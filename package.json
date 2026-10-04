@@ -1,0 +1,55 @@
+{
+  "name": "rat-king",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Encrypted AT Protocol agent network and the tools to configure and run it.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "check": "pnpm typecheck && pnpm check:ship-confidence && ultracite check && oxfmt --check .",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "fix": "ultracite fix && oxfmt .",
+    "prepare": "effect-tsgo patch && lefthook install",
+    "vendor:agent-sources": "bash scripts/vendor-agent-sources.sh",
+    "generate:ship-confidence": "node scripts/ship-confidence.ts --root . --write",
+    "check:ship-confidence": "node scripts/ship-confidence.ts --root .",
+    "fence": "node tools/fence/cli.ts --mode tree",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "4.0.0-rc.117",
+    "@effect/tsgo": "0.45.0",
+    "@effect/vitest": "4.0.0-rc.117",
+    "@oxlint/plugins": "1.83.0",
+    "@types/node": "24.13.6",
+    "@xstate/effect": "0.1.0-alpha.2",
+    "alchemy": "2.0.0-beta.79",
+    "effect": "4.0.0-rc.117",
+    "lefthook": "2.1.14",
+    "oxfmt": "0.68.0",
+    "oxlint": "1.83.0",
+    "oxlint-tsgolint": "7.0.2002",
+    "turbo": "2.11.2",
+    "typescript": "7.0.2",
+    "ultracite": "7.12.0",
+    "vitest": "5.0.1",
+    "xstate": "6.0.0-alpha.59"
+  },
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "11.3.0",
+      "onFail": "error"
+    },
+    "runtime": {
+      "name": "node",
+      "version": ">=24.18.0",
+      "onFail": "warn"
+    }
+  },
+  "engines": {
+    "node": ">=24.18.0",
+    "pnpm": ">=11.1.2"
+  },
+  "packageManager": "pnpm@11.3.0"
+}

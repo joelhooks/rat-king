@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.turbo/
+.agent_sources/
+.agent-sources/
+.pi/
+.brain/
+BRAIN.md
+.fence-tmp/
+.env
+.env.*
+!.env.schema
+.alchemy/
+**/.alchemy/
+*.log
+.DS_Store

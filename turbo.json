@@ -1,0 +1,8 @@
+{
+  "tasks": {
+    "typecheck": {},
+    "check": { "dependsOn": ["typecheck"] },
+    "test": {},
+    "build": {}
+  }
+}

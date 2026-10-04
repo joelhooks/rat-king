@@ -1,0 +1,13 @@
+pre-commit:
+  parallel: false
+  commands:
+    fence:
+      run: node tools/fence/cli.ts --mode staged
+    check:
+      run: pnpm check
+    test:
+      run: pnpm test
+pre-push:
+  commands:
+    fence:
+      run: node tools/fence/cli.ts --mode history

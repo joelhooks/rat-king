@@ -1,0 +1,7 @@
+{
+  "hosts": ["node-a.example", "node-b.example"],
+  "domains": ["network.example"],
+  "ips": ["203.0.113.10", "2001:db8::10"],
+  "sites": ["site-a", "site-b"],
+  "secretNames": ["example_credential"]
+}
