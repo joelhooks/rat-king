@@ -2,7 +2,7 @@ import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import { clientLayer } from "@rat-king/lexicon/mailbox-client";
 import { Clock, Effect, FileSystem, Layer, Ref } from "effect";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import { expect } from "vitest";
 
 import { transportLayer } from "../cli/client.ts";

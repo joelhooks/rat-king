@@ -11,7 +11,7 @@ import type { LexiconDoc } from "@atproto/lexicon";
 import { NodeServices } from "@effect/platform-node";
 import { expect, it } from "@effect/vitest";
 import { Effect, FileSystem, Layer, Result, Schema, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import * as Profile from "../../packages/lexicon/src/agent.profile.ts";
 import * as Defs from "../../packages/lexicon/src/defs.ts";

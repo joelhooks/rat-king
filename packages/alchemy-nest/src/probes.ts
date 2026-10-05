@@ -1,5 +1,5 @@
 import { Crypto, Effect, FileSystem, Redacted, Schema } from "effect";
-import { HttpClient } from "effect/unstable/http";
+import { HttpClient } from "effect/http";
 
 import { refuse } from "./files.ts";
 import { must } from "./host-shell.ts";

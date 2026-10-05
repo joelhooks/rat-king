@@ -14,8 +14,8 @@ import {
   Option,
   Schema,
 } from "effect";
-import { Command, Flag } from "effect/unstable/cli";
-import { FetchHttpClient } from "effect/unstable/http";
+import { Command, Flag } from "effect/cli";
+import { FetchHttpClient } from "effect/http";
 
 import { Documents, staticResolver } from "../src/auth.ts";
 import { transportLayer } from "./client.ts";
