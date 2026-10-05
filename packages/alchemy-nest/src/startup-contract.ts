@@ -4,7 +4,7 @@ import { Effect, Layer, Predicate, Schema } from "effect";
 import { refuse } from "./files.ts";
 import { HostShell, must } from "./host-shell.ts";
 import type { Interface } from "./host-shell.ts";
-import { assessListeners } from "./listeners.ts";
+import { assessListeners, verifiedSidecarPid } from "./listeners.ts";
 import { bootstrapProbe, probeEnvironment } from "./probes.ts";
 import { s3Script } from "./s3-script.ts";
 import { UnitStartup } from "./unit-startup.ts";
@@ -50,7 +50,8 @@ const assertStarted = Effect.fn("UnitStartup.assertStarted")(function* check(
       yield* must(shell, ["ss", "-ltnp"]),
       publicIPv4,
       nodeExpected,
-      sidecarExpected
+      sidecarExpected,
+      sidecarExpected ? yield* verifiedSidecarPid(shell) : undefined
     );
 
     if (Predicate.isTagged(assessment, "Ready")) {

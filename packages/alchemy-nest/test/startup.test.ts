@@ -5,6 +5,7 @@ import { expect } from "vitest";
 
 import { makeFakeShell } from "../src/fake-shell.ts";
 import { testLayer } from "../src/host-shell.ts";
+import { verifiedSidecarPid } from "../src/listeners.ts";
 import { assessListeners, startupLayer } from "../src/startup-contract.ts";
 import { UnitStartup } from "../src/unit-startup.ts";
 
@@ -66,22 +67,81 @@ it("requires exact process, interface and port sets", () => {
 it("requires the sidecar as the eleventh listener and rejects its extra ports", () => {
   const sidecar = line(18_789, "node");
   const full = `${complete}\n${sidecar}`;
-  expect(assessListeners(full, address, true, true)._tag).toBe("Ready");
+  expect(assessListeners(full, address, true, true, "12")._tag).toBe("Ready");
   expect(assessListeners(complete, address, true, true)._tag).toBe("Waiting");
   expect(assessListeners(full, address, true, false)._tag).toBe("Violation");
   expect(
-    assessListeners(`${full}\n${line(19_001, "node")}`, address, true, true)
-      ._tag
+    assessListeners(
+      `${full}\n${line(19_001, "node")}`,
+      address,
+      true,
+      true,
+      "12"
+    )._tag
   ).toBe("Violation");
   expect(
     assessListeners(
       full.replace("127.0.0.1:18789", "0.0.0.0:18789"),
       address,
       true,
-      true
+      true,
+      "12"
     )._tag
   ).toBe("Violation");
 });
+
+it.effect(
+  "accepts Linux MainThread only for the unit PID and approved executable",
+  () =>
+    Effect.gen(function* testLinuxIdentity() {
+      const fake = yield* makeFakeShell();
+      const full = `${complete}\n${line(18_789, "MainThread")}`;
+
+      for (const approved of [true, false]) {
+        const shell = {
+          ...fake.shell,
+          exec: (argv: readonly string[]) => {
+            if (argv[0] === "systemctl" && argv.includes("MainPID")) {
+              return Effect.succeed({ code: 0, stdout: "12\n" });
+            }
+
+            if (argv[0] === "readlink") {
+              return Effect.succeed({
+                code: 0,
+                stdout:
+                  argv[2] === "/usr/local/bin/node" || approved
+                    ? "/opt/example/node\n"
+                    : "/opt/example/not-node\n",
+              });
+            }
+
+            return fake.shell.exec(argv);
+          },
+        };
+
+        const pid = yield* verifiedSidecarPid(shell);
+
+        expect(pid).toBe(approved ? "12" : undefined);
+        expect(assessListeners(full, address, true, true, pid)._tag).toBe(
+          approved ? "Ready" : "Violation"
+        );
+      }
+
+      for (const changed of [
+        full.replace('"MainThread",pid=12', '"MainThread",pid=13'),
+        full.replace("127.0.0.1:18789", "0.0.0.0:18789"),
+        `${full}\n${line(19_001, "MainThread")}`,
+        full.replace(
+          '"MainThread",pid=12,fd=3))',
+          '"MainThread",pid=12,fd=3),("node",pid=13,fd=4))'
+        ),
+      ]) {
+        expect(assessListeners(changed, address, true, true, "12")._tag).toBe(
+          "Violation"
+        );
+      }
+    })
+);
 
 it.effect("stops both units before returning a startup violation", () =>
   Effect.gen(function* testStop() {
