@@ -7,6 +7,7 @@
     "@rat-king/agent-runtime": "workspace:*",
     "@rat-king/envelope": "workspace:*",
     "@rat-king/lexicon": "workspace:*",
+    "@rat-king/mailbox-client": "workspace:*",
     "effect": "4.0.1",
     "xstate": "6.0.0-alpha.59"
   },

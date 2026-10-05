@@ -1,13 +1,12 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
-import { clientLayer } from "@rat-king/lexicon/mailbox-client";
-import { Clock, Effect, FileSystem, Layer, Ref } from "effect";
+import * as Defs from "@rat-king/lexicon/defs";
+import { RatKingMailbox, layer } from "@rat-king/mailbox-client";
+import { Clock, Effect, FileSystem, Layer, Ref, Schema } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { expect } from "vitest";
 
-import { transportLayer } from "../cli/client.ts";
 import { readIdentity } from "../cli/identity.ts";
-import { list } from "../cli/operations.ts";
 import { provision } from "../cli/provision.ts";
 import { authenticate, ReplayAuthority, staticResolver } from "../src/auth.ts";
 import type { ClaimsValue } from "../src/auth.ts";
@@ -44,7 +43,7 @@ it.effect(
         Effect.gen(function* authenticateRequest() {
           expect(
             yield* authenticate({
-              audience: "did:web:service.example",
+              audience: "did:web:service.example#mailbox",
               authorization: request.headers.authorization ?? null,
               now: yield* Clock.currentTimeMillis,
               nsid: "sh.mschf.ratking.mailbox.list",
@@ -58,19 +57,19 @@ it.effect(
         }).pipe(Effect.orDie)
       );
 
-      const client = clientLayer.pipe(
-        Layer.provide(
-          transportLayer(
-            "http://worker.example",
-            "did:web:service.example",
-            identity
-          ).pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, http)))
-        )
-      );
+      const client = layer({
+        documents: yield* Schema.decodeUnknownEffect(
+          Schema.toType(Schema.Array(Defs.DidDocument))
+        )(document === undefined ? [] : [document]),
+        endpoint: "http://worker.example",
+        identity,
+        serviceDid: "did:web:service.example",
+      }).pipe(Layer.provide(Layer.succeed(HttpClient.HttpClient, http)));
 
       yield* Effect.gen(function* requests() {
-        expect((yield* list(identity)).events).toEqual([]);
-        expect((yield* list(identity)).events).toEqual([]);
+        const mailbox = yield* RatKingMailbox;
+        expect((yield* mailbox.list({})).events).toEqual([]);
+        expect((yield* mailbox.list({})).events).toEqual([]);
       }).pipe(Effect.provide(client));
       const observed = yield* Ref.get(claims);
       expect(observed).toHaveLength(2);

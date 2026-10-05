@@ -1,7 +1,7 @@
 {
   "effect": "4.0.1",
   "generatorVersion": "0.1.0",
-  "sourceDigest": "89cf6f2c13135eb1b98e327cbb30f01d254f60d1343a7b1ec9471f713d746948",
+  "sourceDigest": "5c59e36835bc058aff2aa673efd75177393382bfee5af2ac3366697ac8bd8ac7",
   "sources": [
     "lexicons/sh/mschf/ratking/admin/putDidDocument.json",
     "lexicons/sh/mschf/ratking/agent/profile.json",

@@ -1,8 +1,8 @@
 /* oxlint-disable typescript/promise-function-async, promise/prefer-await-to-callbacks -- Private WebCrypto generation stays on the agent's machine. */
 import { cryptoOperation } from "@rat-king/envelope/webcrypto";
+import { Documents } from "@rat-king/mailbox-client";
 import { Effect, FileSystem, Path, Schema } from "effect";
 
-import { Documents } from "../src/auth.ts";
 import { CliError, Identity, PrivateJwk, readIdentity } from "./identity.ts";
 import type { IdentityValue } from "./identity.ts";
 
@@ -11,25 +11,25 @@ const Pair = Schema.Struct({
   publicKey: Schema.instanceOf(CryptoKey),
 });
 
-const generateKey = Effect.fn("MailboxCli.generateKey")(function* generateKey(
-  name: "ECDSA" | "ECDH"
-) {
-  const key = yield* cryptoOperation(() =>
-    crypto.subtle.generateKey(
-      { name, namedCurve: "P-256" },
-      true,
-      name === "ECDSA" ? ["sign", "verify"] : ["deriveBits"]
-    )
-  );
+export const generateKey = Effect.fn("MailboxCli.generateKey")(
+  function* generateKey(name: "ECDSA" | "ECDH") {
+    const key = yield* cryptoOperation(() =>
+      crypto.subtle.generateKey(
+        { name, namedCurve: "P-256" },
+        true,
+        name === "ECDSA" ? ["sign", "verify"] : ["deriveBits"]
+      )
+    );
 
-  const pair = yield* Schema.decodeUnknownEffect(Pair)(key);
+    const pair = yield* Schema.decodeUnknownEffect(Pair)(key);
 
-  return yield* Schema.decodeUnknownEffect(PrivateJwk)(
-    yield* cryptoOperation(() =>
-      crypto.subtle.exportKey("jwk", pair.privateKey)
-    )
-  );
-});
+    return yield* Schema.decodeUnknownEffect(PrivateJwk)(
+      yield* cryptoOperation(() =>
+        crypto.subtle.exportKey("jwk", pair.privateKey)
+      )
+    );
+  }
+);
 
 const publicKey = (key: typeof PrivateJwk.Type) => ({
   crv: key.crv,

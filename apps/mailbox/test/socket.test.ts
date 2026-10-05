@@ -10,6 +10,8 @@ import * as Subscribe from "@rat-king/lexicon/mailbox.subscribe";
 import * as Acquire from "@rat-king/lexicon/runtime.acquireLease";
 import * as Release from "@rat-king/lexicon/runtime.releaseLease";
 import * as Renew from "@rat-king/lexicon/runtime.renewLease";
+import * as Resolve from "@rat-king/lexicon/runtime.resolveLease";
+import { XrpcFailure } from "@rat-king/lexicon/xrpc-failure";
 import { Arbitrary, Clock, DateTime, Effect, Schedule, Schema } from "effect";
 import { describe, expect } from "vitest";
 
@@ -127,20 +129,35 @@ describe.skipIf(
           )
         );
 
+        let acquisition = 0;
+
         const acquire = () =>
           Effect.gen(function* acquireLease() {
-            return (yield* recipient.acquireLease(
-              yield* Schema.decodeUnknownEffect(Acquire.Input)({
-                did: recipientDid,
-                expiresAt: DateTime.formatIso(
-                  DateTime.makeUnsafe((yield* Clock.currentTimeMillis) + 60_000)
-                ),
-                harness: {
-                  $type: "sh.mschf.ratking.runtime.lease#pi",
-                  sessionId: "socket-proof",
-                },
-              })
-            )).lease;
+            acquisition += 1;
+
+            return (yield* recipient
+              .acquireLease(
+                yield* Schema.decodeUnknownEffect(Acquire.Input)({
+                  did: recipientDid,
+                  expiresAt: DateTime.formatIso(
+                    DateTime.makeUnsafe(
+                      (yield* Clock.currentTimeMillis) + 60_000
+                    )
+                  ),
+                  harness: {
+                    $type: "sh.mschf.ratking.runtime.lease#pi",
+                    sessionId: "socket-proof",
+                  },
+                })
+              )
+              .pipe(
+                Effect.mapError(
+                  (error) =>
+                    new TestFailure({
+                      message: `Socket lease acquire ${acquisition === 1 ? "initially" : "after expiry"} refused: ${Schema.is(XrpcFailure)(error) ? error.error : error._tag}`,
+                    })
+                )
+              )).lease;
           });
 
         let lease = yield* acquire();
@@ -151,6 +168,18 @@ describe.skipIf(
             generation: lease.generation,
             leaseId: lease.leaseId,
           });
+
+        yield* Effect.addFinalizer(() =>
+          recipient.releaseLease(fence()).pipe(
+            Effect.catchIf(
+              (error) =>
+                Schema.is(XrpcFailure)(error) &&
+                error.error === "LeaseMismatch",
+              () => Effect.void
+            ),
+            Effect.orDie
+          )
+        );
 
         const url = () => {
           const endpoint = new URL(
@@ -344,18 +373,35 @@ describe.skipIf(
           yield* Schema.decodeUnknownEffect(Renew.Input)({
             ...fence(),
             expiresAt: DateTime.formatIso(
-              DateTime.makeUnsafe((yield* Clock.currentTimeMillis) + 100)
+              DateTime.makeUnsafe((yield* Clock.currentTimeMillis) + 1000)
             ),
           })
         ));
-        yield* states().pipe(
-          Effect.flatMap(() => Clock.currentTimeMillis),
-          Effect.filterOrFail(
-            (now) => now > Date.parse(lease.expiresAt),
-            () => new TestFailure({ message: "Lease expiry pending" })
-          ),
-          Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 })
-        );
+        yield* recipient
+          .resolveLease(
+            yield* Schema.decodeUnknownEffect(Resolve.Params)({
+              did: recipientDid,
+            })
+          )
+          .pipe(
+            Effect.flatMap(() =>
+              Effect.fail(new TestFailure({ message: "Lease expiry pending" }))
+            ),
+            Effect.catchIf(
+              (error) =>
+                Schema.is(XrpcFailure)(error) &&
+                error.error === "LeaseNotFound",
+              () => Effect.void
+            ),
+            Effect.retry({
+              schedule: Schedule.spaced("10 millis"),
+              times: 500,
+              while: (error) =>
+                Schema.is(TestFailure)(error) &&
+                error.message === "Lease expiry pending",
+            }),
+            Effect.timeout("10 seconds")
+          );
         const older = lease;
         lease = yield* acquire();
         expect(lease.generation).toBe(older.generation + 1);
@@ -372,6 +418,9 @@ describe.skipIf(
         expect(stale.closedCode()).toBe(socketCodes.stale);
         expect(stale.notices).toEqual([]);
       }).pipe(Effect.scoped),
-    { arbitrary: { runs: 3 }, timeout: 90_000 }
+    {
+      arbitrary: { runs: 3, seed: process.env.RAT_KING_SOCKET_SEED },
+      timeout: 90_000,
+    }
   );
 });

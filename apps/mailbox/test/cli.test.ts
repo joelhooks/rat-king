@@ -3,7 +3,9 @@ import { it } from "@effect/vitest";
 import { seal, suite, cryptoOperation } from "@rat-king/envelope";
 import * as Defs from "@rat-king/lexicon/defs";
 import * as List from "@rat-king/lexicon/mailbox.list";
-import { Effect, Result, Schema } from "effect";
+import { RatKingMailbox, layer, Identity, tid } from "@rat-king/mailbox-client";
+import { Effect, Layer, Result, Schema } from "effect";
+import { FetchHttpClient } from "effect/http";
 import { expect } from "vitest";
 
 import {
@@ -11,9 +13,6 @@ import {
   senderDid,
   recipientDid,
 } from "../../../packages/envelope/test/helpers.ts";
-import { Identity } from "../cli/identity.ts";
-import { open, tid } from "../cli/operations.ts";
-import { staticResolver } from "../src/auth.ts";
 import { documents } from "./helpers.ts";
 
 it.effect(
@@ -56,11 +55,25 @@ it.effect(
 
       const wire = yield* Schema.encodeEffect(Defs.EncryptedEnvelope)(envelope);
 
-      const resolver = staticResolver(
-        yield* documents(pair.sender.publicKey, pair.recipient.publicKey)
+      const publicDocuments = yield* Schema.decodeUnknownEffect(
+        Schema.toType(Schema.Array(Defs.DidDocument))
+      )(yield* documents(pair.sender.publicKey, pair.recipient.publicKey));
+
+      const client = yield* RatKingMailbox.pipe(
+        Effect.provide(
+          layer({
+            documents: publicDocuments,
+            endpoint: "https://mailbox.example.invalid",
+            identity,
+            serviceDid: "did:web:service.example",
+          }).pipe(Layer.provide(FetchHttpClient.layer))
+        )
       );
 
-      const result = yield* open(identity, wire).pipe(Effect.provide(resolver));
+      const result = yield* client.open(
+        yield* Schema.decodeEffect(Defs.EncryptedEnvelope)(wire)
+      );
+
       expect(result).toEqual({
         body: "proof message",
         senderDid,
@@ -69,10 +82,10 @@ it.effect(
       });
       expect(
         Result.isFailure(
-          yield* open(identity, {
+          yield* Schema.decodeEffect(Defs.EncryptedEnvelope)({
             ...wire,
             aad: { ...wire.aad, messageId: tid(1_700_000_000_001, 42) },
-          }).pipe(Effect.provide(resolver), Effect.result)
+          }).pipe(Effect.flatMap(client.open), Effect.result)
         )
       ).toBe(true);
       expect(
