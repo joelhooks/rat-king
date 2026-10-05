@@ -12,7 +12,6 @@ import {
   symlink,
   writeFile,
 } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -46,11 +45,8 @@ it.live.prop(
   [Arbitrary.schema(State)],
   ([sample]) =>
     Effect.promise(async () => {
-      const root = await realpath(tmpdir());
-
-      const directory = await mkdtemp(
-        path.join(root, "rat-king-private-file-")
-      );
+      const root = await realpath(new URL("..", import.meta.url));
+      const directory = await mkdtemp(path.join(root, ".private-file-test-"));
 
       try {
         const parent = path.join(directory, "parent");
@@ -138,4 +134,31 @@ it.live.prop(
       }
     }),
   { arbitrary: { runs: 100 }, timeout: 30_000 }
+);
+
+it.live.prop(
+  "root-owned sticky world-writable ancestors reject private credentials",
+  [Arbitrary.schema(Schema.Literals([0o400, 0o600]))],
+  ([safeMode]) =>
+    Effect.promise(async () => {
+      const root = await realpath("/tmp");
+      const metadata = await stat(root);
+      expect(metadata.uid).toBe(0);
+      expect(metadata.mode & 0o7777).toBe(0o1777);
+
+      const directory = await mkdtemp(
+        path.join(root, "rat-king-private-file-")
+      );
+
+      try {
+        const target = path.join(directory, "credential");
+        await writeFile(target, generateBearer(), { mode: safeMode });
+        await expect(readPrivateFile(target)).rejects.toThrow(
+          "Credential directory must not be writable by others"
+        );
+      } finally {
+        await rm(directory, { force: true, recursive: true });
+      }
+    }),
+  { arbitrary: { runs: 10 }, timeout: 30_000 }
 );
