@@ -1,0 +1,9 @@
+{
+  "$type": "sh.mschf.ratking.desk.theme",
+  "universe": "Example Fiction",
+  "tone": "Plain",
+  "namePool": [
+    "Example",
+    "Sample"
+  ]
+}

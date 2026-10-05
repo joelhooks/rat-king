@@ -1,0 +1,83 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.mailbox.ack",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Idempotently acknowledge after processing. Recipient authorization and current lease fencing identity are required. Expired or failed messages cannot be revived.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "description": "Only the active recipient runtime can ack. Repeating a valid ack returns its original receipt.",
+          "required": [
+            "message",
+            "recipientDid",
+            "leaseId",
+            "generation"
+          ],
+          "properties": {
+            "message": {
+              "type": "ref",
+              "ref": "sh.mschf.ratking.defs#messageRef"
+            },
+            "recipientDid": {
+              "type": "string",
+              "format": "did"
+            },
+            "leaseId": {
+              "type": "string",
+              "format": "tid"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "description": "Durable receipt.",
+          "required": [
+            "receipt"
+          ],
+          "properties": {
+            "receipt": {
+              "type": "ref",
+              "ref": "sh.mschf.ratking.defs#receipt"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "InvalidRequest",
+          "description": "Invalid or unsupported operation."
+        },
+        {
+          "name": "AuthRequired",
+          "description": "Missing or invalid service-auth token."
+        },
+        {
+          "name": "Forbidden",
+          "description": "Authenticated DID is not authorized."
+        },
+        {
+          "name": "MessageNotFound"
+        },
+        {
+          "name": "LeaseMismatch",
+          "description": "Lease expired or fencing identity is stale."
+        },
+        {
+          "name": "InvalidTransition",
+          "description": "Message cannot transition to acked."
+        }
+      ]
+    }
+  }
+}

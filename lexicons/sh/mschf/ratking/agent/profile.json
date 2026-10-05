@@ -1,0 +1,55 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.agent.profile",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "tid",
+      "description": "Public profile revision. Repository DID is the immutable serial; the separately resolved handle is not stored here. Call sign, emoji, icon and theme may change.",
+      "record": {
+        "type": "object",
+        "description": "Latest profile revision selected by application policy. No field changes repository DID.",
+        "required": [
+          "birthContext",
+          "genesisCid"
+        ],
+        "properties": {
+          "callSign": {
+            "type": "string",
+            "description": "Human display call sign, not an address or verified handle."
+          },
+          "emoji": {
+            "type": "string"
+          },
+          "icon": {
+            "type": "blob",
+            "accept": [
+              "image/png",
+              "image/jpeg",
+              "image/webp"
+            ],
+            "maxSize": 1000000
+          },
+          "themeRef": {
+            "type": "string",
+            "format": "at-uri",
+            "description": "Actual desk theme record URI."
+          },
+          "birthContext": {
+            "type": "ref",
+            "ref": "sh.mschf.ratking.defs#birthContext"
+          },
+          "genesisCid": {
+            "type": "string",
+            "format": "cid",
+            "description": "CIDv1 0x71 SHA-256 of the DID-independent genesis certificate, not the profile or its resulting DID."
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "datetime"
+          }
+        }
+      }
+    }
+  }
+}

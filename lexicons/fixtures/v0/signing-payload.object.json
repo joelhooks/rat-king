@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "suite": {
+    "kemId": 16,
+    "kdfId": 1,
+    "aeadId": 1
+  },
+  "aad": {
+    "senderDid": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+    "recipientDid": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+    "messageId": "3jzfcijpj2z2a",
+    "recipientKeyId": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb#keyAgreement",
+    "expiresAt": "2026-10-05T00:00:00.000Z"
+  },
+  "body": {
+    "$bytes": "ZXhhbXBsZQ=="
+  },
+  "createdAt": "2026-10-04T00:00:00.000Z",
+  "replyTo": {
+    "senderDid": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+    "messageId": "3jzfcijpj2z2a"
+  }
+}

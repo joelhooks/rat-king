@@ -1,0 +1,9 @@
+{
+  "message": {
+    "senderDid": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+    "messageId": "3jzfcijpj2z2a"
+  },
+  "recipientDid": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+  "leaseId": "3jzfcijpj2z2b",
+  "generation": 1
+}
