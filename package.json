@@ -7,14 +7,14 @@
   "type": "module",
   "scripts": {
     "check": "pnpm lexgen:check && pnpm typecheck && pnpm check:ship-confidence && ultracite check && oxfmt --check .",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tools/lexgen/tsconfig.json && tsc --noEmit -p packages/alchemy-nest/tsconfig.json && tsc --noEmit -p packages/envelope/tsconfig.json && tsc --noEmit -p apps/mailbox/tsconfig.json && tsc --noEmit -p packages/agent-runtime/tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tools/lexgen/tsconfig.json && tsc --noEmit -p packages/alchemy-nest/tsconfig.json && tsc --noEmit -p packages/envelope/tsconfig.json && tsc --noEmit -p apps/mailbox/tsconfig.json && tsc --noEmit -p packages/agent-runtime/tsconfig.json && tsc --noEmit -p apps/claude-sidecar/tsconfig.json && tsc --noEmit -p apps/claude-sidecar/test/worker/tsconfig.json",
     "fix": "ultracite fix && oxfmt .",
     "prepare": "effect-tsgo patch && lefthook install",
     "vendor:agent-sources": "bash scripts/vendor-agent-sources.sh",
     "generate:ship-confidence": "node scripts/ship-confidence.ts --root . --write",
     "check:ship-confidence": "node scripts/ship-confidence.ts --root .",
     "fence": "node tools/fence/cli.ts --mode tree",
-    "test": "ALCHEMY_TELEMETRY_DISABLED=1 vitest run && vitest run --config tools/lexgen/vitest.config.ts && ALCHEMY_TELEMETRY_DISABLED=1 vitest run --config packages/alchemy-nest/vitest.config.ts && vitest run --config packages/envelope/vitest.config.ts && vitest run --config apps/mailbox/vitest.config.ts && vitest run --config packages/agent-runtime/vitest.config.ts",
+    "test": "ALCHEMY_TELEMETRY_DISABLED=1 vitest run && vitest run --config tools/lexgen/vitest.config.ts && ALCHEMY_TELEMETRY_DISABLED=1 vitest run --config packages/alchemy-nest/vitest.config.ts && vitest run --config packages/envelope/vitest.config.ts && vitest run --config apps/mailbox/vitest.config.ts && vitest run --config packages/agent-runtime/vitest.config.ts && vitest run --config apps/claude-sidecar/vitest.config.ts",
     "lexgen:write": "node tools/lexgen/cli.ts --write",
     "lexgen:check": "node tools/lexgen/cli.ts --check"
   },

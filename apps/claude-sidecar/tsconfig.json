@@ -1,0 +1,15 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "paths": {
+      "pi-claude-bridge/src/mcp-server.ts": ["./types/mcp-server.d.ts"],
+      "pi-claude-bridge/src/prompt-stream.ts": ["./types/prompt-stream.d.ts"]
+    },
+    "noEmit": true,
+    "lib": ["ES2024", "DOM", "DOM.Iterable"],
+    "types": ["node"]
+  },
+  "exclude": ["test/worker/**"],
+  "include": ["src/**/*.ts", "test/**/*.ts", "*.config.ts"]
+}
