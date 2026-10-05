@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
+    "@rat-king/agent-runtime": "workspace:*",
     "@rat-king/envelope": "workspace:*",
     "@rat-king/lexicon": "workspace:*",
     "effect": "4.0.1",

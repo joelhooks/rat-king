@@ -17,21 +17,11 @@ import { Clock, Effect, Schema } from "effect";
 import { DidResolver } from "../src/auth.ts";
 import { proofLeasePath, ProofLease } from "../src/proof-lease.ts";
 import { Lease } from "../src/store.ts";
+import { tid } from "../src/tid.ts";
 import { CliError, importSigning, importAgreement } from "./identity.ts";
 import type { IdentityValue } from "./identity.ts";
 
-export const tid = (millis: number, clockId: number) => {
-  let number = BigInt(millis) * 1000n * 1024n + BigInt(clockId % 1024);
-  const alphabet = "234567abcdefghijklmnopqrstuvwxyz";
-  let text = "";
-
-  for (let index = 0; index < 13; index += 1) {
-    text = (alphabet[Number(number % 32n)] ?? "2") + text;
-    number /= 32n;
-  }
-
-  return text;
-};
+export { tid } from "../src/tid.ts";
 
 export const send = Effect.fn("MailboxCli.send")(function* send(
   identity: IdentityValue,
@@ -156,6 +146,14 @@ export const ack = Effect.fn("MailboxCli.ack")(function* ack(
   );
 });
 
+export interface OpenedMessage {
+  body: string;
+  replyTo?: Defs.MessageRefValue;
+  senderDid: Defs.AadValue["senderDid"];
+  tid: Defs.AadValue["messageId"];
+  verified: true;
+}
+
 export const open = Effect.fn("MailboxCli.open")(function* open(
   identity: IdentityValue,
   input: typeof Defs.EncryptedEnvelope.Encoded
@@ -182,7 +180,7 @@ export const open = Effect.fn("MailboxCli.open")(function* open(
         ),
   });
 
-  return {
+  const result: OpenedMessage = {
     body: new TextDecoder("utf-8", { fatal: true, ignoreBOM: false }).decode(
       payload.body
     ),
@@ -190,4 +188,10 @@ export const open = Effect.fn("MailboxCli.open")(function* open(
     tid: payload.aad.messageId,
     verified: true,
   };
+
+  if (payload.replyTo !== undefined) {
+    result.replyTo = payload.replyTo;
+  }
+
+  return result;
 });

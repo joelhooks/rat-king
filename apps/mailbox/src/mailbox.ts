@@ -26,7 +26,8 @@ const nextSeq = (tx: Transaction) => {
 export const transitionMessage = (
   tx: Transaction,
   message: Message,
-  command: DeliveryCommand
+  command: DeliveryCommand,
+  detail?: string
 ) => {
   const { state } = message.current;
 
@@ -45,7 +46,13 @@ export const transitionMessage = (
   }
 
   const seq = nextSeq(tx);
-  const receipt = { ...message.current, seq, state: next };
+
+  const receipt: Defs.ReceiptValue = { ...message.current, seq, state: next };
+
+  if (detail !== undefined) {
+    Object.assign(receipt, { detail });
+  }
+
   tx.append({ $type: "sh.mschf.ratking.defs#receiptEvent", receipt, seq });
   tx.put({ ...message, current: receipt });
 

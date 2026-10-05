@@ -73,6 +73,47 @@ No further calls were made. This is not evidence of the anticipated extra-usage 
 
 The current minified browser Worker bundle is **1,221,199 bytes**: **+221,713 bytes** over the sol-only adapter (999,486 bytes), and **+569,220 bytes** over the S3 faux-only bundle. The shared fixture includes both provider SDKs; no additional dependency or lockfile change was needed.
 
+## Hosted mailbox loop
+
+`src/mailbox-loop.ts` owns AgentMailbox, AgentJournal and AgentKeys contracts and the Effect drain. `src/hosted.ts` adapts one hosted agent DID to one DO and one pi-durable Harness. The mailbox composition Worker supplies local authenticated XRPC and static DID resolution. No provider implementation enters the loop contract.
+
+The XState lifecycle checkpoints pending → submitted → answered → sealed → replied → acked. An unanswered submission checkpoints unanswered → failed and records a terminal mailbox receipt with the public-safe detail `Agent harness settled unanswered`; its exact reason stays in the private agent journal. Each submission uses `requestId = senderDid/messageId`. The journal stores the submission ID and the exact sealed reply before sending. A retry reuses that ciphertext and sender/TID, rather than resealing a conflicting admission. Journal operations use the same queued SQLite facade as the Harness. A DO-owned Promise tail serializes whole drains. Completed drains and safe operation-only failures remain available through private evidence RPC.
+
+The registry is empty: **no tools, no CodingTools, no tool-bearing extensions, no shell, filesystem or network tools**. Model input is text; settlement returns text. The agent adds no listener. In gateway mode its only outbound transport is the model gateway's configured origin. `src/model-egress.ts` passes an origin-checked fetch into both provider stream methods, rejects other origins with EgressRefused, and disables automatic redirects. The guarded provider exposes static chat models only, without discovery, refresh, deferred, image or classification network paths. Replies stay within the Worker through Mailbox stubs.
+
+Worker configuration selects the same code path:
+
+- `AGENT_MODEL=gateway`: requires `MODEL_GATEWAY_BASE_URL` and the secret `MODEL_GATEWAY_CREDENTIAL`; `MODEL_GATEWAY_MODEL` defaults to `gpt-6-sol`. The existing exact allowlist still applies. The proof uses low thinking, no retry and a 45-second model stream timeout.
+- `AGENT_MODEL=faux`: installs pi-ai's faux provider with the scripted one-line answer `Faux agent answer.` on every turn. Both gateway URL and credential bindings must be absent, not empty. No proxy origin or network-capable provider is installed. This is the mode available to a later faux deployment; it does not authorize one.
+- `HOSTED_AGENTS`: JSON array of agent DIDs only. No host inventory or addresses.
+- `AGENT_IDENTITIES_CREDENTIAL`: secret JSON array of `{ did, signing, agreement }` with private P-256 JWKs. It never enters tracked config or Alchemy state. The local proof generates it in a mode-600 OS-temp `.dev.vars`. celld v0.6.1 strips outer quotes but does not JSON-unescape them, so this binding contains raw one-line JSON, not a double-encoded JSON string.
+
+The hosted adapter wraps ModelAccess without changing `src/model-access.ts`. The workspace lockfile adds only the mailbox → runtime and runtime → envelope/lexicon/XState links; no external dependency version changed.
+
+### One real-loop proof
+
+`apps/mailbox/test/agent-loop-celld.test.ts` skips unless the named binary and both readable gateway files exist. It bundles the composition Worker and the actual CLI, provisions temporary sender and agent identities under invented `.example.invalid` DIDs, and starts celld on loopback. It runs CLI send, waits for the reply, and runs CLI open as the sender. `RAT_KING_MAILBOX_CLIENT_LABEL` selects the local CLI alias; the public fixture defaults to `sender`. Assertions require verified=true, the agent sender, matching replyTo, non-empty answer and an acked original. It resends the exact original ciphertext with fresh service auth, waits for two completed drains, and requires one reply and one persisted submission after a one-second observation window. It redacts gateway URL, hostname and key in errors and trashes temporary secrets after stopping its processes.
+
+```sh
+RAT_KING_CELLD=/path/to/verified/celld \
+RAT_KING_MODEL_GATEWAY_KEY_FILE=/path/to/private/key \
+RAT_KING_MODEL_GATEWAY_ENDPOINT_FILE=/path/to/private/endpoint \
+pnpm exec vitest run --config apps/mailbox/vitest.config.ts apps/mailbox/test/agent-loop-celld.test.ts
+```
+
+Observed local result: the final real sol run, after merging the sidecar landing, passed in **9.65 seconds**. Two real sol turns ran in total: the initial proof and the owner-requested post-merge proof. No third attempt ran. The CLI alias in this pasted output is anonymized.
+
+```text
+S5 mailbox loop: mode=gpt-6-sol low; endpoint/key [REDACTED]
+send --from [client]: {"receipt":{"message":{"messageId":"3mx4bqoug5ktr","senderDid":"did:web:sender.example.invalid"},"recipientDid":"did:web:agent.example.invalid","seq":1,"state":"accepted"}}
+open --as [client]: {"body":"2 + 2 = 4.","replyTo":{"messageId":"3mx4bqoug5ktr","senderDid":"did:web:sender.example.invalid"},"senderDid":"did:web:agent.example.invalid","tid":"3mx4bqozq3222","verified":true}
+original=acked; duplicate receipt=original; reply count=1; submission count=1; wake receipts=2 accepted; tools/extensions=0
+```
+
+The same proof can qualify local wiring without gateway calls using `RAT_KING_MAILBOX_FAUX_PROOF=1` and the named celld binary, with no gateway files. Faux passed locally. A small unit test checks same-origin dispatch, foreign-origin/port and userinfo refusals, and redirect suppression.
+
+Not tested for this loop: deployment or Cloudflare; multiple hosted agents or questions; the door-3 secret-file shortcut as a production key-delivery mechanism; real-key custody, rotation or DID resolution; crash at reply/ack boundaries; failed/unanswered receipt behavior end to end; gateway failures, revocation or rate limits; lease contention or takeover; pagination under concurrent admissions; expiry, pruning, sustained load, alarms or missed-wake recovery. Wakes are best-effort, not a durable scheduler. Failed drains do not automatically retry or claim success. Crypto remains unreviewed. No deployment, release or publication capability changed.
+
 ## S3 memory baseline
 
 Measured with celld v0.6.1 on arm64 macOS, using `ps -o rss` against the actual isolate-node PID, not the dev supervisor. A live-clock sampler probes every 25 ms during both runs; short spikes can fall between samples. Values are whole-process RSS, not an isolated V8 heap measurement.

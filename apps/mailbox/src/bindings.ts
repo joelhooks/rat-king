@@ -1,3 +1,5 @@
+import type { HostedBindings } from "@rat-king/agent-runtime/hosted";
+
 import type { Mailbox, AuthTokens } from "./worker.ts";
 
 export interface Bindings {
@@ -5,6 +7,15 @@ export interface Bindings {
   readonly AUTH_TOKENS: DurableObjectNamespace<AuthTokens>;
   readonly SERVICE_DID: string;
   readonly DID_DOCUMENTS: string;
+  readonly HOSTED_AGENTS?: string;
+  readonly AGENT?: {
+    readonly getByName: (did: string) => { readonly wake: () => Promise<void> };
+  };
+  readonly AGENT_IDENTITIES_CREDENTIAL?: HostedBindings["AGENT_IDENTITIES_CREDENTIAL"];
+  readonly AGENT_MODEL?: HostedBindings["AGENT_MODEL"];
+  readonly MODEL_GATEWAY_BASE_URL?: string;
+  readonly MODEL_GATEWAY_CREDENTIAL?: string;
+  readonly MODEL_GATEWAY_MODEL?: string;
 }
 
 export interface Build {

@@ -7,13 +7,18 @@
     ".": "./src/port.ts",
     "./pi-durable": "./src/pi-durable.ts",
     "./model-access": "./src/model-access.ts",
-    "./sqlite": "./src/sqlite.ts"
+    "./sqlite": "./src/sqlite.ts",
+    "./mailbox-loop": "./src/mailbox-loop.ts",
+    "./hosted": "./src/hosted.ts"
   },
   "dependencies": {
     "@earendil-works/chord": "1.0.2",
     "@earendil-works/pi-ai": "1.0.2",
     "@earendil-works/pi-durable": "1.0.2",
-    "effect": "4.0.1"
+    "@rat-king/envelope": "workspace:*",
+    "@rat-king/lexicon": "workspace:*",
+    "effect": "4.0.1",
+    "xstate": "6.0.0-alpha.59"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261004.1",
