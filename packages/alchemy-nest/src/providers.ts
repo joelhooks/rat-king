@@ -298,6 +298,10 @@ export const SystemdUnitProvider = () =>
         }),
         reconcile: Effect.fn("SystemdUnit.provider.reconcile")(
           function* operation({ news, olds, output }) {
+            yield* validateUnit(news);
+
+            const existed = yield* shell.stat(unitPath(news));
+
             if (Option.isSome(startup)) {
               yield* startup.value.beforeStart(news.name, news.home);
             }
@@ -310,7 +314,15 @@ export const SystemdUnitProvider = () =>
             );
 
             if (Option.isSome(startup)) {
-              yield* startup.value.afterStart(news.name);
+              yield* startup.value
+                .afterStart(news.name)
+                .pipe(
+                  Effect.onError(() =>
+                    existed === undefined
+                      ? deleteUnit(shell, attributes).pipe(Effect.orDie)
+                      : Effect.void
+                  )
+                );
             }
 
             return attributes;

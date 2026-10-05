@@ -13,6 +13,7 @@ import { FetchHttpClient } from "effect/http";
 
 import { provision } from "../../apps/mailbox/cli/provision.ts";
 import { Documents } from "../../apps/mailbox/src/auth.ts";
+import { sidecarUnit } from "../../packages/alchemy-nest/src/agent-runtime-files.ts";
 import {
   deleteDirectory,
   reconcileDirectory,
@@ -21,6 +22,8 @@ import {
 import { HostShell, must } from "../../packages/alchemy-nest/src/host-shell.ts";
 import { Host } from "../../packages/alchemy-nest/src/host.ts";
 import { listenerProbe } from "../../packages/alchemy-nest/src/probes.ts";
+import { deleteDeclaredUnit } from "../../packages/alchemy-nest/src/systemd.ts";
+import { removeStoreSockets } from "../../packages/alchemy-nest/src/unit-cleanup.ts";
 import { connection, nest } from "./stack.ts";
 
 export const claudeMtimeScript = String.raw`
@@ -37,10 +40,26 @@ export type Action =
   | "listeners"
   | "destroy-plan"
   | "destroy"
-  | "teardown-probe";
+  | "teardown-probe"
+  | "recover-delete";
 
 export const run = (action: Action) =>
   Effect.gen(function* runNestAction() {
+    if (action === "recover-delete") {
+      const shell = yield* HostShell;
+      const hosts = yield* Host;
+
+      const host = yield* hosts.node(
+        yield* Config.String("RAT_KING_LIVE_NODE")
+      );
+
+      yield* deleteDeclaredUnit(shell, sidecarUnit(host.home, ""));
+      yield* removeStoreSockets(shell);
+      yield* Effect.log("OWNED_RECOVERY_DELETE_PASSED");
+
+      return yield* Effect.void;
+    }
+
     if (action === "prepare") {
       const fs = yield* FileSystem.FileSystem;
       const shell = yield* HostShell;

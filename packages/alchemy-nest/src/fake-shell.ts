@@ -1,8 +1,10 @@
 import { Effect, Layer } from "effect";
 
+import { absent } from "./absent.ts";
 import { HostShell, HostError } from "./host-shell.ts";
 import type { Interface, Result } from "./host-shell.ts";
 import { purgeScript, validatePurgePath } from "./purge.ts";
+import { storeSocketScript, wantsLinkScript } from "./unit-cleanup.ts";
 
 export interface Call {
   readonly operation: string;
@@ -125,10 +127,58 @@ export const makeFakeShell = Effect.fn("HostShell.fake")(() =>
       return { code: 0, stdout: "" };
     };
 
+    const control = (action: string, name: string): Result => {
+      if (action === "daemon-reload") {
+        return reload();
+      }
+
+      if (action === "show") {
+        return show(name);
+      }
+
+      return changeUnit(action, name);
+    };
+
+    const unitCleanup = (argv: readonly string[]): Result | undefined => {
+      if (argv[0] !== "python3") {
+        return absent;
+      }
+
+      if (argv[2] === storeSocketScript) {
+        return { code: 0, stdout: "ready" };
+      }
+
+      if (argv[2] !== wantsLinkScript) {
+        return absent;
+      }
+
+      const home = argv[3] ?? "";
+      const unit = argv[4] ?? "";
+      const target = `${home}/.config/systemd/user/${unit}`;
+      const link = `${home}/.config/systemd/user/default.target.wants/${unit}`;
+      const existing = symlinks.get(link);
+
+      if (existing !== undefined && existing !== target) {
+        return { code: 1, stdout: "" };
+      }
+
+      if (argv[5] === "remove") {
+        symlinks.delete(link);
+      }
+
+      return { code: 0, stdout: "ready" };
+    };
+
     const shell: Interface = {
       exec: Effect.fn("HostShell.fake.exec")(function* exec(argv) {
         record("exec", argv);
         const [program, scope, action = "", name = ""] = argv;
+
+        const cleanup = unitCleanup(argv);
+
+        if (cleanup !== undefined) {
+          return cleanup;
+        }
 
         if (program === "python3" && argv[2] === purgeScript) {
           const root = argv.at(3) ?? "";
@@ -174,15 +224,7 @@ export const makeFakeShell = Effect.fn("HostShell.fake")(() =>
           });
         }
 
-        if (action === "daemon-reload") {
-          return reload();
-        }
-
-        if (action === "show") {
-          return show(name);
-        }
-
-        return changeUnit(action, name);
+        return control(action, name);
       }),
       mkdir: Effect.fn("HostShell.fake.mkdir")(function* mkdir({ path, mode }) {
         record("mkdir", [path]);
@@ -290,6 +332,7 @@ export const makeFakeShell = Effect.fn("HostShell.fake")(() =>
         Effect.sync(() => {
           symlinks.set(path, target);
         }),
+      symlinkTarget: (path: string) => Effect.sync(() => symlinks.get(path)),
     };
   })
 );

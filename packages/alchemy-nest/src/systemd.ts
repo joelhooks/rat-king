@@ -10,6 +10,7 @@ import {
 } from "./files.ts";
 import { must } from "./host-shell.ts";
 import type { Interface } from "./host-shell.ts";
+import { removeStoreSockets, wantsLink } from "./unit-cleanup.ts";
 
 const directive = Schema.String.check(Schema.isPattern(/^[^\r\n\0]*$/u));
 
@@ -196,6 +197,7 @@ export const deleteUnit = Effect.fn("SystemdUnit.delete")(function* deleteUnit(
   output: UnitAttributes
 ) {
   const live = yield* status(shell, output);
+  yield* wantsLink(shell, output.home, output.name, "check");
 
   if (live.active) {
     yield* ctl(shell, "stop", output.name);
@@ -210,8 +212,29 @@ export const deleteUnit = Effect.fn("SystemdUnit.delete")(function* deleteUnit(
     path: output.path,
     sha256: output.sha256,
   });
+  yield* wantsLink(shell, output.home, output.name, "remove");
   yield* ctl(shell, "daemon-reload");
+
+  if (output.name === "rat-king-seaweedfs.service") {
+    yield* removeStoreSockets(shell);
+  }
 });
+
+export const deleteDeclaredUnit = Effect.fn("SystemdUnit.deleteDeclared")(
+  function* removeDeclared(shell: Interface, props: UnitProps) {
+    const output = yield* readUnit(shell, props);
+
+    if (output === undefined) {
+      return yield* Effect.void;
+    }
+
+    if (output.sha256 !== textDigest(renderUnit(props))) {
+      return yield* refuse("Declared unit changed; delete refused.");
+    }
+
+    return yield* deleteUnit(shell, output);
+  }
+);
 
 const cleanupCreatedUnit = Effect.fn("SystemdUnit.cleanupCreated")(
   function* cleanup(shell: Interface, props: UnitProps, sha256: string) {
