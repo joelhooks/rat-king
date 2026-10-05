@@ -23,6 +23,7 @@ import * as Acquire from "@rat-king/lexicon/runtime.acquireLease";
 import type { MainValue as LeaseValue } from "@rat-king/lexicon/runtime.lease";
 import * as Release from "@rat-king/lexicon/runtime.releaseLease";
 import { XrpcFailure } from "@rat-king/lexicon/xrpc-failure";
+import { RatKingMailbox, layer, tid } from "@rat-king/mailbox-client";
 import {
   Clock,
   Context,
@@ -47,7 +48,6 @@ import {
 import { transportLayer } from "../cli/client.ts";
 import { importSigning } from "../cli/identity.ts";
 import type { IdentityValue } from "../cli/identity.ts";
-import { open, send, tid } from "../cli/operations.ts";
 import { DidResolver, staticResolver } from "../src/auth.ts";
 import { generateIdentities, readSuiteIdentities } from "./suite-identities.ts";
 import type { SuiteIdentities } from "./suite-identities.ts";
@@ -84,7 +84,21 @@ const services = (
   return Layer.mergeAll(
     clientLayer.pipe(Layer.provide(transport)),
     transport,
-    staticResolver(identities.documents)
+    staticResolver(identities.documents),
+    Layer.unwrap(
+      Schema.decodeUnknownEffect(Schema.toType(Schema.Array(Defs.DidDocument)))(
+        identities.documents
+      ).pipe(
+        Effect.map((documents) =>
+          layer({
+            documents,
+            endpoint: target.baseUrl,
+            identity,
+            serviceDid: target.serviceDid,
+          }).pipe(Layer.provide(FetchHttpClient.layer))
+        )
+      )
+    )
   );
 };
 
@@ -221,19 +235,24 @@ const agentQuestion = Effect.fn("Suite.agentQuestion")(function* agentQuestion(
     real.identities.sender
   );
 
-  const question = yield* send(
-    real.identities.sender,
-    agent.did,
-    "What is 2 + 2? Answer in one short line."
+  const question = yield* RatKingMailbox.use((client) =>
+    client.send(agent.did, "What is 2 + 2? Answer in one short line.")
   ).pipe(Effect.provide(senderLayer));
 
   const reply = yield* readPages(real.sender, real.identities.sender.did).pipe(
     Effect.flatMap((all) =>
       Effect.gen(function* findReply() {
         for (const event of all.filter(Schema.is(Defs.MessageEvent))) {
-          const result = yield* open(
-            real.identities.sender,
-            yield* Schema.encodeEffect(Defs.EncryptedEnvelope)(event.envelope)
+          const wire = yield* Schema.encodeEffect(Defs.EncryptedEnvelope)(
+            event.envelope
+          );
+
+          const decoded = yield* Schema.decodeEffect(Defs.EncryptedEnvelope)(
+            wire
+          );
+
+          const result = yield* RatKingMailbox.use((client) =>
+            client.open(decoded)
           ).pipe(Effect.provide(senderLayer));
 
           if (
@@ -438,9 +457,16 @@ const messageCommand = Effect.fn("Suite.messageCommand")(
       }
 
       case "open": {
-        const opened = yield* open(
-          real.identities.recipient,
-          yield* Schema.encodeEffect(Defs.EncryptedEnvelope)(envelope)
+        const wire = yield* Schema.encodeEffect(Defs.EncryptedEnvelope)(
+          envelope
+        );
+
+        const decoded = yield* Schema.decodeEffect(Defs.EncryptedEnvelope)(
+          wire
+        );
+
+        const opened = yield* RatKingMailbox.use((client) =>
+          client.open(decoded)
         ).pipe(Effect.provide(recipientLayer));
 
         expect(opened).toMatchObject({

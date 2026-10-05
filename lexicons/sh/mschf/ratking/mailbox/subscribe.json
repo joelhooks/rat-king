@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "subscription",
-      "description": "Recipient-scoped sequence notices. The service-auth JWT never goes in the URL, because URLs land in logs. The client's first frame is #auth { token }; the server closes the socket if it does not arrive within 5 seconds. Notices carry { seq } only, never sender or content. A newer lease generation closes older sockets. Use list with exclusive afterSeq as the catch-up path.",
+      "description": "Recipient-scoped sequence notices. The service-auth JWT never goes in the URL, because URLs land in logs. The client's first frame is #auth { token }; the server closes the socket if it does not arrive within 5 seconds. Notices carry { seq } only, never sender or content. A newer lease generation closes older sockets. Use list with exclusive afterSeq as the catch-up path. After successful #auth the server sends one #notice carrying the current watermark; this is the ready barrier, and clients list only after it.",
       "parameters": {
         "type": "params",
         "required": [

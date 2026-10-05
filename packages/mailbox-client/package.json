@@ -1,0 +1,14 @@
+{
+  "name": "@rat-king/mailbox-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "dependencies": {
+    "@rat-king/envelope": "workspace:*",
+    "@rat-king/lexicon": "workspace:*",
+    "effect": "4.0.1"
+  }
+}

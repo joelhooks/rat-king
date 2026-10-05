@@ -309,6 +309,9 @@ importers:
       '@rat-king/lexicon':
         specifier: workspace:*
         version: link:../../packages/lexicon
+      '@rat-king/mailbox-client':
+        specifier: workspace:*
+        version: link:../../packages/mailbox-client
       effect:
         specifier: 4.0.1
         version: 4.0.1
@@ -402,6 +405,18 @@ importers:
       '@atproto/lexicon':
         specifier: 0.7.16
         version: 0.7.16
+      effect:
+        specifier: 4.0.1
+        version: 4.0.1
+
+  packages/mailbox-client:
+    dependencies:
+      '@rat-king/envelope':
+        specifier: workspace:*
+        version: link:../envelope
+      '@rat-king/lexicon':
+        specifier: workspace:*
+        version: link:../lexicon
       effect:
         specifier: 4.0.1
         version: 4.0.1
