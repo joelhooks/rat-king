@@ -17,12 +17,14 @@ export const Node = (
   id: string,
   props: {
     readonly host: HostNode;
+    readonly workerIPv4?: string;
     readonly bucket: BucketOutput;
     readonly purgeOnDelete?: boolean;
   }
 ) =>
   Effect.gen(function* node() {
     const { host, bucket } = props;
+    const workerIPv4 = props.workerIPv4 ?? host.tailnetIPv4;
 
     const data = yield* HostDirectory("data", {
       mode: 0o700,
@@ -78,9 +80,10 @@ export const Node = (
             environment: env,
             host,
             restartOn: [envHash, binaryHash],
+            workerIPv4,
           }),
           internalUrl: "http://127.0.0.1:18788",
-          publicUrl: `http://${host.tailnetIPv4}:18787`,
+          publicUrl: `http://${workerIPv4}:18787`,
           version: "v0.6.1" as const,
         }))
       )

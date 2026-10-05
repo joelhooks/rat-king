@@ -14,6 +14,7 @@ const program = Effect.gen(function* launcher() {
 
   const action = yield* Schema.decodeUnknownEffect(
     Schema.Literals([
+      "stop",
       "prepare",
       "plan",
       "deploy",

@@ -1,9 +1,20 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
-import { ConfigProvider, Effect, FileSystem, Layer } from "effect";
+import {
+  Arbitrary,
+  ConfigProvider,
+  Effect,
+  FileSystem,
+  Layer,
+  Schema,
+} from "effect";
 import { describe, expect } from "vitest";
 
+import { workerIPv4, workerUrl } from "../../../stacks/nest/config.ts";
 import { Host, layer } from "../src/host.ts";
+import { NodeSchema } from "../src/inventory-schema.ts";
+import { nodeUnit, sliceUnit } from "../src/service-units.ts";
+import { renderUnit } from "../src/systemd.ts";
 
 const node = {
   dataRoot: "/srv/example",
@@ -33,7 +44,60 @@ const configuredLayer = (location: string) =>
     )
   );
 
+const unitProps = (host: typeof NodeSchema.Type) => ({
+  binary: "/opt/example/celld",
+  data: "/srv/example/cells",
+  environment: "/opt/example/celld.env",
+  host,
+  restartOn: [],
+});
+
 describe("RatsNest.Host inventory boundary", () => {
+  it.prop(
+    "pilot uses loopback while proof preserves node address and default unit bytes",
+    {
+      octets: Arbitrary.schema(
+        Schema.Tuple([
+          Schema.Int.check(Schema.isBetween({ maximum: 255, minimum: 0 })),
+          Schema.Int.check(Schema.isBetween({ maximum: 255, minimum: 0 })),
+          Schema.Int.check(Schema.isBetween({ maximum: 255, minimum: 0 })),
+          Schema.Int.check(Schema.isBetween({ maximum: 255, minimum: 0 })),
+        ])
+      ),
+    },
+    ({ octets }) => {
+      const address = octets.join(".");
+      const input = { ...node, tailnetIPv4: address };
+      const host = Schema.decodeSync(NodeSchema)(input);
+      const props = unitProps(host);
+
+      const proof = renderUnit(
+        nodeUnit({ ...props, workerIPv4: workerIPv4("proof", host) })
+      );
+
+      expect(JSON.stringify(host)).toBe(JSON.stringify(input));
+      expect(proof).toBe(renderUnit(nodeUnit(props)));
+      expect(proof).toContain(
+        `--listen ${address}:18787 --internal-listen 127.0.0.1:18788`
+      );
+      expect(workerUrl("proof", host)).toBe(`http://${address}:18787`);
+      expect(
+        renderUnit(
+          nodeUnit({ ...props, workerIPv4: workerIPv4("pilot", host) })
+        )
+      ).toContain("--listen 127.0.0.1:18787 --internal-listen 127.0.0.1:18788");
+      expect(workerUrl("pilot", host)).toBe("http://127.0.0.1:18787");
+      expect(renderUnit(sliceUnit(node.home))).toBe(
+        renderUnit(sliceUnit(node.home, "4G", "300%"))
+      );
+
+      const capped = renderUnit(sliceUnit(node.home, "1536M", "150%"));
+
+      expect(capped).toContain("MemoryMax=1536M");
+      expect(capped).toContain("CPUQuota=150%");
+    }
+  );
+
   it.effect("reads runtime host facts from a private override", () =>
     Effect.gen(function* inventory() {
       const fs = yield* FileSystem.FileSystem;
