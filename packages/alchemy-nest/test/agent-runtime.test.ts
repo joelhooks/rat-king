@@ -217,6 +217,7 @@ it("renders the approved unit and configurable slice cap, with unquoted Environm
     "CPUQuota=100%",
     "KillMode=control-group",
     "NoNewPrivileges=true",
+    "LimitCORE=0",
     "UMask=0077",
   ]) {
     expect(unit).toContain(line);

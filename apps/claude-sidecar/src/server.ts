@@ -14,6 +14,7 @@ import {
   ModelDriver,
   requireModel,
   SidecarFailure,
+  userText,
 } from "./port.ts";
 import { sdkLayer } from "./sdk-adapter.ts";
 import type { SdkGateway } from "./sdk-adapter.ts";
@@ -92,6 +93,18 @@ export const serve = (
 
         const input: unknown = JSON.parse(Buffer.concat(chunks).toString());
         const chat = Schema.decodeUnknownSync(ChatRequest)(input);
+
+        if (
+          userText(chat).trimStart().startsWith("/") ||
+          chat.messages.some(
+            (message) =>
+              message.role === "user" &&
+              (message.content ?? "").trimStart().startsWith("/")
+          )
+        ) {
+          throw new Error("Command-form user text is not accepted");
+        }
+
         await runtime.runPromise(requireModel(chat.model));
 
         const turn = await runtime.runPromise(

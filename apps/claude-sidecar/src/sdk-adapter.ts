@@ -17,7 +17,13 @@ import {
 } from "pi-claude-bridge/src/prompt-stream.ts";
 import { createActor, createMachine } from "xstate";
 
-import { MODEL, ModelDriver, requireModel, SidecarFailure } from "./port.ts";
+import {
+  MODEL,
+  ModelDriver,
+  requireModel,
+  SidecarFailure,
+  userText,
+} from "./port.ts";
 import type { ChatRequest, ToolCall, Turn } from "./port.ts";
 
 const lifecycle = createMachine({
@@ -169,8 +175,10 @@ class Session {
         settings: {
           apiKeyHelper: `/bin/cat ${shellQuote(this.gateway.apiKeyFile)}`,
           autoMemoryEnabled: false,
+          availableModels: [MODEL],
           claudeMdExcludes: ["**"],
           disableAllHooks: true,
+          enforceAvailableModels: true,
           includeGitInstructions: false,
         },
         skills: [],
@@ -205,14 +213,7 @@ class Session {
       prompt: this.promptStream.stream,
     });
     void this.promptStream
-      .push(
-        userMessage(
-          this.request.messages
-            .filter((message) => message.role === "user")
-            .map((message) => message.content ?? "")
-            .join("\n\n")
-        )
-      )
+      .push(userMessage(userText(this.request)))
       .catch((error: unknown) => {
         this.fail(error);
       });
@@ -250,6 +251,10 @@ class Session {
       }
 
       if (message.type === "assistant") {
+        if (message.message.model !== MODEL) {
+          throw new Error("Claude Code assistant returned an unexpected model");
+        }
+
         if (message.error !== undefined) {
           throw new Error(`Claude Code assistant failed: ${message.error}`);
         }

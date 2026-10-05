@@ -36,7 +36,7 @@ const algorithm = { name: "ECDH", namedCurve: "P-256" };
 await crypto.subtle.importKey("raw", nodeExportedPoint, algorithm, true, []); // NotSupportedError: unsupported key import
 ```
 
-The import adapter accepts only 65-byte uncompressed SEC1 points. Before converting x/y to a public P-256 JWK and using the existing JWK import path, it checks `0 < x,y < p` and `y² ≡ x³ − 3x + b (mod p)`. Malformed or off-curve points fail with `EnvelopeFailure`. No global WebCrypto methods change.
+The import adapter accepts only 65-byte uncompressed SEC1 points. Before converting x/y to a public P-256 JWK and using the existing JWK import path, it checks `0 ≤ x,y < p` and `y² ≡ x³ − 3x + b (mod p)`. Malformed or off-curve points fail with `EnvelopeFailure`. No global WebCrypto methods change.
 
 The extension point is `@hpke/core@1.9.0 esm/src/kems/dhkemNative.js:5-6`, which installs the EC primitive as protected `_prim`. Its installed dependency `@hpke/common@1.10.1 esm/src/kems/dhkemPrimitives/ec.js:229-232,355-358` uses raw public-key export/import. `esm/src/kems/dhkem.js:118-119,156,163` calls those primitives in both KEM directions. Patching only the KEM's public `serializePublicKey` method would miss those internal calls.
 

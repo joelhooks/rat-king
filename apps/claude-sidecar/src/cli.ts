@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { Config, Effect, Schema } from "effect";
 
+import { gatewayUrl } from "./gateway-url.ts";
 import { SidecarFailure } from "./port.ts";
 import { serve } from "./server.ts";
 
@@ -36,18 +37,10 @@ const program = Effect.gen(function* launcher() {
     try: async () => {
       const endpoint = await readFile(endpointFile, "utf-8");
       const key = await stat(keyFile);
-      const baseUrl = endpoint.trim().replace(/\/v1\/?$/u, "");
+      const baseUrl = gatewayUrl(endpoint);
       const apiKeyFile = path.resolve(keyFile);
-      const url = new URL(baseUrl);
 
-      if (
-        !["http:", "https:"].includes(url.protocol) ||
-        url.username ||
-        url.password ||
-        url.search ||
-        key.mode % 0o1000 !== 0o600 ||
-        key.size === 0
-      ) {
+      if (key.mode % 0o1000 !== 0o600 || key.size === 0) {
         throw new Error("Invalid model gateway files");
       }
 

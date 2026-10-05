@@ -109,6 +109,7 @@ export const sidecarUnit = (home: string, ready: string): UnitProps => ({
         ],
         ["MemoryMax", "1536M"],
         ["MemorySwapMax", "0"],
+        ["LimitCORE", "0"],
         ["CPUQuota", "100%"],
         ["Restart", "on-failure"],
         ["RestartSec", "5"],

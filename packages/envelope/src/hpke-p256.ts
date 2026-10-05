@@ -60,13 +60,7 @@ export const p256PublicJwk = (
   const rhs =
     (((x * x * x - 3n * x + p256B) % p256Prime) + p256Prime) % p256Prime;
 
-  if (
-    x <= 0n ||
-    x >= p256Prime ||
-    y <= 0n ||
-    y >= p256Prime ||
-    (y * y) % p256Prime !== rhs
-  ) {
+  if (x >= p256Prime || y >= p256Prime || (y * y) % p256Prime !== rhs) {
     throw new EnvelopeFailure({ reason: "Off-curve P-256 public key" });
   }
 

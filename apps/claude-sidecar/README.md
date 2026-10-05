@@ -2,7 +2,7 @@
 
 A Node process turns a real Claude Code client into a loopback-only OpenAI chat-completions endpoint. pi-durable owns tool execution inside the celld Durable Object. The sidecar only hands declared tool calls out and passes their results back to the waiting Claude Code query.
 
-Only `claude-opus-5-5` is allowed. Other IDs fail before SDK startup. Sol and Luna keep their model-gateway route; the default remains `gpt-6-sol`.
+Only `claude-opus-5-5` is allowed. Other request IDs fail before SDK startup. The HTTP boundary rejects user messages starting with `/` after leading whitespace, both individually and after joining, before invoking the driver. Inline `availableModels: [MODEL]` and `enforceAvailableModels: true` also constrain the CLI's model selection. Sol and Luna keep their model-gateway route; the default remains `gpt-6-sol`.
 
 ## Boundaries
 
@@ -10,7 +10,7 @@ Only `claude-opus-5-5` is allowed. Other IDs fail before SDK startup. Sol and Lu
 
 The HTTP endpoint emits OpenAI SSE chunks at completed tool/answer boundaries, not token-by-token deltas. It accepts text-only, streaming requests. This POC supports a fresh user turn and its live tool continuations, not arbitrary imported chat history.
 
-Claude Code receives `tools: []`. Only the request's declared MCP names are allowed; the permission callback denies everything else. Initialization and assistant messages reject unexpected model IDs or tool names. The MCP handlers never run model tools on the host: they wait for the DO's results. The credential helper is the one deliberate exception to host command execution: Claude Code runs `/bin/cat` against the configured credential file for authentication. Its path is shell-quoted, and neither its path nor its contents are committed.
+Claude Code receives `tools: []`. Only the request's declared MCP names are allowed; the permission callback denies everything else. Initialization rejects unexpected model IDs or tool names. Every assistant message's reported model is checked before consuming content or handing off tools. A mismatched reply fails the HTTP request rather than being relabelled as Opus. The MCP handlers never run model tools on the host: they wait for the DO's results. The credential helper is the one deliberate exception to host command execution: Claude Code runs `/bin/cat` against the configured credential file for authentication. Its path is shell-quoted, and neither its path nor its contents are committed.
 
 Each HTTP route, including metrics, requires the per-instance bearer. The listener always binds `127.0.0.1`. Port `0` selects an ephemeral proof port; deployment must configure a fixed port. There is no public listener or remote fallback.
 
@@ -22,7 +22,7 @@ The child environment is built from scratch. `HOME` and `CLAUDE_CONFIG_DIR` poin
 
 `DISABLE_AUTOUPDATER=1` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` disable updates and nonessential traffic. `ENABLE_CLAUDEAI_MCP_SERVERS=0` excludes account-connected MCP servers. `DISABLE_AUTO_COMPACT=1` leaves compaction to the durable caller.
 
-The gateway endpoint file contains the OpenAI `/v1` URL. The launcher strips that suffix for Claude Code's gateway origin. Inline `settings.apiKeyHelper` reads the mode-600 gateway credential file. The SDK uses Claude Code's genuine `claude_code` system-prompt preset and only appends caller instructions. No extra client headers or fabricated identity are added. A deployment needs its own authorized gateway credential; it does not use a host user's Claude login.
+The gateway endpoint file contains the OpenAI `/v1` URL. The launcher strips that suffix for Claude Code's gateway origin. It requires HTTPS except for numeric loopback proof endpoints: IPv4 `127.0.0.0/8` and IPv6 `::1`. Every DNS hostname requires HTTPS. It rejects URL credentials, queries and fragments. Inline `settings.apiKeyHelper` reads the mode-600 gateway credential file. The SDK uses Claude Code's genuine `claude_code` system-prompt preset and only appends caller instructions. No extra client headers or fabricated identity are added. A deployment needs its own authorized gateway credential; it does not use a host user's Claude login.
 
 The SDK source confirms this wiring: `sdk.mjs` line 121 forwards inline settings independently of `--setting-sources`, and line 221 copies an explicitly supplied environment instead of inheriting the parent. `sdk.d.ts` exposes `Settings.apiKeyHelper`. The opt-in dummy capture test qualifies the installed client's actual helper behavior without contacting a model provider.
 
@@ -68,6 +68,15 @@ pnpm exec vitest run --config apps/claude-sidecar/vitest.config.ts apps/claude-s
 
 It points the same SDK driver at a loopback capture server, supplies only a dummy credential and checks the actual auth header and child environment. It never uses a real gateway credential.
 
+The model-policy property uses the dedicated executable and the same dummy-only loopback capture:
+
+```sh
+RAT_KING_CLAUDE_EXECUTABLE=/path/to/dedicated/claude \
+pnpm exec vitest run --config apps/claude-sidecar/vitest.config.ts apps/claude-sidecar/test/policy.test.ts
+```
+
+It generates message lists, checks joined text and Unicode whitespace with model aliases, and varies response models independently. Command-form HTTP requests must return 400 without launching the client. Allowed requests must name exactly Opus; forbidden replies must fail. A direct driver probe also qualifies the inline CLI model restriction. This property skips when no executable is configured; the URL property runs by default. Neither probe contacts a model provider.
+
 ## Linux deployment code, not live-qualified
 
 Install **2.1.285** in user scope without global npm or sudo. The exact glibc linux-x64 binary is:
@@ -98,6 +107,7 @@ RestartSec=5
 TimeoutStopSec=10
 KillMode=control-group
 NoNewPrivileges=true
+LimitCORE=0
 UMask=0077
 
 [Install]
@@ -116,4 +126,4 @@ Earlier, the first live fixture failed because it used the wrong pi-durable tool
 
 ## Not tested
 
-Linux deployment, cgroup limits, fixed-port deployment, remote hosts, arbitrary conversation import, images, concurrent clients, cancellation at every instruction boundary, crashes during a sidecar handoff, durable sidecar-session recovery, sustained load, credential rotation, or gateway failure recovery. The live proof covers an uninterrupted local turn and one durable tool round trip, not exactly-once external model calls.
+Linux deployment, cgroup limits, host crash-collector behavior (including whether `LimitCORE=0` prevents credential persistence for Node and its children), fixed-port deployment, remote hosts, arbitrary conversation import, images, concurrent clients, cancellation at every instruction boundary, crashes during a sidecar handoff, durable sidecar-session recovery, sustained load, credential rotation, or gateway failure recovery. The live proof covers an uninterrupted local turn and one durable tool round trip, not exactly-once external model calls.

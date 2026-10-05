@@ -49,6 +49,12 @@ export const ChatRequest = Schema.Struct({
 
 export type ChatRequest = typeof ChatRequest.Type;
 
+export const userText = (request: ChatRequest) =>
+  request.messages
+    .filter((message) => message.role === "user")
+    .map((message) => message.content ?? "")
+    .join("\n\n");
+
 export type ToolCall = typeof ToolCall.Type;
 
 export interface Turn {
