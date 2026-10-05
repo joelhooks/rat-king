@@ -1,0 +1,323 @@
+import { Effect, Schema } from "effect";
+
+import { absent } from "./absent.ts";
+import {
+  AbsolutePath,
+  deleteFile,
+  readFile,
+  refuse,
+  textDigest,
+} from "./files.ts";
+import { must } from "./host-shell.ts";
+import type { Interface } from "./host-shell.ts";
+
+const directive = Schema.String.check(Schema.isPattern(/^[^\r\n\0]*$/u));
+
+const section = Schema.Struct({
+  lines: Schema.Array(
+    Schema.Tuple([
+      Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9]*$/u)),
+      directive,
+    ])
+  ),
+  name: Schema.String.check(Schema.isPattern(/^[A-Za-z][A-Za-z0-9]*$/u)),
+});
+
+export const UnitSchema = Schema.Struct({
+  enabled: Schema.optionalKey(Schema.Boolean),
+  home: AbsolutePath,
+  name: Schema.String.check(
+    Schema.isPattern(
+      /^[A-Za-z0-9][A-Za-z0-9_@:-]*(?:\.[A-Za-z0-9_@:-]+)*\.(?:service|slice)$/u
+    )
+  ),
+  restartOn: Schema.optionalKey(Schema.Array(directive)),
+  scope: Schema.Literal("user"),
+  sections: Schema.NonEmptyArray(section),
+  started: Schema.optionalKey(Schema.Boolean),
+});
+
+export type UnitProps = typeof UnitSchema.Type;
+
+export interface UnitAttributes {
+  readonly name: string;
+  readonly home: string;
+  readonly scope: "user";
+  readonly path: string;
+  readonly sha256: string;
+  readonly configSha256: string;
+  readonly active: boolean;
+  readonly enabled: boolean;
+  readonly needDaemonReload: boolean;
+}
+
+export const renderUnit = (props: UnitProps): string =>
+  `${props.sections.map((s) => [`[${s.name}]`, ...s.lines.map(([key, value]) => `${key}=${value}`)].join("\n")).join("\n\n")}\n`;
+
+export const unitPath = (props: Pick<UnitProps, "home" | "name">): string =>
+  `${props.home}/.config/systemd/user/${props.name}`;
+
+const enabled = (props: UnitProps): boolean =>
+  props.enabled ?? props.sections.some((s) => s.name === "Install");
+
+const configDigest = (props: UnitProps): string =>
+  textDigest((props.restartOn ?? []).join("\n"));
+
+export const validateUnit = Effect.fn("SystemdUnit.validate")(
+  function* validateUnit(props: UnitProps) {
+    const valid = yield* Schema.decodeEffect(UnitSchema)(props).pipe(
+      Effect.mapError(() => refuse("Invalid user unit declaration."))
+    );
+
+    if (enabled(valid) && !valid.sections.some((s) => s.name === "Install")) {
+      return yield* refuse("Enabled unit needs an Install section.");
+    }
+
+    if (
+      valid.name.endsWith(".slice") &&
+      !valid.sections.some((s) => s.name === "Slice")
+    ) {
+      return yield* refuse("Slice unit needs a Slice section.");
+    }
+
+    return valid;
+  }
+);
+
+const ctl = (shell: Interface, action: string, name?: string) =>
+  must(shell, [
+    "systemctl",
+    "--user",
+    action,
+    ...(name === undefined ? [] : [name]),
+  ]);
+
+const status = Effect.fn("SystemdUnit.status")(function* status(
+  shell: Interface,
+  props: Pick<UnitProps, "home" | "name">
+) {
+  const result = yield* shell.exec([
+    "systemctl",
+    "--user",
+    "show",
+    props.name,
+    "--no-pager",
+    "--property=LoadState,ActiveState,SubState,UnitFileState,NeedDaemonReload,FragmentPath",
+  ]);
+
+  const fields = new Map(
+    result.stdout
+      .trim()
+      .split("\n")
+      .map((line) => {
+        const at = line.indexOf("=");
+
+        return [line.slice(0, at), line.slice(at + 1)] as const;
+      })
+  );
+
+  const load = fields.get("LoadState");
+
+  if (load === "not-found") {
+    return { active: false, enabled: false, needDaemonReload: false };
+  }
+
+  if (
+    result.code !== 0 ||
+    load !== "loaded" ||
+    !fields.has("ActiveState") ||
+    !fields.has("NeedDaemonReload")
+  ) {
+    return yield* refuse("Unusable or malformed user unit status.");
+  }
+
+  const implicitSlice =
+    props.name.endsWith(".slice") && fields.get("FragmentPath") === "";
+
+  if (fields.get("FragmentPath") !== unitPath(props) && !implicitSlice) {
+    return yield* refuse("Unit name resolves to a different fragment.");
+  }
+
+  return {
+    active:
+      fields.get("ActiveState") === "active" ||
+      fields.get("ActiveState") === "activating",
+    enabled:
+      fields.get("UnitFileState") === "enabled" ||
+      fields.get("UnitFileState") === "enabled-runtime",
+    needDaemonReload: fields.get("NeedDaemonReload") === "yes",
+  };
+});
+
+export const readUnit = Effect.fn("SystemdUnit.read")(function* readUnit(
+  shell: Interface,
+  props: UnitProps
+) {
+  yield* validateUnit(props);
+  const file = yield* readFile(shell, unitPath(props));
+  const live = yield* status(shell, props);
+
+  if (file === undefined) {
+    if (live.active || live.enabled) {
+      return yield* refuse(
+        "Unit file is absent but the manager still holds it."
+      );
+    }
+
+    return absent;
+  }
+
+  return {
+    configSha256: configDigest(props),
+    home: props.home,
+    name: props.name,
+    path: file.path,
+    scope: props.scope,
+    sha256: file.sha256,
+    ...live,
+  } satisfies UnitAttributes;
+});
+
+export const needsUpdate = (
+  props: UnitProps,
+  output: UnitAttributes,
+  live: UnitAttributes | undefined
+): boolean =>
+  live === undefined ||
+  live.sha256 !== textDigest(renderUnit(props)) ||
+  output.sha256 !== live.sha256 ||
+  output.configSha256 !== configDigest(props) ||
+  live.enabled !== enabled(props) ||
+  live.active !== (props.started ?? true) ||
+  live.needDaemonReload;
+
+export const deleteUnit = Effect.fn("SystemdUnit.delete")(function* deleteUnit(
+  shell: Interface,
+  output: UnitAttributes
+) {
+  const live = yield* status(shell, output);
+
+  if (live.active) {
+    yield* ctl(shell, "stop", output.name);
+  }
+
+  if (live.enabled) {
+    yield* ctl(shell, "disable", output.name);
+  }
+
+  yield* deleteFile(shell, {
+    mode: 0o644,
+    path: output.path,
+    sha256: output.sha256,
+  });
+  yield* ctl(shell, "daemon-reload");
+});
+
+export const reconcileUnit = Effect.fn("SystemdUnit.reconcile")(
+  function* reconcileUnit(
+    shell: Interface,
+    props: UnitProps,
+    output: UnitAttributes | undefined,
+    adopt: boolean
+  ) {
+    const valid = yield* validateUnit(props);
+    const path = unitPath(valid);
+
+    if (output !== undefined && output.path !== path) {
+      return yield* refuse(
+        "Unit identity changes require delete-first replacement."
+      );
+    }
+
+    const before = yield* readFile(shell, path);
+    const live = yield* status(shell, valid);
+
+    if (before === undefined && live.active && output === undefined) {
+      return yield* refuse(
+        "Active unit without its declared file cannot be claimed."
+      );
+    }
+
+    const text = renderUnit(valid);
+    const sha256 = textDigest(text);
+
+    if (before !== undefined && output === undefined) {
+      if (!adopt) {
+        return yield* refuse("Existing unit requires explicit adoption.");
+      }
+
+      if (before.sha256 !== sha256) {
+        return yield* refuse("Only a matching unit may be adopted.");
+      }
+    }
+
+    const wrote = before?.sha256 !== sha256;
+
+    const changed =
+      wrote ||
+      live.needDaemonReload ||
+      (output !== undefined &&
+        (output.sha256 !== sha256 ||
+          output.configSha256 !== configDigest(valid)));
+
+    const apply = Effect.gen(function* apply() {
+      if (wrote) {
+        yield* shell.write({
+          bytes: new TextEncoder().encode(text),
+          mode: 0o644,
+          path,
+        });
+      }
+
+      if (wrote || live.needDaemonReload) {
+        yield* ctl(shell, "daemon-reload");
+      }
+
+      if (live.enabled !== enabled(valid)) {
+        yield* ctl(shell, enabled(valid) ? "enable" : "disable", valid.name);
+      }
+
+      if (valid.started !== false) {
+        if (!live.active) {
+          yield* ctl(shell, "start", valid.name);
+        } else if (changed) {
+          yield* ctl(shell, "restart", valid.name);
+        }
+      } else if (live.active) {
+        yield* ctl(shell, "stop", valid.name);
+      }
+
+      const after = yield* readUnit(shell, valid);
+
+      if (
+        after === undefined ||
+        after.sha256 !== sha256 ||
+        after.active !== (valid.started ?? true) ||
+        after.enabled !== enabled(valid) ||
+        after.needDaemonReload
+      ) {
+        return yield* refuse("User unit failed readback.");
+      }
+
+      return after;
+    });
+
+    return yield* apply.pipe(
+      Effect.onError(() =>
+        before === undefined
+          ? deleteUnit(shell, {
+              active: false,
+              configSha256: configDigest(valid),
+              enabled: false,
+              home: valid.home,
+              name: valid.name,
+              needDaemonReload: false,
+              path,
+              scope: valid.scope,
+              sha256,
+            }).pipe(Effect.orDie)
+          : Effect.void
+      )
+    );
+  }
+);

@@ -1,23 +1,30 @@
+// @effect-diagnostics nodeBuiltinImport:off -- The license exception is keyed by a literal hash, not its email.
+import { createHash } from "node:crypto";
 // @effect-diagnostics nodeBuiltinImport:off -- Node tooling validates IP literals at the publication boundary.
 import { isIP } from "node:net";
 
-import { Schema } from "effect";
+import type { Instance } from "../../packages/alchemy-nest/src/inventory-schema.ts";
 
-const nonemptyValues = Schema.NonEmptyArray(
-  Schema.NonEmptyString.check(Schema.isPattern(/\S/u))
-);
-
-export const Instance = Schema.Struct({
-  domains: nonemptyValues,
-  hosts: nonemptyValues,
-  ips: Schema.NonEmptyArray(
-    Schema.String.check(Schema.makeFilter((value) => isIP(value) !== 0))
-  ),
-  secretNames: nonemptyValues,
-  sites: nonemptyValues,
-});
+export { Instance } from "../../packages/alchemy-nest/src/inventory-schema.ts";
 
 export type PrivateInstance = typeof Instance.Type;
+
+export const instanceLiterals = (
+  inventory: PrivateInstance
+): readonly (readonly [string, readonly string[]])[] => [
+  ["domains", inventory.domains],
+  ["hosts", inventory.hosts],
+  ["ips", inventory.ips],
+  ["secretNames", inventory.secretNames],
+  ["sites", inventory.sites],
+  [
+    "nodes",
+    Object.entries(inventory.nodes ?? {}).flatMap(([alias, node]) => [
+      alias,
+      ...Object.values(node),
+    ]),
+  ],
+];
 
 export const BOT_EMAIL = "286405550+shitratgit[bot]@users.noreply.github.com";
 
@@ -42,9 +49,11 @@ const escaped = (value: string) =>
 export const violations = ({
   content,
   inventory,
+  name = "",
 }: {
   readonly content: string;
   readonly inventory: PrivateInstance | null;
+  readonly name?: string;
 }): readonly string[] => {
   const found = new Set<string>();
 
@@ -75,7 +84,12 @@ export const violations = ({
   for (const match of content.matchAll(
     /[A-Za-z0-9.!#$%&*+/=?^_`{|}~[\]-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?![A-Za-z0-9])/gu
   )) {
-    if (match[0] !== BOT_EMAIL) {
+    const licenseEmail =
+      name === "packages/alchemy-nest/LICENSE-homeflare-kit" &&
+      createHash("sha256").update(match[0]).digest("hex") ===
+        "cd3105c99447834c3bb6bf23f116151f442c5a0f0b6d38d573c50df45c12ef63";
+
+    if (match[0] !== BOT_EMAIL && !licenseEmail) {
       found.add("email");
     }
   }
@@ -89,7 +103,7 @@ export const violations = ({
   }
 
   if (inventory !== null) {
-    for (const [category, values] of Object.entries(inventory)) {
+    for (const [category, values] of instanceLiterals(inventory)) {
       for (const value of values) {
         if (
           new RegExp(`(?<![\\w-])${escaped(value)}(?![\\w-])`, "iu").test(
