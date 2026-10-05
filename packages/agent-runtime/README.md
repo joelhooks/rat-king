@@ -32,7 +32,7 @@ The test bundles with esbuild for a browser isolate. Imports use pi-ai's models/
 
 The adapter connects to an OpenAI- and Anthropic-compatible model gateway. The provider exposes only the validated selection, with static Bearer auth and no environment lookup, discovery, aliases or model fallback. Use the proxy's IDs verbatim: `gpt-6-sol`, not Pi's native-provider name `gpt-6.1-sol`. Sol/Luna use pi-ai's OpenAI completions API. Opus uses its native Anthropic messages API; that SDK appends `/v1/messages`, so the adapter removes the OpenAI base URL's final `/v1`. Imports use the models and lazy API subpaths only. The 32,768-token context and 1,024-token output ceilings are local POC limits, not measured provider limits. Cost rates are unknown and represented as zero; recorded token usage is not a billing receipt.
 
-The DO receives the base URL as a plain binding and the key as a secret binding. Invented example values only:
+Sol and Luna receive the model-gateway base URL as a plain binding and the key as a secret binding. Opus now uses `CLAUDE_SIDECAR_BASE_URL` (explicit loopback HTTP port and `/v1` path) and `CLAUDE_SIDECAR_CREDENTIAL`; missing sidecar config fails closed. The default remains `gpt-6-sol`. See [the sidecar proof](../../apps/claude-sidecar/README.md). Invented example values only:
 
 ```json
 {
@@ -42,7 +42,7 @@ The DO receives the base URL as a plain binding and the key as a secret binding.
 }
 ```
 
-The test-only Worker selects a separate named agent per `?model=` value; the Layer validates it. Missing model bindings retain the S3 faux fixture. There is no deployed service or deployment authority in this proof.
+The S4 test-only Worker selects a separate named agent per `?model=` value; the Layer validates it. Its direct-gateway Opus probe below is historical; the current Opus proof lives in `apps/claude-sidecar/test/real.test.ts`. Missing model bindings retain the S3 faux fixture. There is no deployed service or deployment authority in this proof.
 
 ```sh
 RAT_KING_CELLD=/path/to/verified/celld \
