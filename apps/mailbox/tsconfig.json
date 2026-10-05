@@ -5,5 +5,11 @@
     "noEmit": true,
     "types": ["node", "@cloudflare/workers-types"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "*.config.ts"]
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "cli/**/*.ts",
+    "../../stacks/nest/**/*.ts",
+    "*.config.ts"
+  ]
 }

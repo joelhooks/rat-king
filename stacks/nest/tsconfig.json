@@ -1,0 +1,10 @@
+{
+  "extends": "../../apps/mailbox/tsconfig.json",
+  "compilerOptions": {
+    "typeRoots": [
+      "../../node_modules/@types",
+      "../../apps/mailbox/node_modules"
+    ]
+  },
+  "include": ["*.ts"]
+}

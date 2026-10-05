@@ -19,7 +19,7 @@ const KINDS = new Map<string, string>([
 const refuse = (message: string): ArchiveRefused =>
   new ArchiveRefused({ message });
 
-const strict = new TextDecoder("utf-8", { fatal: true });
+const strict = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
 
 const ascii = new TextDecoder("latin1");
 

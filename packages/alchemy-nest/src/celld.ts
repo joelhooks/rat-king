@@ -2,6 +2,7 @@ import * as Namespace from "alchemy/Namespace";
 import * as Output from "alchemy/Output";
 import { Effect, Redacted } from "effect";
 
+import { Deployment, DeploymentProvider } from "./deployment.ts";
 import type { Node as HostNode } from "./inventory-schema.ts";
 import { NodeProvider, NodeResource } from "./node-provider.ts";
 import type { BucketOutput } from "./object-store.ts";
@@ -93,4 +94,9 @@ export const Node = (
     };
   }).pipe(Namespace.push(id));
 
-export const Celld = { Node, providers: NodeProvider };
+export const Celld = {
+  Deployment,
+  Node,
+  deploymentProvider: DeploymentProvider,
+  providers: NodeProvider,
+};
