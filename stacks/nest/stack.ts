@@ -66,11 +66,14 @@ const startup = Layer.unwrap(
   Effect.gen(function* startup() {
     const hosts = yield* Host;
 
+    const stage = yield* stageName;
+
     return startupLayer(
       stageWorkerIPv4(
-        yield* stageName,
+        stage,
         yield* hosts.node(yield* Config.String("RAT_KING_LIVE_NODE"))
-      )
+      ),
+      stage === "pilot" ? "service" : "scope"
     );
   })
 ).pipe(Layer.provide(connection), Layer.orDie);

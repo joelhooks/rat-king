@@ -14,22 +14,37 @@ import type { Interface } from "./host-shell.ts";
 import { assessListeners, verifiedSidecarPid } from "./listeners.ts";
 import { s3Script } from "./s3-script.ts";
 
-const scope = (name: string, argv: readonly string[]) => [
+export type ProbeRunnerMode = "scope" | "service";
+
+export const serviceCapGuard = String.raw`
+set -eu
+caps=$(systemctl --user show "$1" --no-pager --property=MemoryMax,MemorySwapMax,CPUQuotaPerSecUSec,TasksMax)
+for expected in MemoryMax=67108864 MemorySwapMax=0 CPUQuotaPerSecUSec=100ms TasksMax=64; do
+  printf '%s\n' "$caps" | grep -Fxq "$expected" || { printf 'Probe service cap readback failed\n' >&2; exit 1; }
+done
+shift
+exec nice -n 10 "$@"
+`;
+
+export const probeCommand = (
+  name: string,
+  argv: readonly string[],
+  mode: ProbeRunnerMode = "scope"
+) => [
   "systemd-run",
   "--user",
-  "--scope",
+  ...(mode === "scope" ? ["--scope"] : ["--wait", "--pipe", "--collect"]),
   "--quiet",
-  `--unit=${name}`,
+  `--unit=${mode === "scope" ? name : `${name}.service`}`,
   "--slice=rat-king.slice",
   "--property=MemoryMax=64M",
   "--property=MemorySwapMax=0",
   "--property=CPUQuota=10%",
   "--property=TasksMax=64",
   "--",
-  "nice",
-  "-n",
-  "10",
-  ...argv,
+  ...(mode === "scope"
+    ? ["nice", "-n", "10", ...argv]
+    : ["sh", "-c", serviceCapGuard, "probe", `${name}.service`, ...argv]),
 ];
 
 const Identity = Schema.Struct({
@@ -102,20 +117,27 @@ export const probeEnvironment = Effect.fn("Probe.environment")(
 );
 
 export const diagnoseProbe = Effect.fn("Celld.diagnoseProbe")(
-  function* diagnose(shell: Interface, input: { readonly home: string }) {
+  function* diagnose(
+    shell: Interface,
+    input: { readonly home: string; readonly runnerMode?: ProbeRunnerMode }
+  ) {
     const crypto = yield* Crypto.Crypto;
 
     const environment = yield* probeEnvironment(shell, input.home);
 
     const result = yield* shell.exec(
-      scope(`rat-king-probe-${yield* crypto.randomUUIDv4}`, [
-        "sh",
-        "-c",
-        'set -a; . "$1"; TOKIO_WORKER_THREADS=2; exec "$2" diagnose --listen 127.0.0.1:0 --internal-listen 127.0.0.1:0 2>&1',
-        "probe",
-        `${input.home}/.config/rat-king/celld.env`,
-        `${input.home}/.local/share/rat-king/bin/celld`,
-      ]),
+      probeCommand(
+        `rat-king-probe-${yield* crypto.randomUUIDv4}`,
+        [
+          "sh",
+          "-c",
+          'set -a; . "$1"; TOKIO_WORKER_THREADS=2; exec "$2" diagnose --listen 127.0.0.1:0 --internal-listen 127.0.0.1:0 2>&1',
+          "probe",
+          `${input.home}/.config/rat-king/celld.env`,
+          `${input.home}/.local/share/rat-king/bin/celld`,
+        ],
+        input.runnerMode
+      ),
       { redactions: environment.redactions }
     );
 
@@ -145,20 +167,25 @@ export const raceProbe = Effect.fn("ObjectStore.raceProbe")(function* race(
     readonly config: string;
     readonly endpoint: string;
     readonly name: string;
+    readonly runnerMode?: ProbeRunnerMode;
   }
 ) {
   const crypto = yield* Crypto.Crypto;
 
   const result = yield* shell.exec(
-    scope(`rat-king-probe-${yield* crypto.randomUUIDv4}`, [
-      "python3",
-      "-c",
-      s3Script,
-      input.config,
-      input.endpoint,
-      input.name,
-      "race",
-    ]),
+    probeCommand(
+      `rat-king-probe-${yield* crypto.randomUUIDv4}`,
+      [
+        "python3",
+        "-c",
+        s3Script,
+        input.config,
+        input.endpoint,
+        input.name,
+        "race",
+      ],
+      input.runnerMode
+    ),
     { redactions: yield* credentialRedactions(shell, input.config) }
   );
 
@@ -186,7 +213,10 @@ export const raceProbe = Effect.fn("ObjectStore.raceProbe")(function* race(
 });
 
 export const bootstrapProbe = Effect.fn("Celld.bootstrapProbe")(
-  function* bootstrap(shell: Interface, input: { readonly home: string }) {
+  function* bootstrap(
+    shell: Interface,
+    input: { readonly home: string; readonly runnerMode?: ProbeRunnerMode }
+  ) {
     const crypto = yield* Crypto.Crypto;
     const fs = yield* FileSystem.FileSystem;
 
@@ -218,15 +248,19 @@ export const bootstrapProbe = Effect.fn("Celld.bootstrapProbe")(
       const environment = yield* probeEnvironment(shell, input.home);
 
       const result = yield* shell.exec(
-        scope(`rat-king-probe-${yield* crypto.randomUUIDv4}`, [
-          "sh",
-          "-c",
-          'set -a; . "$1"; TOKIO_WORKER_THREADS=2; exec "$2" deploy "$3"',
-          "probe",
-          `${input.home}/.config/rat-king/celld.env`,
-          `${input.home}/.local/share/rat-king/bin/celld`,
-          directory,
-        ]),
+        probeCommand(
+          `rat-king-probe-${yield* crypto.randomUUIDv4}`,
+          [
+            "sh",
+            "-c",
+            'set -a; . "$1"; TOKIO_WORKER_THREADS=2; exec "$2" deploy "$3"',
+            "probe",
+            `${input.home}/.config/rat-king/celld.env`,
+            `${input.home}/.local/share/rat-king/bin/celld`,
+            directory,
+          ],
+          input.runnerMode
+        ),
         { redactions: environment.redactions }
       );
 

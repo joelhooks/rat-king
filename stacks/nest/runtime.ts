@@ -22,6 +22,7 @@ import {
 import { HostShell, must } from "../../packages/alchemy-nest/src/host-shell.ts";
 import { Host } from "../../packages/alchemy-nest/src/host.ts";
 import { listenerProbe } from "../../packages/alchemy-nest/src/probes.ts";
+import { stopUnits } from "../../packages/alchemy-nest/src/startup-contract.ts";
 import { deleteDeclaredUnit } from "../../packages/alchemy-nest/src/systemd.ts";
 import { removeStoreSockets } from "../../packages/alchemy-nest/src/unit-cleanup.ts";
 import { stageName, workerIPv4 } from "./config.ts";
@@ -193,14 +194,17 @@ export const run = (action: Action) =>
           sidecar
         ).pipe(
           Effect.onError(() =>
-            must(shell, [
-              "systemctl",
-              "--user",
-              "stop",
+            stopUnits(shell, [
               "rat-king-celld.service",
               "rat-king-seaweedfs.service",
               "rat-king-claude-sidecar.service",
-            ]).pipe(Effect.orDie)
+            ]).pipe(
+              Effect.matchEffect({
+                onFailure: (error) =>
+                  Effect.logError("LISTENER_CLEANUP_FAILED", error),
+                onSuccess: () => Effect.void,
+              })
+            )
           )
         )
       );
@@ -327,14 +331,17 @@ export const run = (action: Action) =>
 
     yield* listenerProbe(shell, workerIPv4(stage, host), true, sidecar).pipe(
       Effect.onError(() =>
-        must(shell, [
-          "systemctl",
-          "--user",
-          "stop",
+        stopUnits(shell, [
           "rat-king-celld.service",
           "rat-king-seaweedfs.service",
           "rat-king-claude-sidecar.service",
-        ]).pipe(Effect.orDie)
+        ]).pipe(
+          Effect.matchEffect({
+            onFailure: (error) =>
+              Effect.logError("LISTENER_CLEANUP_FAILED", error),
+            onSuccess: () => Effect.void,
+          })
+        )
       )
     );
     yield* Effect.log("MAILBOX_DEPLOYED");

@@ -1,12 +1,16 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
-import { Effect, Layer, Predicate } from "effect";
+import { Arbitrary, Effect, Layer, Predicate, Result, Schema } from "effect";
 import { expect } from "vitest";
 
 import { makeFakeShell } from "../src/fake-shell.ts";
 import { testLayer } from "../src/host-shell.ts";
 import { verifiedSidecarPid } from "../src/listeners.ts";
-import { assessListeners, startupLayer } from "../src/startup-contract.ts";
+import {
+  assessListeners,
+  startupLayer,
+  stopUnit,
+} from "../src/startup-contract.ts";
 import { UnitStartup } from "../src/unit-startup.ts";
 
 const address = "203.0.113.10";
@@ -143,49 +147,111 @@ it.effect(
     })
 );
 
-it.effect("stops both units before returning a startup violation", () =>
-  Effect.gen(function* testStop() {
-    const fake = yield* makeFakeShell();
-    const stopped: string[][] = [];
+it.effect.prop(
+  "stops both units and preserves the startup violation even if cleanup fails",
+  { stopFails: Arbitrary.schema(Schema.Boolean) },
+  ({ stopFails }) =>
+    Effect.gen(function* testStop() {
+      const fake = yield* makeFakeShell();
+      const stopped: string[][] = [];
 
-    const shell = {
-      ...fake.shell,
-      exec: (argv: readonly string[]) => {
-        if (argv[0] === "ss") {
-          return Effect.succeed({
-            code: 0,
-            stdout: `${complete}\n${line(9101)}`,
-          });
+      const shell = {
+        ...fake.shell,
+        exec: (argv: readonly string[]) => {
+          if (argv[0] === "ss") {
+            return Effect.succeed({
+              code: 0,
+              stdout: `${complete}\n${line(9101)}`,
+            });
+          }
+
+          if (argv[0] === "systemctl" && argv[2] === "stop") {
+            stopped.push(argv.slice(3));
+
+            return Effect.succeed({ code: stopFails ? 7 : 0, stdout: "" });
+          }
+
+          if (
+            argv[0] === "systemctl" &&
+            argv.includes("--property=LoadState")
+          ) {
+            return Effect.succeed({ code: 0, stdout: "LoadState=loaded" });
+          }
+
+          return fake.shell.exec(argv);
+        },
+      };
+
+      yield* Effect.gen(function* invoke() {
+        const startup = yield* UnitStartup;
+
+        const result = yield* Effect.result(
+          startup.afterStart("rat-king-celld.service")
+        );
+
+        expect(Result.isFailure(result)).toBe(true);
+
+        if (Result.isFailure(result)) {
+          expect(result.failure.reason).toContain(
+            "Startup listener contract violated"
+          );
         }
 
-        if (argv[0] === "systemctl" && argv[2] === "stop") {
-          stopped.push(argv.slice(3));
+        expect(stopped).toEqual([
+          ["rat-king-celld.service"],
+          ["rat-king-seaweedfs.service"],
+        ]);
+      }).pipe(
+        Effect.provide(
+          startupLayer(address).pipe(
+            Layer.provide(testLayer(shell)),
+            Layer.provide(NodeServices.layer)
+          )
+        )
+      );
+    })
+);
 
-          return Effect.succeed({ code: 0, stdout: "" });
-        }
+it.effect.prop(
+  "failed stop is tolerated only with a successful exact-unit not-found readback",
+  {
+    load: Arbitrary.schema(
+      Schema.Literals(["not-found", "loaded", "masked", "error"])
+    ),
+    readFails: Arbitrary.schema(Schema.Boolean),
+  },
+  ({ load, readFails }) =>
+    Effect.gen(function* checkAbsence() {
+      const fake = yield* makeFakeShell();
+      const observed: string[][] = [];
 
-        return fake.shell.exec(argv);
-      },
-    };
+      const shell = {
+        ...fake.shell,
+        exec: (argv: readonly string[]) => {
+          observed.push([...argv]);
 
-    yield* Effect.gen(function* invoke() {
-      const startup = yield* UnitStartup;
+          return Effect.succeed(
+            argv[2] === "stop"
+              ? { code: 5, stdout: "" }
+              : { code: readFails ? 1 : 0, stdout: `LoadState=${load}` }
+          );
+        },
+      };
 
-      const result = yield* Effect.result(
-        startup.afterStart("rat-king-celld.service")
+      const result = yield* stopUnit(shell, "example.service").pipe(
+        Effect.result
       );
 
-      expect(Predicate.isTagged(result, "Failure")).toBe(true);
-      expect(stopped).toEqual([
-        ["rat-king-celld.service", "rat-king-seaweedfs.service"],
+      expect(Result.isSuccess(result)).toBe(!readFails && load === "not-found");
+      expect(observed).toEqual([
+        ["systemctl", "--user", "stop", "example.service"],
+        [
+          "systemctl",
+          "--user",
+          "show",
+          "example.service",
+          "--property=LoadState",
+        ],
       ]);
-    }).pipe(
-      Effect.provide(
-        startupLayer(address).pipe(
-          Layer.provide(testLayer(shell)),
-          Layer.provide(NodeServices.layer)
-        )
-      )
-    );
-  })
+    })
 );

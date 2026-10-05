@@ -1,23 +1,63 @@
 import type { Crypto, FileSystem } from "effect";
-import { Effect, Layer, Predicate, Schema } from "effect";
+import { Effect, Layer, Predicate, Result, Schema } from "effect";
 
 import { refuse } from "./files.ts";
 import { HostShell, must } from "./host-shell.ts";
 import type { Interface } from "./host-shell.ts";
 import { assessListeners, verifiedSidecarPid } from "./listeners.ts";
 import { bootstrapProbe, probeEnvironment } from "./probes.ts";
+import type { ProbeRunnerMode } from "./probes.ts";
 import { s3Script } from "./s3-script.ts";
 import { UnitStartup } from "./unit-startup.ts";
 
 export { assessListeners } from "./listeners.ts";
 
+export const stopUnit = Effect.fn("UnitStartup.stopUnit")(function* stopUnit(
+  shell: Interface,
+  name: string
+) {
+  const stopped = yield* shell.exec(["systemctl", "--user", "stop", name]);
+
+  if (stopped.code === 0) {
+    return yield* Effect.void;
+  }
+
+  const load = yield* shell.exec([
+    "systemctl",
+    "--user",
+    "show",
+    name,
+    "--property=LoadState",
+  ]);
+
+  if (load.code === 0 && load.stdout.trim() === "LoadState=not-found") {
+    return yield* Effect.void;
+  }
+
+  return yield* refuse("User unit stop failed; unit absence was not proven.");
+});
+
+export const stopUnits = Effect.fn("UnitStartup.stopUnits")(function* stopUnits(
+  shell: Interface,
+  names: readonly string[]
+) {
+  const results = yield* Effect.all(
+    names.map((name) => stopUnit(shell, name).pipe(Effect.result))
+  );
+
+  const failure = results.find(Result.isFailure);
+
+  if (failure !== undefined) {
+    return yield* failure.failure;
+  }
+
+  return yield* Effect.void;
+});
+
 const stopBoth = Effect.fn("UnitStartup.stopBoth")(function* stop(
   shell: Interface
 ) {
-  yield* must(shell, [
-    "systemctl",
-    "--user",
-    "stop",
+  yield* stopUnits(shell, [
     "rat-king-celld.service",
     "rat-king-seaweedfs.service",
   ]);
@@ -30,12 +70,7 @@ const stopBoth = Effect.fn("UnitStartup.stopBoth")(function* stop(
       "rat-king-claude-sidecar.service",
     ])).code === 0
   ) {
-    yield* must(shell, [
-      "systemctl",
-      "--user",
-      "stop",
-      "rat-king-claude-sidecar.service",
-    ]);
+    yield* stopUnit(shell, "rat-king-claude-sidecar.service");
   }
 });
 
@@ -80,7 +115,10 @@ const Pointer = Schema.Struct({
   version: Schema.String,
 });
 
-export const startupLayer = (publicIPv4: string) =>
+export const startupLayer = (
+  publicIPv4: string,
+  runnerMode: ProbeRunnerMode = "scope"
+) =>
   Layer.effect(
     UnitStartup,
     Effect.gen(function* startup() {
@@ -126,7 +164,17 @@ export const startupLayer = (publicIPv4: string) =>
                   })
                 )
               : readiness;
-          }).pipe(Effect.onError(() => stopBoth(shell).pipe(Effect.orDie)));
+          }).pipe(
+            Effect.onError(() =>
+              stopBoth(shell).pipe(
+                Effect.matchEffect({
+                  onFailure: (error) =>
+                    Effect.logError("STARTUP_CLEANUP_FAILED", error),
+                  onSuccess: () => Effect.void,
+                })
+              )
+            )
+          );
         },
         beforeStart: (name: string, home: string) => {
           if (name !== "rat-king-celld.service") {
@@ -169,10 +217,12 @@ export const startupLayer = (publicIPv4: string) =>
             );
 
             if (pointer.status === 404) {
-              yield* bootstrapProbe(shell, { home }).pipe(
+              yield* bootstrapProbe(shell, { home, runnerMode }).pipe(
                 Effect.provideContext(context),
-                Effect.mapError(() =>
-                  refuse("Bootstrap seed failed; both units must stop.")
+                Effect.mapError((error) =>
+                  Predicate.isTagged(error, "HostError")
+                    ? error
+                    : refuse("Bootstrap operation failed before publication.")
                 )
               );
             } else if (pointer.status !== 200) {
@@ -182,7 +232,17 @@ export const startupLayer = (publicIPv4: string) =>
             }
 
             return yield* Effect.void;
-          }).pipe(Effect.onError(() => stopBoth(shell).pipe(Effect.orDie)));
+          }).pipe(
+            Effect.onError(() =>
+              stopBoth(shell).pipe(
+                Effect.matchEffect({
+                  onFailure: (error) =>
+                    Effect.logError("STARTUP_CLEANUP_FAILED", error),
+                  onSuccess: () => Effect.void,
+                })
+              )
+            )
+          );
         },
       };
     })

@@ -21,7 +21,11 @@ The launcher refuses state inside the public repository, including through a sym
 
 ## Loopback-only pilot
 
-`RAT_KING_STAGE=pilot` selects a separate `nest/pilot` Alchemy namespace. Give it a fresh private state directory outside the repository and its own isolated Linux VM. Never select an existing proof host for the pilot. The pinned release assets require Linux x86_64; on an ARM host the VM uses amd64 emulation. Install Node 24.18.0 in the VM before preparation. Enable lingering for the VM user only so user units return after a VM restart.
+`RAT_KING_STAGE=pilot` selects a separate `nest/pilot` Alchemy namespace. Give it a fresh private state directory outside the repository and its own isolated Linux VM. Never select an existing proof host for the pilot. The pinned release assets require Linux x86_64; on an ARM host the VM uses amd64 emulation. Install Node 24.18.0 in the VM before preparation. Create the missing user configuration parents (`~/.config`, `~/.config/systemd`, `~/.config/systemd/user`) at mode 700 before deployment; fresh VMs do not have them. Enable lingering for the VM user only so user units return after a VM restart.
+
+OrbStack pilot machines reject transient user scopes with `Inappropriate ioctl for device`. Pilot bootstrap probe jobs therefore use explicit service mode: `systemd-run --user --wait --pipe --collect` with a unique owned service name, the same slice, 64M memory, no swap, 10% CPU, 64 tasks and nice priority 10. The service checks its applied systemd properties before executing the probe; an unreadable or mismatched cap, nonzero exit or timeout fails. Output bounds and credential redaction remain unchanged. Other stages and hosts retain the byte-identical default scope command.
+
+Failed-start cleanup treats a stop failure as harmless only after that exact unit reports `LoadState=not-found`. Other stop failures remain failures. Cleanup failures are logged without replacing the original startup error.
 
 The pilot deploys only the mailbox Worker, Mailbox and AuthTokens Durable Objects. It declares no hosted agent, runtime identity files, sidecar or gateway. It refuses gateway mode or a sidecar. The pilot stage sets every core listener and the generated CLI endpoint to `127.0.0.1`, independently of the inventory node address. Proof retains the inventory tailnet bind and endpoint. Loopback is a stage property, not private inventory data.
 
