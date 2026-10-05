@@ -30,6 +30,11 @@ const whitespace = [
   "\u2003",
   "\u3000",
   "\uFEFF",
+  "\u200B",
+  "\u2060",
+  "\u200B \u2060",
+  "\u200E",
+  "\u202A",
 ];
 
 const Sample = Schema.Struct({

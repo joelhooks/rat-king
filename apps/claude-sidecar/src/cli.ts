@@ -1,12 +1,13 @@
-/* oxlint-disable eslint/no-bitwise -- POSIX file mode validation uses a permission mask. */
 // @effect-diagnostics nodeBuiltinImport:off asyncFunction:off globalConsoleInEffect:off -- Host launcher reads a mode-600 token file and emits one machine-readable readiness line.
-import { readFile, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { Config, Effect, Schema } from "effect";
 
 import { gatewayUrl } from "./gateway-url.ts";
 import { SidecarFailure } from "./port.ts";
+import { readPrivateFile, requireBearer } from "./private-file.ts";
 import { serve } from "./server.ts";
 
 const program = Effect.gen(function* launcher() {
@@ -15,15 +16,7 @@ const program = Effect.gen(function* launcher() {
 
   const token = yield* Effect.tryPromise({
     catch: (cause) => new SidecarFailure({ reason: String(cause) }),
-    try: async () => {
-      const file = await stat(tokenFile);
-
-      if ((file.mode & 0o777) !== 0o600) {
-        throw new Error("Token file must have mode 600");
-      }
-
-      return await readFile(tokenFile, "utf-8");
-    },
+    try: async () => requireBearer(await readPrivateFile(tokenFile)),
   });
 
   const endpointFile = yield* Config.String(
@@ -32,17 +25,26 @@ const program = Effect.gen(function* launcher() {
 
   const keyFile = yield* Config.String("RAT_KING_MODEL_GATEWAY_KEY_FILE");
 
+  const credentialDirectory = yield* Effect.acquireRelease(
+    Effect.tryPromise({
+      catch: () =>
+        new SidecarFailure({ reason: "Cannot create private key snapshot" }),
+      try: async () => await mkdtemp(path.join(tmpdir(), "rat-king-key-")),
+    }),
+    (directory) =>
+      Effect.promise(async () => {
+        await rm(directory, { force: true, recursive: true });
+      })
+  );
+
   const gateway = yield* Effect.tryPromise({
     catch: () => new SidecarFailure({ reason: "Invalid model gateway files" }),
     try: async () => {
       const endpoint = await readFile(endpointFile, "utf-8");
-      const key = await stat(keyFile);
+      const key = await readPrivateFile(keyFile);
       const baseUrl = gatewayUrl(endpoint);
-      const apiKeyFile = path.resolve(keyFile);
-
-      if (key.mode % 0o1000 !== 0o600 || key.size === 0) {
-        throw new Error("Invalid model gateway files");
-      }
+      const apiKeyFile = path.join(credentialDirectory, "key");
+      await writeFile(apiKeyFile, key, { flag: "wx", mode: 0o600 });
 
       return { apiKeyFile, baseUrl };
     },

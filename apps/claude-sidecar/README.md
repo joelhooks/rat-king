@@ -12,6 +12,8 @@ The HTTP endpoint emits OpenAI SSE chunks at completed tool/answer boundaries, n
 
 Claude Code receives `tools: []`. Only the request's declared MCP names are allowed; the permission callback denies everything else. Initialization rejects unexpected model IDs or tool names. Every assistant message's reported model is checked before consuming content or handing off tools. A mismatched reply fails the HTTP request rather than being relabelled as Opus. The MCP handlers never run model tools on the host: they wait for the DO's results. The credential helper is the one deliberate exception to host command execution: Claude Code runs `/bin/cat` against the configured credential file for authentication. Its path is shell-quoted, and neither its path nor its contents are committed.
 
+The launcher accepts bearer and gateway-key files only as nonempty regular files owned by its uid, with permissions 600 or tighter and no execute or special bits. It walks every parent directory with no-follow descriptors, rejects writable-by-others or foreign-owned directories (except root-owned ancestors), and rejects symlinks anywhere in the path. File metadata and contents come from the same opened descriptor; nonblocking open prevents FIFO hangs. The helper reads a mode-600 snapshot in an owned mode-700 directory, not a later replacement of the gateway binding. Scoped shutdown removes the snapshot. Configured bearers must contain at least 32 UTF-8 bytes; proof bearers use 32 cryptographically random bytes encoded as hex.
+
 Each HTTP route, including metrics, requires the per-instance bearer. The listener always binds `127.0.0.1`. Port `0` selects an ephemeral proof port; deployment must configure a fixed port. There is no public listener or remote fallback.
 
 ## Client isolation and authentication
@@ -39,11 +41,11 @@ The bridge's `convert.ts` imports `skills.ts`, which imports pi-coding-agent at 
 | Variable | Meaning |
 | --- | --- |
 | `RAT_KING_CLAUDE_EXECUTABLE` | Explicit dedicated Claude Code binary |
-| `RAT_KING_SIDECAR_TOKEN_FILE` | Per-instance bearer file, mode 600 |
+| `RAT_KING_SIDECAR_TOKEN_FILE` | Owned private bearer file, at least 32 bytes |
 | `RAT_KING_SIDECAR_PORT` | Fixed deployment port; default 0 for local proof |
 | `RAT_KING_SIDECAR_TEMP_DIR` | Parent for private config/working directories; default `/tmp` |
 | `RAT_KING_MODEL_GATEWAY_ENDPOINT_FILE` | Private gateway endpoint file |
-| `RAT_KING_MODEL_GATEWAY_KEY_FILE` | Private gateway credential file, mode 600 |
+| `RAT_KING_MODEL_GATEWAY_KEY_FILE` | Owned private gateway credential file |
 
 The agent-runtime Layer selects Opus with `MODEL_GATEWAY_MODEL=claude-opus-5-5`, `CLAUDE_SIDECAR_BASE_URL=http://127.0.0.1:<configured-port>/v1` and secret binding `CLAUDE_SIDECAR_CREDENTIAL`. It rejects non-loopback sidecar URLs. Sol and Luna continue using `MODEL_GATEWAY_BASE_URL` and `MODEL_GATEWAY_CREDENTIAL`. Missing sidecar bindings never fall back to direct Anthropic requests.
 
@@ -75,7 +77,9 @@ RAT_KING_CLAUDE_EXECUTABLE=/path/to/dedicated/claude \
 pnpm exec vitest run --config apps/claude-sidecar/vitest.config.ts apps/claude-sidecar/test/policy.test.ts
 ```
 
-It generates message lists, checks joined text and Unicode whitespace with model aliases, and varies response models independently. Command-form HTTP requests must return 400 without launching the client. Allowed requests must name exactly Opus; forbidden replies must fail. A direct driver probe also qualifies the inline CLI model restriction. This property skips when no executable is configured; the URL property runs by default. Neither probe contacts a model provider.
+It generates message lists, checks joined text, Unicode whitespace and format-character prefixes with model aliases, and varies response models independently. The HTTP boundary strips leading whitespace and all Unicode category Cf characters before checking for a slash, both for each user message and the joined text. A dummy-gateway probe of checksum-verified Claude Code 2.1.285 sent both `\u200B/model x` and `\u2060/model x` as model text, rather than consuming them as local commands. Neither prefix is accepted by the sidecar.
+
+The default credential property generates modes, regular/symlink/directory/FIFO states, symlinked parents, writable parents and bearer lengths. Ownership is generated on descriptor metadata without requiring privileged chown. Each run also reads an owned 400 or 600 file successfully. Command-form HTTP requests must return 400 without launching the client. Allowed requests must name exactly Opus; forbidden replies must fail. A direct driver probe also qualifies the inline CLI model restriction. This property skips when no executable is configured; the URL property runs by default. Neither probe contacts a model provider.
 
 ## Linux deployment code, not live-qualified
 

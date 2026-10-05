@@ -3,7 +3,7 @@
 import type { Buffer } from "node:buffer";
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash } from "node:crypto";
 import { mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -14,6 +14,8 @@ import { it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { build } from "esbuild";
 import { expect } from "vitest";
+
+import { generateBearer } from "../src/private-file.ts";
 
 class ProofFailure extends Schema.TaggedError<ProofFailure>()("ProofFailure", {
   reason: Schema.String,
@@ -172,7 +174,7 @@ it.live.skipIf(
         mkdtemp(path.join(tmpdir(), "rat-king-sidecar-proof-"))
       );
 
-      const token = randomBytes(32).toString("hex");
+      const token = generateBearer();
       const tokenFile = path.join(directory, "bearer");
       yield* io(() => writeFile(tokenFile, token, { mode: 0o600 }));
       const cli = path.join(directory, "sidecar.mjs");
