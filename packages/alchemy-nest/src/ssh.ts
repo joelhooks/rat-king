@@ -1,4 +1,4 @@
-import { Effect, Layer, Redacted, Schema, Stream } from "effect";
+import { Effect, Layer, Redacted, Schema, Semaphore, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { absent } from "./absent.ts";
@@ -27,6 +27,8 @@ export const layer = (node: Node) =>
       );
 
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+
+      const permits = yield* Semaphore.make(4);
 
       const run = Effect.fn("HostShell.ssh")(
         function* run(
@@ -113,6 +115,7 @@ export const layer = (node: Node) =>
         Effect.scoped,
         (effect) =>
           effect.pipe(
+            permits.withPermits(1),
             Effect.timeoutOrElse({
               duration: "2 minutes",
               orElse: () =>

@@ -1,3 +1,4 @@
+/* oxlint-disable unicorn/no-array-sort, unicorn/no-useless-spread -- Generated clients target ES2022; sort only a copied array. */
 import { Schema, SchemaGetter } from "effect";
 
 export const BooleanFromQuery = Schema.Literals(["true", "false"]).pipe(
@@ -14,8 +15,8 @@ export const Params = Schema.Record(Schema.String, Value);
 export const entries = (
   params: typeof Params.Type
 ): readonly (readonly [string, string])[] =>
-  Object.entries(params)
-    .toSorted(([a], [b]) => a.localeCompare(b))
+  [...Object.entries(params)]
+    .sort(([a], [b]) => a.localeCompare(b))
     .flatMap(([key, value]) => {
       if (Schema.is(Schema.String)(value)) {
         return [[key, value] satisfies readonly [string, string]];

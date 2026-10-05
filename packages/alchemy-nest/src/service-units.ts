@@ -117,7 +117,7 @@ export const nodeUnit = (input: {
           "ExecStart",
           `${quote(input.binary)} --listen ${input.host.tailnetIPv4}:18787 --internal-listen 127.0.0.1:18788`,
         ],
-        ["EnvironmentFile", quote(input.environment)],
+        ["EnvironmentFile", input.environment.replaceAll("%", "%%")],
         ["WorkingDirectory", input.data.replaceAll("%", "%%")],
         ["Environment", "CELLD_OTEL=0"],
         ["Environment", quote(`CELLD_TEST_DATA_DIR=${input.data}`)],

@@ -22,6 +22,7 @@ import {
   LeaseAuthority,
   leaseLayer,
 } from "./mailbox.ts";
+import { proofLeasePath, ProofLease } from "./proof-lease.ts";
 import { sqliteStore } from "./sqlite.ts";
 import type { LeaseValue } from "./store.ts";
 import { TerminalDelivery, terminalLayer } from "./terminal.ts";
@@ -189,6 +190,59 @@ export const fetchRequest = (request: Request, env: Bindings) =>
 
     if (url.pathname === "/.well-known/rat-king/version") {
       return Response.json(bundle);
+    }
+
+    if (url.pathname === proofLeasePath) {
+      if (
+        request.method !== "POST" ||
+        request.headers.get("content-type")?.split(";")[0] !==
+          "application/json"
+      ) {
+        return yield* failure("InvalidRequest");
+      }
+
+      const issuer = yield* authenticate({
+        audience: `${env.SERVICE_DID}#mailbox`,
+        authorization: request.headers.get("authorization"),
+        now: yield* Clock.currentTimeMillis,
+        nsid: proofLeasePath,
+      }).pipe(
+        Effect.provide(Layer.merge(documentsLayer(env), replayLayer(env)))
+      );
+
+      const input = yield* Schema.decodeUnknownEffect(ProofLease)(
+        yield* Effect.tryPromise({
+          catch: () => failure("InvalidRequest"),
+          try: () => request.json(),
+        })
+      ).pipe(Effect.mapError(() => failure("InvalidRequest")));
+
+      const lease = yield* Effect.tryPromise({
+        catch: () => failure("MailboxUnavailable", 503),
+        try: () => {
+          const mailbox = env.MAILBOX.getByName(issuer);
+
+          return input.generation === undefined
+            ? mailbox.acquireLease(input.leaseId, input.ttl)
+            : mailbox.renewLease(input.leaseId, input.generation, input.ttl);
+        },
+      });
+
+      if (input.message !== undefined) {
+        const { message } = input;
+        yield* Effect.tryPromise({
+          catch: () => failure("MailboxUnavailable", 503),
+          try: () =>
+            env.MAILBOX.getByName(issuer).inject(
+              message.senderDid,
+              message.messageId,
+              lease.leaseId,
+              lease.generation
+            ),
+        });
+      }
+
+      return Response.json(lease);
     }
 
     const nsid = url.pathname.slice("/xrpc/".length);
