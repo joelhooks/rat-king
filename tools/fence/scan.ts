@@ -133,6 +133,7 @@ export const scan = Effect.fn("fence.scan")(function* scan({
     for (const rule of violations({
       content: `${name}\n${new TextDecoder().decode(bytes)}`,
       inventory,
+      name,
     })) {
       findings.add(rule);
     }

@@ -49,6 +49,36 @@
         "type": "string",
         "minLength": 1
       }
+    },
+    "nodes": {
+      "type": "object",
+      "propertyNames": {
+        "minLength": 1
+      },
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ssh", "tailnetIPv4", "home", "dataRoot"],
+        "properties": {
+          "ssh": {
+            "type": "string",
+            "pattern": "^(?!-)[A-Za-z0-9_.@:-]+$"
+          },
+          "tailnetIPv4": {
+            "type": "string",
+            "format": "ipv4",
+            "pattern": "^(?:\\d{1,3}\\.){3}\\d{1,3}$"
+          },
+          "home": {
+            "type": "string",
+            "pattern": "^/(?!$)(?!\\.{1,2}(?:/|$))(?!.*/\\.{1,2}(?:/|$))(?!.*//)[^\\r\\n\\0]*[^/\\r\\n\\0]$"
+          },
+          "dataRoot": {
+            "type": "string",
+            "pattern": "^/(?!$)(?!\\.{1,2}(?:/|$))(?!.*/\\.{1,2}(?:/|$))(?!.*//)[^\\r\\n\\0]*[^/\\r\\n\\0]$"
+          }
+        }
+      }
     }
   }
 }

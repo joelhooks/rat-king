@@ -1,0 +1,24 @@
+{
+  "name": "@rat-king/alchemy-nest",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./RatsNest": "./src/host.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "ALCHEMY_TELEMETRY_DISABLED=1 pnpm -C ../.. exec vitest run --config packages/alchemy-nest/vitest.config.ts"
+  },
+  "dependencies": {
+    "alchemy": "2.0.0-beta.79",
+    "effect": "4.0.0-rc.117"
+  },
+  "devDependencies": {
+    "@effect/platform-node": "4.0.0-rc.117",
+    "@effect/vitest": "4.0.0-rc.117",
+    "vitest": "5.0.1"
+  }
+}

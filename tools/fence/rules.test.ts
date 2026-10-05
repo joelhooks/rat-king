@@ -2,7 +2,13 @@ import { it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
 import { describe, expect } from "vitest";
 
-import { BOT_EMAIL, Instance, privateArtifact, violations } from "./rules.ts";
+import {
+  BOT_EMAIL,
+  Instance,
+  instanceLiterals,
+  privateArtifact,
+  violations,
+} from "./rules.ts";
 
 const check = (content: string) => violations({ content, inventory: null });
 
@@ -69,7 +75,7 @@ describe("publication rules", () => {
     Effect.gen(function* decodeInventory() {
       const decoded = yield* Schema.decodeUnknownEffect(Instance)(inventory);
 
-      for (const [category, values] of Object.entries(decoded)) {
+      for (const [category, values] of instanceLiterals(decoded)) {
         for (const value of values) {
           expect(
             violations({ content: value.toUpperCase(), inventory: decoded })

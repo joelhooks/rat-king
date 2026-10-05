@@ -2,9 +2,11 @@
 
 Local pre-commit scans exact staged blobs, not working-tree copies. Pre-push scans every reachable committed tree, including historical versions, not just the current diff. Both run gitleaks with its default rules and require the private instance file. Findings report rule names only, never matched values or file paths.
 
+Third-party license notices can carry a path-and-hash exemption for the email rule only.
+
 The denylist rejects private IPv4 ranges, carrier-grade NAT addresses, tailnet DNS names, private host suffixes, account home paths, credential-name patterns, and email addresses except the bot's noreply identity. Instance literals cover host aliases, domains, IPv4 and IPv6 addresses, sites and credential names. Paths are scanned as well as content. Local Brain, harness files, source mirrors, env values and Alchemy state cannot be staged for publication.
 
-The private configuration defaults to `~/.config/rats-nest/instance.json`. Override it with `RATS_NEST_INSTANCE`. It must have mode 600 and contain nonempty string arrays for every field in [the schema](instance.schema.json). Missing, malformed or broadly readable configuration fails closed. [The example](../../config/instance.example.json) contains invented values, not an inventory.
+The private configuration defaults to `~/.config/rats-nest/instance.json`. Override it with `RATS_NEST_INSTANCE`. It must have mode 600 and contain the five required nonempty string arrays in [the schema](instance.schema.json). Optional `nodes` records carry runtime host facts; every node value feeds the denylist. Missing, malformed or broadly readable configuration fails closed. [The example](../../config/instance.example.json) contains invented values, not an inventory.
 
 ```sh
 node tools/fence/cli.ts --mode staged
