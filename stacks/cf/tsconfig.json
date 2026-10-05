@@ -1,0 +1,4 @@
+{
+  "extends": "../nest/tsconfig.json",
+  "include": ["*.ts"]
+}
