@@ -11,7 +11,7 @@ import { HttpClient } from "effect/http";
 import { refuse } from "./files.ts";
 import { must } from "./host-shell.ts";
 import type { Interface } from "./host-shell.ts";
-import { assessListeners } from "./listeners.ts";
+import { assessListeners, verifiedSidecarPid } from "./listeners.ts";
 import { s3Script } from "./s3-script.ts";
 
 const scope = (name: string, argv: readonly string[]) => [
@@ -276,7 +276,8 @@ export const listenerProbe = Effect.fn("Celld.listenerProbe")(
       yield* must(shell, ["ss", "-ltnp"]),
       publicIPv4,
       nodeExpected,
-      sidecarExpected === true
+      sidecarExpected === true,
+      sidecarExpected === true ? yield* verifiedSidecarPid(shell) : undefined
     );
 
     if (!Predicate.isTagged(assessment, "Ready")) {

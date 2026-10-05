@@ -57,7 +57,7 @@ Startup checks intermediate resource stages, then the final deployment requires 
 - `127.0.0.1:18789` (sidecar)
 - inventory tailnet IPv4, port 18787 (celld Worker)
 
-The gate checks process, interface and port, including any extra listener owned by the sidecar PID. A mismatch stops the core units and the active sidecar before returning failure. Faux mode expects the ten core listeners. The owner must reconcile this exact list and approve the guard before live startup.
+The gate checks process, interface and port, including any extra listener owned by the sidecar PID. The sidecar's `node` or Linux `MainThread` label is accepted only when every listed PID equals the unit's `MainPID` and its `/proc/<pid>/exe` resolves to the approved `/usr/local/bin/node` target. A mismatch stops the core units and the active sidecar before returning failure. Faux mode expects the ten core listeners. The owner must reconcile this exact list and approve the guard before live startup.
 
 ### Two model turns, one hosted DID
 
