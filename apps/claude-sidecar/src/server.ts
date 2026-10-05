@@ -26,9 +26,9 @@ export const serve = (
   configuredPort = 0
 ) =>
   Effect.gen(function* serveSidecar() {
-    if (token.length < 32) {
+    if (Buffer.byteLength(token, "utf-8") < 32) {
       return yield* new SidecarFailure({
-        reason: "Bearer token must have at least 32 characters",
+        reason: "Bearer token must have at least 32 bytes",
       });
     }
 
@@ -95,11 +95,15 @@ export const serve = (
         const chat = Schema.decodeUnknownSync(ChatRequest)(input);
 
         if (
-          userText(chat).trimStart().startsWith("/") ||
+          userText(chat)
+            .replace(/^[\s\p{Cf}]*/u, "")
+            .startsWith("/") ||
           chat.messages.some(
             (message) =>
               message.role === "user" &&
-              (message.content ?? "").trimStart().startsWith("/")
+              (message.content ?? "")
+                .replace(/^[\s\p{Cf}]*/u, "")
+                .startsWith("/")
           )
         ) {
           throw new Error("Command-form user text is not accepted");
