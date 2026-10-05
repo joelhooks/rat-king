@@ -4,7 +4,7 @@ import { Layer, Schema } from "effect";
 
 import { base64url, unbase64url } from "./auth.ts";
 import { Lease, MailboxStore, storageOperation } from "./store.ts";
-import type { Event, Message, Transaction } from "./store.ts";
+import type { Event, LeaseValue, Message, Transaction } from "./store.ts";
 
 export interface Sql {
   readonly exec: (
@@ -44,7 +44,11 @@ const firstValue = (
     : Schema.decodeUnknownSync(Row)(row).value;
 };
 
-export const sqliteStore = (sql: Sql, recipient: string) => {
+export const sqliteStore = (
+  sql: Sql,
+  recipient: string,
+  committed?: (events: readonly Event[], lease: LeaseValue | undefined) => void
+) => {
   sql.exec(
     "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
   );
@@ -84,6 +88,16 @@ export const sqliteStore = (sql: Sql, recipient: string) => {
           "SELECT value FROM metadata WHERE key='cursorSecret'"
         ) ?? ""
       ),
+    document: () => {
+      const value = firstValue(
+        sql,
+        "SELECT value FROM metadata WHERE key='didDocument'"
+      );
+
+      return value === undefined
+        ? undefined
+        : Schema.decodeUnknownSync(Defs.DidDocument)(JSON.parse(value));
+    },
     events: (after, through, limit) =>
       Array.from(
         sql.exec(
@@ -137,6 +151,12 @@ export const sqliteStore = (sql: Sql, recipient: string) => {
     },
     recipient: () =>
       firstValue(sql, "SELECT value FROM metadata WHERE key='recipient'") ?? "",
+    setDocument: (document) => {
+      sql.exec(
+        "INSERT INTO metadata (key,value) VALUES ('didDocument',?)",
+        JSON.stringify(Schema.encodeSync(Defs.DidDocument)(document))
+      );
+    },
     setLease: (lease) => {
       sql.exec(
         "INSERT INTO lease (singleton,value) VALUES (1,?) ON CONFLICT(singleton) DO UPDATE SET value=excluded.value",
@@ -156,7 +176,23 @@ export const sqliteStore = (sql: Sql, recipient: string) => {
     MailboxStore,
     MailboxStore.of({
       transaction: (operation) =>
-        storageOperation(() => sql.transaction(() => operation(transaction))),
+        storageOperation(() => {
+          const appended: Event[] = [];
+
+          const result = sql.transaction(() =>
+            operation({
+              ...transaction,
+              append: (event) => {
+                transaction.append(event);
+                appended.push(event);
+              },
+            })
+          );
+
+          committed?.(appended, transaction.lease());
+
+          return result;
+        }),
     })
   );
 };

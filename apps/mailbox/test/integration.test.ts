@@ -1,12 +1,6 @@
 /* oxlint-disable typescript/promise-function-async, promise/prefer-await-to-callbacks -- Effect owns control flow; Node process and HTTP adapters return SDK promises. */
 // @effect-diagnostics globalFetch:off -- This is the base-URL HTTP test adapter and signed-out ingress probe, not application transport policy.
 // @effect-diagnostics nodeBuiltinImport:off -- Integration harness starts its owned celld process and writes generated test configuration to an OS temp directory.
-import { spawn } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { createServer } from "node:net";
-import { tmpdir } from "node:os";
-import path from "node:path";
-
 import { it } from "@effect/vitest";
 import {
   canonical,
@@ -15,17 +9,13 @@ import {
   open,
 } from "@rat-king/envelope";
 import * as Defs from "@rat-king/lexicon/defs";
-import { clientLayer, MailboxClient } from "@rat-king/lexicon/mailbox-client";
+import { MailboxClient } from "@rat-king/lexicon/mailbox-client";
 import * as Ack from "@rat-king/lexicon/mailbox.ack";
+import * as Deliver from "@rat-king/lexicon/mailbox.deliver";
 import * as List from "@rat-king/lexicon/mailbox.list";
-import * as Runtime from "@rat-king/lexicon/runtime";
-import { Transport } from "@rat-king/lexicon/transport";
-import type {
-  Request as XrpcRequest,
-  Response as XrpcResponse,
-} from "@rat-king/lexicon/transport";
-import { TransportFailure } from "@rat-king/lexicon/transport-failure";
-import { Clock, Effect, Layer, Schema } from "effect";
+import * as Acquire from "@rat-king/lexicon/runtime.acquireLease";
+import * as Release from "@rat-king/lexicon/runtime.releaseLease";
+import { Clock, DateTime, Effect, Schedule, Schema } from "effect";
 import { expect } from "vitest";
 
 import {
@@ -34,200 +24,9 @@ import {
   sealed,
   senderDid,
 } from "../../../packages/envelope/test/helpers.ts";
-import { base64url, serviceToken } from "../src/auth.ts";
-import { configuration } from "../src/bindings.ts";
-import { Lease } from "../src/store.ts";
+import { io, celldNode, TestFailure } from "./celld.ts";
 import { documents } from "./helpers.ts";
-
-class TestFailure extends Schema.TaggedError<TestFailure>()("TestFailure", {
-  message: Schema.String,
-}) {}
-
-const io = <A>(operation: () => Promise<A>) =>
-  Effect.tryPromise({
-    catch: () => new TestFailure({ message: "Integration I/O failed" }),
-    try: operation,
-  });
-
-const freePort = Effect.callback<number, TestFailure>((resume) => {
-  const server = createServer();
-  server.once("error", () => {
-    resume(Effect.fail(new TestFailure({ message: "Port allocation failed" })));
-  });
-  server.listen(0, "127.0.0.1", () => {
-    const address = server.address();
-
-    if (address === null || Schema.is(Schema.String)(address)) {
-      server.close();
-      resume(
-        Effect.fail(new TestFailure({ message: "Missing listener address" }))
-      );
-
-      return;
-    }
-
-    server.close(() => {
-      resume(Effect.succeed(address.port));
-    });
-  });
-
-  return Effect.sync(() => {
-    server.close();
-  });
-});
-
-const celldNode = (binary: string, documentsJson: string) =>
-  Effect.gen(function* launch() {
-    const directory = yield* io(() =>
-      mkdtemp(path.join(tmpdir(), "rat-king-p4-"))
-    );
-
-    const source = JSON.stringify(path.resolve("apps/mailbox/test/worker.ts"));
-    yield* io(() =>
-      writeFile(
-        path.join(directory, "worker.ts"),
-        `export { default, Mailbox, AuthTokens } from ${source};`
-      )
-    );
-    yield* io(() =>
-      writeFile(
-        path.join(directory, "wrangler.json"),
-        JSON.stringify(
-          configuration("worker.ts", {
-            commit: "b845798-proof",
-            documents: documentsJson,
-            serviceDid: "did:web:service.example",
-            version: "0.1.0-proof",
-          })
-        )
-      )
-    );
-    const port = yield* freePort;
-
-    const child = yield* Effect.acquireRelease(
-      Effect.sync(() =>
-        spawn(
-          binary,
-          ["dev", directory, "--port", String(port), "--no-watch"],
-          {
-            env: {
-              ...process.env,
-              CELLD_ESBUILD: path.resolve(
-                "apps/mailbox/node_modules/.bin/esbuild"
-              ),
-              NO_COLOR: "1",
-            },
-            stdio: ["ignore", "pipe", "pipe"],
-          }
-        )
-      ),
-      (owned) =>
-        Effect.sync(() => {
-          owned.kill("SIGTERM");
-        })
-    );
-
-    yield* Effect.callback<boolean, TestFailure>((resume) => {
-      let output = "";
-
-      const onOutput = (chunk: Buffer) => {
-        output = (output + chunk.toString()).slice(-8000);
-
-        if (output.includes("ready  http://")) {
-          resume(Effect.succeed(true));
-        }
-      };
-
-      child.stdout.on("data", onOutput);
-      child.stderr.on("data", onOutput);
-      child.once("error", () => {
-        resume(Effect.fail(new TestFailure({ message: "celld spawn failed" })));
-      });
-      child.once("exit", (code) => {
-        resume(
-          Effect.fail(
-            new TestFailure({ message: `celld exited ${code}: ${output}` })
-          )
-        );
-      });
-
-      return Effect.sync(() => {
-        child.stdout.off("data", onOutput);
-        child.stderr.off("data", onOutput);
-      });
-    }).pipe(Effect.timeout("20 seconds"));
-
-    return `http://127.0.0.1:${port}`;
-  });
-
-export const httpClient = (baseUrl: string, issuer: string, key: CryptoKey) =>
-  clientLayer.pipe(
-    Layer.provide(
-      Layer.succeed(Transport, {
-        request: Effect.fn("Test.httpTransport")(
-          function* request(input: XrpcRequest) {
-            const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
-
-            const token = yield* serviceToken(
-              {
-                aud: "did:web:service.example#mailbox",
-                exp: now + 60,
-                iat: now,
-                iss: issuer,
-                jti: base64url(crypto.getRandomValues(new Uint8Array(16))),
-                lxm: input.nsid,
-              },
-              key
-            );
-
-            const url = new URL(`/xrpc/${input.nsid}`, baseUrl);
-
-            const params = yield* Schema.decodeUnknownEffect(
-              Schema.Record(
-                Schema.String,
-                Schema.Union([Schema.String, Schema.Int])
-              )
-            )(input.params ?? {});
-
-            for (const [name, value] of Object.entries(params)) {
-              url.searchParams.set(name, String(value));
-            }
-
-            const options: RequestInit = {
-              headers: {
-                authorization: `Bearer ${token}`,
-                "content-type": "application/json",
-              },
-              method: input.method,
-            };
-
-            if (input.input !== undefined) {
-              options.body = JSON.stringify(input.input);
-            }
-
-            const response = yield* io(() => fetch(url, options));
-
-            const body = yield* Schema.decodeUnknownEffect(
-              Schema.toEncoded(Runtime.Data)
-            )(yield* io(() => response.json()));
-
-            return {
-              body,
-              kind: "json",
-              status: response.status,
-            } satisfies XrpcResponse;
-          },
-          Effect.mapError(
-            () =>
-              new TransportFailure({
-                cause: undefined,
-                reason: "HTTP transport failed",
-              })
-          )
-        ),
-      })
-    )
-  );
+import { httpClient } from "./http-client.ts";
 
 export const outcomeProof = (
   baseUrl: string,
@@ -307,32 +106,23 @@ export const outcomeProof = (
     const initial = yield* recipient.list(params);
     expect(initial.throughSeq).toBe(1);
 
-    const rpc = (operation: string, generation: number, ttl = 60_000) =>
-      Effect.gen(function* rpcCall() {
-        const result = yield* io(() =>
-          fetch(`${baseUrl}/test/lease`, {
-            body: JSON.stringify({
-              generation,
-              leaseId: "3m7x2ka4xv22b",
-              messageId: sample.envelope.aad.messageId,
-              operation,
-              recipientDid,
-              senderDid,
-              ttl,
-            }),
-            headers: { "content-type": "application/json" },
-            method: "POST",
+    const acquire = (ttl = 60_000) =>
+      Effect.gen(function* acquireLease() {
+        return (yield* recipient.acquireLease(
+          yield* Schema.decodeUnknownEffect(Acquire.Input)({
+            did: recipientDid,
+            expiresAt: DateTime.formatIso(
+              DateTime.makeUnsafe((yield* Clock.currentTimeMillis) + ttl)
+            ),
+            harness: {
+              $type: "sh.mschf.ratking.runtime.lease#pi",
+              sessionId: "integration",
+            },
           })
-        );
-
-        expect(result.status).toBe(200);
-
-        return yield* io(() => result.json());
+        )).lease;
       });
 
-    const lease = yield* Schema.decodeUnknownEffect(Lease)(
-      yield* rpc("acquire", 0)
-    );
+    const lease = yield* acquire();
 
     const ack = yield* Schema.decodeUnknownEffect(Ack.Input)({
       generation: lease.generation,
@@ -342,16 +132,29 @@ export const outcomeProof = (
     });
 
     expect((yield* recipient.ack(ack).pipe(Effect.exit))._tag).toBe("Failure");
-    yield* rpc("inject", lease.generation);
+    yield* recipient.deliver(
+      yield* Schema.decodeUnknownEffect(Deliver.Input)(ack)
+    );
     const page1 = yield* recipient.list(params);
     expect(page1.throughSeq).toBe(3);
 
-    const rebound = yield* Schema.decodeUnknownEffect(Lease)(
-      yield* rpc("acquire", 0)
+    yield* recipient.releaseLease(
+      yield* Schema.decodeUnknownEffect(Release.Input)({
+        did: recipientDid,
+        generation: lease.generation,
+        leaseId: lease.leaseId,
+      })
     );
+    const rebound = yield* acquire();
 
     expect((yield* recipient.ack(ack).pipe(Effect.exit))._tag).toBe("Failure");
-    const valid = { ...ack, generation: rebound.generation };
+
+    const valid = {
+      ...ack,
+      generation: rebound.generation,
+      leaseId: rebound.leaseId,
+    };
+
     const acknowledged = yield* recipient.ack(valid);
     expect(acknowledged.receipt.state).toBe("acked");
     expect(yield* recipient.ack(valid)).toEqual(acknowledged);
@@ -380,14 +183,28 @@ export const outcomeProof = (
     expect(all.throughSeq).toBe(4);
     expect(all.events.length).toBe(4);
 
-    const expired = yield* Schema.decodeUnknownEffect(Lease)(
-      yield* rpc("acquire", 0, 1)
+    yield* recipient.releaseLease(
+      yield* Schema.decodeUnknownEffect(Release.Input)({
+        did: recipientDid,
+        generation: rebound.generation,
+        leaseId: rebound.leaseId,
+      })
     );
-
-    yield* Effect.sleep("10 millis");
+    const expired = yield* acquire(200);
+    yield* Clock.currentTimeMillis.pipe(
+      Effect.filterOrFail(
+        (now) => now > Date.parse(expired.expiresAt),
+        () => new TestFailure({ message: "Expiry pending" })
+      ),
+      Effect.retry({ schedule: Schedule.spaced("10 millis"), times: 100 })
+    );
     expect(
       (yield* recipient
-        .ack({ ...ack, generation: expired.generation })
+        .ack({
+          ...ack,
+          generation: expired.generation,
+          leaseId: expired.leaseId,
+        })
         .pipe(Effect.exit))._tag
     ).toBe("Failure");
     expect((yield* sender.list(params).pipe(Effect.exit))._tag).toBe("Failure");

@@ -44,7 +44,7 @@ const PublicJwk = Schema.Struct({
   y: Schema.String,
 });
 
-const Document = Schema.Struct({
+export const Document = Schema.Struct({
   authentication: Schema.Array(Schema.String),
   id: Schema.String,
   keyAgreement: Schema.Array(Schema.String),
@@ -72,13 +72,17 @@ export class DidResolver extends Context.Service<
   }
 >()("mailbox/DidResolver") {}
 
-export const staticResolver = (documents: DocumentsValue) =>
+export const documentResolver = (
+  lookup: (
+    did: string
+  ) => Effect.Effect<typeof Document.Type | undefined, XrpcFailure>
+) =>
   Layer.succeed(
     DidResolver,
     DidResolver.of({
       resolve: Effect.fn("DidResolver.resolve")(
         function* resolve(did, keyId, purpose) {
-          const document = documents.find((candidate) => candidate.id === did);
+          const document = yield* lookup(did);
 
           const method = document?.verificationMethod.find(
             (candidate) =>
@@ -112,6 +116,11 @@ export const staticResolver = (documents: DocumentsValue) =>
         }
       ),
     })
+  );
+
+export const staticResolver = (documents: DocumentsValue) =>
+  documentResolver((did) =>
+    Effect.succeed(documents.find((candidate) => candidate.id === did))
   );
 
 export interface AuthenticateRequest {

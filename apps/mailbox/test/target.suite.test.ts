@@ -16,10 +16,23 @@ import * as Defs from "@rat-king/lexicon/defs";
 import { clientLayer, MailboxClient } from "@rat-king/lexicon/mailbox-client";
 import type { MailboxInterface } from "@rat-king/lexicon/mailbox-client";
 import { Input as AckInput } from "@rat-king/lexicon/mailbox.ack";
+import * as Deliver from "@rat-king/lexicon/mailbox.deliver";
 import { Params as ListParams } from "@rat-king/lexicon/mailbox.list";
 import type { OutputValue as SendOutput } from "@rat-king/lexicon/mailbox.send";
+import * as Acquire from "@rat-king/lexicon/runtime.acquireLease";
+import type { MainValue as LeaseValue } from "@rat-king/lexicon/runtime.lease";
+import * as Release from "@rat-king/lexicon/runtime.releaseLease";
 import { XrpcFailure } from "@rat-king/lexicon/xrpc-failure";
-import { Clock, Effect, Layer, Result, Schedule, Schema } from "effect";
+import {
+  Clock,
+  Context,
+  DateTime,
+  Effect,
+  Layer,
+  Result,
+  Schedule,
+  Schema,
+} from "effect";
 import { FetchHttpClient } from "effect/http";
 import { build } from "esbuild";
 import * as fc from "fast-check";
@@ -34,9 +47,8 @@ import {
 import { transportLayer } from "../cli/client.ts";
 import { importSigning } from "../cli/identity.ts";
 import type { IdentityValue } from "../cli/identity.ts";
-import { lease, open, send, tid } from "../cli/operations.ts";
+import { open, send, tid } from "../cli/operations.ts";
 import { DidResolver, staticResolver } from "../src/auth.ts";
-import type { LeaseValue } from "../src/store.ts";
 import { generateIdentities, readSuiteIdentities } from "./suite-identities.ts";
 import type { SuiteIdentities } from "./suite-identities.ts";
 
@@ -339,14 +351,37 @@ const messageCommand = Effect.fn("Suite.messageCommand")(
 
       case "lease": {
         real.staleLease = real.currentLease;
-        real.currentLease = yield* lease({
-          leaseId:
-            real.currentLease === undefined
-              ? yield* nextTid
-              : real.currentLease.leaseId,
-          message: admitted.receipt.message,
-          ttl: 60_000,
-        }).pipe(Effect.provide(recipientLayer));
+
+        if (real.currentLease !== undefined) {
+          yield* real.recipient.releaseLease(
+            yield* Schema.decodeUnknownEffect(Release.Input)({
+              did: real.identities.recipient.did,
+              generation: real.currentLease.generation,
+              leaseId: real.currentLease.leaseId,
+            })
+          );
+        }
+
+        real.currentLease = (yield* real.recipient.acquireLease(
+          yield* Schema.decodeUnknownEffect(Acquire.Input)({
+            did: real.identities.recipient.did,
+            expiresAt: DateTime.formatIso(
+              DateTime.makeUnsafe((yield* Clock.currentTimeMillis) + 60_000)
+            ),
+            harness: {
+              $type: "sh.mschf.ratking.runtime.lease#pi",
+              sessionId: "target-suite",
+            },
+          })
+        )).lease;
+        yield* real.recipient.deliver(
+          yield* Schema.decodeUnknownEffect(Deliver.Input)({
+            generation: real.currentLease.generation,
+            leaseId: real.currentLease.leaseId,
+            message: admitted.receipt.message,
+            recipientDid: real.identities.recipient.did,
+          })
+        );
 
         if (real.staleLease) {
           expect(real.currentLease.generation).toBeGreaterThan(
@@ -674,6 +709,19 @@ export const targetProof = Effect.fn("Suite.targetProof")(function* targetProof(
               [...required.map((kind) => new Command(kind)), ...generated]
             );
             expect(model.state).not.toBe("empty");
+
+            if (real.currentLease !== undefined) {
+              // oxlint-disable-next-line effect-tests/no-manual-effect-runtime-in-tests -- fast-check requires a Promise; the owning target suite uses it.live.
+              await Effect.runPromiseWith(Context.empty())(
+                real.recipient.releaseLease(
+                  Schema.decodeUnknownSync(Release.Input)({
+                    did: identities.recipient.did,
+                    generation: real.currentLease.generation,
+                    leaseId: real.currentLease.leaseId,
+                  })
+                )
+              );
+            }
           }
         ),
         { endOnFailure: true, numRuns }

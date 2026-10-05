@@ -7,6 +7,8 @@ export interface Bindings {
   readonly AUTH_TOKENS: DurableObjectNamespace<AuthTokens>;
   readonly SERVICE_DID: string;
   readonly DID_DOCUMENTS: string;
+  readonly LEASE_RESOLVERS?: string;
+  readonly OPERATOR_DIDS?: string;
   readonly HOSTED_AGENTS?: string;
   readonly AGENT?: {
     readonly getByName: (did: string) => { readonly wake: () => Promise<void> };
