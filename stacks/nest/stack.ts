@@ -1,9 +1,14 @@
 import { Stack, localState } from "alchemy";
 import * as Output from "alchemy/Output";
-import { Config, Effect, FileSystem, Layer, Path } from "effect";
+import { Config, Effect, FileSystem, Layer, Path, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 
-import { hostedBindings, hostedVars } from "../../apps/mailbox/src/bindings.ts";
+import { Documents } from "../../apps/mailbox/src/auth.ts";
+import {
+  bindings,
+  hostedBindings,
+  hostedVars,
+} from "../../apps/mailbox/src/bindings.ts";
 import {
   RuntimeFiles,
   RuntimeFilesProvider,
@@ -16,6 +21,7 @@ import {
   Deployment,
   DeploymentProvider,
 } from "../../packages/alchemy-nest/src/deployment.ts";
+import type { DeploymentProps } from "../../packages/alchemy-nest/src/deployment.ts";
 import { offlineLayer } from "../../packages/alchemy-nest/src/fake-shell.ts";
 import {
   Host,
@@ -32,6 +38,11 @@ import {
   layer as sshLayer,
 } from "../../packages/alchemy-nest/src/ssh.ts";
 import { startupLayer } from "../../packages/alchemy-nest/src/startup-contract.ts";
+import {
+  configuration,
+  stageName,
+  workerIPv4 as stageWorkerIPv4,
+} from "./config.ts";
 
 export const connection = Layer.unwrap(
   Effect.gen(function* connection() {
@@ -55,9 +66,14 @@ const startup = Layer.unwrap(
   Effect.gen(function* startup() {
     const hosts = yield* Host;
 
+    const stage = yield* stageName;
+
     return startupLayer(
-      (yield* hosts.node(yield* Config.String("RAT_KING_LIVE_NODE")))
-        .tailnetIPv4
+      stageWorkerIPv4(
+        stage,
+        yield* hosts.node(yield* Config.String("RAT_KING_LIVE_NODE"))
+      ),
+      stage === "pilot" ? "service" : "scope"
     );
   })
 ).pipe(Layer.provide(connection), Layer.orDie);
@@ -87,41 +103,23 @@ export const nest = Stack(
       .node(yield* Config.String("RAT_KING_LIVE_NODE"))
       .pipe(Effect.orDie);
 
-    const mode = yield* Config.String("RAT_KING_AGENT_MODEL").pipe(
-      Config.withDefault("faux")
-    );
+    const {
+      cpuQuota,
+      gatewayUrl,
+      hostedDid,
+      memoryMax,
+      mode,
+      model,
+      pilot,
+      remoteAgent,
+      secretName,
+      sidecar,
+      sidecarBundle,
+      workerIPv4,
+      workerUrl,
+    } = yield* configuration(node);
 
-    if (mode !== "faux" && mode !== "gateway") {
-      return yield* Effect.die("Unknown hosted agent mode");
-    }
-
-    const sidecar = yield* Config.Boolean("RAT_KING_CLAUDE_SIDECAR").pipe(
-      Config.withDefault(false)
-    );
-
-    const model = yield* Config.String("MODEL_GATEWAY_MODEL").pipe(
-      Config.withDefault("gpt-6-sol")
-    );
-
-    if (
-      (model !== "gpt-6-sol" && model !== "claude-opus-5-5") ||
-      (model === "claude-opus-5-5" && !sidecar) ||
-      (mode === "faux" && sidecar)
-    ) {
-      return yield* Effect.die("Unsupported hosted model configuration");
-    }
-
-    const hostedDid = yield* Config.String("RAT_KING_REMOTE_DID");
-
-    const gatewayUrl =
-      mode === "gateway" ? yield* Config.String("MODEL_GATEWAY_BASE_URL") : "";
-
-    const slice = yield* ObjectStore.Slice(
-      node.home,
-      yield* Config.String("RAT_KING_SLICE_MEMORY_MAX").pipe(
-        Config.withDefault("4G")
-      )
-    );
+    const slice = yield* ObjectStore.Slice(node.home, memoryMax, cpuQuota);
 
     const bucket = yield* ObjectStore.Bucket("store", {
       host: node,
@@ -136,49 +134,39 @@ export const nest = Stack(
       bucket,
       host: node,
       purgeOnDelete: true,
+      workerIPv4,
     });
 
-    const remoteAgent = yield* Config.String("RAT_KING_REMOTE_AGENT");
-
-    const secretName =
-      mode === "gateway"
-        ? yield* Config.String("RAT_KING_MODEL_GATEWAY_SECRET_NAME")
-        : "";
-
-    const sidecarBundle = sidecar
-      ? yield* fs.readFileString(
-          yield* Config.String("RAT_KING_SIDECAR_OUTPUT")
-        )
-      : "";
-
-    const runtime = yield* RuntimeFiles(
-      "agent-runtime-files",
-      Output.all(cells.unit.sha256).pipe(
-        Output.map(
-          ([ready]) =>
-            ({
-              agent: remoteAgent,
-              did: hostedDid,
-              gatewayUrl,
-              home: node.home,
-              mode,
-              ready,
-              secretName,
-              sidecar,
-              sidecarBundle,
-            }) satisfies RuntimeFilesProps
-        )
-      )
-    );
+    const runtime = pilot
+      ? undefined
+      : yield* RuntimeFiles(
+          "agent-runtime-files",
+          Output.all(cells.unit.sha256).pipe(
+            Output.map(
+              ([ready]) =>
+                ({
+                  agent: remoteAgent,
+                  did: hostedDid,
+                  gatewayUrl,
+                  home: node.home,
+                  mode,
+                  ready,
+                  secretName,
+                  sidecar,
+                  sidecarBundle,
+                }) satisfies RuntimeFilesProps
+            )
+          )
+        );
 
     const sidecarReady = sidecar
       ? (yield* SystemdUnit(
           "claude-sidecar",
-          runtime.sha256.pipe(
+          (runtime?.sha256 ?? cells.unit.sha256).pipe(
             Output.map((ready) => sidecarUnit(node.home, ready))
           )
         )).sha256
-      : runtime.sha256;
+      : (runtime?.sha256 ?? cells.unit.sha256);
 
     const documents = yield* fs.readFileString(
       yield* Config.String("RAT_KING_DOCUMENTS")
@@ -188,22 +176,60 @@ export const nest = Stack(
     const commit = yield* Config.String("RAT_KING_COMMIT");
     const serviceDid = yield* Config.String("RAT_KING_SERVICE_DID");
 
-    const vars = hostedVars({
-      documents,
-      gatewayModel: model,
-      gatewayUrl,
-      hostedDid,
-      model: mode,
-      serviceDid,
-      sidecar,
-    });
+    const vars = pilot
+      ? { DID_DOCUMENTS: documents, SERVICE_DID: serviceDid }
+      : hostedVars({
+          documents,
+          gatewayModel: model,
+          gatewayUrl,
+          hostedDid,
+          model: mode,
+          serviceDid,
+          sidecar,
+        });
+
+    const operators = yield* Config.schema(
+      Schema.fromJsonString(Schema.Array(Schema.NonEmptyString)),
+      "RAT_KING_OPERATOR_DIDS"
+    ).pipe(Config.withDefault([]));
+
+    const resolvers = yield* Config.schema(
+      Schema.fromJsonString(Schema.Array(Schema.NonEmptyString)),
+      "RAT_KING_LEASE_RESOLVERS"
+    ).pipe(Config.withDefault([]));
+
+    if (pilot) {
+      const publicDocuments = yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(Documents)
+      )(documents);
+
+      if (
+        operators.length === 0 ||
+        operators.some(
+          (did) => !publicDocuments.some((document) => document.id === did)
+        )
+      ) {
+        return yield* Effect.die(
+          "Pilot requires static public documents for every operator DID"
+        );
+      }
+    }
+
+    if (pilot || operators.length > 0 || resolvers.length > 0) {
+      Object.assign(vars, {
+        LEASE_RESOLVERS: JSON.stringify(resolvers),
+        OPERATOR_DIDS: JSON.stringify(operators),
+      });
+    }
 
     const prepared = yield* prepareDeployment(
       path.resolve(
         import.meta.dirname,
-        "../../apps/mailbox/src/hosted-worker.ts"
+        pilot
+          ? "../../apps/mailbox/src/worker.ts"
+          : "../../apps/mailbox/src/hosted-worker.ts"
       ),
-      hostedBindings,
+      pilot ? bindings : hostedBindings,
       {
         commit,
         vars,
@@ -226,7 +252,7 @@ export const nest = Stack(
     });
 
     yield* RemoteFile("mailbox-cli-environment", {
-      content: `export RAT_KING_DOCUMENTS=${shellQuote(`${node.home}/.config/rat-king/proof.documents.json`)}\nexport RAT_KING_ENDPOINT=${shellQuote(`http://${node.tailnetIPv4}:18787`)}\nexport RAT_KING_SERVICE_DID=${shellQuote(serviceDid)}\n`,
+      content: `export RAT_KING_DOCUMENTS=${shellQuote(`${node.home}/.config/rat-king/proof.documents.json`)}\nexport RAT_KING_ENDPOINT=${shellQuote(workerUrl)}\nexport RAT_KING_SERVICE_DID=${shellQuote(serviceDid)}\n`,
       mode: 0o600,
       path: Output.interpolate`${bucket.configuration}/proof.env`,
     });
@@ -239,18 +265,25 @@ export const nest = Stack(
         bucket.configuration,
         cli.sha256,
         cells.unit.sha256,
-        runtime.bindings,
+        runtime?.bindings ?? cells.unit.sha256.pipe(Output.map(() => "")),
         sidecarReady
       ).pipe(
-        Output.map((values) => ({
-          ...prepared,
-          binary: `${node.home}/.local/share/rat-king/bin/celld`,
-          bindingsFile: values[5],
-          directory: `${values[2]}/mailbox-deployment`,
-          environmentFile: `${values[2]}/celld.env`,
-          internalUrl: values[1],
-          workerUrl: values[0],
-        }))
+        Output.map((values) => {
+          const props: DeploymentProps = {
+            ...prepared,
+            binary: `${node.home}/.local/share/rat-king/bin/celld`,
+            directory: `${values[2]}/mailbox-deployment`,
+            environmentFile: `${values[2]}/celld.env`,
+            internalUrl: values[1],
+            workerUrl: values[0],
+          };
+
+          if (!pilot) {
+            return { ...props, bindingsFile: values[5] };
+          }
+
+          return props;
+        })
       )
     );
 

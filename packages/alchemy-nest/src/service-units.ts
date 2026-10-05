@@ -4,7 +4,11 @@ import type { UnitProps } from "./systemd.ts";
 const quote = (value: string): string =>
   `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%").replaceAll("$", "$$")}"`;
 
-export const sliceUnit = (home: string, memoryMax = "4G"): UnitProps => ({
+export const sliceUnit = (
+  home: string,
+  memoryMax = "4G",
+  cpuQuota = "300%"
+): UnitProps => ({
   home,
   name: "rat-king.slice",
   scope: "user",
@@ -13,7 +17,7 @@ export const sliceUnit = (home: string, memoryMax = "4G"): UnitProps => ({
       lines: [
         ["MemoryMax", memoryMax],
         ["MemorySwapMax", "0"],
-        ["CPUQuota", "300%"],
+        ["CPUQuota", cpuQuota],
         ["TasksMax", "2048"],
       ],
       name: "Slice",
@@ -92,6 +96,7 @@ export const storeUnit = (input: {
 
 export const nodeUnit = (input: {
   readonly host: Node;
+  readonly workerIPv4?: string;
   readonly binary: string;
   readonly data: string;
   readonly environment: string;
@@ -115,7 +120,7 @@ export const nodeUnit = (input: {
       lines: [
         [
           "ExecStart",
-          `${quote(input.binary)} --listen ${input.host.tailnetIPv4}:18787 --internal-listen 127.0.0.1:18788`,
+          `${quote(input.binary)} --listen ${input.workerIPv4 ?? input.host.tailnetIPv4}:18787 --internal-listen 127.0.0.1:18788`,
         ],
         ["EnvironmentFile", input.environment.replaceAll("%", "%%")],
         ["WorkingDirectory", input.data.replaceAll("%", "%%")],

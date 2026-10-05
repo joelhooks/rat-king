@@ -22,8 +22,10 @@ import {
 import { HostShell, must } from "../../packages/alchemy-nest/src/host-shell.ts";
 import { Host } from "../../packages/alchemy-nest/src/host.ts";
 import { listenerProbe } from "../../packages/alchemy-nest/src/probes.ts";
+import { stopUnits } from "../../packages/alchemy-nest/src/startup-contract.ts";
 import { deleteDeclaredUnit } from "../../packages/alchemy-nest/src/systemd.ts";
 import { removeStoreSockets } from "../../packages/alchemy-nest/src/unit-cleanup.ts";
+import { stageName, workerIPv4 } from "./config.ts";
 import { connection, nest } from "./stack.ts";
 
 export const claudeMtimeScript = String.raw`
@@ -34,6 +36,7 @@ print(json.dumps({path: os.lstat(path).st_mtime_ns if os.path.lexists(path) else
 `;
 
 export type Action =
+  | "stop"
   | "prepare"
   | "plan"
   | "deploy"
@@ -45,6 +48,21 @@ export type Action =
 
 export const run = (action: Action) =>
   Effect.gen(function* runNestAction() {
+    const stage = yield* stageName;
+
+    if (action === "stop") {
+      yield* must(yield* HostShell, [
+        "systemctl",
+        "--user",
+        "stop",
+        "rat-king-celld.service",
+        "rat-king-seaweedfs.service",
+      ]);
+      yield* Effect.log("MAILBOX_STOPPED");
+
+      return yield* Effect.void;
+    }
+
     if (action === "recover-delete") {
       const shell = yield* HostShell;
       const hosts = yield* Host;
@@ -109,6 +127,18 @@ export const run = (action: Action) =>
         path: cliPath,
       });
 
+      if (stage === "pilot") {
+        if (!(yield* fs.exists(yield* Config.String("RAT_KING_DOCUMENTS")))) {
+          return yield* refuse(
+            "Pilot public operator documents must exist before prepare"
+          );
+        }
+
+        yield* Effect.log("PILOT_PREPARED");
+
+        return yield* Effect.void;
+      }
+
       const remote = yield* must(shell, [
         "node",
         cliPath,
@@ -157,16 +187,24 @@ export const run = (action: Action) =>
       );
 
       yield* Effect.log(
-        yield* listenerProbe(shell, host.tailnetIPv4, true, sidecar).pipe(
+        yield* listenerProbe(
+          shell,
+          workerIPv4(stage, host),
+          true,
+          sidecar
+        ).pipe(
           Effect.onError(() =>
-            must(shell, [
-              "systemctl",
-              "--user",
-              "stop",
+            stopUnits(shell, [
               "rat-king-celld.service",
               "rat-king-seaweedfs.service",
               "rat-king-claude-sidecar.service",
-            ]).pipe(Effect.orDie)
+            ]).pipe(
+              Effect.matchEffect({
+                onFailure: (error) =>
+                  Effect.logError("LISTENER_CLEANUP_FAILED", error),
+                onSuccess: () => Effect.void,
+              })
+            )
           )
         )
       );
@@ -211,7 +249,7 @@ export const run = (action: Action) =>
 
     if (action === "destroy-plan") {
       const plan = yield* evalStack(nest, (stack) => Plan.destroy(stack), {
-        stage: "proof",
+        stage,
       });
 
       yield* Effect.log(JSON.stringify(Plan.describePlan(plan)));
@@ -235,7 +273,7 @@ export const run = (action: Action) =>
         path: `${host.home}/.config/rat-king/agents`,
         purgeRoot: `${host.home}/.config/rat-king`,
       });
-      yield* destroy({ stack: nest, stage: "proof" });
+      yield* destroy({ stack: nest, stage });
       yield* Effect.log("MAILBOX_DESTROYED");
 
       return yield* Effect.void;
@@ -243,7 +281,7 @@ export const run = (action: Action) =>
 
     if (action === "plan") {
       const plan = yield* evalStack(nest, (stack) => Plan.make(stack), {
-        stage: "proof",
+        stage,
       }).pipe(adopt(true));
 
       const summary = Plan.describePlan(plan);
@@ -280,7 +318,7 @@ export const run = (action: Action) =>
       return yield* refuse("Prepare must record Claude mtimes before deploy");
     }
 
-    yield* deploy({ stack: nest, stage: "proof" }).pipe(adopt(true));
+    yield* deploy({ stack: nest, stage }).pipe(adopt(true));
     const shell = yield* HostShell;
 
     const host = yield* (yield* Host).node(
@@ -291,16 +329,19 @@ export const run = (action: Action) =>
       Config.withDefault(false)
     );
 
-    yield* listenerProbe(shell, host.tailnetIPv4, true, sidecar).pipe(
+    yield* listenerProbe(shell, workerIPv4(stage, host), true, sidecar).pipe(
       Effect.onError(() =>
-        must(shell, [
-          "systemctl",
-          "--user",
-          "stop",
+        stopUnits(shell, [
           "rat-king-celld.service",
           "rat-king-seaweedfs.service",
           "rat-king-claude-sidecar.service",
-        ]).pipe(Effect.orDie)
+        ]).pipe(
+          Effect.matchEffect({
+            onFailure: (error) =>
+              Effect.logError("LISTENER_CLEANUP_FAILED", error),
+            onSuccess: () => Effect.void,
+          })
+        )
       )
     );
     yield* Effect.log("MAILBOX_DEPLOYED");

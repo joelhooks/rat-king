@@ -2,9 +2,10 @@
 
 This program deploys the mailbox and a hosted agent Durable Object on an inventory-selected host. It composes the user slice, object-store bucket, celld node, CLI and generated mailbox deployment. The node startup guard seeds a deployment pointer before opening listeners. Deployment then replaces that pointer, reloads the internal listener and checks the expected mailbox version and commit through the Worker listener.
 
-Run `node stacks/nest/cli.ts prepare|plan|deploy|listeners|destroy-plan|destroy|teardown-probe` with private inputs:
+Run `node stacks/nest/cli.ts prepare|plan|deploy|listeners|stop|destroy-plan|destroy|teardown-probe` with private inputs:
 
 - `RATS_NEST_INSTANCE`, `RAT_KING_LIVE_NODE`, `RAT_KING_STATE_DIR`
+- `RAT_KING_STAGE=proof|pilot` (`proof` is the default)
 - `RAT_KING_LOCAL_AGENT`, `RAT_KING_LOCAL_DID`
 - `RAT_KING_REMOTE_AGENT`, `RAT_KING_REMOTE_DID`
 - `RAT_KING_SERVICE_DID`, `RAT_KING_DOCUMENTS`, `RAT_KING_CLI_OUTPUT`
@@ -17,6 +18,40 @@ Build the CLI first using `apps/mailbox/cli/build.ts`. Preparation installs it a
 For an existing P3 deployment, import its resource-state rows into the private `nest/proof` state namespace **before** evaluating the stack. Preserve resource FQNs, instance IDs and the random credential rows. Keep the old state as recovery evidence, but stop using it to drive the resources. The first plan must show the existing resources unchanged, not replacement or destruction. Do not regenerate the bucket credentials to adopt a running store.
 
 The launcher refuses state inside the public repository, including through a symlink. The plan refuses delete and replace actions. For an explicitly approved teardown, run `destroy-plan`, inspect the resource list, then `destroy` and `teardown-probe`. Destroy drains the bucket before stopping its server, purges owned data children, removes deployment files and the explicitly owned provisioned remote agents directory, and removes empty roots. Purge refuses symlinks and paths outside inventory-owned roots. The probe is read-only and prints only pass/fail labels. A failed probe means stop, report leftovers and retain state; never hand-clean the host. Local operator keys and state retention remain the operator’s responsibility.
+
+## Loopback-only pilot
+
+`RAT_KING_STAGE=pilot` selects a separate `nest/pilot` Alchemy namespace. Give it a fresh private state directory outside the repository and its own isolated Linux VM. Never select an existing proof host for the pilot. The pinned release assets require Linux x86_64; on an ARM host the VM uses amd64 emulation. Install Node 24.18.0 in the VM before preparation. Create the missing user configuration parents (`~/.config`, `~/.config/systemd`, `~/.config/systemd/user`) at mode 700 before deployment; fresh VMs do not have them. Enable lingering for the VM user only so user units return after a VM restart.
+
+OrbStack pilot machines reject transient user scopes with `Inappropriate ioctl for device`. Pilot bootstrap probe jobs therefore use explicit service mode: `systemd-run --user --wait --pipe --collect` with a unique owned service name, the same slice, 64M memory, no swap, 10% CPU, 64 tasks and nice priority 10. The service checks its applied systemd properties before executing the probe; an unreadable or mismatched cap, nonzero exit or timeout fails. Output bounds and credential redaction remain unchanged. Other stages and hosts retain the byte-identical default scope command.
+
+Failed-start cleanup treats a stop failure as harmless only after that exact unit reports `LoadState=not-found`. Other stop failures remain failures. Cleanup failures are logged without replacing the original startup error.
+
+The pilot deploys only the mailbox Worker, Mailbox and AuthTokens Durable Objects. It declares no hosted agent, runtime identity files, sidecar or gateway. It refuses gateway mode or a sidecar. The pilot stage sets every core listener and the generated CLI endpoint to `127.0.0.1`, independently of the inventory node address. Proof retains the inventory tailnet bind and endpoint. Loopback is a stage property, not private inventory data.
+
+For example, an invented private node can use `ssh: "mailbox-example@orb"`, `home: "/home/example"`, `dataRoot: "/home/example/mailbox-data"` and `tailnetIPv4: "203.0.113.10"`. Use the VM\'s actual address for this required compatibility field; pilot does not use it for listening. Keep the inventory mode 600. VM creation might use `orb create --arch amd64 --cpus 2 --memory 2G --disk 16G --isolated ubuntu:noble mailbox-example`. This is an example, not deployment authority.
+
+Additional stage inputs:
+
+- `RAT_KING_OPERATOR_DIDS='["did:web:operator.example.invalid"]'`
+- `RAT_KING_LEASE_RESOLVERS='[]'` until the owner supplies resolver DIDs
+- `RAT_KING_DOCUMENTS` contains the operator's public DID document, never its private keys
+- `RAT_KING_AGENT_MODEL=faux`, `RAT_KING_CLAUDE_SIDECAR=false`
+- `RAT_KING_SLICE_MEMORY_MAX=1536M`; pilot slice CPUQuota is 150%, below a 2 CPU / 2 GB VM's limits
+
+`prepare` installs the built CLI and records the VM user's Claude mtimes. It requires pre-existing public documents but does not provision hosted or local proof identities in pilot mode. Mint the operator with the CLI's key code, pipe its JSON into the credential daemon and delete temporary mode-600 key files. CLI custody and provisioning follow the CLI README.
+
+Before deployment, prove that loopback VM ports forward only to host loopback. Inspect OrbStack's host listeners with `lsof -nP -iTCP -sTCP:LISTEN`, and test host LAN, tailnet, VM bridge and VM DNS addresses from another machine. Stop if any answers. Do not change global OrbStack settings or add firewall rules. After deployment, require exact commit/version readback, a no-change plan, the listener gate, encrypted delivery and a VM restart with persisted messages. An offline plan proves none of those live behaviors.
+
+Crypto remains **unreviewed**. This pilot is for the operator's own agents, not public or customer traffic. VM restart survival is not host reboot survival: when OrbStack's `app.start_at_login` is false, open OrbStack after a host reboot before expecting the VM back. Do not change login settings as part of the pilot.
+
+With the same private environment and stage selected:
+
+- **Stop:** `node stacks/nest/cli.ts stop` stops the mailbox user units without deleting messages.
+- **Destroy:** first run `node stacks/nest/cli.ts destroy-plan` and inspect the owned resource list. After separate teardown approval, run `node stacks/nest/cli.ts destroy && node stacks/nest/cli.ts teardown-probe`. Retain state and report any failed probe.
+- **Delete the example VM:** `orb delete mailbox-example`, only after stage destruction and a passing teardown probe. This is a separate irreversible action.
+
+Rollback redeploys the previous commit with the same stage inputs, or stops the stage. It does not restore data. A stage namespace isolates Alchemy state, not Linux service names; never run proof and pilot against the same VM/user.
 
 ## Hosted agent and optional Claude sidecar
 
