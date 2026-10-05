@@ -9,7 +9,7 @@ import { sealed, senderDid } from "../../../packages/envelope/test/helpers.ts";
 import { staticResolver } from "../src/auth.ts";
 import { Caller, handlersLayer } from "../src/mailbox.ts";
 import { TerminalDelivery, terminalLayer } from "../src/terminal.ts";
-import { documents, testStore } from "./helpers.ts";
+import { documents, testStore, unleasedSender } from "./helpers.ts";
 
 it.effect(
   "terminal receipts are durable, cannot revive, and expiry is sender-controlled",
@@ -29,6 +29,7 @@ it.effect(
       }).pipe(
         Effect.provide(
           handlersLayer.pipe(
+            Layer.provide(unleasedSender),
             Layer.provide(storage.layer),
             Layer.provide(staticResolver(docs)),
             Layer.provide(Layer.succeed(Caller, { did: senderDid }))

@@ -1,30 +1,39 @@
+import * as PutDocument from "@rat-king/lexicon/admin.putDidDocument";
+import * as Defs from "@rat-king/lexicon/defs";
 /* oxlint-disable promise/prefer-await-to-callbacks, typescript/promise-function-async -- Effect adapters require lazy Promise thunks, not callback-style control flow. */
 import { MailboxServer, serverLayer } from "@rat-king/lexicon/mailbox-server";
 import * as Ack from "@rat-king/lexicon/mailbox.ack";
+import * as Deliver from "@rat-king/lexicon/mailbox.deliver";
 import * as List from "@rat-king/lexicon/mailbox.list";
 import * as Send from "@rat-king/lexicon/mailbox.send";
+import * as Subscribe from "@rat-king/lexicon/mailbox.subscribe";
+import * as Runtime from "@rat-king/lexicon/runtime";
+import * as Acquire from "@rat-king/lexicon/runtime.acquireLease";
+import * as Release from "@rat-king/lexicon/runtime.releaseLease";
+import * as Renew from "@rat-king/lexicon/runtime.renewLease";
+import * as Resolve from "@rat-king/lexicon/runtime.resolveLease";
 import type { Request as XrpcRequest } from "@rat-king/lexicon/transport";
 import type { XrpcFailure } from "@rat-king/lexicon/xrpc-failure";
 import { DurableObject } from "cloudflare:workers";
 import { Clock, Effect, Layer, Schema } from "effect";
 
-import {
-  authenticate,
-  Documents,
-  ReplayAuthority,
-  staticResolver,
-} from "./auth.ts";
+import { authenticate, ReplayAuthority } from "./auth.ts";
 import type { Bindings } from "./bindings.ts";
+import { documentsLayer, didAllowlist } from "./documents.ts";
 import { failure } from "./failure.ts";
+import { validLease } from "./lease.ts";
 import {
   Caller,
-  handlersLayer,
+  mailboxHandlers,
+  deliverMessage,
   LeaseAuthority,
   leaseLayer,
 } from "./mailbox.ts";
-import { proofLeasePath, ProofLease } from "./proof-lease.ts";
+import { SenderFence } from "./sender-fence.ts";
+import { SocketAttachment, socketStep, socketCodes } from "./socket.ts";
 import { sqliteStore } from "./sqlite.ts";
-import type { LeaseValue } from "./store.ts";
+import { MailboxStore } from "./store.ts";
+import type { LeaseValue, Event } from "./store.ts";
 import { TerminalDelivery, terminalLayer } from "./terminal.ts";
 
 declare const __BUNDLE_VERSION__: string;
@@ -36,15 +45,37 @@ export const bundle = {
   version: __BUNDLE_VERSION__,
 };
 
-const documentsLayer = (env: Bindings) =>
-  staticResolver(
-    Schema.decodeUnknownSync(Documents)(JSON.parse(env.DID_DOCUMENTS))
-  );
-
 const errorResponse = (error: XrpcFailure) =>
   Response.json(
     { error: error.error, message: error.message },
     { status: error.status }
+  );
+
+const replayLayer = (env: Bindings) =>
+  Layer.succeed(
+    ReplayAuthority,
+    ReplayAuthority.of({
+      consume: Effect.fn("AuthTokens.consume")(function* consume(claims, now) {
+        const accepted = yield* Effect.tryPromise({
+          catch: () => failure("MailboxUnavailable", 503),
+          try: () =>
+            env.AUTH_TOKENS.getByName(env.SERVICE_DID).consume(
+              claims.iss,
+              claims.jti,
+              claims.exp,
+              now
+            ),
+        });
+
+        if (!accepted) {
+          return yield* Effect.fail(
+            failure("AuthRequired", 401, "Reused service token")
+          );
+        }
+
+        return yield* Effect.void;
+      }),
+    })
   );
 
 export class Mailbox extends DurableObject<Bindings> {
@@ -65,7 +96,10 @@ export class Mailbox extends DurableObject<Bindings> {
         exec: (query, ...values) => ctx.storage.sql.exec(query, ...values),
         transaction: (operation) => ctx.storage.transactionSync(operation),
       },
-      recipient
+      recipient,
+      (events, lease) => {
+        this.committed(events, lease);
+      }
     );
   }
   recordWake(sender: string, tid: string, outcome: "accepted" | "unavailable") {
@@ -86,7 +120,34 @@ export class Mailbox extends DurableObject<Bindings> {
   }
 
   route(request: XrpcRequest, issuer: string) {
-    const layer = handlersLayer.pipe(
+    const { env } = this;
+
+    const layer = mailboxHandlers({
+      operators: didAllowlist(this.env.OPERATOR_DIDS),
+      resolvers: didAllowlist(this.env.LEASE_RESOLVERS),
+      staticDocuments: Schema.decodeSync(
+        Schema.fromJsonString(Schema.Array(Defs.DidDocument))
+      )(this.env.DID_DOCUMENTS),
+    }).pipe(
+      Layer.provide(
+        Layer.succeed(SenderFence, {
+          check: Effect.fn("SenderFence.check")(function* check(
+            did: string,
+            fence: { readonly leaseId?: string; readonly generation?: number }
+          ) {
+            const response = yield* Effect.tryPromise({
+              catch: () => failure("MailboxUnavailable", 503),
+              try: () => env.MAILBOX.getByName(did).checkSend(fence),
+            });
+
+            if (!response) {
+              return yield* Effect.fail(failure("LeaseMismatch", 409));
+            }
+
+            return yield* Effect.void;
+          }),
+        })
+      ),
       Layer.provide(this.store),
       Layer.provide(Layer.succeed(Caller, { did: issuer })),
       Layer.provide(documentsLayer(this.env))
@@ -116,42 +177,67 @@ export class Mailbox extends DurableObject<Bindings> {
         );
       }).pipe(
         Effect.map((response) => ({
-          body: JSON.stringify(response.body),
+          body: JSON.stringify(response.body) ?? "",
           status: response.status,
         })),
         Effect.provide(serverLayer.pipe(Layer.provide(layer)))
       )
     );
   }
-  acquireLease(leaseId: string, ttl: number): Promise<LeaseValue> {
-    return Effect.runPromise(
-      Effect.gen(function* step2() {
-        const leases = yield* LeaseAuthority;
+  acquireLease(json: string) {
+    const input = Schema.decodeSync(Schema.fromJsonString(Acquire.Input))(json);
 
-        return yield* leases.acquire(leaseId, ttl);
-      }).pipe(Effect.provide(leaseLayer.pipe(Layer.provide(this.store))))
+    return Effect.runPromise(
+      LeaseAuthority.use((leases) => leases.acquire(input)).pipe(
+        Effect.map((lease) => JSON.stringify(lease)),
+        Effect.provide(leaseLayer.pipe(Layer.provide(this.store)))
+      )
     );
   }
-  renewLease(
-    leaseId: string,
-    generation: number,
-    ttl: number
-  ): Promise<LeaseValue> {
-    return Effect.runPromise(
-      Effect.gen(function* step3() {
-        const leases = yield* LeaseAuthority;
+  renewLease(json: string) {
+    const input = Schema.decodeSync(Schema.fromJsonString(Renew.Input))(json);
 
-        return yield* leases.renew(leaseId, generation, ttl);
-      }).pipe(Effect.provide(leaseLayer.pipe(Layer.provide(this.store))))
+    return Effect.runPromise(
+      LeaseAuthority.use((leases) => leases.renew(input)).pipe(
+        Effect.map((lease) => JSON.stringify(lease)),
+        Effect.provide(leaseLayer.pipe(Layer.provide(this.store)))
+      )
     );
   }
-  releaseLease(leaseId: string, generation: number): Promise<void> {
-    return Effect.runPromise(
-      Effect.gen(function* step4() {
-        const leases = yield* LeaseAuthority;
+  releaseLease(json: string) {
+    const input = Schema.decodeSync(Schema.fromJsonString(Release.Input))(json);
 
-        return yield* leases.release(leaseId, generation);
-      }).pipe(Effect.provide(leaseLayer.pipe(Layer.provide(this.store))))
+    return Effect.runPromise(
+      LeaseAuthority.use((leases) => leases.release(input)).pipe(
+        Effect.provide(leaseLayer.pipe(Layer.provide(this.store)))
+      )
+    );
+  }
+  checkSend(fence: {
+    readonly leaseId?: string;
+    readonly generation?: number;
+  }) {
+    return Effect.runPromise(
+      LeaseAuthority.use((leases) => leases.checkSend(fence)).pipe(
+        Effect.as(true),
+        Effect.catchTag("XrpcFailure", (error) =>
+          error.error === "LeaseMismatch"
+            ? Effect.succeed(false)
+            : Effect.fail(error)
+        ),
+        Effect.provide(leaseLayer.pipe(Layer.provide(this.store)))
+      )
+    );
+  }
+  registeredDocument() {
+    return Effect.runPromise(
+      MailboxStore.use((store) =>
+        store.transaction((tx) => {
+          const document = tx.document();
+
+          return document === undefined ? undefined : JSON.stringify(document);
+        })
+      ).pipe(Effect.provide(this.store))
     );
   }
   settle(
@@ -173,43 +259,282 @@ export class Mailbox extends DurableObject<Bindings> {
 
   inject(sender: string, tid: string, leaseId: string, generation: number) {
     return Effect.runPromise(
-      Effect.gen(function* step5() {
-        const leases = yield* LeaseAuthority;
+      Effect.gen(function* inject() {
+        const store = yield* MailboxStore;
+        const now = yield* Clock.currentTimeMillis;
 
         return JSON.stringify(
-          yield* leases.inject(sender, tid, leaseId, generation)
+          yield* store.transaction((tx) => {
+            validLease(tx, { generation, leaseId }, now);
+
+            return deliverMessage(tx, sender, tid, now);
+          })
         );
-      }).pipe(Effect.provide(leaseLayer.pipe(Layer.provide(this.store))))
+      }).pipe(Effect.provide(this.store))
     );
   }
-}
 
-const replayLayer = (env: Bindings) =>
-  Layer.succeed(
-    ReplayAuthority,
-    ReplayAuthority.of({
-      consume: Effect.fn("AuthTokens.consume")(function* consume(claims, now) {
-        const accepted = yield* Effect.tryPromise({
-          catch: () => failure("MailboxUnavailable", 503),
-          try: () =>
-            env.AUTH_TOKENS.getByName(env.SERVICE_DID).consume(
-              claims.iss,
-              claims.jti,
-              claims.exp,
-              now
-            ),
-        });
+  private committed(events: readonly Event[], lease: LeaseValue | undefined) {
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = Schema.decodeUnknownSync(SocketAttachment)(
+        socket.deserializeAttachment()
+      );
 
-        if (!accepted) {
-          return yield* Effect.fail(
-            failure("AuthRequired", 401, "Reused service token")
+      if (attachment.state === "closed") {
+        continue;
+      }
+
+      if (
+        !lease ||
+        lease.expiresAt <= Effect.runSync(Clock.currentTimeMillis) ||
+        lease.leaseId !== attachment.leaseId ||
+        lease.generation !== attachment.generation
+      ) {
+        Mailbox.closeSocket(socket, socketCodes.stale, "Stale lease");
+        continue;
+      }
+
+      if (attachment.state === "authenticated") {
+        for (const event of events) {
+          socket.send(
+            JSON.stringify({
+              $type: "sh.mschf.ratking.mailbox.subscribe#notice",
+              seq: event.seq,
+            })
           );
         }
+      }
+    }
+  }
 
-        return yield* Effect.void;
-      }),
-    })
-  );
+  private static closeSocket(socket: WebSocket, code: number, reason: string) {
+    const attachment = Schema.decodeUnknownSync(SocketAttachment)(
+      socket.deserializeAttachment()
+    );
+
+    socket.serializeAttachment(socketStep(attachment, "close"));
+    socket.close(code, reason);
+  }
+
+  override fetch(request: Request) {
+    return Effect.runPromise(
+      Effect.gen(
+        function* upgrade(this: Mailbox) {
+          const url = new URL(request.url);
+
+          if (
+            request.method !== "GET" ||
+            request.headers.get("upgrade")?.toLowerCase() !== "websocket" ||
+            [...url.searchParams.keys()].some(
+              (key) => !["recipientDid", "leaseId", "generation"].includes(key)
+            )
+          ) {
+            return yield* Effect.fail(failure("InvalidRequest"));
+          }
+
+          const params = yield* Subscribe.decodeParams([
+            ...url.searchParams.entries(),
+          ]).pipe(Effect.mapError(() => failure("InvalidRequest")));
+
+          const store = yield* MailboxStore;
+          const now = yield* Clock.currentTimeMillis;
+          yield* store.transaction((tx) => {
+            if (params.recipientDid !== tx.recipient()) {
+              throw failure("Forbidden", 403);
+            }
+
+            validLease(tx, params, now);
+          });
+          const pair = new WebSocketPair();
+          const [server, client] = Object.values(pair);
+
+          if (!server || !client) {
+            return yield* Effect.fail(failure("MailboxUnavailable", 503));
+          }
+
+          this.ctx.acceptWebSocket(server);
+          server.serializeAttachment({
+            ...params,
+            deadline: now + 5000,
+            state: "awaitingAuth",
+          });
+
+          const alarm = yield* Effect.promise(() =>
+            this.ctx.storage.getAlarm()
+          );
+
+          if (alarm === null || alarm > now + 5000) {
+            yield* Effect.promise(() => this.ctx.storage.setAlarm(now + 5000));
+          }
+
+          return new Response(null, { status: 101, webSocket: client });
+        }.bind(this)
+      ).pipe(
+        Effect.provide(this.store),
+        Effect.catchTag("XrpcFailure", (error) =>
+          Effect.succeed(errorResponse(error))
+        )
+      )
+    );
+  }
+
+  override webSocketMessage(socket: WebSocket, message: string | ArrayBuffer) {
+    const attachment = Schema.decodeUnknownSync(SocketAttachment)(
+      socket.deserializeAttachment()
+    );
+
+    if (attachment.state !== "awaitingAuth") {
+      Mailbox.closeSocket(socket, socketCodes.auth, "Unexpected frame");
+
+      return Promise.resolve();
+    }
+
+    if (Effect.runSync(Clock.currentTimeMillis) >= attachment.deadline) {
+      Mailbox.closeSocket(
+        socket,
+        socketCodes.timeout,
+        "Authentication timeout"
+      );
+
+      return Promise.resolve();
+    }
+
+    socket.serializeAttachment(socketStep(attachment, "authenticate"));
+
+    return Effect.runPromise(
+      Effect.gen(
+        function* socketAuth(this: Mailbox) {
+          const auth = yield* Schema.decodeUnknownEffect(
+            Schema.fromJsonString(
+              Schema.Struct({
+                $type: Schema.Literal(
+                  "sh.mschf.ratking.mailbox.subscribe#auth"
+                ),
+                token: Subscribe.Auth.schema.fields.token,
+              })
+            )
+          )(message);
+
+          const issuer = yield* authenticate({
+            audience: `${this.env.SERVICE_DID}#mailbox`,
+            authorization: `Bearer ${auth.token}`,
+            now: yield* Clock.currentTimeMillis,
+            nsid: Subscribe.Method.nsid,
+          }).pipe(
+            Effect.provide(
+              Layer.merge(documentsLayer(this.env), replayLayer(this.env))
+            )
+          );
+
+          if (issuer !== attachment.recipientDid) {
+            return yield* Effect.fail(failure("Forbidden", 403));
+          }
+
+          const store = yield* MailboxStore;
+          const now = yield* Clock.currentTimeMillis;
+          yield* store.transaction((tx) => {
+            validLease(tx, attachment, now);
+
+            const current = Schema.decodeUnknownSync(SocketAttachment)(
+              socket.deserializeAttachment()
+            );
+
+            if (current.state !== "authenticating") {
+              return;
+            }
+
+            if (now >= current.deadline) {
+              Mailbox.closeSocket(
+                socket,
+                socketCodes.timeout,
+                "Authentication timeout"
+              );
+
+              return;
+            }
+
+            socket.serializeAttachment(socketStep(current, "accept"));
+            socket.send(
+              JSON.stringify({
+                $type: "sh.mschf.ratking.mailbox.subscribe#notice",
+                seq: tx.watermark(),
+              })
+            );
+          });
+
+          return yield* Effect.void;
+        }.bind(this)
+      ).pipe(
+        Effect.provide(this.store),
+        Effect.catchTag("SchemaError", () =>
+          Effect.sync(() => {
+            Mailbox.closeSocket(
+              socket,
+              socketCodes.auth,
+              "Authentication refused"
+            );
+          })
+        ),
+        Effect.catchTag("XrpcFailure", (error) =>
+          Effect.sync(() => {
+            const code = Schema.is(
+              Schema.Struct({ error: Schema.Literal("LeaseMismatch") })
+            )(error)
+              ? socketCodes.stale
+              : socketCodes.auth;
+
+            Mailbox.closeSocket(socket, code, "Authentication refused");
+          })
+        )
+      )
+    );
+  }
+
+  override webSocketClose(socket: WebSocket) {
+    const attachment = Schema.decodeUnknownSync(SocketAttachment)(
+      socket.deserializeAttachment()
+    );
+
+    socket.serializeAttachment(socketStep(attachment, "close"));
+
+    return this.alarm();
+  }
+
+  override webSocketError(socket: WebSocket) {
+    Mailbox.closeSocket(socket, socketCodes.auth, "Socket error");
+
+    return this.alarm();
+  }
+
+  override alarm() {
+    let deadline = Number.POSITIVE_INFINITY;
+
+    for (const socket of this.ctx.getWebSockets()) {
+      const attachment = Schema.decodeUnknownSync(SocketAttachment)(
+        socket.deserializeAttachment()
+      );
+
+      if (
+        attachment.state === "awaitingAuth" ||
+        attachment.state === "authenticating"
+      ) {
+        if (Effect.runSync(Clock.currentTimeMillis) >= attachment.deadline) {
+          Mailbox.closeSocket(
+            socket,
+            socketCodes.timeout,
+            "Authentication timeout"
+          );
+        } else {
+          deadline = Math.min(deadline, attachment.deadline);
+        }
+      }
+    }
+
+    return Number.isFinite(deadline)
+      ? this.ctx.storage.setAlarm(deadline)
+      : Promise.resolve();
+  }
+}
 
 const scheduleWake = (
   context: Pick<ExecutionContext, "waitUntil">,
@@ -287,98 +612,78 @@ export const fetchRequest = (
       return Response.json(bundle);
     }
 
-    if (url.pathname === proofLeasePath) {
-      if (
-        request.method !== "POST" ||
-        request.headers.get("content-type")?.split(";")[0] !==
-          "application/json"
-      ) {
-        return yield* failure("InvalidRequest");
-      }
+    const nsid = url.pathname.slice("/xrpc/".length);
 
-      const issuer = yield* authenticate({
-        audience: `${env.SERVICE_DID}#mailbox`,
-        authorization: request.headers.get("authorization"),
-        now: yield* Clock.currentTimeMillis,
-        nsid: proofLeasePath,
-      }).pipe(
-        Effect.provide(Layer.merge(documentsLayer(env), replayLayer(env)))
-      );
+    if (url.pathname === Subscribe.Method.path) {
+      const params = yield* Subscribe.decodeParams([
+        ...url.searchParams.entries(),
+      ]).pipe(Effect.mapError(() => failure("InvalidRequest")));
 
-      const input = yield* Schema.decodeUnknownEffect(ProofLease)(
-        yield* Effect.tryPromise({
-          catch: () => failure("InvalidRequest"),
-          try: () => request.json(),
-        })
-      ).pipe(Effect.mapError(() => failure("InvalidRequest")));
-
-      const lease = yield* Effect.tryPromise({
+      return yield* Effect.tryPromise({
         catch: () => failure("MailboxUnavailable", 503),
-        try: () => {
-          const mailbox = env.MAILBOX.getByName(issuer);
-
-          return input.generation === undefined
-            ? mailbox.acquireLease(input.leaseId, input.ttl)
-            : mailbox.renewLease(input.leaseId, input.generation, input.ttl);
-        },
+        try: () => env.MAILBOX.getByName(params.recipientDid).fetch(request),
       });
-
-      if (input.message !== undefined) {
-        const { message } = input;
-        yield* Effect.tryPromise({
-          catch: () => failure("MailboxUnavailable", 503),
-          try: () =>
-            env.MAILBOX.getByName(issuer).inject(
-              message.senderDid,
-              message.messageId,
-              lease.leaseId,
-              lease.generation
-            ),
-        });
-      }
-
-      return Response.json(lease);
     }
 
-    const nsid = url.pathname.slice("/xrpc/".length);
+    const procedures = [
+      Send.Method,
+      Ack.Method,
+      Deliver.Method,
+      Acquire.Method,
+      Renew.Method,
+      Release.Method,
+      PutDocument.Method,
+    ];
 
     if (
       !url.pathname.startsWith("/xrpc/") ||
-      ![Send.Method.nsid, Ack.Method.nsid, List.Method.nsid].some(
-        (method) => method === nsid
+      ![...procedures, List.Method, Resolve.Method].some(
+        (method) => method.nsid === nsid
       )
     ) {
       return Response.json({ error: "InvalidRequest" }, { status: 404 });
     }
 
-    const now = yield* Clock.currentTimeMillis;
-
     const issuer = yield* authenticate({
       audience: `${env.SERVICE_DID}#mailbox`,
       authorization: request.headers.get("authorization"),
-      now,
+      now: yield* Clock.currentTimeMillis,
       nsid,
     }).pipe(Effect.provide(Layer.merge(documentsLayer(env), replayLayer(env))));
 
     let recipient: string;
     let transport: XrpcRequest;
 
-    if (nsid === List.Method.nsid) {
+    if (nsid === List.Method.nsid || nsid === Resolve.Method.nsid) {
       if (request.method !== "GET") {
         return yield* Effect.fail(failure("InvalidRequest"));
       }
 
-      const params = yield* List.decodeParams([
-        ...url.searchParams.entries(),
-      ]).pipe(Effect.mapError(() => failure("InvalidRequest")));
+      if (nsid === List.Method.nsid) {
+        const params = yield* List.decodeParams([
+          ...url.searchParams.entries(),
+        ]).pipe(Effect.mapError(() => failure("InvalidRequest")));
 
-      recipient = params.recipientDid;
-      transport = {
-        input: undefined,
-        method: "GET",
-        nsid,
-        params: yield* Schema.encodeEffect(List.Params)(params),
-      };
+        recipient = params.recipientDid;
+        transport = {
+          input: undefined,
+          method: "GET",
+          nsid,
+          params: yield* Schema.encodeEffect(List.Params)(params),
+        };
+      } else {
+        const params = yield* Resolve.decodeParams([
+          ...url.searchParams.entries(),
+        ]).pipe(Effect.mapError(() => failure("InvalidRequest")));
+
+        recipient = params.did;
+        transport = {
+          input: undefined,
+          method: "GET",
+          nsid,
+          params: yield* Schema.encodeEffect(Resolve.Params)(params),
+        };
+      }
     } else {
       if (
         request.method !== "POST" ||
@@ -393,31 +698,59 @@ export const fetchRequest = (
         try: () => request.json(),
       });
 
-      if (nsid === Send.Method.nsid) {
-        const decoded = yield* Schema.decodeUnknownEffect(Send.Input)(
-          input
-        ).pipe(Effect.mapError(() => failure("InvalidRequest")));
+      const destination = Effect.gen(function* destination() {
+        switch (nsid) {
+          case Send.Method.nsid: {
+            return (yield* Schema.decodeUnknownEffect(Send.Input)(input))
+              .envelope.aad.recipientDid;
+          }
 
-        recipient = decoded.envelope.aad.recipientDid;
-        transport = {
-          input: yield* Schema.encodeEffect(Send.Input)(decoded),
-          method: "POST",
-          nsid,
-          params: undefined,
-        };
-      } else {
-        const decoded = yield* Schema.decodeUnknownEffect(Ack.Input)(
-          input
-        ).pipe(Effect.mapError(() => failure("InvalidRequest")));
+          case Ack.Method.nsid: {
+            return (yield* Schema.decodeUnknownEffect(Ack.Input)(input))
+              .recipientDid;
+          }
 
-        recipient = decoded.recipientDid;
-        transport = {
-          input: yield* Schema.encodeEffect(Ack.Input)(decoded),
-          method: "POST",
-          nsid,
-          params: undefined,
-        };
-      }
+          case Deliver.Method.nsid: {
+            return (yield* Schema.decodeUnknownEffect(Deliver.Input)(input))
+              .recipientDid;
+          }
+
+          case Acquire.Method.nsid: {
+            return (yield* Schema.decodeUnknownEffect(Acquire.Input)(input))
+              .did;
+          }
+
+          case Renew.Method.nsid: {
+            return (yield* Schema.decodeUnknownEffect(Renew.Input)(input)).did;
+          }
+
+          case Release.Method.nsid: {
+            return (yield* Schema.decodeUnknownEffect(Release.Input)(input))
+              .did;
+          }
+
+          case PutDocument.Method.nsid: {
+            return (yield* Schema.decodeUnknownEffect(PutDocument.Input)(input))
+              .document.id;
+          }
+
+          default: {
+            return yield* Effect.fail(failure("InvalidRequest"));
+          }
+        }
+      });
+
+      recipient = yield* destination.pipe(
+        Effect.mapError(() => failure("InvalidRequest"))
+      );
+      transport = {
+        input: yield* Schema.decodeUnknownEffect(
+          Schema.toEncoded(Runtime.Data)
+        )(input),
+        method: "POST",
+        nsid,
+        params: undefined,
+      };
     }
 
     const response = yield* Effect.tryPromise({

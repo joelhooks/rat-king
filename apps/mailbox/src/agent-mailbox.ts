@@ -8,17 +8,15 @@ import * as Defs from "@rat-king/lexicon/defs";
 import * as Ack from "@rat-king/lexicon/mailbox.ack";
 import * as List from "@rat-king/lexicon/mailbox.list";
 import * as Send from "@rat-king/lexicon/mailbox.send";
-import { Clock, Effect, Schema } from "effect";
+import * as Acquire from "@rat-king/lexicon/runtime.acquireLease";
+import * as RuntimeLease from "@rat-king/lexicon/runtime.lease";
+import * as Release from "@rat-king/lexicon/runtime.releaseLease";
+import * as Renew from "@rat-king/lexicon/runtime.renewLease";
+import { Clock, DateTime, Effect, Schema } from "effect";
 
-import {
-  base64url,
-  DidResolver,
-  Documents,
-  serviceToken,
-  staticResolver,
-} from "./auth.ts";
+import { base64url, DidResolver, serviceToken } from "./auth.ts";
 import type { Bindings } from "./bindings.ts";
-import { tid } from "./tid.ts";
+import { documentsLayer } from "./documents.ts";
 import { fetchRequest } from "./worker.ts";
 
 export const resolveAgentKey =
@@ -29,11 +27,7 @@ export const resolveAgentKey =
 
       return yield* resolver.resolve(did, keyId, purpose);
     }).pipe(
-      Effect.provide(
-        staticResolver(
-          Schema.decodeUnknownSync(Documents)(JSON.parse(env.DID_DOCUMENTS))
-        )
-      ),
+      Effect.provide(documentsLayer(env)),
       Effect.mapError(
         () => new EnvelopeFailure({ reason: "Unauthorized agent envelope key" })
       )
@@ -51,33 +45,69 @@ const rpc = <A>(operation: string, run: () => Promise<A>) =>
     try: run,
   });
 
+const expiresAt = (now: number) =>
+  DateTime.formatIso(DateTime.makeUnsafe(now + 60_000));
+
 export const agentMailbox = (env: Bindings, did: string, signing: CryptoKey) =>
   Effect.gen(function* mailboxAdapter() {
     const stub = env.MAILBOX.getByName(did);
 
-    const leaseId = tid(
-      yield* Clock.currentTimeMillis,
-      crypto.getRandomValues(new Uint16Array(1))[0] ?? 0
-    );
+    const acquire = yield* Schema.decodeUnknownEffect(Acquire.Input)({
+      did,
+      expiresAt: expiresAt(yield* Clock.currentTimeMillis),
+      harness: {
+        $type: "sh.mschf.ratking.runtime.lease#other",
+        kind: "hosted",
+        sessionId: did,
+      },
+    });
 
     let lease = yield* Effect.acquireRelease(
-      rpc("lease.acquire", () => stub.acquireLease(leaseId, 60_000)),
+      rpc("lease.acquire", () =>
+        stub.acquireLease(JSON.stringify(acquire))
+      ).pipe(
+        Effect.flatMap(
+          Schema.decodeEffect(Schema.fromJsonString(RuntimeLease.Main))
+        )
+      ),
       (owned) =>
-        rpc("lease.release", () =>
-          stub.releaseLease(owned.leaseId, owned.generation)
-        ).pipe(Effect.orDie)
+        Schema.decodeUnknownEffect(Release.Input)({
+          did,
+          generation: owned.generation,
+          leaseId: owned.leaseId,
+        }).pipe(
+          Effect.flatMap((input) =>
+            rpc("lease.release", () => stub.releaseLease(JSON.stringify(input)))
+          ),
+          Effect.ignore
+        )
     );
 
-    const renew = () =>
-      rpc("lease.renew", () =>
-        stub.renewLease(lease.leaseId, lease.generation, 60_000)
-      ).pipe(
-        Effect.tap((next) =>
-          Effect.sync(() => {
-            lease = next;
+    const renew = Effect.fn("AgentMailbox.renew")(
+      function* renew() {
+        const input = yield* Schema.decodeUnknownEffect(Renew.Input)({
+          did,
+          expiresAt: expiresAt(yield* Clock.currentTimeMillis),
+          generation: lease.generation,
+          leaseId: lease.leaseId,
+        });
+
+        lease = yield* rpc("lease.renew", () =>
+          stub.renewLease(JSON.stringify(input))
+        ).pipe(
+          Effect.flatMap(
+            Schema.decodeEffect(Schema.fromJsonString(RuntimeLease.Main))
+          )
+        );
+      },
+      Effect.mapError(
+        () =>
+          new HarnessFailure({
+            operation: "lease.renew",
+            reason: "Cannot renew runtime lease",
           })
-        )
-      );
+      )
+    );
 
     const xrpc = Effect.fn("AgentMailbox.xrpc")(
       function* xrpc(
@@ -255,7 +285,14 @@ export const agentMailbox = (env: Bindings, did: string, signing: CryptoKey) =>
       ),
       send: Effect.fn("AgentMailbox.send")(
         function* send(envelope) {
-          const decoded = Send.Input.make({ envelope });
+          yield* renew();
+
+          const decoded = Send.Input.make({
+            envelope,
+            generation: lease.generation,
+            leaseId: lease.leaseId,
+          });
+
           yield* xrpc(
             Send.Method.nsid,
             yield* Schema.encodeEffect(Send.Input)(decoded)
@@ -270,4 +307,13 @@ export const agentMailbox = (env: Bindings, did: string, signing: CryptoKey) =>
         )
       ),
     } satisfies LoopMailbox);
-  });
+  }).pipe(
+    Effect.mapError((error) =>
+      Schema.is(HarnessFailure)(error)
+        ? error
+        : new HarnessFailure({
+            operation: "lease.acquire",
+            reason: "Runtime lease unavailable",
+          })
+    )
+  );
