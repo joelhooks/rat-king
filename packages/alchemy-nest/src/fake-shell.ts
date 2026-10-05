@@ -27,6 +27,7 @@ export const makeFakeShell = Effect.fn("HostShell.fake")(() =>
 
     const directories = new Map<string, number>([
       ["/home/example/.config/systemd/user", 0o755],
+      ["/home/example/.config/rat-king", 0o700],
       ["/srv/example", 0o755],
     ]);
 

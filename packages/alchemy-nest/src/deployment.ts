@@ -10,7 +10,7 @@ import {
   DeploymentError,
   GeneratedConfiguration,
 } from "./deployment-config.ts";
-import { AbsolutePath, digest, textDigest } from "./files.ts";
+import { AbsolutePath, deleteDirectory, digest, textDigest } from "./files.ts";
 import { HostShell, must } from "./host-shell.ts";
 import { shellQuote } from "./ssh.ts";
 
@@ -150,7 +150,28 @@ export const DeploymentProvider = () =>
       );
 
       return Deployment.Provider.of({
-        delete: () => Effect.void,
+        delete: Effect.fn("Celld.Deployment.delete")(function* remove({
+          output,
+        }) {
+          const root = shell.purgeRoots.find((path) =>
+            path.endsWith("/.config/rat-king")
+          );
+
+          if (
+            root === undefined ||
+            output.directory !== `${root}/mailbox-deployment`
+          ) {
+            return yield* new DeploymentError({
+              reason: "Deployment delete escapes owned configuration",
+            });
+          }
+
+          return yield* deleteDirectory(shell, {
+            mode: 0o700,
+            path: output.directory,
+            purgeRoot: root,
+          });
+        }),
         diff: Effect.fn("Celld.Deployment.diff")(function* diff({
           news,
           output,

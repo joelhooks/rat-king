@@ -13,7 +13,15 @@ const program = Effect.gen(function* launcher() {
   const path = yield* Path.Path;
 
   const action = yield* Schema.decodeUnknownEffect(
-    Schema.Literals(["prepare", "plan", "deploy", "listeners"])
+    Schema.Literals([
+      "prepare",
+      "plan",
+      "deploy",
+      "listeners",
+      "destroy-plan",
+      "destroy",
+      "teardown-probe",
+    ])
   )(process.argv[2]);
 
   const directory = path.resolve(yield* Config.String("RAT_KING_STATE_DIR"));

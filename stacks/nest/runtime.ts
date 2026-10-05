@@ -3,6 +3,7 @@ import { adopt } from "alchemy/AdoptPolicy";
 import { AlchemyContextLive } from "alchemy/AlchemyContext";
 import { provideFreshArtifactStore } from "alchemy/Artifacts";
 import { deploy } from "alchemy/Deploy";
+import { destroy } from "alchemy/Destroy";
 import { layerNonInteractive } from "alchemy/Interaction";
 import * as Plan from "alchemy/Plan";
 import { evalStack } from "alchemy/Stack";
@@ -12,13 +13,23 @@ import { FetchHttpClient } from "effect/unstable/http";
 
 import { provision } from "../../apps/mailbox/cli/provision.ts";
 import { Documents } from "../../apps/mailbox/src/auth.ts";
-import { refuse } from "../../packages/alchemy-nest/src/files.ts";
+import {
+  deleteDirectory,
+  refuse,
+} from "../../packages/alchemy-nest/src/files.ts";
 import { HostShell, must } from "../../packages/alchemy-nest/src/host-shell.ts";
 import { Host } from "../../packages/alchemy-nest/src/host.ts";
 import { listenerProbe } from "../../packages/alchemy-nest/src/probes.ts";
 import { connection, nest } from "./stack.ts";
 
-export type Action = "prepare" | "plan" | "deploy" | "listeners";
+export type Action =
+  | "prepare"
+  | "plan"
+  | "deploy"
+  | "listeners"
+  | "destroy-plan"
+  | "destroy"
+  | "teardown-probe";
 
 export const run = (action: Action) =>
   Effect.gen(function* runNestAction() {
@@ -86,6 +97,70 @@ export const run = (action: Action) =>
       );
 
       yield* Effect.log(yield* listenerProbe(shell, host.tailnetIPv4, true));
+
+      return yield* Effect.void;
+    }
+
+    if (action === "teardown-probe") {
+      const fs = yield* FileSystem.FileSystem;
+      const shell = yield* HostShell;
+      const hosts = yield* Host;
+
+      const host = yield* hosts.node(
+        yield* Config.String("RAT_KING_LIVE_NODE")
+      );
+
+      const script = yield* fs.readFileString(
+        new URL("teardown-probe.py", import.meta.url).pathname
+      );
+
+      const result = yield* shell.exec([
+        "python3",
+        "-c",
+        script,
+        host.home,
+        host.dataRoot,
+      ]);
+
+      yield* Effect.log(result.stdout);
+
+      if (result.code !== 0) {
+        return yield* refuse(
+          "Teardown probe failed; retain state and report leftovers"
+        );
+      }
+
+      return yield* Effect.void;
+    }
+
+    if (action === "destroy-plan") {
+      const plan = yield* evalStack(nest, (stack) => Plan.destroy(stack), {
+        stage: "proof",
+      });
+
+      yield* Effect.log(JSON.stringify(Plan.describePlan(plan)));
+      yield* Effect.log(
+        "EXPLICIT_OWNED_DELETE: configuration/agents (provisioned proof keys)"
+      );
+
+      return yield* Effect.void;
+    }
+
+    if (action === "destroy") {
+      const shell = yield* HostShell;
+      const hosts = yield* Host;
+
+      const host = yield* hosts.node(
+        yield* Config.String("RAT_KING_LIVE_NODE")
+      );
+
+      yield* deleteDirectory(shell, {
+        mode: 0o700,
+        path: `${host.home}/.config/rat-king/agents`,
+        purgeRoot: `${host.home}/.config/rat-king`,
+      });
+      yield* destroy({ stack: nest, stage: "proof" });
+      yield* Effect.log("MAILBOX_DESTROYED");
 
       return yield* Effect.void;
     }
