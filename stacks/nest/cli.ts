@@ -21,6 +21,7 @@ const program = Effect.gen(function* launcher() {
       "destroy-plan",
       "destroy",
       "teardown-probe",
+      "recover-delete",
     ])
   )(process.argv[2]);
 

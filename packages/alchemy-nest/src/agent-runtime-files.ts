@@ -7,6 +7,7 @@ import { absent } from "./absent.ts";
 import { runtimeScript } from "./agent-runtime-script.ts";
 import { AbsolutePath, deleteDirectory, refuse, textDigest } from "./files.ts";
 import { HostShell, must } from "./host-shell.ts";
+import { deleteDeclaredUnit } from "./systemd.ts";
 import type { UnitProps } from "./systemd.ts";
 
 export const RuntimeFilesSchema = Schema.Struct({
@@ -157,6 +158,10 @@ export const RuntimeFilesProvider = () =>
           !shell.purgeRoots.includes(`${output.home}/.local/share/rat-king`)
         ) {
           return yield* refuse("Runtime delete escapes owned roots");
+        }
+
+        if (output.sidecar) {
+          yield* deleteDeclaredUnit(shell, sidecarUnit(output.home, ""));
         }
 
         for (const path of [

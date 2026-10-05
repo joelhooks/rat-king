@@ -26,10 +26,15 @@ import {
   validateUnit,
 } from "../src/systemd.ts";
 import type { UnitProps } from "../src/systemd.ts";
+import { wantsLinkScript } from "../src/unit-cleanup.ts";
 import { service } from "./fixtures.ts";
 
 const mutations = (calls: readonly Call[]) =>
   calls.flatMap((call) => {
+    if (call.operation === "exec" && call.argv[2] === wantsLinkScript) {
+      return [`wants-${call.argv[5]}`];
+    }
+
     if (call.operation === "exec" && call.argv[2] !== "show") {
       return [call.argv[2]];
     }
@@ -128,9 +133,11 @@ describe("user unit lifecycle", () => {
         expect(adopted.sha256).toBe(updated.sha256);
         yield* deleteUnit(fake.shell, adopted);
         expect(mutations(yield* fake.calls())).toEqual([
+          "wants-check",
           "stop",
           "disable",
           "remove",
+          "wants-remove",
           "daemon-reload",
         ]);
         expect(yield* readUnit(fake.shell, next)).toBeUndefined();

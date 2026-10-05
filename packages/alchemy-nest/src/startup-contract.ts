@@ -43,9 +43,10 @@ const assertStarted = Effect.fn("UnitStartup.assertStarted")(function* check(
   shell: Interface,
   publicIPv4: string,
   nodeExpected: boolean,
-  sidecarExpected: boolean
+  sidecarExpected: boolean,
+  attempts = 40
 ) {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     const assessment = assessListeners(
       yield* must(shell, ["ss", "-ltnp"]),
       publicIPv4,
@@ -109,12 +110,22 @@ export const startupLayer = (publicIPv4: string) =>
             const sidecarActive =
               (yield* active("rat-king-claude-sidecar.service")).code === 0;
 
-            yield* assertStarted(
+            const readiness = assertStarted(
               shell,
               publicIPv4,
               name !== "rat-king-seaweedfs.service" || nodeActive,
-              name === "rat-king-claude-sidecar.service" || sidecarActive
+              name === "rat-king-claude-sidecar.service" || sidecarActive,
+              name === "rat-king-seaweedfs.service" ? 120 : 40
             );
+
+            yield* name === "rat-king-seaweedfs.service"
+              ? readiness.pipe(
+                  Effect.timeoutOrElse({
+                    duration: "30 seconds",
+                    orElse: () => refuse("Weed readiness deadline exceeded."),
+                  })
+                )
+              : readiness;
           }).pipe(Effect.onError(() => stopBoth(shell).pipe(Effect.orDie)));
         },
         beforeStart: (name: string, home: string) => {

@@ -57,7 +57,7 @@ Startup checks intermediate resource stages, then the final deployment requires 
 - `127.0.0.1:18789` (sidecar)
 - inventory tailnet IPv4, port 18787 (celld Worker)
 
-The gate checks process, interface and port, including any extra listener owned by the sidecar PID. The sidecar's `node` or Linux `MainThread` label is accepted only when every listed PID equals the unit's `MainPID` and its `/proc/<pid>/exe` resolves to the approved `/usr/local/bin/node` target. A mismatch stops the core units and the active sidecar before returning failure. Faux mode expects the ten core listeners. The owner must reconcile this exact list and approve the guard before live startup.
+The gate checks process, interface and port, including any extra listener owned by the sidecar PID. The sidecar's `node` or Linux `MainThread` label is accepted only when every listed PID equals the unit's `MainPID` and its `/proc/<pid>/exe` resolves to the approved `/usr/local/bin/node` target. A mismatch stops the core units and the active sidecar before returning failure. Faux mode expects the ten core listeners. The owner must reconcile this exact list and approve the guard before live startup. Weed readiness has a bounded 30-second wait for missing listeners, checking every sample immediately for extras; this covers persisted-store Raft election before filer and S3 bind.
 
 ### Two model turns, one hosted DID
 
@@ -73,7 +73,11 @@ node "$RAT_KING_CLI_OUTPUT" open --as "$RAT_KING_LOCAL_AGENT" --file /path/to/pr
 
 Extract the reply event's `envelope` to a mode-600 private file for `open`. Keep endpoint, documents, service DID and keys in the CLI's private environment. Complete each model's reply and ack before changing configuration. A fallback requires destroy first, then a fresh faux configuration; it is not a hot mode switch.
 
-Destroy reverses the resource graph: deployment, sidecar unit, runtime custody/install, celld, storage and slice. It also removes the explicitly owned remote proof-key directory. The read-only teardown probe checks port 18789, the dedicated install's absence and unchanged user Claude mtimes, in addition to the original checks. Never hand-clean a leftover.
+Destroy reverses the resource graph: deployment, sidecar unit, runtime custody/install, celld, storage and slice. Runtime custody deletion also deletes the matching declared sidecar unit when an interrupted create left no completed unit state. Unit deletion disables the unit, removes its matching default-target wants link and file, then reloads the manager. Weed deletion removes only its two owned, non-listening S3 Unix sockets after stop. It also removes the explicitly owned remote proof-key directory. The read-only teardown probe checks port 18789, the dedicated install's absence and unchanged user Claude mtimes, in addition to the original checks. Never hand-clean a leftover.
+
+### Interrupted-delete recovery
+
+Only with explicit owner approval, `recover-delete` calls the same provider delete helper for the matching sidecar unit and cleans the two owned, non-listening S3 sockets. It never starts services, reads credentials or evaluates the deployment stack. Run the full `teardown-probe` afterwards. A changed unit, foreign wants link, active socket or non-socket path refuses cleanup; never hand-clean a leftover.
 
 ### Offline qualification
 

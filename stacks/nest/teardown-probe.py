@@ -45,12 +45,21 @@ try:
     listeners = command("ss", "-H", "-ltnup")
     ports = {int(match.group(1)) for row in listeners.splitlines()
              if (match := re.search(r":(\d+)$", row.split()[4]))}
-    for port in (19333, 18081, 18888, 18333, 29333, 28081, 28888, 28333, 18788, 18787, 18789):
+    for port in (19333, 18081, 18888, 18333, 29333, 28081, 28888, 28333, 18788, 18787, 18789, 8181, 9101):
         check("port " + str(port) + " closed", port not in ports)
     for label, path in (
         ("binary and CLI root absent", home + "/.local/share/rat-king"),
         ("configuration and keys absent", home + "/.config/rat-king"),
         ("data root absent", data),
+    ):
+        check(label, not os.path.lexists(path))
+    for label, path in (
+        ("sidecar unit file absent", home + "/.config/systemd/user/rat-king-claude-sidecar.service"),
+        ("sidecar wants link absent", home + "/.config/systemd/user/default.target.wants/rat-king-claude-sidecar.service"),
+        ("S3 HTTP socket absent", "/tmp/seaweedfs-s3-18333.sock"),
+        ("S3 gRPC socket absent", "/tmp/seaweedfs-s3-grpc-28333.sock"),
+        ("runtime custody absent", home + "/.config/rat-king/agent-runtime"),
+        ("sidecar root absent", home + "/.local/share/rat-king/claude-sidecar"),
     ):
         check(label, not os.path.lexists(path))
     check("dedicated Claude install absent", not os.path.lexists(home + "/.local/share/rat-king/claude-code"))

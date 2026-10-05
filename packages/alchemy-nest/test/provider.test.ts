@@ -3,6 +3,7 @@ import * as Test from "alchemy/Test/Vitest";
 import { Context, Effect, Layer } from "effect";
 import { expect } from "vitest";
 
+import { sidecarUnit } from "../src/agent-runtime-files.ts";
 import { makeFakeShell } from "../src/fake-shell.ts";
 import { digest } from "../src/files.ts";
 import { HostShell } from "../src/host-shell.ts";
@@ -116,6 +117,48 @@ test.provider(
       yield* adopt.pipe(
         Effect.ensuring(deleteUnit(host.shell, seed).pipe(Effect.orDie))
       );
+    })
+);
+
+test.provider(
+  "sidecar delete disables, unlinks wants and unloads the unit",
+  (scratch) =>
+    Effect.gen(function* sidecarDelete() {
+      const stack = checkedStack(scratch);
+      const host = yield* Fake;
+      const props = sidecarUnit("/home/example", "invented-runtime");
+      const link = `${props.home}/.config/systemd/user/default.target.wants/${props.name}`;
+
+      yield* stack.destroy().pipe(Effect.orDie);
+
+      const output = yield* stack
+        .deploy(SystemdUnit("sidecar", props))
+        .pipe(Effect.orDie);
+
+      yield* host.symlink(link, output.path);
+      yield* host.clear();
+      yield* stack.destroy().pipe(Effect.orDie);
+
+      expect(yield* host.shell.stat(output.path)).toBeUndefined();
+      expect(yield* host.symlinkTarget(link)).toBeUndefined();
+
+      const calls = yield* host.calls();
+
+      expect(
+        calls.some(
+          (call) => call.argv[2] === "disable" && call.argv[3] === props.name
+        )
+      ).toBe(true);
+      expect(calls.some((call) => call.argv[2] === "daemon-reload")).toBe(true);
+
+      const manager = yield* host.shell.exec([
+        "systemctl",
+        "--user",
+        "show",
+        props.name,
+      ]);
+
+      expect(manager.stdout).toContain("LoadState=not-found");
     })
 );
 
