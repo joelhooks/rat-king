@@ -1,0 +1,6 @@
+{
+  "did": "did:web:recipient.example.invalid",
+  "leaseId": "3jzfcijpj2z2b",
+  "generation": 1,
+  "expiresAt": "2026-10-05T00:05:00.000Z"
+}

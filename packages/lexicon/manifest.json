@@ -1,14 +1,21 @@
 {
   "effect": "4.0.1",
   "generatorVersion": "0.1.0",
-  "sourceDigest": "a565647e6d22dce7bf209649173290e561c04cdf5c2bf9c00102cbee1fced9a6",
+  "sourceDigest": "89cf6f2c13135eb1b98e327cbb30f01d254f60d1343a7b1ec9471f713d746948",
   "sources": [
+    "lexicons/sh/mschf/ratking/admin/putDidDocument.json",
     "lexicons/sh/mschf/ratking/agent/profile.json",
     "lexicons/sh/mschf/ratking/defs.json",
     "lexicons/sh/mschf/ratking/desk/theme.json",
     "lexicons/sh/mschf/ratking/mailbox/ack.json",
+    "lexicons/sh/mschf/ratking/mailbox/deliver.json",
     "lexicons/sh/mschf/ratking/mailbox/list.json",
     "lexicons/sh/mschf/ratking/mailbox/send.json",
-    "lexicons/sh/mschf/ratking/runtime/lease.json"
+    "lexicons/sh/mschf/ratking/mailbox/subscribe.json",
+    "lexicons/sh/mschf/ratking/runtime/acquireLease.json",
+    "lexicons/sh/mschf/ratking/runtime/lease.json",
+    "lexicons/sh/mschf/ratking/runtime/releaseLease.json",
+    "lexicons/sh/mschf/ratking/runtime/renewLease.json",
+    "lexicons/sh/mschf/ratking/runtime/resolveLease.json"
   ]
 }

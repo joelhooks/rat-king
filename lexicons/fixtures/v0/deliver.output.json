@@ -1,0 +1,11 @@
+{
+  "receipt": {
+    "message": {
+      "senderDid": "did:web:sender.example.invalid",
+      "messageId": "3jzfcijpj2z2a"
+    },
+    "recipientDid": "did:web:recipient.example.invalid",
+    "state": "delivered",
+    "seq": 2
+  }
+}

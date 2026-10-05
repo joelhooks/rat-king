@@ -1,0 +1,51 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.runtime.resolveLease",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Only the DID itself or a configured resolver DID may call this method, because the lease carries private harness session ids.",
+      "parameters": {
+        "type": "params",
+        "required": [
+          "did"
+        ],
+        "properties": {
+          "did": {
+            "type": "string",
+            "format": "did"
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "lease"
+          ],
+          "properties": {
+            "lease": {
+              "type": "ref",
+              "ref": "sh.mschf.ratking.runtime.lease"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "LeaseNotFound"
+        }
+      ]
+    }
+  }
+}

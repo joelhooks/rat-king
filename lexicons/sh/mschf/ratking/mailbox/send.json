@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Durable admission, idempotent on authenticated sender DID plus TID. Exact replay returns the original admission receipt. Different content under the same id is rejected.",
+      "description": "Durable admission, idempotent on authenticated sender DID plus TID. Exact replay returns the original admission receipt. Different content under the same id is rejected. When the sender holds a live lease, the send must carry that leaseId and generation fence; a stale or missing fence is refused with LeaseMismatch.",
       "input": {
         "encoding": "application/json",
         "schema": {
@@ -14,6 +14,8 @@
             "envelope"
           ],
           "properties": {
+            "leaseId": { "type": "string", "format": "tid" },
+            "generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
             "envelope": {
               "type": "ref",
               "ref": "sh.mschf.ratking.defs#encryptedEnvelope"
@@ -38,6 +40,7 @@
         }
       },
       "errors": [
+        { "name": "LeaseMismatch", "description": "Missing or stale sender lease fence." },
         {
           "name": "InvalidRequest",
           "description": "Invalid or unsupported operation."

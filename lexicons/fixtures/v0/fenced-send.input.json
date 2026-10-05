@@ -1,0 +1,25 @@
+{
+  "envelope": {
+    "version": 1,
+    "suite": {
+      "kemId": 16,
+      "kdfId": 1,
+      "aeadId": 1
+    },
+    "enc": {
+      "$bytes": "AAECAw=="
+    },
+    "ciphertext": {
+      "$bytes": "BAUGBw=="
+    },
+    "aad": {
+      "senderDid": "did:web:sender.example.invalid",
+      "recipientDid": "did:web:recipient.example.invalid",
+      "messageId": "3jzfcijpj2z2a",
+      "recipientKeyId": "did:web:recipient.example.invalid#encryption",
+      "expiresAt": "2026-10-05T00:00:00.000Z"
+    }
+  },
+  "leaseId": "3jzfcijpj2z2b",
+  "generation": 1
+}

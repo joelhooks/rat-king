@@ -1,0 +1,50 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.runtime.releaseLease",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Release the DID's current exclusive lease using its leaseId and generation fence. A stale fence is refused. No output body.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "did",
+            "leaseId",
+            "generation"
+          ],
+          "properties": {
+            "did": {
+              "type": "string",
+              "format": "did"
+            },
+            "leaseId": {
+              "type": "string",
+              "format": "tid"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "LeaseMismatch"
+        }
+      ]
+    }
+  }
+}

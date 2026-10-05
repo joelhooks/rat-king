@@ -1,15 +1,14 @@
 {
   "lexicon": 1,
-  "id": "sh.mschf.ratking.mailbox.ack",
+  "id": "sh.mschf.ratking.mailbox.deliver",
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "States are accepted → delivered → acked. Idempotently acknowledge from delivered after processing; repeating an ack from acked returns its original receipt. Recipient authorization and current leaseId and generation fence are required; a stale fence is refused, never ignored. Expired or failed messages cannot be revived.",
+      "description": "States are accepted → delivered → acked. Mark injection into the recipient runtime, not processing. Requires the recipient's current leaseId and generation fence; a stale fence is refused, never ignored. Idempotent from delivered, returning the original delivery receipt.",
       "input": {
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "description": "Only the active recipient runtime can ack. Repeating a valid ack returns its original receipt.",
           "required": [
             "message",
             "recipientDid",
@@ -41,7 +40,6 @@
         "encoding": "application/json",
         "schema": {
           "type": "object",
-          "description": "Durable receipt.",
           "required": [
             "receipt"
           ],
@@ -55,27 +53,22 @@
       },
       "errors": [
         {
-          "name": "InvalidRequest",
-          "description": "Invalid or unsupported operation."
+          "name": "InvalidRequest"
         },
         {
-          "name": "AuthRequired",
-          "description": "Missing or invalid service-auth token."
+          "name": "AuthRequired"
         },
         {
-          "name": "Forbidden",
-          "description": "Authenticated DID is not authorized."
+          "name": "Forbidden"
         },
         {
           "name": "MessageNotFound"
         },
         {
-          "name": "LeaseMismatch",
-          "description": "Lease expired or fencing identity is stale."
+          "name": "LeaseMismatch"
         },
         {
-          "name": "InvalidTransition",
-          "description": "Message cannot transition to acked."
+          "name": "InvalidTransition"
         }
       ]
     }
