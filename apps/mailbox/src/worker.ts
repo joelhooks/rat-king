@@ -57,6 +57,9 @@ export class Mailbox extends DurableObject<Bindings> {
       throw failure("Forbidden", 403);
     }
 
+    ctx.storage.sql.exec(
+      "CREATE TABLE IF NOT EXISTS wake_attempts (id INTEGER PRIMARY KEY, sender TEXT NOT NULL, tid TEXT NOT NULL, outcome TEXT NOT NULL)"
+    );
     this.store = sqliteStore(
       {
         exec: (query, ...values) => ctx.storage.sql.exec(query, ...values),
@@ -65,6 +68,23 @@ export class Mailbox extends DurableObject<Bindings> {
       recipient
     );
   }
+  recordWake(sender: string, tid: string, outcome: "accepted" | "unavailable") {
+    this.ctx.storage.sql.exec(
+      "INSERT INTO wake_attempts (sender,tid,outcome) VALUES (?,?,?)",
+      sender,
+      tid,
+      outcome
+    );
+  }
+
+  wakeEvidence() {
+    return [
+      ...this.ctx.storage.sql.exec(
+        "SELECT sender,tid,outcome FROM wake_attempts ORDER BY id"
+      ),
+    ];
+  }
+
   route(request: XrpcRequest, issuer: string) {
     const layer = handlersLayer.pipe(
       Layer.provide(this.store),
@@ -134,12 +154,19 @@ export class Mailbox extends DurableObject<Bindings> {
       }).pipe(Effect.provide(leaseLayer.pipe(Layer.provide(this.store))))
     );
   }
-  settle(sender: string, tid: string, command: "expire" | "fail") {
+  settle(
+    sender: string,
+    tid: string,
+    command: "expire" | "fail",
+    detail?: string
+  ) {
     return Effect.runPromise(
       Effect.gen(function* settleDelivery() {
         const terminal = yield* TerminalDelivery;
 
-        return JSON.stringify(yield* terminal.settle(sender, tid, command));
+        return JSON.stringify(
+          yield* terminal.settle(sender, tid, command, detail)
+        );
       }).pipe(Effect.provide(terminalLayer.pipe(Layer.provide(this.store))))
     );
   }
@@ -184,7 +211,75 @@ const replayLayer = (env: Bindings) =>
     })
   );
 
-export const fetchRequest = (request: Request, env: Bindings) =>
+const scheduleWake = (
+  context: Pick<ExecutionContext, "waitUntil">,
+  wake: Effect.Effect<void, XrpcFailure>
+) => {
+  context.waitUntil(Effect.runPromise(wake.pipe(Effect.ignore)));
+};
+
+const wakeHosted = Effect.fn("Mailbox.wakeHosted")(function* wakeHosted(
+  env: Bindings,
+  recipient: string,
+  body: string,
+  context?: Pick<ExecutionContext, "waitUntil">
+) {
+  if (env.AGENT === undefined) {
+    return yield* Effect.void;
+  }
+
+  const hosts = yield* Schema.decodeUnknownEffect(
+    Schema.fromJsonString(Schema.Array(Schema.String))
+  )(env.HOSTED_AGENTS ?? "[]");
+
+  if (!hosts.includes(recipient)) {
+    return yield* Effect.void;
+  }
+
+  const admitted = yield* Schema.decodeEffect(
+    Schema.fromJsonString(Send.Output)
+  )(body);
+
+  const agents = env.AGENT;
+
+  const wake = Effect.gen(function* wakeAgent() {
+    const outcome = yield* Effect.tryPromise({
+      catch: () => failure("MailboxUnavailable", 503),
+      try: () => agents.getByName(recipient).wake(),
+    }).pipe(
+      Effect.match({
+        onFailure: () => "unavailable" as const,
+        onSuccess: () => "accepted" as const,
+      })
+    );
+
+    yield* Effect.tryPromise({
+      catch: () => failure("MailboxUnavailable", 503),
+      try: () =>
+        Promise.resolve(
+          env.MAILBOX.getByName(recipient).recordWake(
+            admitted.receipt.message.senderDid,
+            admitted.receipt.message.messageId,
+            outcome
+          )
+        ),
+    });
+  });
+
+  if (context === undefined) {
+    yield* wake;
+  } else {
+    scheduleWake(context, wake);
+  }
+
+  return yield* Effect.void;
+});
+
+export const fetchRequest = (
+  request: Request,
+  env: Bindings,
+  context?: Pick<ExecutionContext, "waitUntil">
+) =>
   Effect.gen(function* handleRequest() {
     const url = new URL(request.url);
 
@@ -330,6 +425,12 @@ export const fetchRequest = (request: Request, env: Bindings) =>
       try: () => env.MAILBOX.getByName(recipient).route(transport, issuer),
     });
 
+    if (nsid === Send.Method.nsid && response.status === 200) {
+      yield* wakeHosted(env, recipient, response.body, context).pipe(
+        Effect.ignore
+      );
+    }
+
     return new Response(response.body, {
       headers: { "content-type": "application/json" },
       status: response.status,
@@ -341,8 +442,8 @@ export const fetchRequest = (request: Request, env: Bindings) =>
   );
 
 export default {
-  fetch: (request: Request, env: Bindings) =>
-    Effect.runPromise(fetchRequest(request, env)),
+  fetch: (request: Request, env: Bindings, context?: ExecutionContext) =>
+    Effect.runPromise(fetchRequest(request, env, context)),
 };
 
 export { AuthTokens } from "./auth-tokens.ts";

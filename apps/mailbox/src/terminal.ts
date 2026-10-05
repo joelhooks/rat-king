@@ -12,7 +12,8 @@ export class TerminalDelivery extends Context.Service<
     readonly settle: (
       sender: string,
       tid: string,
-      command: "expire" | "fail"
+      command: "expire" | "fail",
+      detail?: string
     ) => Effect.Effect<Defs.ReceiptValue, XrpcFailure>;
   }
 >()("mailbox/TerminalDelivery") {}
@@ -24,7 +25,7 @@ export const terminalLayer = Layer.effect(
 
     return TerminalDelivery.of({
       settle: Effect.fn("Delivery.settle")(
-        function* settle(sender, tid, command) {
+        function* settle(sender, tid, command, detail) {
           const now = yield* Clock.currentTimeMillis;
 
           return yield* store.transaction((tx) => {
@@ -52,7 +53,7 @@ export const terminalLayer = Layer.effect(
               return message.current;
             }
 
-            return transitionMessage(tx, message, command);
+            return transitionMessage(tx, message, command, detail);
           });
         }
       ),

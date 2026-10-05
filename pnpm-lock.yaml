@@ -300,6 +300,9 @@ importers:
 
   apps/mailbox:
     dependencies:
+      '@rat-king/agent-runtime':
+        specifier: workspace:*
+        version: link:../../packages/agent-runtime
       '@rat-king/envelope':
         specifier: workspace:*
         version: link:../../packages/envelope
@@ -331,9 +334,18 @@ importers:
       '@earendil-works/pi-durable':
         specifier: 1.0.2
         version: 1.0.2(@aws-sdk/credential-provider-node@3.972.84)(@modelcontextprotocol/sdk@1.29.0(zod@4.6.5))(@smithy/signature-v4@5.7.4)(undici@8.11.2)(ws@8.22.0)(zod@4.6.5)
+      '@rat-king/envelope':
+        specifier: workspace:*
+        version: link:../envelope
+      '@rat-king/lexicon':
+        specifier: workspace:*
+        version: link:../lexicon
       effect:
         specifier: 4.0.1
         version: 4.0.1
+      xstate:
+        specifier: 6.0.0-alpha.59
+        version: 6.0.0-alpha.59
     devDependencies:
       '@cloudflare/workers-types':
         specifier: 5.20261004.1
