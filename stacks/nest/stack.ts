@@ -4,18 +4,28 @@ import { Config, Effect, FileSystem, Layer, Path } from "effect";
 import { FetchHttpClient } from "effect/http";
 
 import { bindings } from "../../apps/mailbox/src/bindings.ts";
+import {
+  RuntimeFiles,
+  RuntimeFilesProvider,
+  sidecarUnit,
+} from "../../packages/alchemy-nest/src/agent-runtime-files.ts";
+import type { RuntimeFilesProps } from "../../packages/alchemy-nest/src/agent-runtime-files.ts";
 import { Celld } from "../../packages/alchemy-nest/src/celld.ts";
 import { prepareDeployment } from "../../packages/alchemy-nest/src/deployment-build.ts";
 import {
   Deployment,
   DeploymentProvider,
 } from "../../packages/alchemy-nest/src/deployment.ts";
+import { offlineLayer } from "../../packages/alchemy-nest/src/fake-shell.ts";
 import {
   Host,
   layer as inventoryLayer,
 } from "../../packages/alchemy-nest/src/host.ts";
 import { ObjectStore } from "../../packages/alchemy-nest/src/object-store.ts";
-import { RemoteFile } from "../../packages/alchemy-nest/src/providers.ts";
+import {
+  RemoteFile,
+  SystemdUnit,
+} from "../../packages/alchemy-nest/src/providers.ts";
 import { sourceLayer } from "../../packages/alchemy-nest/src/release.ts";
 import {
   shellQuote,
@@ -26,6 +36,14 @@ import { startupLayer } from "../../packages/alchemy-nest/src/startup-contract.t
 export const connection = Layer.unwrap(
   Effect.gen(function* connection() {
     const hosts = yield* Host;
+
+    if (
+      yield* Config.Boolean("RAT_KING_OFFLINE_PLAN").pipe(
+        Config.withDefault(false)
+      )
+    ) {
+      return offlineLayer;
+    }
 
     return sshLayer(
       yield* hosts.node(yield* Config.String("RAT_KING_LIVE_NODE"))
@@ -50,7 +68,8 @@ export const nest = Stack(
     providers: Layer.mergeAll(
       ObjectStore.providers(),
       Celld.providers(),
-      DeploymentProvider()
+      DeploymentProvider(),
+      RuntimeFilesProvider()
     ).pipe(
       Layer.provide(startup),
       Layer.provide(connection),
@@ -68,7 +87,41 @@ export const nest = Stack(
       .node(yield* Config.String("RAT_KING_LIVE_NODE"))
       .pipe(Effect.orDie);
 
-    const slice = yield* ObjectStore.Slice(node.home);
+    const mode = yield* Config.String("RAT_KING_AGENT_MODEL").pipe(
+      Config.withDefault("faux")
+    );
+
+    if (mode !== "faux" && mode !== "gateway") {
+      return yield* Effect.die("Unknown hosted agent mode");
+    }
+
+    const sidecar = yield* Config.Boolean("RAT_KING_CLAUDE_SIDECAR").pipe(
+      Config.withDefault(false)
+    );
+
+    const model = yield* Config.String("MODEL_GATEWAY_MODEL").pipe(
+      Config.withDefault("gpt-6-sol")
+    );
+
+    if (
+      (model !== "gpt-6-sol" && model !== "claude-opus-5-5") ||
+      (model === "claude-opus-5-5" && !sidecar) ||
+      (mode === "faux" && sidecar)
+    ) {
+      return yield* Effect.die("Unsupported hosted model configuration");
+    }
+
+    const hostedDid = yield* Config.String("RAT_KING_REMOTE_DID");
+
+    const gatewayUrl =
+      mode === "gateway" ? yield* Config.String("MODEL_GATEWAY_BASE_URL") : "";
+
+    const slice = yield* ObjectStore.Slice(
+      node.home,
+      yield* Config.String("RAT_KING_SLICE_MEMORY_MAX").pipe(
+        Config.withDefault("4G")
+      )
+    );
 
     const bucket = yield* ObjectStore.Bucket("store", {
       host: node,
@@ -85,6 +138,48 @@ export const nest = Stack(
       purgeOnDelete: true,
     });
 
+    const remoteAgent = yield* Config.String("RAT_KING_REMOTE_AGENT");
+
+    const secretName =
+      mode === "gateway"
+        ? yield* Config.String("RAT_KING_MODEL_GATEWAY_SECRET_NAME")
+        : "";
+
+    const sidecarBundle = sidecar
+      ? yield* fs.readFileString(
+          yield* Config.String("RAT_KING_SIDECAR_OUTPUT")
+        )
+      : "";
+
+    const runtime = yield* RuntimeFiles(
+      "agent-runtime-files",
+      Output.all(cells.unit.sha256).pipe(
+        Output.map(
+          ([ready]) =>
+            ({
+              agent: remoteAgent,
+              did: hostedDid,
+              gatewayUrl,
+              home: node.home,
+              mode,
+              ready,
+              secretName,
+              sidecar,
+              sidecarBundle,
+            }) satisfies RuntimeFilesProps
+        )
+      )
+    );
+
+    const sidecarReady = sidecar
+      ? (yield* SystemdUnit(
+          "claude-sidecar",
+          runtime.sha256.pipe(
+            Output.map((ready) => sidecarUnit(node.home, ready))
+          )
+        )).sha256
+      : runtime.sha256;
+
     const documents = yield* fs.readFileString(
       yield* Config.String("RAT_KING_DOCUMENTS")
     );
@@ -93,15 +188,46 @@ export const nest = Stack(
     const commit = yield* Config.String("RAT_KING_COMMIT");
     const serviceDid = yield* Config.String("RAT_KING_SERVICE_DID");
 
+    const vars = {
+      AGENT_MODEL: mode,
+      DID_DOCUMENTS: documents,
+      HOSTED_AGENTS: JSON.stringify([hostedDid]),
+      SERVICE_DID: serviceDid,
+    };
+
+    if (mode === "gateway") {
+      Object.assign(vars, {
+        MODEL_GATEWAY_BASE_URL: gatewayUrl,
+        MODEL_GATEWAY_MODEL: model,
+      });
+    }
+
+    if (sidecar) {
+      Object.assign(vars, {
+        CLAUDE_SIDECAR_BASE_URL: "http://127.0.0.1:18789/v1",
+      });
+    }
+
     const prepared = yield* prepareDeployment(
-      path.resolve(import.meta.dirname, "../../apps/mailbox/src/worker.ts"),
-      bindings,
+      path.resolve(
+        import.meta.dirname,
+        "../../apps/mailbox/src/hosted-worker.ts"
+      ),
+      {
+        ...bindings,
+        durable_objects: {
+          bindings: [
+            ...bindings.durable_objects.bindings,
+            { class_name: "Agent", name: "AGENT" },
+          ],
+        },
+        migrations: [
+          { new_sqlite_classes: ["Mailbox", "AuthTokens", "Agent"], tag: "v1" },
+        ],
+      },
       {
         commit,
-        vars: {
-          DID_DOCUMENTS: documents,
-          SERVICE_DID: serviceDid,
-        },
+        vars,
         version,
       }
     );
@@ -133,15 +259,18 @@ export const nest = Stack(
         cells.internalUrl,
         bucket.configuration,
         cli.sha256,
-        cells.unit.sha256
+        cells.unit.sha256,
+        runtime.bindings,
+        sidecarReady
       ).pipe(
-        Output.map(([workerUrl, internalUrl, directory]) => ({
+        Output.map((values) => ({
           ...prepared,
           binary: `${node.home}/.local/share/rat-king/bin/celld`,
-          directory: `${directory}/mailbox-deployment`,
-          environmentFile: `${directory}/celld.env`,
-          internalUrl,
-          workerUrl,
+          bindingsFile: values[5],
+          directory: `${values[2]}/mailbox-deployment`,
+          environmentFile: `${values[2]}/celld.env`,
+          internalUrl: values[1],
+          workerUrl: values[0],
         }))
       )
     );

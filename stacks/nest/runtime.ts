@@ -15,12 +15,20 @@ import { provision } from "../../apps/mailbox/cli/provision.ts";
 import { Documents } from "../../apps/mailbox/src/auth.ts";
 import {
   deleteDirectory,
+  reconcileDirectory,
   refuse,
 } from "../../packages/alchemy-nest/src/files.ts";
 import { HostShell, must } from "../../packages/alchemy-nest/src/host-shell.ts";
 import { Host } from "../../packages/alchemy-nest/src/host.ts";
 import { listenerProbe } from "../../packages/alchemy-nest/src/probes.ts";
 import { connection, nest } from "./stack.ts";
+
+export const claudeMtimeScript = String.raw`
+import glob, json, os, sys
+home = sys.argv[1]
+paths = sorted(set(glob.glob(home + "/.claude*") + [home + "/.local/bin/claude"]))
+print(json.dumps({path: os.lstat(path).st_mtime_ns if os.path.lexists(path) else None for path in paths}))
+`;
 
 export type Action =
   | "prepare"
@@ -44,6 +52,35 @@ export const run = (action: Action) =>
 
       if ((yield* must(shell, ["uname", "-m"])).trim() !== "x86_64") {
         return yield* refuse("Wrong deployment architecture");
+      }
+
+      const snapshotPath = `${yield* Config.String("RAT_KING_STATE_DIR")}/claude-mtimes.json`;
+
+      if (yield* fs.exists(snapshotPath)) {
+        return yield* refuse(
+          "Claude mtime snapshot already exists; preserve it and use a fresh state directory"
+        );
+      }
+
+      const snapshot = yield* must(shell, [
+        "python3",
+        "-c",
+        claudeMtimeScript,
+        host.home,
+      ]);
+
+      yield* fs.writeFileString(snapshotPath, snapshot, { mode: 0o600 });
+
+      for (const directory of [
+        `${host.home}/.local/share/rat-king`,
+        `${host.home}/.local/share/rat-king/bin`,
+      ]) {
+        yield* reconcileDirectory(
+          shell,
+          { mode: 0o700, path: directory },
+          undefined,
+          true
+        );
       }
 
       const cliPath = `${host.home}/.local/share/rat-king/bin/mailbox.mjs`;
@@ -96,7 +133,24 @@ export const run = (action: Action) =>
         yield* Config.String("RAT_KING_LIVE_NODE")
       );
 
-      yield* Effect.log(yield* listenerProbe(shell, host.tailnetIPv4, true));
+      const sidecar = yield* Config.Boolean("RAT_KING_CLAUDE_SIDECAR").pipe(
+        Config.withDefault(false)
+      );
+
+      yield* Effect.log(
+        yield* listenerProbe(shell, host.tailnetIPv4, true, sidecar).pipe(
+          Effect.onError(() =>
+            must(shell, [
+              "systemctl",
+              "--user",
+              "stop",
+              "rat-king-celld.service",
+              "rat-king-seaweedfs.service",
+              "rat-king-claude-sidecar.service",
+            ]).pipe(Effect.orDie)
+          )
+        )
+      );
 
       return yield* Effect.void;
     }
@@ -120,6 +174,9 @@ export const run = (action: Action) =>
         script,
         host.home,
         host.dataRoot,
+        yield* fs.readFileString(
+          `${yield* Config.String("RAT_KING_STATE_DIR")}/claude-mtimes.json`
+        ),
       ]);
 
       yield* Effect.log(result.stdout);
@@ -194,7 +251,39 @@ export const run = (action: Action) =>
       return yield* refuse("Host listener approval required");
     }
 
+    const fs = yield* FileSystem.FileSystem;
+
+    if (
+      !(yield* fs.exists(
+        `${yield* Config.String("RAT_KING_STATE_DIR")}/claude-mtimes.json`
+      ))
+    ) {
+      return yield* refuse("Prepare must record Claude mtimes before deploy");
+    }
+
     yield* deploy({ stack: nest, stage: "proof" }).pipe(adopt(true));
+    const shell = yield* HostShell;
+
+    const host = yield* (yield* Host).node(
+      yield* Config.String("RAT_KING_LIVE_NODE")
+    );
+
+    const sidecar = yield* Config.Boolean("RAT_KING_CLAUDE_SIDECAR").pipe(
+      Config.withDefault(false)
+    );
+
+    yield* listenerProbe(shell, host.tailnetIPv4, true, sidecar).pipe(
+      Effect.onError(() =>
+        must(shell, [
+          "systemctl",
+          "--user",
+          "stop",
+          "rat-king-celld.service",
+          "rat-king-seaweedfs.service",
+          "rat-king-claude-sidecar.service",
+        ]).pipe(Effect.orDie)
+      )
+    );
     yield* Effect.log("MAILBOX_DEPLOYED");
 
     return yield* Effect.void;

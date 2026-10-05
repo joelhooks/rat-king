@@ -24,6 +24,7 @@ export interface DeploymentProps {
   readonly environmentFile: string;
   readonly internalUrl: string;
   readonly workerUrl: string;
+  readonly bindingsFile?: string;
 }
 
 export interface DeploymentAttributes extends DeploymentProps {
@@ -37,6 +38,30 @@ export type DeploymentResource = Resource<
 >;
 
 export const Deployment = Resource<DeploymentResource>("Celld.Deployment");
+
+export const bindingConfigurationScript = String.raw`
+import json, pathlib, stat, sys
+try:
+    directory, binding = map(pathlib.Path, sys.argv[1:3])
+    for path in [directory, binding, directory/"wrangler.public.json", directory/"wrangler.json"]:
+        if any(part.is_symlink() for part in [path, *path.parents]):
+            raise ValueError()
+    if stat.S_IMODE(binding.stat().st_mode) != 0o600:
+        raise ValueError()
+    config = json.loads((directory/"wrangler.public.json").read_text())
+    secrets = json.loads(binding.read_text())
+    allowed = {"AGENT_IDENTITIES_CREDENTIAL", "MODEL_GATEWAY_CREDENTIAL", "CLAUDE_SIDECAR_CREDENTIAL"}
+    if not secrets or not set(secrets).issubset(allowed) or set(secrets).intersection(config["vars"]):
+        raise ValueError()
+    config["vars"].update(secrets)
+    target = directory/"wrangler.json"
+    target.touch(mode=0o600, exist_ok=True)
+    target.chmod(0o600)
+    target.write_text(json.dumps(config))
+except Exception:
+    print("Private binding generation refused", file=sys.stderr)
+    sys.exit(1)
+`;
 
 const identity = Schema.Struct({
   commit: Schema.String,
@@ -55,6 +80,7 @@ const fingerprint = (props: DeploymentProps) =>
       props.environmentFile,
       props.internalUrl,
       props.workerUrl,
+      props.bindingsFile,
     ])
   );
 
@@ -75,6 +101,10 @@ const validate = Effect.fn("Celld.Deployment.validate")(function* validate(
 
   for (const path of [props.directory, props.binary, props.environmentFile]) {
     yield* Schema.decodeEffect(AbsolutePath)(path);
+  }
+
+  if (props.bindingsFile !== undefined) {
+    yield* Schema.decodeEffect(AbsolutePath)(props.bindingsFile);
   }
 
   const internal = yield* Effect.try({
@@ -137,7 +167,7 @@ export const DeploymentProvider = () =>
           const bundle = yield* shell.read(`${props.directory}/worker.mjs`);
 
           const configuration = yield* shell.read(
-            `${props.directory}/wrangler.json`
+            `${props.directory}/${props.bindingsFile === undefined ? "wrangler.json" : "wrangler.public.json"}`
           );
 
           return (
@@ -252,8 +282,19 @@ export const DeploymentProvider = () =>
           yield* shell.write({
             bytes: new TextEncoder().encode(news.configuration),
             mode: 0o600,
-            path: `${news.directory}/wrangler.json`,
+            path: `${news.directory}/${news.bindingsFile === undefined ? "wrangler.json" : "wrangler.public.json"}`,
           });
+
+          if (news.bindingsFile !== undefined) {
+            yield* must(shell, [
+              "python3",
+              "-c",
+              bindingConfigurationScript,
+              news.directory,
+              news.bindingsFile,
+            ]);
+          }
+
           yield* must(shell, [
             "sh",
             "-c",

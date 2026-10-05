@@ -1,9 +1,9 @@
 /* oxlint-disable typescript/promise-function-async, promise/prefer-await-to-callbacks, promise/prefer-await-to-then -- SDK and MCP callback boundaries. */
 // @effect-diagnostics asyncFunction:off newPromise:off globalTimers:off -- SDK/MCP handshake latches and the host session expiry are Promise boundaries.
 // @effect-diagnostics nodeBuiltinImport:off -- Host-only SDK adapter owns its temporary working directory.
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -39,6 +39,7 @@ const lifecycle = createMachine({
 export interface SdkGateway {
   readonly baseUrl: string;
   readonly apiKeyFile: string;
+  readonly temporaryRoot?: string;
   readonly observeChild?: (names: readonly string[]) => void;
 }
 
@@ -360,14 +361,21 @@ export const sdkLayer = (executable: string, gateway: SdkGateway) =>
     Effect.gen(function* makeDriver() {
       const sessions = new Set<Session>();
 
+      const temporaryRoot = gateway.temporaryRoot ?? tmpdir();
+      yield* Effect.tryPromise({
+        catch: () =>
+          new SidecarFailure({ reason: "Cannot create private temp root" }),
+        try: () => mkdir(temporaryRoot, { mode: 0o700, recursive: true }),
+      });
+
       const cwd = yield* Effect.tryPromise({
         catch: (cause) => new SidecarFailure({ reason: String(cause) }),
-        try: () => mkdtemp(path.join(tmpdir(), "rat-king-claude-cwd-")),
+        try: () => mkdtemp(path.join(temporaryRoot, "rat-king-claude-cwd-")),
       });
 
       const configDirectory = yield* Effect.tryPromise({
         catch: (cause) => new SidecarFailure({ reason: String(cause) }),
-        try: () => mkdtemp(path.join(tmpdir(), "rat-king-claude-config-")),
+        try: () => mkdtemp(path.join(temporaryRoot, "rat-king-claude-config-")),
       });
 
       yield* Effect.addFinalizer(() =>
@@ -377,11 +385,14 @@ export const sdkLayer = (executable: string, gateway: SdkGateway) =>
               session.close();
             }
           });
-          yield* Effect.callback<boolean>((resume) => {
-            execFile("trash", [configDirectory, cwd], () => {
-              resume(Effect.succeed(true));
-            });
-          });
+          yield* Effect.tryPromise({
+            catch: () =>
+              new SidecarFailure({ reason: "Private temp cleanup failed" }),
+            try: async () => {
+              await rm(configDirectory, { force: true, recursive: true });
+              await rm(cwd, { force: true, recursive: true });
+            },
+          }).pipe(Effect.orDie);
         })
       );
 

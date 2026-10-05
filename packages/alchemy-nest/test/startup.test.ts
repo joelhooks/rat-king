@@ -63,6 +63,26 @@ it("requires exact process, interface and port sets", () => {
   ).toBe(true);
 });
 
+it("requires the sidecar as the eleventh listener and rejects its extra ports", () => {
+  const sidecar = line(18_789, "node");
+  const full = `${complete}\n${sidecar}`;
+  expect(assessListeners(full, address, true, true)._tag).toBe("Ready");
+  expect(assessListeners(complete, address, true, true)._tag).toBe("Waiting");
+  expect(assessListeners(full, address, true, false)._tag).toBe("Violation");
+  expect(
+    assessListeners(`${full}\n${line(19_001, "node")}`, address, true, true)
+      ._tag
+  ).toBe("Violation");
+  expect(
+    assessListeners(
+      full.replace("127.0.0.1:18789", "0.0.0.0:18789"),
+      address,
+      true,
+      true
+    )._tag
+  ).toBe("Violation");
+});
+
 it.effect("stops both units before returning a startup violation", () =>
   Effect.gen(function* testStop() {
     const fake = yield* makeFakeShell();

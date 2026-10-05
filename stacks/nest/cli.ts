@@ -24,6 +24,15 @@ const program = Effect.gen(function* launcher() {
     ])
   )(process.argv[2]);
 
+  if (
+    (yield* Config.Boolean("RAT_KING_OFFLINE_PLAN").pipe(
+      Config.withDefault(false)
+    )) &&
+    action !== "plan"
+  ) {
+    return yield* refuse("Offline shell supports plan only");
+  }
+
   const directory = path.resolve(yield* Config.String("RAT_KING_STATE_DIR"));
   const root = path.resolve(import.meta.dirname, "../..");
 

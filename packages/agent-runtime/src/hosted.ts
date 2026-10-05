@@ -43,6 +43,8 @@ export interface HostedBindings {
   readonly MODEL_GATEWAY_BASE_URL?: string;
   readonly MODEL_GATEWAY_CREDENTIAL?: string;
   readonly MODEL_GATEWAY_MODEL?: string;
+  readonly CLAUDE_SIDECAR_BASE_URL?: string;
+  readonly CLAUDE_SIDECAR_CREDENTIAL?: string;
 }
 
 const PrivateKey = Schema.Struct({
@@ -70,7 +72,9 @@ const guardedModelLayer = (env: HostedBindings, outbound: typeof fetch) =>
       if (mode === "faux") {
         if (
           env.MODEL_GATEWAY_BASE_URL !== undefined ||
-          env.MODEL_GATEWAY_CREDENTIAL !== undefined
+          env.MODEL_GATEWAY_CREDENTIAL !== undefined ||
+          env.CLAUDE_SIDECAR_BASE_URL !== undefined ||
+          env.CLAUDE_SIDECAR_CREDENTIAL !== undefined
         ) {
           return yield* new HarnessFailure({
             operation: "configure",
@@ -120,14 +124,19 @@ const guardedModelLayer = (env: HostedBindings, outbound: typeof fetch) =>
 
       const provider = access.models.getProvider(access.model.provider);
 
-      if (!provider || env.MODEL_GATEWAY_BASE_URL === undefined) {
+      const baseUrl =
+        access.model.provider === "claude-sidecar"
+          ? env.CLAUDE_SIDECAR_BASE_URL
+          : env.MODEL_GATEWAY_BASE_URL;
+
+      if (!provider || baseUrl === undefined) {
         return yield* new HarnessFailure({
           operation: "configure",
           reason: "Missing gateway provider",
         });
       }
 
-      const fetch = originFetch(env.MODEL_GATEWAY_BASE_URL, outbound);
+      const fetch = originFetch(baseUrl, outbound);
       const models = createModels();
       models.setProvider(
         createProvider({
@@ -197,7 +206,8 @@ export const makeHostedAgent = <Env extends HostedBindings>(
               access.model,
               {
                 thinkingLevel: access.model.provider === "faux" ? "off" : "low",
-              }
+              },
+              true
             );
           })
         ).pipe(

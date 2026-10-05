@@ -18,7 +18,7 @@ Each HTTP route, including metrics, requires the per-instance bearer. The listen
 
 The launcher requires an explicit dedicated executable through `RAT_KING_CLAUDE_EXECUTABLE`. Install it separately under the user's `~/.local/share/rat-king/`, not the user's ordinary Claude launcher. The SDK uses `pathToClaudeCodeExecutable`; it does not vendor the client or run an installer.
 
-The child environment is built from scratch. `HOME` and `CLAUDE_CONFIG_DIR` point at a fresh mode-700 temp directory, and `PATH` is `/usr/bin:/bin`. No parent credentials, user settings, hooks, memory, plugins or login are inherited. `settingSources: []`, `skills: []`, `strictMcpConfig: true`, `disableAllHooks: true`, `autoMemoryEnabled: false`, `claudeMdExcludes: ["**"]` and `persistSession: false` enforce the isolated query shape. The layer trashes its config and working directories on disposal.
+The child environment is built from scratch. `HOME` and `CLAUDE_CONFIG_DIR` point at a fresh mode-700 temp directory, and `PATH` is `/usr/bin:/bin`. No parent credentials, user settings, hooks, memory, plugins or login are inherited. `settingSources: []`, `skills: []`, `strictMcpConfig: true`, `disableAllHooks: true`, `autoMemoryEnabled: false`, `claudeMdExcludes: ["**"]` and `persistSession: false` enforce the isolated query shape. The layer removes only its own config and working directories on disposal with Node filesystem APIs; it needs no external cleanup CLI. `RAT_KING_SIDECAR_TEMP_DIR` selects the parent directory (default `/tmp`).
 
 `DISABLE_AUTOUPDATER=1` and `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1` disable updates and nonessential traffic. `ENABLE_CLAUDEAI_MCP_SERVERS=0` excludes account-connected MCP servers. `DISABLE_AUTO_COMPACT=1` leaves compaction to the durable caller.
 
@@ -41,6 +41,7 @@ The bridge's `convert.ts` imports `skills.ts`, which imports pi-coding-agent at 
 | `RAT_KING_CLAUDE_EXECUTABLE` | Explicit dedicated Claude Code binary |
 | `RAT_KING_SIDECAR_TOKEN_FILE` | Per-instance bearer file, mode 600 |
 | `RAT_KING_SIDECAR_PORT` | Fixed deployment port; default 0 for local proof |
+| `RAT_KING_SIDECAR_TEMP_DIR` | Parent for private config/working directories; default `/tmp` |
 | `RAT_KING_MODEL_GATEWAY_ENDPOINT_FILE` | Private gateway endpoint file |
 | `RAT_KING_MODEL_GATEWAY_KEY_FILE` | Private gateway credential file, mode 600 |
 
@@ -67,7 +68,7 @@ pnpm exec vitest run --config apps/claude-sidecar/vitest.config.ts apps/claude-s
 
 It points the same SDK driver at a loopback capture server, supplies only a dummy credential and checks the actual auth header and child environment. It never uses a real gateway credential.
 
-## Later Linux deployment, not built here
+## Linux deployment code, not live-qualified
 
 Install **2.1.285** in user scope without global npm or sudo. The exact glibc linux-x64 binary is:
 
@@ -79,7 +80,7 @@ Verified manifest SHA-256: `33dad1ec615a2e08cc78b494f05c110e49916de2c79d78ec8799
 
 Download to a new temp file, compare that checksum, then install mode 755 at `~/.local/share/rat-king/claude-code/2.1.285/claude`. Refuse to overwrite an existing installation until its version and checksum are checked. Do not run the general installer: it manages the user's normal launcher. The macOS proof uses the separate darwin-arm64 download, whose manifest SHA-256 is `51f09bd1e021d9fa8a1864c179799bd37cb39962a937935c5cf6823398e86db4`.
 
-Alchemy should own the unit, private mode-600 config and bearer in gitignored state. Example user-unit shape, not an installed unit:
+`stacks/nest` and `packages/alchemy-nest/src/agent-runtime-files.ts` now own the optional sidecar unit, dedicated install and private files. Alchemy stores references, not gateway keys or bearer values. Build the fully bundled `sidecar.mjs` with `node apps/claude-sidecar/src/build.ts`, using `RAT_KING_SIDECAR_OUTPUT`. Example user-unit shape, not an installed unit:
 
 ```ini
 [Unit]
@@ -89,7 +90,7 @@ Description=Rat King Claude model endpoint
 Type=simple
 Slice=rat-king.slice
 EnvironmentFile=%h/.local/share/rat-king/claude-sidecar/service.env
-ExecStart=/usr/bin/node %h/.local/share/rat-king/claude-sidecar/sidecar.mjs
+ExecStart=/usr/local/bin/node %h/.local/share/rat-king/claude-sidecar/sidecar.mjs
 MemoryMax=1536M
 CPUQuota=100%
 Restart=on-failure
@@ -103,9 +104,9 @@ UMask=0077
 WantedBy=default.target
 ```
 
-The environment file must select a fixed sidecar port and the dedicated executable. The host also needs a `trash` CLI on the sidecar process’s PATH for scoped temporary-directory cleanup; the macOS proof used the installed command. Linux must supply an equivalent user-scoped trash CLI before deployment. The sidecar's 1536 MiB and 100% limits fit inside the parent slice's 4 GiB and 300% ceilings, but the owner must budget the other services. Linux cgroup kill semantics cover children too. No slice exists on macOS; the proof owns and stops exact PIDs instead.
+The environment file selects port 18789, the dedicated executable, binding paths and a temp parent under the owned sidecar directory. No `trash` CLI is required. Every invocation still passes the exact SDK line `tools: [],` in `src/sdk-adapter.ts`; the hosted agent has no declared MCP tools either. The sidecar's 1536 MiB and 100% limits require an owner-approved budget alongside the other services. The nest stack accepts a separately approved parent slice cap; it does not raise the default 4 GiB cap silently. Linux cgroup kill semantics cover children too. No slice exists on macOS; the proof owns and stops exact PIDs instead.
 
-Destroy must stop and disable the owned unit, remove its unit file, dedicated installation, private config, generated binding and bearer, and trash any owned temporary config directories. It must not touch the user's ordinary Claude installation or config. These install, deploy and destroy operations require the owning infrastructure lane's authorization; this app does not implement them.
+Destroy must stop and disable the owned unit, remove its unit file, dedicated installation, private config, generated binding and bearer, and trash any owned temporary config directories. It must not touch the user's ordinary Claude installation or config. These install, deploy and destroy operations require the owning infrastructure lane's authorization. Code readiness does not establish live Linux behavior.
 
 ## Local proof receipt
 

@@ -1,9 +1,17 @@
-import { Crypto, Effect, FileSystem, Redacted, Schema } from "effect";
+import {
+  Crypto,
+  Effect,
+  FileSystem,
+  Predicate,
+  Redacted,
+  Schema,
+} from "effect";
 import { HttpClient } from "effect/http";
 
 import { refuse } from "./files.ts";
 import { must } from "./host-shell.ts";
 import type { Interface } from "./host-shell.ts";
+import { assessListeners } from "./listeners.ts";
 import { s3Script } from "./s3-script.ts";
 
 const scope = (name: string, argv: readonly string[]) => [
@@ -261,42 +269,20 @@ export const listenerProbe = Effect.fn("Celld.listenerProbe")(
   function* listeners(
     shell: Interface,
     publicIPv4: string,
-    nodeExpected: boolean
+    nodeExpected: boolean,
+    sidecarExpected?: boolean
   ) {
-    const text = yield* must(shell, ["ss", "-ltnp"]);
+    const assessment = assessListeners(
+      yield* must(shell, ["ss", "-ltnp"]),
+      publicIPv4,
+      nodeExpected,
+      sidecarExpected === true
+    );
 
-    const lines = text
-      .split("\n")
-      .filter((line) => /users:\(\("(?:weed|celld)"/u.test(line));
-
-    const expected = new Set([
-      19_333,
-      18_081,
-      18_888,
-      18_333,
-      29_333,
-      28_081,
-      28_888,
-      28_333,
-      ...(nodeExpected ? [18_787, 18_788] : []),
-    ]);
-
-    if (lines.length !== expected.size) {
-      return yield* refuse("Unexpected listener count.");
+    if (!Predicate.isTagged(assessment, "Ready")) {
+      return yield* refuse("Listener contract did not match");
     }
 
-    for (const line of lines) {
-      const local = line.trim().split(/\s+/u)[3] ?? "";
-      const port = Number(local.slice(local.lastIndexOf(":") + 1));
-
-      if (
-        !expected.delete(port) ||
-        local !== `${port === 18_787 ? publicIPv4 : "127.0.0.1"}:${port}`
-      ) {
-        return yield* refuse("Unexpected listener interface or port.");
-      }
-    }
-
-    return lines.join("\n");
+    return assessment.receipt;
   }
 );

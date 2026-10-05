@@ -36,7 +36,8 @@ export const piDurableLayer = (
   storage: Storage,
   options: HarnessOptions,
   model: ModelRef,
-  agent: Pick<AgentChange, "thinkingLevel"> = {}
+  agent: Pick<AgentChange, "thinkingLevel"> = {},
+  reconcileModel = false
 ) =>
   Layer.effect(
     AgentHarness,
@@ -56,6 +57,35 @@ export const piDurableLayer = (
           agent: { ...agent, model },
         })
       );
+
+      if (reconcileModel) {
+        const current = yield* operation("configured-model", () =>
+          root.agent(BACKGROUND_CONTEXT)
+        );
+
+        if (
+          current.model?.provider !== model.provider ||
+          current.model?.modelId !== model.modelId
+        ) {
+          const pending = yield* operation("inspect-model-switch", () =>
+            harness.inspect(BACKGROUND_CONTEXT)
+          );
+
+          if (pending.tasks.length > 0 || pending.submissions.length > 0) {
+            return yield* new HarnessFailure({
+              operation: "configure",
+              reason: "Model switch requires an idle harness",
+            });
+          }
+
+          yield* operation("reset-model-context", () =>
+            root.reset(undefined, BACKGROUND_CONTEXT)
+          );
+          yield* operation("configure-model", () =>
+            root.configure({ ...agent, model }, BACKGROUND_CONTEXT)
+          );
+        }
+      }
 
       return AgentHarness.of({
         resume: Effect.fn("AgentHarness.resume")(() =>
