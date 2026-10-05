@@ -1,0 +1,36 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.desk.theme",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "tid",
+      "description": "Public optional desk theme revision. Suggestions only; changing a theme changes neither DIDs nor existing call signs.",
+      "record": {
+        "type": "object",
+        "description": "Desk universe with optional tone and name suggestions; public-safe labels only.",
+        "required": [
+          "universe"
+        ],
+        "properties": {
+          "universe": {
+            "type": "string"
+          },
+          "tone": {
+            "type": "string"
+          },
+          "namePool": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "datetime"
+          }
+        }
+      }
+    }
+  }
+}

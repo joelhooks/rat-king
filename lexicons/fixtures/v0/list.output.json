@@ -1,0 +1,56 @@
+{
+  "events": [
+    {
+      "$type": "sh.mschf.ratking.defs#messageEvent",
+      "seq": 1,
+      "envelope": {
+        "version": 1,
+        "suite": {
+          "kemId": 16,
+          "kdfId": 1,
+          "aeadId": 1
+        },
+        "enc": {
+          "$bytes": "AAECAw=="
+        },
+        "ciphertext": {
+          "$bytes": "BAUGBw=="
+        },
+        "aad": {
+          "senderDid": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+          "recipientDid": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+          "messageId": "3jzfcijpj2z2a",
+          "recipientKeyId": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb#keyAgreement",
+          "expiresAt": "2026-10-05T00:00:00.000Z"
+        }
+      },
+      "receipt": {
+        "message": {
+          "senderDid": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+          "messageId": "3jzfcijpj2z2a"
+        },
+        "recipientDid": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "accepted",
+        "seq": 1,
+        "recordedAt": "2026-10-04T00:00:00.000Z",
+        "woke": false
+      }
+    },
+    {
+      "$type": "sh.mschf.ratking.defs#receiptEvent",
+      "seq": 2,
+      "receipt": {
+        "message": {
+          "senderDid": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+          "messageId": "3jzfcijpj2z2a"
+        },
+        "recipientDid": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+        "state": "acked",
+        "seq": 2,
+        "recordedAt": "2026-10-04T00:00:00.000Z",
+        "woke": false
+      }
+    }
+  ],
+  "throughSeq": 2
+}

@@ -1,0 +1,20 @@
+{
+  "$type": "sh.mschf.ratking.agent.profile",
+  "callSign": "Example",
+  "emoji": "🐀",
+  "birthContext": {
+    "operator": "example",
+    "project": "example",
+    "createdAt": "2026-10-04T00:00:00.000Z"
+  },
+  "genesisCid": "bafyreidfayvfuwqa7qlnopdjiqrxzs6blmoeu4rujcjtnci5beludirz2a",
+  "themeRef": "at://did:plc:aaaaaaaaaaaaaaaaaaaaaaaa/sh.mschf.ratking.desk.theme/3jzfcijpj2z2a",
+  "icon": {
+    "$type": "blob",
+    "ref": {
+      "$link": "bafkreigh2akiscaildc6w4535w7hvhlplb6w3dtwxrs5mrjx2mjjmg6o5a"
+    },
+    "mimeType": "image/png",
+    "size": 64
+  }
+}

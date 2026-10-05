@@ -1,0 +1,336 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.defs",
+  "description": "Draft phase-0 shared definitions. No public mailbox records. Policy and byte encodings are in design.md.",
+  "defs": {
+    "hpkeSuite": {
+      "type": "object",
+      "description": "RFC 9180 HPKE suite tuple using IANA numeric identifiers. Unknown suites validate structurally but require implementation support.",
+      "required": [
+        "kemId",
+        "kdfId",
+        "aeadId"
+      ],
+      "properties": {
+        "kemId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "kdfId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        },
+        "aeadId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 65535
+        }
+      }
+    },
+    "aad": {
+      "type": "object",
+      "description": "HPKE metadata. Canonical AAD binds envelope version, suite, enc and this object. See design.md.",
+      "required": [
+        "senderDid",
+        "recipientDid",
+        "messageId",
+        "recipientKeyId"
+      ],
+      "properties": {
+        "senderDid": {
+          "type": "string",
+          "format": "did"
+        },
+        "recipientDid": {
+          "type": "string",
+          "format": "did"
+        },
+        "messageId": {
+          "type": "string",
+          "format": "tid",
+          "description": "Sender DID plus TID is the immutable idempotency key."
+        },
+        "recipientKeyId": {
+          "type": "string",
+          "format": "uri",
+          "description": "DID URL of recipient's keyAgreement key; checked against recipientDid."
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "datetime",
+          "description": "Absent means no expiry; never infer expiry from the TID."
+        }
+      }
+    },
+    "encryptedEnvelope": {
+      "type": "object",
+      "description": "Sign-then-encrypt envelope; appSignature over canonicalSigningBytes is encrypted inside ciphertext. Not an atproto record signature.",
+      "required": [
+        "version",
+        "suite",
+        "enc",
+        "ciphertext",
+        "aad"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "suite": {
+          "type": "ref",
+          "ref": "sh.mschf.ratking.defs#hpkeSuite"
+        },
+        "enc": {
+          "type": "bytes",
+          "minLength": 1,
+          "description": "HPKE encapsulated key, not a nonce."
+        },
+        "ciphertext": {
+          "type": "bytes",
+          "minLength": 1,
+          "description": "HPKE encryption of signedMessage, including appSignature."
+        },
+        "aad": {
+          "type": "ref",
+          "ref": "sh.mschf.ratking.defs#aad"
+        }
+      }
+    },
+    "deliveryState": {
+      "type": "string",
+      "knownValues": [
+        "accepted",
+        "queued",
+        "delivered",
+        "acked",
+        "expired",
+        "failed"
+      ],
+      "description": "Open values: accepted = durable admission; queued = awaiting runtime; delivered = injected into leased runtime, not processed; acked = recipient acknowledgment; expired = sender-set expiry reached; failed = terminal failure with a receipt. Unknown values are not success."
+    },
+    "messageRef": {
+      "type": "object",
+      "description": "Sender DID plus TID identity, with optional future repository locators.",
+      "required": [
+        "senderDid",
+        "messageId"
+      ],
+      "properties": {
+        "senderDid": {
+          "type": "string",
+          "format": "did"
+        },
+        "messageId": {
+          "type": "string",
+          "format": "tid"
+        },
+        "uri": {
+          "type": "string",
+          "format": "at-uri",
+          "description": "Optional actual persisted record URI; never fabricate a phase-0 record locator."
+        },
+        "cid": {
+          "type": "string",
+          "format": "cid",
+          "description": "Optional CID of that exact persisted record, not a hash of JSON."
+        }
+      }
+    },
+    "appSignature": {
+      "type": "object",
+      "description": "App-specific encrypted signature over canonicalSigningBytes. Not a repo commit signature.",
+      "required": [
+        "algorithm",
+        "keyId",
+        "signature"
+      ],
+      "properties": {
+        "algorithm": {
+          "type": "string",
+          "knownValues": [
+            "ES256",
+            "ES256K"
+          ]
+        },
+        "keyId": {
+          "type": "string",
+          "format": "uri",
+          "description": "DID URL of sender's authorized signing key at send time."
+        },
+        "signature": {
+          "type": "bytes"
+        },
+        "publicKeyMultibase": {
+          "type": "string",
+          "description": "Optional historical key hint, never authority without verified key history."
+        }
+      }
+    },
+    "signedMessage": {
+      "type": "object",
+      "description": "HPKE plaintext encoded as DRISL-CBOR. canonicalSigningBytes is the domain-separated canonical encoding of signingPayload, not JSON.",
+      "required": [
+        "canonicalSigningBytes",
+        "appSignature"
+      ],
+      "properties": {
+        "canonicalSigningBytes": {
+          "type": "bytes"
+        },
+        "appSignature": {
+          "type": "ref",
+          "ref": "sh.mschf.ratking.defs#appSignature"
+        }
+      }
+    },
+    "signingPayload": {
+      "type": "object",
+      "description": "Payload following the Rat King signature domain prefix. Metadata must match the envelope; body contains application bytes.",
+      "required": [
+        "version",
+        "suite",
+        "aad",
+        "body"
+      ],
+      "properties": {
+        "version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "suite": {
+          "type": "ref",
+          "ref": "sh.mschf.ratking.defs#hpkeSuite"
+        },
+        "aad": {
+          "type": "ref",
+          "ref": "sh.mschf.ratking.defs#aad"
+        },
+        "body": {
+          "type": "bytes"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "datetime"
+        },
+        "replyTo": {
+          "type": "ref",
+          "ref": "sh.mschf.ratking.defs#messageRef"
+        }
+      }
+    },
+    "birthContext": {
+      "type": "object",
+      "description": "Immutable serial birth context.",
+      "required": [
+        "operator",
+        "project"
+      ],
+      "properties": {
+        "operator": {
+          "type": "string",
+          "description": "Public operator namespace label, not a private person name."
+        },
+        "project": {
+          "type": "string",
+          "description": "Public project namespace at birth, not the current assignment."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "datetime"
+        }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "description": "Sequenced receipt in the recipient's private log. State transitions append events, never overwrite history.",
+      "required": [
+        "message",
+        "recipientDid",
+        "state",
+        "seq"
+      ],
+      "properties": {
+        "message": {
+          "type": "ref",
+          "ref": "sh.mschf.ratking.defs#messageRef"
+        },
+        "recipientDid": {
+          "type": "string",
+          "format": "did"
+        },
+        "state": {
+          "type": "ref",
+          "ref": "sh.mschf.ratking.defs#deliveryState"
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "recordedAt": {
+          "type": "string",
+          "format": "datetime"
+        },
+        "detail": {
+          "type": "string",
+          "description": "Optional public-safe failure or expiry explanation."
+        },
+        "woke": {
+          "type": "boolean",
+          "description": "Independent best-effort wake outcome, never proof of delivery."
+        },
+        "wakeReason": {
+          "type": "string"
+        }
+      }
+    },
+    "messageEvent": {
+      "type": "object",
+      "description": "Message admission event; seq equals receipt.seq. Later transitions are separate receiptEvent objects.",
+      "required": [
+        "seq",
+        "envelope",
+        "receipt"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "envelope": {
+          "type": "ref",
+          "ref": "sh.mschf.ratking.defs#encryptedEnvelope"
+        },
+        "receipt": {
+          "type": "ref",
+          "ref": "sh.mschf.ratking.defs#receipt"
+        }
+      }
+    },
+    "receiptEvent": {
+      "type": "object",
+      "description": "Delivery transition event; seq equals receipt.seq.",
+      "required": [
+        "seq",
+        "receipt"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "receipt": {
+          "type": "ref",
+          "ref": "sh.mschf.ratking.defs#receipt"
+        }
+      }
+    }
+  }
+}

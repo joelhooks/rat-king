@@ -1,0 +1,68 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.mailbox.send",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Durable admission, idempotent on authenticated sender DID plus TID. Exact replay returns the original admission receipt. Different content under the same id is rejected.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "description": "Sender DID must match service-auth iss.",
+          "required": [
+            "envelope"
+          ],
+          "properties": {
+            "envelope": {
+              "type": "ref",
+              "ref": "sh.mschf.ratking.defs#encryptedEnvelope"
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "description": "Durable receipt.",
+          "required": [
+            "receipt"
+          ],
+          "properties": {
+            "receipt": {
+              "type": "ref",
+              "ref": "sh.mschf.ratking.defs#receipt"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "InvalidRequest",
+          "description": "Invalid or unsupported operation."
+        },
+        {
+          "name": "AuthRequired",
+          "description": "Missing or invalid service-auth token."
+        },
+        {
+          "name": "Forbidden",
+          "description": "Authenticated DID is not authorized."
+        },
+        {
+          "name": "IdempotencyConflict",
+          "description": "The same sender DID plus TID exists with a different envelope or recipient."
+        },
+        {
+          "name": "UnsupportedEnvelope",
+          "description": "Unsupported envelope version or encryption suite."
+        },
+        {
+          "name": "MailboxUnavailable",
+          "description": "Durable admission not confirmed; retry the same id with fresh service auth."
+        }
+      ]
+    }
+  }
+}

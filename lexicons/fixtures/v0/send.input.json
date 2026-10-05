@@ -1,0 +1,23 @@
+{
+  "envelope": {
+    "version": 1,
+    "suite": {
+      "kemId": 16,
+      "kdfId": 1,
+      "aeadId": 1
+    },
+    "enc": {
+      "$bytes": "AAECAw=="
+    },
+    "ciphertext": {
+      "$bytes": "BAUGBw=="
+    },
+    "aad": {
+      "senderDid": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+      "recipientDid": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+      "messageId": "3jzfcijpj2z2a",
+      "recipientKeyId": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb#keyAgreement",
+      "expiresAt": "2026-10-05T00:00:00.000Z"
+    }
+  }
+}
