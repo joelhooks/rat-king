@@ -1,0 +1,153 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.runtime.lease",
+  "description": "Private ephemeral binding, NOT a public repo record. A DID-keyed authority enforces exclusivity, expiry and monotonically increasing fencing generation.",
+  "defs": {
+    "main": {
+      "type": "object",
+      "description": "Exclusive runtime binding. Known adapters require at least one sessionId or paneId; schema validity grants no authority.",
+      "required": [
+        "did",
+        "leaseId",
+        "generation",
+        "expiresAt",
+        "harness"
+      ],
+      "properties": {
+        "did": {
+          "type": "string",
+          "format": "did"
+        },
+        "leaseId": {
+          "type": "string",
+          "format": "tid"
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "expiresAt": {
+          "type": "string",
+          "format": "datetime"
+        },
+        "harness": {
+          "type": "union",
+          "refs": [
+            "#pi",
+            "#claude",
+            "#codex",
+            "#opencode",
+            "#other"
+          ],
+          "closed": false
+        },
+        "issuedAt": {
+          "type": "string",
+          "format": "datetime"
+        }
+      }
+    },
+    "pi": {
+      "type": "object",
+      "description": "Private pi adapter binding.",
+      "required": [],
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "description": "Opaque adapter-local session identifier, never identity."
+        },
+        "paneId": {
+          "type": "string",
+          "description": "Opaque adapter-local pane identifier, never a host address."
+        },
+        "executionId": {
+          "type": "string",
+          "description": "Optional run inside the bound session."
+        }
+      }
+    },
+    "claude": {
+      "type": "object",
+      "description": "Private claude adapter binding.",
+      "required": [],
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "description": "Opaque adapter-local session identifier, never identity."
+        },
+        "paneId": {
+          "type": "string",
+          "description": "Opaque adapter-local pane identifier, never a host address."
+        },
+        "executionId": {
+          "type": "string",
+          "description": "Optional run inside the bound session."
+        }
+      }
+    },
+    "codex": {
+      "type": "object",
+      "description": "Private codex adapter binding.",
+      "required": [],
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "description": "Opaque adapter-local session identifier, never identity."
+        },
+        "paneId": {
+          "type": "string",
+          "description": "Opaque adapter-local pane identifier, never a host address."
+        },
+        "executionId": {
+          "type": "string",
+          "description": "Optional run inside the bound session."
+        }
+      }
+    },
+    "opencode": {
+      "type": "object",
+      "description": "Private opencode adapter binding.",
+      "required": [],
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "description": "Opaque adapter-local session identifier, never identity."
+        },
+        "paneId": {
+          "type": "string",
+          "description": "Opaque adapter-local pane identifier, never a host address."
+        },
+        "executionId": {
+          "type": "string",
+          "description": "Optional run inside the bound session."
+        }
+      }
+    },
+    "other": {
+      "type": "object",
+      "description": "Extensible binding; unknown variants cannot execute without an installed adapter.",
+      "required": [
+        "kind"
+      ],
+      "properties": {
+        "kind": {
+          "type": "string",
+          "description": "Harness adapter identifier."
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Opaque adapter-local session identifier, never identity."
+        },
+        "paneId": {
+          "type": "string",
+          "description": "Opaque adapter-local pane identifier, never a host address."
+        },
+        "executionId": {
+          "type": "string",
+          "description": "Optional run inside the bound session."
+        }
+      }
+    }
+  }
+}

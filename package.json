@@ -6,17 +6,21 @@
   "license": "MIT",
   "type": "module",
   "scripts": {
-    "check": "pnpm typecheck && pnpm check:ship-confidence && ultracite check && oxfmt --check .",
-    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "check": "pnpm lexgen:check && pnpm typecheck && pnpm check:ship-confidence && ultracite check && oxfmt --check .",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tools/lexgen/tsconfig.json",
     "fix": "ultracite fix && oxfmt .",
     "prepare": "effect-tsgo patch && lefthook install",
     "vendor:agent-sources": "bash scripts/vendor-agent-sources.sh",
     "generate:ship-confidence": "node scripts/ship-confidence.ts --root . --write",
     "check:ship-confidence": "node scripts/ship-confidence.ts --root .",
     "fence": "node tools/fence/cli.ts --mode tree",
-    "test": "vitest run"
+    "test": "vitest run && vitest run --config tools/lexgen/vitest.config.ts",
+    "lexgen:write": "node tools/lexgen/cli.ts --write",
+    "lexgen:check": "node tools/lexgen/cli.ts --check"
   },
   "devDependencies": {
+    "@atproto/lex-data": "0.1.8",
+    "@atproto/lexicon": "0.7.16",
     "@effect/platform-node": "4.0.0-rc.117",
     "@effect/tsgo": "0.45.0",
     "@effect/vitest": "4.0.0-rc.117",

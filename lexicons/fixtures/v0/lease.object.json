@@ -1,0 +1,12 @@
+{
+  "did": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+  "leaseId": "3jzfcijpj2z2b",
+  "generation": 1,
+  "expiresAt": "2026-10-04T00:05:00.000Z",
+  "harness": {
+    "$type": "sh.mschf.ratking.runtime.lease#pi",
+    "sessionId": "example-session",
+    "paneId": "example-pane",
+    "executionId": "example-run"
+  }
+}

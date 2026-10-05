@@ -1,0 +1,13 @@
+{
+  "receipt": {
+    "message": {
+      "senderDid": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa",
+      "messageId": "3jzfcijpj2z2a"
+    },
+    "recipientDid": "did:plc:bbbbbbbbbbbbbbbbbbbbbbbb",
+    "state": "acked",
+    "seq": 2,
+    "recordedAt": "2026-10-04T00:00:00.000Z",
+    "woke": false
+  }
+}

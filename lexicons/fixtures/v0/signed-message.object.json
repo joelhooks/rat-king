@@ -1,0 +1,12 @@
+{
+  "canonicalSigningBytes": {
+    "$bytes": "ZXhhbXBsZQ=="
+  },
+  "appSignature": {
+    "algorithm": "ES256",
+    "keyId": "did:plc:aaaaaaaaaaaaaaaaaaaaaaaa#atproto",
+    "signature": {
+      "$bytes": "AAECAw=="
+    }
+  }
+}

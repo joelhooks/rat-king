@@ -1,0 +1,14 @@
+{
+  "effect": "4.0.0-rc.117",
+  "generatorVersion": "0.1.0",
+  "sourceDigest": "a565647e6d22dce7bf209649173290e561c04cdf5c2bf9c00102cbee1fced9a6",
+  "sources": [
+    "lexicons/sh/mschf/ratking/agent/profile.json",
+    "lexicons/sh/mschf/ratking/defs.json",
+    "lexicons/sh/mschf/ratking/desk/theme.json",
+    "lexicons/sh/mschf/ratking/mailbox/ack.json",
+    "lexicons/sh/mschf/ratking/mailbox/list.json",
+    "lexicons/sh/mschf/ratking/mailbox/send.json",
+    "lexicons/sh/mschf/ratking/runtime/lease.json"
+  ]
+}
