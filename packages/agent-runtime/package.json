@@ -1,0 +1,21 @@
+{
+  "name": "@rat-king/agent-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/port.ts",
+    "./pi-durable": "./src/pi-durable.ts",
+    "./sqlite": "./src/sqlite.ts"
+  },
+  "dependencies": {
+    "@earendil-works/chord": "1.0.2",
+    "@earendil-works/pi-ai": "1.0.2",
+    "@earendil-works/pi-durable": "1.0.2",
+    "effect": "4.0.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20261004.1",
+    "esbuild": "0.28.2"
+  }
+}
