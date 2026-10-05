@@ -1,0 +1,16 @@
+{
+  "name": "@rat-king/envelope",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/envelope.ts",
+    "./*": "./src/*.ts"
+  },
+  "dependencies": {
+    "@hpke/core": "1.9.0",
+    "@ipld/dag-cbor": "10.0.2",
+    "@rat-king/lexicon": "workspace:*",
+    "effect": "4.0.0-rc.117"
+  }
+}
