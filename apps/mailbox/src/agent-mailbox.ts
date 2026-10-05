@@ -12,9 +12,9 @@ import * as Acquire from "@rat-king/lexicon/runtime.acquireLease";
 import * as RuntimeLease from "@rat-king/lexicon/runtime.lease";
 import * as Release from "@rat-king/lexicon/runtime.releaseLease";
 import * as Renew from "@rat-king/lexicon/runtime.renewLease";
+import { base64url, DidResolver, serviceToken } from "@rat-king/mailbox-client";
 import { Clock, DateTime, Effect, Schema } from "effect";
 
-import { base64url, DidResolver, serviceToken } from "./auth.ts";
 import type { Bindings } from "./bindings.ts";
 import { documentsLayer } from "./documents.ts";
 import { fetchRequest } from "./worker.ts";
