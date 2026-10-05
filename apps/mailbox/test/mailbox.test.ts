@@ -2,7 +2,9 @@ import { it } from "@effect/vitest";
 import { MailboxHandlers } from "@rat-king/lexicon/mailbox-handlers";
 import * as Ack from "@rat-king/lexicon/mailbox.ack";
 import * as List from "@rat-king/lexicon/mailbox.list";
-import { Effect, Layer, Schema } from "effect";
+import * as Acquire from "@rat-king/lexicon/runtime.acquireLease";
+import * as Renew from "@rat-king/lexicon/runtime.renewLease";
+import { Clock, DateTime, Effect, Layer, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { expect } from "vitest";
 
@@ -18,7 +20,7 @@ import {
   LeaseAuthority,
   leaseLayer,
 } from "../src/mailbox.ts";
-import { documents, testStore } from "./helpers.ts";
+import { documents, testStore, unleasedSender } from "./helpers.ts";
 
 it.effect(
   "SQL admission, canonical idempotency, snapshots, lease fencing and ack durability",
@@ -34,12 +36,14 @@ it.effect(
       const storage = yield* testStore;
 
       const senderLayer = handlersLayer.pipe(
+        Layer.provide(unleasedSender),
         Layer.provide(storage.layer),
         Layer.provide(staticResolver(docs)),
         Layer.provide(Layer.succeed(Caller, { did: senderDid }))
       );
 
       const recipientLayer = handlersLayer.pipe(
+        Layer.provide(unleasedSender),
         Layer.provide(storage.layer),
         Layer.provide(staticResolver(docs)),
         Layer.provide(Layer.succeed(Caller, { did: recipientDid }))
@@ -80,8 +84,20 @@ it.effect(
       expect(read.throughSeq).toBe(1);
       expect(read.events.length).toBe(1);
       expect(read.cursor).toBeUndefined();
-      const leaseId = "3m7x2ka4xv22b";
-      const firstLease = yield* leases.acquire(leaseId, 1000);
+
+      const input = yield* Schema.decodeUnknownEffect(Acquire.Input)({
+        did: recipientDid,
+        expiresAt: DateTime.formatIso(
+          DateTime.makeUnsafe((yield* Clock.currentTimeMillis) + 1000)
+        ),
+        harness: {
+          $type: "sh.mschf.ratking.runtime.lease#pi",
+          sessionId: "test",
+        },
+      });
+
+      const firstLease = yield* leases.acquire(input);
+      const { leaseId } = firstLease;
 
       const ack = yield* Schema.decodeUnknownEffect(Ack.Input)({
         generation: firstLease.generation,
@@ -93,21 +109,27 @@ it.effect(
       expect((yield* recipient.ack(ack).pipe(Effect.exit))._tag).toBe(
         "Failure"
       );
-      yield* leases.inject(
-        senderDid,
-        sample.envelope.aad.messageId,
-        leaseId,
-        firstLease.generation
-      );
+      yield* recipient.deliver(ack);
       const page1 = yield* recipient.list(params);
       expect(page1.throughSeq).toBe(3);
       expect(page1.cursor).toBeDefined();
-      const rebound = yield* leases.acquire(leaseId, 1000);
+      yield* leases.release({
+        did: input.did,
+        generation: firstLease.generation,
+        leaseId: firstLease.leaseId,
+      });
+      const rebound = yield* leases.acquire(input);
       expect(rebound.generation).toBe(2);
       expect((yield* recipient.ack(ack).pipe(Effect.exit))._tag).toBe(
         "Failure"
       );
-      const valid = { ...ack, generation: rebound.generation };
+
+      const valid = {
+        ...ack,
+        generation: rebound.generation,
+        leaseId: rebound.leaseId,
+      };
+
       const acknowledged = yield* recipient.ack(valid);
       expect(acknowledged.receipt.state).toBe("acked");
       expect(yield* recipient.ack(valid)).toEqual(acknowledged);
@@ -144,7 +166,13 @@ it.effect(
       );
       expect(
         (yield* leases
-          .renew(leaseId, rebound.generation, 1000)
+          .renew(
+            yield* Schema.decodeUnknownEffect(Renew.Input)({
+              ...input,
+              generation: rebound.generation,
+              leaseId: rebound.leaseId,
+            })
+          )
           .pipe(Effect.exit))._tag
       ).toBe("Failure");
     }).pipe(Effect.scoped)

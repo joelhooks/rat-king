@@ -1,5 +1,6 @@
 import type * as Defs from "@rat-king/lexicon/defs";
 import type * as List from "@rat-king/lexicon/mailbox.list";
+import * as RuntimeLease from "@rat-king/lexicon/runtime.lease";
 import { XrpcFailure as XrpcFailureClass } from "@rat-king/lexicon/xrpc-failure";
 import type { XrpcFailure } from "@rat-king/lexicon/xrpc-failure";
 import { Context, Effect, Schema } from "effect";
@@ -13,7 +14,7 @@ export interface Message {
   readonly current: Defs.ReceiptValue;
 }
 
-export const Lease = Schema.Struct({
+const LegacyLease = Schema.Struct({
   expiresAt: Schema.Int,
   generation: Schema.Int.check(
     Schema.isGreaterThanOrEqualTo(1),
@@ -21,6 +22,16 @@ export const Lease = Schema.Struct({
   ),
   leaseId: Schema.String,
 });
+
+export const Lease = Schema.Union([
+  Schema.Struct({
+    ...LegacyLease.fields,
+    did: RuntimeLease.Main.schema.fields.did,
+    harness: RuntimeLease.Main.schema.fields.harness,
+    issuedAt: Schema.Int,
+  }),
+  LegacyLease,
+]);
 
 export type LeaseValue = typeof Lease.Type;
 
@@ -40,6 +51,8 @@ export interface Transaction {
   readonly lease: () => LeaseValue | undefined;
   readonly setLease: (lease: LeaseValue) => void;
   readonly cursorSecret: () => Uint8Array;
+  readonly document: () => Defs.DidDocumentValue | undefined;
+  readonly setDocument: (document: Defs.DidDocumentValue) => void;
 }
 
 export class MailboxStore extends Context.Service<

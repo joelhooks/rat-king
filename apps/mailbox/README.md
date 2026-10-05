@@ -1,16 +1,28 @@
-# Mailbox proof
+# Mailbox pilot
 
 Local proof only. No deployment authority, Cloudflare deployment or real recipient sends. The optional hosted Worker wakes an agent DO after mailbox admission.
 
 `src/worker.ts` projects generated `@rat-king/lexicon` routes. Application Effect services own admission, idempotency, sequenced events, snapshots and leases. The SQL adapter groups authoritative changes in DO SQLite transactions. The XState v6 delivery machine keeps wake results out of delivery state.
 
-One Mailbox DO is named by recipient DID. A separate AuthTokens DO owns service-wide JWT replay rejection across all mailboxes and methods. DID documents in Worker configuration contain only public P-256 JWKs and explicit authentication/keyAgreement membership. The proof admits configured did:web accounts; network resolution and key-history verification are later adapters.
+One Mailbox DO is named by recipient DID. A separate AuthTokens DO owns service-wide JWT replay rejection across all mailboxes and methods. DID documents in Worker configuration contain only public P-256 JWKs and explicit authentication/keyAgreement membership. The pilot admits configured or operator-registered did:web accounts. Static documents win over registration. Unknown-DID lookups touch the Mailbox DO for that name; that is acceptable for the pilot. Network resolution and key-history verification remain later adapters.
 
 Bindings and build metadata live in `src/bindings.ts`. Bundles require build-supplied version and commit; `/.well-known/rat-king/version` reports those literals. No runtime Git access. No tracked Wrangler configuration.
 
-The lease authority's acquire/renew/release and injection-evidence methods are DO RPC. The authenticated proof-only `POST /rat-king/v0/lease` seam acquires or renews the issuer's own lease and optionally records delivery for a message reference. Listing never mutates delivery. Ack requires current, unexpired lease ID/generation and a delivered message; repeated valid acks return their original receipt. TerminalDelivery records sender-authorized expiry or terminal failure without reviving terminal messages. The optional hosted-agent adapter supplies runtime injection. No expiry scheduler or owner notification transport is supplied: trusted adapters must call those private ports and consume receipt events. Transient wake failures must not call terminal failure.
+The generated runtime XRPC methods acquire, renew, release and resolve the exclusive lease in each DID's Mailbox DO. Acquire never steals, even from the same issuer. The server mints a TID lease ID, increments the persistent generation and clamps expiry to five minutes. Renew and release require the current unexpired fence. Only the DID itself may change its lease. Resolve allows the DID or an issuer in `LEASE_RESOLVERS`, an optional JSON array that defaults to `[]`. Legacy lease rows still decode, and expiry or release never resets generation.
+
+A sender with a live lease must supply its exact `leaseId` and `generation` to `mailbox.send`. The check reads the sender's own Mailbox DO. An unfenced send is allowed only without a live lease; any supplied stale or partial fence is refused. `mailbox.deliver` requires the recipient's fence and records runtime injection. Repeating delivery returns the original delivery receipt without appending another event. Listing never mutates delivery. Ack requires current, unexpired lease ID/generation and a delivered message; repeated valid acks return their original receipt. TerminalDelivery records sender-authorized expiry or terminal failure without reviving terminal messages. The optional hosted-agent adapter supplies runtime injection. No message-expiry scheduler is supplied: trusted adapters must call those private ports and consume receipt events. Transient wake failures must not call terminal failure.
 
 Canonical envelope bytes identify a sender-DID/TID admission forever in this proof: records and terminal receipts are not pruned. There are therefore no retention gaps or CursorExpired cases yet. SenderReservation is a typed seam only. A recipient DO cannot reserve the same sender/TID across different recipients; the sender outbox/handoff belongs to later work.
+
+## Push socket
+
+Upgrade `/xrpc/sh.mschf.ratking.mailbox.subscribe` with only `recipientDid`, `leaseId` and `generation` in the query. The first JSON frame is `{ "$type": "sh.mschf.ratking.mailbox.subscribe#auth", "token": "<fresh service-auth JWT>" }`. Its issuer must be the recipient and its `lxm` must be the subscribe NSID. The normal signature, audience, expiry and replay checks apply. Successful authentication emits exactly one notice with the current watermark, atomically with marking the socket authenticated. This first notice is the ready and catch-up barrier: clients wait for it before listing. Every later committed append emits its own notice, so appends racing authentication are either included in the barrier or announced after it. Tokens never belong in URLs or persisted socket attachments.
+
+Hibernatable sockets use `acceptWebSocket`, lifecycle attachments and DO alarms for the five-second authentication deadline. After each committed append, an authenticated holder receives `{ "$type": "sh.mschf.ratking.mailbox.subscribe#notice", "seq": 1 }`, with no sender, TID or content. Catch up through list's exclusive `afterSeq`. A newer generation or release closes the old sockets; expiry closes them at the next notice. Close codes are `4408` for authentication timeout, `4401` for authentication failure and `4409` for a stale lease. Hibernation preserves attachments; owner migration requires reconnecting.
+
+## DID registration
+
+`admin.putDidDocument` allows only issuers in `OPERATOR_DIDS`, an optional JSON array that defaults to `[]`. It stores the public document in the DO named by its ID. Identical repeats return the DID; different documents fail with `DocumentConflict`. Static `DID_DOCUMENTS` cannot be overridden. Key rotation is not available in this version.
 
 ## Hosted mailbox loop
 
@@ -18,7 +30,7 @@ Use `src/hosted-worker.ts` to compose Mailbox, AuthTokens and Agent in one Worke
 
 After a successful authenticated send, the Worker best-effort calls the hosted recipient's private `wake()` RPC. Separate `wake_attempts` rows record accepted or unavailable; they never change delivery state. An accepted wake means the agent accepted work, not that it answered. Replaying an admitted envelope can wake the agent again, but returns its original admission receipt.
 
-The agent acquires a mailbox lease, reads every page of one list snapshot, folds receipt events, and processes only accepted, queued or delivered messages. It renews before injection and acknowledgment. Listing itself still does not deliver anything. The agent opens and verifies envelopes inside the isolate, submits through AgentHarness, delivers its signed reply through the same XRPC authentication and routing handler as the CLI, then acknowledges the original. The reply's encrypted signed payload contains `replyTo`. Reply delivery uses same-Worker DO stubs, never an outbound HTTP call.
+The agent acquires a mailbox lease through the same authority. If another holder owns it, that wake does no processing and the next wake retries. It reads every page of one list snapshot, folds receipt events, and processes only accepted, queued or delivered messages. It renews before injection and acknowledgment. Listing itself still does not deliver anything. The agent opens and verifies envelopes inside the isolate, submits through AgentHarness, delivers its signed reply through the same XRPC authentication and routing handler as the CLI, then acknowledges the original. The reply's encrypted signed payload contains `replyTo`. Reply delivery uses same-Worker DO stubs, never an outbound HTTP call.
 
 See [agent-runtime](../../packages/agent-runtime/README.md#hosted-mailbox-loop) for configuration, checkpoints, model egress restrictions and limits. Production has no evidence route; `test/agent-worker.ts` exposes loop evidence only for the owned loopback proof.
 
@@ -30,9 +42,9 @@ See [agent-runtime](../../packages/agent-runtime/README.md#hosted-mailbox-loop) 
 RAT_KING_CELLD=/path/to/verified/celld pnpm test
 ```
 
-The harness generates Wrangler config and an entry module in an OS temp directory, allocates a loopback port, starts its own celld process, waits for observed readiness and terminates that process on scope exit. `test/worker.ts` exposes private lease RPC for tests only. Production never imports it. Its separate `/rat-king/v0/lease` seam requires service authentication.
+The harness generates Wrangler config and an entry module in an OS temp directory, allocates a loopback port, starts its own celld process, waits for observed readiness and terminates that process on scope exit. `test/worker.ts` adds only loopback crypto probes and a socket-state readback for authentication synchronization. Production never imports it. The proof-only `/rat-king/v0/lease` route has been removed.
 
-`outcomeProof(baseUrl, sample)` stays celld-dev-only: it uses `/test/lease` for private injection coverage. The shared production suite is `test/target.suite.test.ts`. Cloudflare adapter qualification remains undone.
+`outcomeProof(baseUrl, sample)` uses generated lease and deliver XRPC methods. The shared production suite is `test/target.suite.test.ts`. Cloudflare adapter qualification remains undone.
 
 ## Shared target suite
 

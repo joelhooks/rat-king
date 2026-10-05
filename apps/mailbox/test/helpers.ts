@@ -3,13 +3,14 @@
 import { DatabaseSync } from "node:sqlite";
 
 import { cryptoOperation } from "@rat-king/envelope/webcrypto";
-import { Effect, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 
 import {
   recipientDid,
   senderDid,
 } from "../../../packages/envelope/test/helpers.ts";
 import { Documents } from "../src/auth.ts";
+import { SenderFence } from "../src/sender-fence.ts";
 import { sqliteStore } from "../src/sqlite.ts";
 import type { Sql } from "../src/sqlite.ts";
 
@@ -58,31 +59,38 @@ export const documents = Effect.fn("Test.documents")(function* documents(
   ]);
 });
 
-export const testStore = Effect.acquireRelease(
-  Effect.sync(() => new DatabaseSync(":memory:")),
-  (database) =>
-    Effect.sync(() => {
-      database.close();
+export const unleasedSender = Layer.succeed(SenderFence, {
+  check: () => Effect.void,
+});
+
+export const testStoreFor = (did: string) =>
+  Effect.acquireRelease(
+    Effect.sync(() => new DatabaseSync(":memory:")),
+    (database) =>
+      Effect.sync(() => {
+        database.close();
+      })
+  ).pipe(
+    Effect.map((database) => {
+      const sql: Sql = {
+        exec: (query, ...values) => database.prepare(query).all(...values),
+        transaction: (operation) => {
+          database.exec("BEGIN");
+
+          try {
+            const result = operation();
+            database.exec("COMMIT");
+
+            return result;
+          } catch (error) {
+            database.exec("ROLLBACK");
+            throw error;
+          }
+        },
+      };
+
+      return { layer: sqliteStore(sql, did), sql };
     })
-).pipe(
-  Effect.map((database) => {
-    const sql: Sql = {
-      exec: (query, ...values) => database.prepare(query).all(...values),
-      transaction: (operation) => {
-        database.exec("BEGIN");
+  );
 
-        try {
-          const result = operation();
-          database.exec("COMMIT");
-
-          return result;
-        } catch (error) {
-          database.exec("ROLLBACK");
-          throw error;
-        }
-      },
-    };
-
-    return { layer: sqliteStore(sql, recipientDid), sql };
-  })
-);
+export const testStore = testStoreFor(recipientDid);

@@ -1,22 +1,31 @@
-import * as Runtime from "@rat-king/lexicon/runtime";
 /* oxlint-disable typescript/promise-function-async, promise/prefer-await-to-callbacks -- Test Worker RPC and fetch boundaries return Effect-run promises directly. */
 import { Effect, Schema } from "effect";
 
 import type { Bindings } from "../src/bindings.ts";
-import production from "../src/worker.ts";
+import { SocketAttachment } from "../src/socket.ts";
+import production, { Mailbox as ProductionMailbox } from "../src/worker.ts";
 import { hpkeProof } from "./hpke-proof.ts";
 
-export { AuthTokens, Mailbox } from "../src/worker.ts";
+export { AuthTokens } from "../src/worker.ts";
 
-const Command = Schema.Struct({
-  generation: Schema.Int,
-  leaseId: Runtime.lexString({ format: "tid", type: "string" }),
-  messageId: Schema.String,
-  operation: Schema.Literals(["acquire", "renew", "release", "inject"]),
-  recipientDid: Runtime.lexString({ format: "did", type: "string" }),
-  senderDid: Schema.String,
-  ttl: Schema.Int,
-});
+export class Mailbox extends ProductionMailbox {
+  override fetch(request: Request) {
+    if (new URL(request.url).pathname === "/test/sockets") {
+      const states = this.ctx
+        .getWebSockets()
+        .map(
+          (socket) =>
+            Schema.decodeUnknownSync(SocketAttachment)(
+              socket.deserializeAttachment()
+            ).state
+        );
+
+      return Promise.resolve(Response.json({ states }));
+    }
+
+    return super.fetch(request);
+  }
+}
 
 export default {
   fetch: (request: Request, env: Bindings) => {
@@ -52,54 +61,14 @@ export default {
       );
     }
 
-    if (new URL(request.url).pathname !== "/test/lease") {
-      return production.fetch(request, env);
+    if (new URL(request.url).pathname === "/test/sockets") {
+      const did = new URL(request.url).searchParams.get("recipientDid") ?? "";
+
+      return env.MAILBOX.getByName(did).fetch(
+        new Request("https://test.example.invalid/test/sockets")
+      );
     }
 
-    return Effect.runPromise(
-      Effect.gen(function* privateRpc() {
-        const command = yield* Schema.decodeUnknownEffect(Command)(
-          yield* Effect.promise(() => request.json())
-        );
-
-        const stub = env.MAILBOX.getByName(command.recipientDid);
-
-        if (command.operation === "acquire") {
-          return Response.json(
-            yield* Effect.promise(() =>
-              stub.acquireLease(command.leaseId, command.ttl)
-            )
-          );
-        }
-
-        if (command.operation === "renew") {
-          return Response.json(
-            yield* Effect.promise(() =>
-              stub.renewLease(command.leaseId, command.generation, command.ttl)
-            )
-          );
-        }
-
-        if (command.operation === "release") {
-          yield* Effect.promise(() =>
-            stub.releaseLease(command.leaseId, command.generation)
-          );
-
-          return Response.json({ released: true });
-        }
-
-        return new Response(
-          yield* Effect.promise(() =>
-            stub.inject(
-              command.senderDid,
-              command.messageId,
-              command.leaseId,
-              command.generation
-            )
-          ),
-          { headers: { "content-type": "application/json" } }
-        );
-      })
-    );
+    return production.fetch(request, env);
   },
 };
