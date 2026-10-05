@@ -37,7 +37,7 @@ node stacks/cf/cli.ts teardown-probe
 - `deploy` requires approval and `RAT_KING_CF_OFFLINE_PLAN=false`.
 - `destroy-plan` describes the graph to delete. Offline mode makes no network calls; network-enabled planning requires approval.
 - `destroy` requires approval and offline mode disabled. Inspect the destroy plan first.
-- `teardown-probe` requires approval and offline mode disabled. It makes GET requests only, checking the script's settings and every page of account Durable Object namespaces. Only the specific script-not-found response proves script absence. Authentication errors, malformed responses and incomplete pagination never pass. Output uses pass/fail labels; failure exits nonzero.
+- `teardown-probe` requires approval and offline mode disabled. It makes GET requests only, checking the script's settings and every page of account Durable Object namespaces. Only the specific script-not-found response proves script absence. Authentication errors, malformed responses and incomplete pagination never pass. Pagination stops on a short page (fewer than 100 entries) or a validated `total_pages` boundary when supplied, with a hard 1000-page cap. Missing `total_pages` is allowed; malformed metadata fails closed. Output uses pass/fail labels with sanitised HTTP status, error codes or schema/step names on failure, never response bodies or identifiers. A namespace failure preserves a proven worker PASS; failure exits nonzero.
 
 For the later live phase, set both approval and offline inputs explicitly, use fresh external state and private files, inspect `plan`, deploy, prove the recipient behavior, inspect `destroy-plan`, destroy, then run the probe. No live action has been qualified.
 

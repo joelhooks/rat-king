@@ -688,6 +688,15 @@ export const targetProof = Effect.fn("Suite.targetProof")(function* targetProof(
   return yield* Effect.void;
 });
 
+const deadlineRuns = Number(process.env.RAT_KING_SUITE_NUM_RUNS ?? "2");
+
+const suiteDeadline =
+  60_000 +
+  30_000 *
+    (Number.isInteger(deadlineRuns) && deadlineRuns >= 1 && deadlineRuns <= 20
+      ? deadlineRuns
+      : 2);
+
 const baseUrl = process.env.RAT_KING_SUITE_BASE_URL;
 
 const serviceDid = process.env.RAT_KING_SUITE_SERVICE_DID;
@@ -721,7 +730,7 @@ it.live.skipIf(
 
     return targetProof(target);
   },
-  90_000
+  suiteDeadline
 );
 
 // oxlint-disable-next-line typescript/strict-void-return -- Node promisify consumes the callback overload.
@@ -817,5 +826,5 @@ it.live.skipIf(binary === undefined || binary === "")(
         version: "p6-proof",
       });
     }).pipe(Effect.scoped),
-  120_000
+  suiteDeadline
 );

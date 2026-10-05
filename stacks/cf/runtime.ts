@@ -53,7 +53,10 @@ export const run = (action: Action, offline: boolean) =>
           )
         ),
         Effect.catchCause(() =>
-          Effect.succeed(["WORKER_ABSENT_FAIL", "NAMESPACES_ABSENT_FAIL"])
+          Effect.succeed([
+            "WORKER_ABSENT_FAIL step=credentials-or-probe-runtime",
+            "NAMESPACES_ABSENT_FAIL step=credentials-or-probe-runtime",
+          ])
         )
       );
 
@@ -61,7 +64,7 @@ export const run = (action: Action, offline: boolean) =>
         yield* Effect.log(label);
       }
 
-      if (labels.some((label) => label.endsWith("_FAIL"))) {
+      if (labels.some((label) => label.includes("_FAIL"))) {
         return yield* refuse("Teardown probe failed");
       }
 
