@@ -55,7 +55,7 @@ RAT_KING_SUITE_COMMIT=expected-build-commit \
 pnpm exec vitest run --config apps/mailbox/vitest.config.ts apps/mailbox/test/target.suite.test.ts
 ```
 
-`RAT_KING_SUITE_NUM_RUNS` defaults to 2 and accepts 1–20. Each run generates at most 12 random commands after the required sequence. Individual mailbox snapshots stop at 1000 events. The configured-target test has a 90-second deadline; the local harness has 120 seconds. Agent reply polling stops after 45 seconds, and original-ack polling after 10 seconds. Large run counts can hit the overall deadline. Missing required target inputs skip the configured-target test. Invalid supplied identities or run counts fail.
+`RAT_KING_SUITE_NUM_RUNS` defaults to 2 and accepts 1–20. Each run generates at most 12 random commands after the required sequence. Individual mailbox snapshots stop at 1000 events. Both configured-target and local-harness deadlines allow 30 seconds per `RAT_KING_SUITE_NUM_RUNS` run plus a fixed 60 seconds for agent reply/ack polling (120 seconds by default, 660-second ceiling at 20 runs). Agent reply polling stops after 45 seconds, and original-ack polling after 10 seconds. Large run counts can hit the overall deadline. Missing required target inputs skip the configured-target test. Invalid supplied identities or run counts fail.
 
 The private file shape is `{ sender, recipient, documents, agent? }`. Each identity uses the existing CLI shape `{ did, signing, agreement }`, with private P-256 JWKs. `documents` is the deployed public array, including the agent's public document when testing an agent. The file must be a regular, non-symlink mode-600 file.
 
