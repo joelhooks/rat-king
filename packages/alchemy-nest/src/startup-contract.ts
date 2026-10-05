@@ -1,64 +1,15 @@
 import type { Crypto, FileSystem } from "effect";
-import { Data, Effect, Layer, Predicate, Schema } from "effect";
+import { Effect, Layer, Predicate, Schema } from "effect";
 
 import { refuse } from "./files.ts";
 import { HostShell, must } from "./host-shell.ts";
 import type { Interface } from "./host-shell.ts";
+import { assessListeners } from "./listeners.ts";
 import { bootstrapProbe, probeEnvironment } from "./probes.ts";
 import { s3Script } from "./s3-script.ts";
 import { UnitStartup } from "./unit-startup.ts";
 
-const storePorts = [
-  19_333, 18_081, 18_888, 18_333, 29_333, 28_081, 28_888, 28_333,
-];
-
-export type ListenerAssessment =
-  | { readonly _tag: "Ready"; readonly receipt: string }
-  | { readonly _tag: "Waiting" }
-  | { readonly _tag: "Violation"; readonly receipt: string };
-
-const Assessment = Data.taggedEnum<ListenerAssessment>();
-
-export const assessListeners = (
-  text: string,
-  publicIPv4: string,
-  nodeExpected: boolean
-): ListenerAssessment => {
-  const lines = text
-    .split("\n")
-    .filter((line) =>
-      nodeExpected
-        ? /users:\(\("(?:weed|celld)"/u.test(line)
-        : /users:\(\("weed"/u.test(line)
-    );
-
-  const expected = new Map(storePorts.map((port) => [port, "weed"]));
-
-  if (nodeExpected) {
-    expected.set(18_787, "celld");
-    expected.set(18_788, "celld");
-  }
-
-  for (const line of lines) {
-    const local = line.trim().split(/\s+/u)[3] ?? "";
-    const port = Number(local.slice(local.lastIndexOf(":") + 1));
-
-    const process = /users:\(\("(?<process>weed|celld)"/u.exec(line)?.groups
-      ?.process;
-
-    if (
-      expected.get(port) !== process ||
-      local !== `${port === 18_787 ? publicIPv4 : "127.0.0.1"}:${port}` ||
-      !expected.delete(port)
-    ) {
-      return Assessment.Violation({ receipt: lines.join("\n") });
-    }
-  }
-
-  return expected.size === 0
-    ? Assessment.Ready({ receipt: lines.join("\n") })
-    : Assessment.Waiting();
-};
+export { assessListeners } from "./listeners.ts";
 
 const stopBoth = Effect.fn("UnitStartup.stopBoth")(function* stop(
   shell: Interface
@@ -70,18 +21,36 @@ const stopBoth = Effect.fn("UnitStartup.stopBoth")(function* stop(
     "rat-king-celld.service",
     "rat-king-seaweedfs.service",
   ]);
+
+  if (
+    (yield* shell.exec([
+      "systemctl",
+      "--user",
+      "is-active",
+      "rat-king-claude-sidecar.service",
+    ])).code === 0
+  ) {
+    yield* must(shell, [
+      "systemctl",
+      "--user",
+      "stop",
+      "rat-king-claude-sidecar.service",
+    ]);
+  }
 });
 
 const assertStarted = Effect.fn("UnitStartup.assertStarted")(function* check(
   shell: Interface,
   publicIPv4: string,
-  nodeExpected: boolean
+  nodeExpected: boolean,
+  sidecarExpected: boolean
 ) {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     const assessment = assessListeners(
       yield* must(shell, ["ss", "-ltnp"]),
       publicIPv4,
-      nodeExpected
+      nodeExpected,
+      sidecarExpected
     );
 
     if (Predicate.isTagged(assessment, "Ready")) {
@@ -123,16 +92,29 @@ export const startupLayer = (publicIPv4: string) =>
         afterStart: (name: string) => {
           if (
             name !== "rat-king-seaweedfs.service" &&
-            name !== "rat-king-celld.service"
+            name !== "rat-king-celld.service" &&
+            name !== "rat-king-claude-sidecar.service"
           ) {
             return Effect.void;
           }
 
-          return assertStarted(
-            shell,
-            publicIPv4,
-            name === "rat-king-celld.service"
-          ).pipe(Effect.onError(() => stopBoth(shell).pipe(Effect.orDie)));
+          return Effect.gen(function* checkStarted() {
+            const active = (unit: string) =>
+              shell.exec(["systemctl", "--user", "is-active", unit]);
+
+            const nodeActive =
+              (yield* active("rat-king-celld.service")).code === 0;
+
+            const sidecarActive =
+              (yield* active("rat-king-claude-sidecar.service")).code === 0;
+
+            yield* assertStarted(
+              shell,
+              publicIPv4,
+              name !== "rat-king-seaweedfs.service" || nodeActive,
+              name === "rat-king-claude-sidecar.service" || sidecarActive
+            );
+          }).pipe(Effect.onError(() => stopBoth(shell).pipe(Effect.orDie)));
         },
         beforeStart: (name: string, home: string) => {
           if (name !== "rat-king-celld.service") {

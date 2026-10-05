@@ -4,14 +4,14 @@ import type { UnitProps } from "./systemd.ts";
 const quote = (value: string): string =>
   `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%").replaceAll("$", "$$")}"`;
 
-export const sliceUnit = (home: string): UnitProps => ({
+export const sliceUnit = (home: string, memoryMax = "4G"): UnitProps => ({
   home,
   name: "rat-king.slice",
   scope: "user",
   sections: [
     {
       lines: [
-        ["MemoryMax", "4G"],
+        ["MemoryMax", memoryMax],
         ["MemorySwapMax", "0"],
         ["CPUQuota", "300%"],
         ["TasksMax", "2048"],

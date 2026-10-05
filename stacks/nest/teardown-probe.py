@@ -1,11 +1,13 @@
 """Read-only teardown probe. Arguments come from validated private inventory."""
 import glob
+import json
 import os
 import re
 import subprocess
 import sys
 
 home, data = sys.argv[1:3]
+before = json.loads(sys.argv[3])
 failed = False
 
 
@@ -43,7 +45,7 @@ try:
     listeners = command("ss", "-H", "-ltnup")
     ports = {int(match.group(1)) for row in listeners.splitlines()
              if (match := re.search(r":(\d+)$", row.split()[4]))}
-    for port in (19333, 18081, 18888, 18333, 29333, 28081, 28888, 28333, 18788, 18787):
+    for port in (19333, 18081, 18888, 18333, 29333, 28081, 28888, 28333, 18788, 18787, 18789):
         check("port " + str(port) + " closed", port not in ports)
     for label, path in (
         ("binary and CLI root absent", home + "/.local/share/rat-king"),
@@ -51,6 +53,10 @@ try:
         ("data root absent", data),
     ):
         check(label, not os.path.lexists(path))
+    check("dedicated Claude install absent", not os.path.lexists(home + "/.local/share/rat-king/claude-code"))
+    paths = sorted(set(glob.glob(home + "/.claude*") + [home + "/.local/bin/claude"]))
+    after = {path: os.lstat(path).st_mtime_ns if os.path.lexists(path) else None for path in paths}
+    check("user Claude mtimes unchanged", before == after)
     check("proof temporary files absent", not glob.glob("/tmp/rat-king-proof-*"))
 except (OSError, ValueError, IndexError, subprocess.CalledProcessError):
     check("probe commands completed", False)

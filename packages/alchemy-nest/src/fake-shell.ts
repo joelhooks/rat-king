@@ -1,4 +1,4 @@
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 
 import { HostShell, HostError } from "./host-shell.ts";
 import type { Interface, Result } from "./host-shell.ts";
@@ -292,4 +292,9 @@ export const makeFakeShell = Effect.fn("HostShell.fake")(() =>
         }),
     };
   })
+);
+
+export const offlineLayer = Layer.effect(
+  HostShell,
+  makeFakeShell().pipe(Effect.map((fake) => fake.shell))
 );

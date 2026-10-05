@@ -15,8 +15,8 @@ import {
 } from "./providers.ts";
 import { sliceUnit, storeUnit } from "./service-units.ts";
 
-export const Slice = (home: string) =>
-  SystemdUnit("rat-king-slice", sliceUnit(home));
+export const Slice = (home: string, memoryMax = "4G") =>
+  SystemdUnit("rat-king-slice", sliceUnit(home, memoryMax));
 
 export const Bucket = (
   id: string,

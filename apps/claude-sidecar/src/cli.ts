@@ -63,7 +63,17 @@ const program = Effect.gen(function* launcher() {
     Schema.Int.check(Schema.isBetween({ maximum: 65_535, minimum: 0 }))
   )(configuredPort);
 
-  const server = yield* serve(token, executable, gateway, port);
+  const temporaryRoot = yield* Config.String("RAT_KING_SIDECAR_TEMP_DIR").pipe(
+    Config.withDefault("/tmp")
+  );
+
+  const server = yield* serve(
+    token,
+    executable,
+    { ...gateway, temporaryRoot },
+    port
+  );
+
   yield* Effect.sync(() => {
     console.log(JSON.stringify(server));
   });
