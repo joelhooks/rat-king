@@ -2,7 +2,7 @@
 
 Local pre-commit scans exact staged blobs, not working-tree copies. Pre-push scans every reachable committed tree, including historical versions, not just the current diff. Both run gitleaks with its default rules and require the private instance file. Findings report rule names only, never matched values or file paths.
 
-Third-party license notices can carry a path-and-hash exemption for the email rule only.
+`exemptions.json` records owner-approved path, exact blob SHA-256 and rule-specific exemptions; any byte or path change voids approval. All other rules still run, including in generic mode.
 
 The denylist rejects private IPv4 ranges, carrier-grade NAT addresses, tailnet DNS names, private host suffixes, account home paths, credential-name patterns, and email addresses except the bot's noreply identity. Instance literals cover host aliases, domains, IPv4 and IPv6 addresses, sites and credential names. Paths are scanned as well as content. Local Brain, harness files, source mirrors, env values and Alchemy state cannot be staged for publication.
 

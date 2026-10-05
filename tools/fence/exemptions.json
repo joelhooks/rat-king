@@ -1,0 +1,20 @@
+[
+  {
+    "path": "packages/alchemy-nest/LICENSE-homeflare-kit",
+    "sha256": "50bf69106503018f4c09f23579ecfee5edd88c2215ed8b653c9691ef482eaaf1",
+    "rules": ["email"],
+    "reason": "Owner-approved upstream MIT license notice."
+  },
+  {
+    "path": "packages/envelope/test/vectors/rfc9180-p256-sha256-aes128gcm-base.json",
+    "sha256": "432bbeaf4043d761c99a10f39d12772b0898cf8285541634e5cd6c5ff782185f",
+    "rules": ["gitleaks:generic-api-key", "secret-name"],
+    "reason": "Owner-approved published RFC 9180 test data, not application credentials."
+  },
+  {
+    "path": "packages/envelope/test/rfc9180.test.ts",
+    "sha256": "8e919a06b7602ba044bae5450419cc755427292e4c827a8f511a31052c859851",
+    "rules": ["secret-name"],
+    "reason": "Owner-approved references to unmodified RFC 9180 vector field names."
+  }
+]

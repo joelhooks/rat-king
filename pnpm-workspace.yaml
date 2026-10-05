@@ -43,3 +43,4 @@ minimumReleaseAgeExclude:
   - "@earendil-works/pi-tui@0.86.1"
   - better-auth@1.6.2
   - satori@0.33.5
+  - "@cloudflare/workers-types@5.20261004.1"
