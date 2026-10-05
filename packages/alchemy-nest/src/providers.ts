@@ -2,12 +2,15 @@ import { Resource } from "alchemy";
 import { AdoptPolicy, Unowned } from "alchemy/AdoptPolicy";
 import { isResolved } from "alchemy/Diff";
 import * as Provider from "alchemy/Provider";
-import { Effect, Layer, Option } from "effect";
+import { Effect, Layer, Option, Schema } from "effect";
 
 import { absent } from "./absent.ts";
 import {
   deleteDirectory,
   deleteFile,
+  fileText,
+  FileSchema,
+  directoryPolicy,
   readDirectory,
   readFile,
   reconcileDirectory,
@@ -37,8 +40,10 @@ import {
   deleteUnit,
   unitPath,
   validateUnit,
+  UnitSchema,
 } from "./systemd.ts";
 import type { UnitAttributes, UnitProps } from "./systemd.ts";
+import { UnitStartup } from "./unit-startup.ts";
 
 export type RemoteFileResource = Resource<
   "RatsNest.RemoteFile",
@@ -112,7 +117,7 @@ export const RemoteFileProvider = () =>
 
           return {
             action:
-              live?.sha256 === textDigest(news.content) &&
+              live?.sha256 === textDigest(fileText(news.content)) &&
               live.mode === (news.mode ?? 0o644)
                 ? "noop"
                 : "update",
@@ -123,6 +128,10 @@ export const RemoteFileProvider = () =>
           olds,
           output,
         }) {
+          if (output === undefined && !Schema.is(FileSchema)(olds)) {
+            return absent;
+          }
+
           yield* validateFile(olds);
           const live = yield* readFile(shell, olds.path);
 
@@ -173,7 +182,12 @@ export const HostDirectoryProvider = () =>
           const live = yield* readDirectory(shell, news.path);
 
           return {
-            action: live?.mode === (news.mode ?? 0o755) ? "noop" : "update",
+            action:
+              live?.mode === (news.mode ?? 0o755) &&
+              output.purgeRoot ===
+                (news.purgeOnDelete === true ? news.purgeRoot : undefined)
+                ? "noop"
+                : "update",
           };
         }),
         list: () => Effect.succeed([]),
@@ -182,7 +196,24 @@ export const HostDirectoryProvider = () =>
           output,
         }) {
           yield* validateDirectory(olds);
-          const live = yield* readDirectory(shell, olds.path);
+          const observed = yield* readDirectory(shell, olds.path);
+
+          if (
+            observed !== undefined &&
+            output === undefined &&
+            olds.purgeOnDelete === true
+          ) {
+            return yield* new HostError({
+              operation: "adopt",
+              reason:
+                "Existing data directory cannot gain purge authority by adoption.",
+            });
+          }
+
+          const live =
+            observed === undefined
+              ? undefined
+              : directoryPolicy(olds, observed);
 
           return live === undefined || output !== undefined
             ? live
@@ -207,6 +238,7 @@ export const SystemdUnitProvider = () =>
     SystemdUnit,
     Effect.gen(function* makeSystemdUnitProvider() {
       const shell = yield* HostShell;
+      const startup = yield* Effect.serviceOption(UnitStartup);
 
       return SystemdUnit.Provider.of({
         delete: ({ output }) => deleteUnit(shell, output),
@@ -246,6 +278,10 @@ export const SystemdUnitProvider = () =>
           olds,
           output,
         }) {
+          if (output === undefined && !Schema.is(UnitSchema)(olds)) {
+            return absent;
+          }
+
           const live = yield* readUnit(shell, olds);
 
           if (live === undefined) {
@@ -262,12 +298,22 @@ export const SystemdUnitProvider = () =>
         }),
         reconcile: Effect.fn("SystemdUnit.provider.reconcile")(
           function* operation({ news, olds, output }) {
-            return yield* reconcileUnit(
+            if (Option.isSome(startup)) {
+              yield* startup.value.beforeStart(news.name, news.home);
+            }
+
+            const attributes = yield* reconcileUnit(
               shell,
               news,
               olds === undefined ? undefined : output,
               yield* adoption
             );
+
+            if (Option.isSome(startup)) {
+              yield* startup.value.afterStart(news.name);
+            }
+
+            return attributes;
           }
         ),
       });

@@ -1,11 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Provider adapters hash the exact bytes installed on Linux.
 import { createHash } from "node:crypto";
 
-import { Effect, Schema } from "effect";
+import { Effect, Redacted, Schema } from "effect";
 
 import { absent } from "./absent.ts";
 import { HostError, must } from "./host-shell.ts";
 import type { Interface } from "./host-shell.ts";
+import { purgeScript, validatePurgePath } from "./purge.ts";
 
 export const AbsolutePath = Schema.String.check(
   Schema.isPattern(
@@ -18,12 +19,15 @@ export const Mode = Schema.Int.check(
 );
 
 export const FileSchema = Schema.Struct({
-  content: Schema.String,
+  content: Schema.Union([Schema.String, Schema.Redacted(Schema.String)]),
   mode: Schema.optionalKey(Mode),
   path: AbsolutePath,
 });
 
 export type FileProps = typeof FileSchema.Type;
+
+export const fileText = (content: FileProps["content"]): string =>
+  Redacted.isRedacted(content) ? Redacted.value(content) : content;
 
 export interface FileAttributes {
   readonly path: string;
@@ -34,6 +38,8 @@ export interface FileAttributes {
 export const DirectorySchema = Schema.Struct({
   mode: Schema.optionalKey(Mode),
   path: AbsolutePath,
+  purgeOnDelete: Schema.optionalKey(Schema.Boolean),
+  purgeRoot: Schema.optionalKey(AbsolutePath),
 });
 
 export type DirectoryProps = typeof DirectorySchema.Type;
@@ -41,6 +47,7 @@ export type DirectoryProps = typeof DirectorySchema.Type;
 export interface DirectoryAttributes {
   readonly path: string;
   readonly mode: number;
+  readonly purgeRoot?: string;
 }
 
 export const digest = (bytes: Uint8Array): string =>
@@ -52,15 +59,47 @@ export const textDigest = (text: string): string =>
 export const refuse = (reason: string) =>
   new HostError({ operation: "provider", reason });
 
-export const validateFile = (props: FileProps) =>
-  Schema.decodeEffect(FileSchema)(props).pipe(
+export const validateFile = Effect.fn("RemoteFile.validate")(function* validate(
+  props: FileProps
+) {
+  const valid = yield* Schema.decodeEffect(FileSchema)(props).pipe(
     Effect.mapError(() => refuse("Invalid file declaration."))
   );
 
-export const validateDirectory = (props: DirectoryProps) =>
-  Schema.decodeEffect(DirectorySchema)(props).pipe(
-    Effect.mapError(() => refuse("Invalid directory declaration."))
-  );
+  if (Redacted.isRedacted(valid.content) && valid.mode !== 0o600) {
+    return yield* refuse("Secret file content requires mode 600.");
+  }
+
+  return valid;
+});
+
+export const validateDirectory = Effect.fn("HostDirectory.validate")(
+  function* validate(props: DirectoryProps) {
+    const valid = yield* Schema.decodeEffect(DirectorySchema)(props).pipe(
+      Effect.mapError(() => refuse("Invalid directory declaration."))
+    );
+
+    if (
+      valid.purgeOnDelete === true &&
+      (valid.purgeRoot === undefined ||
+        !validatePurgePath(valid.path, valid.purgeRoot))
+    ) {
+      return yield* refuse(
+        "Purge target must be strictly under its declared owned root."
+      );
+    }
+
+    return valid;
+  }
+);
+
+export const directoryPolicy = (
+  props: DirectoryProps,
+  live: DirectoryAttributes
+): DirectoryAttributes =>
+  props.purgeOnDelete === true && props.purgeRoot !== undefined
+    ? { ...live, purgeRoot: props.purgeRoot }
+    : live;
 
 export const readFile = Effect.fn("RemoteFile.read")(function* readFile(
   shell: Interface,
@@ -143,7 +182,7 @@ export const reconcileFile = Effect.fn("RemoteFile.reconcile")(
     return yield* reconcileBytes(
       shell,
       {
-        bytes: new TextEncoder().encode(valid.content),
+        bytes: new TextEncoder().encode(fileText(valid.content)),
         mode: valid.mode ?? 0o644,
         path: valid.path,
       },
@@ -189,6 +228,16 @@ export const reconcileDirectory = Effect.fn("HostDirectory.reconcile")(
   ) {
     const valid = yield* validateDirectory(props);
 
+    if (
+      valid.purgeOnDelete === true &&
+      (valid.purgeRoot === undefined ||
+        !shell.purgeRoots.includes(valid.purgeRoot))
+    ) {
+      return yield* refuse(
+        "Purge root is outside the inventory-derived owned roots."
+      );
+    }
+
     if (output !== undefined && output.path !== valid.path) {
       return yield* refuse("Path changes require replacement.");
     }
@@ -196,8 +245,14 @@ export const reconcileDirectory = Effect.fn("HostDirectory.reconcile")(
     const before = yield* readDirectory(shell, valid.path);
     const mode = valid.mode ?? 0o755;
 
-    if (before !== undefined && output === undefined && !adopt) {
-      return yield* refuse("Existing directory requires explicit adoption.");
+    if (
+      before !== undefined &&
+      output === undefined &&
+      (!adopt || valid.purgeOnDelete === true)
+    ) {
+      return yield* refuse(
+        "Existing directory cannot gain purge authority by adoption."
+      );
     }
 
     if (before === undefined) {
@@ -212,14 +267,33 @@ export const reconcileDirectory = Effect.fn("HostDirectory.reconcile")(
       return yield* refuse("Directory failed readback.");
     }
 
-    return after;
+    return directoryPolicy(valid, after);
   }
 );
 
 export const deleteDirectory = Effect.fn("HostDirectory.delete")(
   function* deleteDirectory(shell: Interface, output: DirectoryAttributes) {
     if ((yield* readDirectory(shell, output.path)) !== undefined) {
-      yield* shell.rmdir(output.path);
+      if (output.purgeRoot === undefined) {
+        yield* shell.rmdir(output.path);
+      } else {
+        if (
+          !shell.purgeRoots.includes(output.purgeRoot) ||
+          !validatePurgePath(output.path, output.purgeRoot)
+        ) {
+          return yield* refuse("Purge target escapes its owned root.");
+        }
+
+        yield* must(shell, [
+          "python3",
+          "-c",
+          purgeScript,
+          output.purgeRoot,
+          output.path,
+        ]);
+      }
     }
+
+    return yield* Effect.void;
   }
 );

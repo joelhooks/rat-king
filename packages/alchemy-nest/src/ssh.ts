@@ -1,9 +1,9 @@
-import { Effect, Layer, Schema, Stream } from "effect";
+import { Effect, Layer, Redacted, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
 import { absent } from "./absent.ts";
 import { HostError, HostShell } from "./host-shell.ts";
-import type { Interface, Result } from "./host-shell.ts";
+import type { Diagnostics, Interface, Result } from "./host-shell.ts";
 import { NodeSchema } from "./inventory-schema.ts";
 import type { Node } from "./inventory-schema.ts";
 
@@ -29,7 +29,14 @@ export const layer = (node: Node) =>
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
       const run = Effect.fn("HostShell.ssh")(
-        function* run(script: string, bytes?: Uint8Array) {
+        function* run(
+          script: string,
+          bytes?: Uint8Array,
+          diagnostics?: Diagnostics
+        ) {
+          const errorChunks: Uint8Array[] = [];
+          let errorBytes = 0;
+
           const handle = yield* spawner.spawn(
             ChildProcess.make(
               "ssh",
@@ -52,7 +59,15 @@ export const layer = (node: Node) =>
             {
               code: handle.exitCode,
               output: Stream.runCollect(handle.stdout),
-              stderr: Stream.runDrain(handle.stderr),
+              stderr: Stream.runForEach(handle.stderr, (chunk) =>
+                Effect.sync(() => {
+                  if (diagnostics !== undefined && errorBytes < 16_384) {
+                    const prefix = chunk.subarray(0, 16_384 - errorBytes);
+                    errorChunks.push(prefix);
+                    errorBytes += prefix.length;
+                  }
+                })
+              ),
             },
             { concurrency: "unbounded" }
           );
@@ -64,9 +79,35 @@ export const layer = (node: Node) =>
             });
           }
 
+          const scrub = (text: string) => {
+            let safe = text;
+
+            for (const value of diagnostics?.redactions ?? []) {
+              safe = safe.replaceAll(Redacted.value(value), "<redacted>");
+            }
+
+            for (const fact of [
+              validated.home,
+              validated.dataRoot,
+              validated.ssh,
+              validated.tailnetIPv4,
+            ]) {
+              safe = safe.replaceAll(fact, "<host>");
+            }
+
+            return safe;
+          };
+
+          const stdout = Buffer.concat(result.output).toString("utf-8");
+
+          if (diagnostics === undefined) {
+            return { code: Number(result.code), stdout } satisfies Result;
+          }
+
           return {
             code: Number(result.code),
-            stdout: Buffer.concat(result.output).toString("utf-8"),
+            stderr: scrub(Buffer.concat(errorChunks).toString("utf-8")),
+            stdout: scrub(stdout.slice(0, 32_768)),
           } satisfies Result;
         },
         Effect.scoped,
@@ -119,14 +160,19 @@ export const layer = (node: Node) =>
       }
 
       const shell: Interface = {
-        exec: Effect.fn("HostShell.exec")((argv) =>
-          run(`exec ${argvText(argv)}`)
+        exec: Effect.fn("HostShell.exec")((argv, diagnostics) =>
+          run(`exec ${argvText(argv)}`, undefined, diagnostics)
         ),
         mkdir: Effect.fn("HostShell.mkdir")(({ path, mode }) =>
           checked(argvText(["mkdir", "-m", mode.toString(8), "--", path])).pipe(
             Effect.asVoid
           )
         ),
+        purgeRoots: [
+          validated.dataRoot,
+          `${validated.home}/.config/rat-king`,
+          `${validated.home}/.local/share/rat-king`,
+        ],
         read: Effect.fn("HostShell.read")(function* operation(path) {
           const p = shellQuote(path);
 
