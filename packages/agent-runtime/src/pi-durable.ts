@@ -3,6 +3,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { AssistantEntry, Harness } from "@earendil-works/pi-durable";
 import type {
+  AgentChange,
   HarnessOptions,
   ModelRef,
   Storage,
@@ -34,7 +35,8 @@ const operation = <A>(name: string, run: () => Promise<A>) =>
 export const piDurableLayer = (
   storage: Storage,
   options: HarnessOptions,
-  model: ModelRef
+  model: ModelRef,
+  agent: Pick<AgentChange, "thinkingLevel"> = {}
 ) =>
   Layer.effect(
     AgentHarness,
@@ -51,7 +53,7 @@ export const piDurableLayer = (
 
       const root = yield* operation("root", () =>
         harness.root(BACKGROUND_CONTEXT, {
-          agent: { model },
+          agent: { ...agent, model },
         })
       );
 
@@ -108,7 +110,17 @@ export const piDurableLayer = (
             if (settled.status !== "done" || settled.type !== "input") {
               return Settlement.cases.Unanswered.make({
                 id,
-                reason: "reason" in settled ? settled.reason : settled.status,
+                reason:
+                  "reason" in settled
+                    ? [
+                        settled.reason,
+                        "detail" in settled
+                          ? JSON.stringify(settled.detail)
+                          : undefined,
+                      ]
+                        .filter(Boolean)
+                        .join(": ")
+                    : settled.status,
               });
             }
 

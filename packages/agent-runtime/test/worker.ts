@@ -15,15 +15,19 @@ import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 // @effect-diagnostics asyncFunction:off -- Test-only Worker and tool SDK boundaries.
 // @effect-diagnostics newPromise:off -- The blocked tool deliberately waits until the owned process is killed.
 import { DurableObject } from "cloudflare:workers";
-import { Effect, ManagedRuntime, Schema } from "effect";
+import { ConfigProvider, Effect, Layer, ManagedRuntime, Schema } from "effect";
 /* oxlint-disable promise/avoid-new, eslint/no-empty-function -- The crash fixture intentionally holds a replay-safe tool until process death. */
 
+import { modelGatewayLayer, ModelAccess } from "../src/model-access.ts";
 import { piDurableLayer } from "../src/pi-durable.ts";
 import { AgentHarness, Input, SubmissionId } from "../src/port.ts";
 import { durableSqlite } from "../src/sqlite.ts";
 
 interface Bindings {
   readonly AGENT: DurableObjectNamespace<Agent>;
+  readonly MODEL_GATEWAY_BASE_URL?: string;
+  readonly MODEL_GATEWAY_CREDENTIAL?: string;
+  readonly MODEL_GATEWAY_MODEL?: string;
 }
 
 const Flag = Schema.Struct({ value: Schema.Int });
@@ -62,6 +66,50 @@ export class Agent extends DurableObject<Bindings> {
     await this.database.exec(
       "CREATE TABLE IF NOT EXISTS proof (key TEXT PRIMARY KEY, value INTEGER NOT NULL)"
     );
+
+    if (this.env.MODEL_GATEWAY_BASE_URL !== undefined) {
+      const storage = await SqliteStorage.open(this.database);
+
+      return ManagedRuntime.make(
+        Layer.unwrap(
+          Effect.gen(function* modelHarness() {
+            const access = yield* ModelAccess;
+
+            return piDurableLayer(
+              storage,
+              {
+                models: access.models,
+                registry: createRegistry(),
+                settings: {
+                  retry: { baseDelayMs: 0, enabled: false, maxRetries: 0 },
+                  stream: { maxRetries: 0, timeoutMs: 60_000 },
+                },
+              },
+              access.model,
+              {
+                thinkingLevel:
+                  access.model.modelId === "claude-opus-5-5" ? "off" : "low",
+              }
+            );
+          })
+        ).pipe(
+          Layer.provide(modelGatewayLayer()),
+          Layer.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromUnknown({
+                MODEL_GATEWAY_BASE_URL: this.env.MODEL_GATEWAY_BASE_URL,
+                MODEL_GATEWAY_CREDENTIAL: this.env.MODEL_GATEWAY_CREDENTIAL,
+                MODEL_GATEWAY_MODEL:
+                  this.ctx.id.name?.startsWith("model:") === true
+                    ? this.ctx.id.name.slice(6)
+                    : (this.env.MODEL_GATEWAY_MODEL ?? "gpt-6-sol"),
+              })
+            )
+          )
+        )
+      );
+    }
+
     const models = createModels();
 
     const { faux } = this;
@@ -166,12 +214,17 @@ export class Agent extends DurableObject<Bindings> {
       "SELECT * FROM submissions ORDER BY id"
     );
 
+    const usage = await this.database.all(
+      "SELECT content AS record FROM document_revisions WHERE document_id IN (SELECT id FROM documents WHERE json_extract(record, '$.kind') = 'pi.usage') AND kind = 'base' ORDER BY seq DESC LIMIT 1"
+    );
+
     return Response.json({
       calls: this.faux.state.callCount,
       entered,
       entries,
       submissions,
       tasks,
+      usage,
     });
   }
 }
@@ -182,6 +235,11 @@ export default {
       return new Response("idle");
     }
 
-    return await env.AGENT.getByName("proof").fetch(request);
+    const name =
+      env.MODEL_GATEWAY_BASE_URL === undefined
+        ? "proof"
+        : `model:${new URL(request.url).searchParams.get("model") ?? env.MODEL_GATEWAY_MODEL ?? "gpt-6-sol"}`;
+
+    return await env.AGENT.getByName(name).fetch(request);
   },
 };
