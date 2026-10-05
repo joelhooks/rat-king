@@ -213,6 +213,28 @@ export const deleteUnit = Effect.fn("SystemdUnit.delete")(function* deleteUnit(
   yield* ctl(shell, "daemon-reload");
 });
 
+const cleanupCreatedUnit = Effect.fn("SystemdUnit.cleanupCreated")(
+  function* cleanup(shell: Interface, props: UnitProps, sha256: string) {
+    const path = unitPath(props);
+    const file = yield* readFile(shell, path);
+
+    if (file === undefined) {
+      return yield* Effect.void;
+    }
+
+    if (file.sha256 !== sha256 || file.mode !== 0o644) {
+      return yield* refuse("Failed-create unit changed; cleanup refused.");
+    }
+
+    yield* shell.exec(["systemctl", "--user", "stop", props.name]);
+    yield* shell.exec(["systemctl", "--user", "disable", props.name]);
+    yield* deleteFile(shell, { mode: 0o644, path, sha256 });
+    yield* ctl(shell, "daemon-reload");
+
+    return yield* Effect.void;
+  }
+);
+
 export const reconcileUnit = Effect.fn("SystemdUnit.reconcile")(
   function* reconcileUnit(
     shell: Interface,
@@ -305,17 +327,7 @@ export const reconcileUnit = Effect.fn("SystemdUnit.reconcile")(
     return yield* apply.pipe(
       Effect.onError(() =>
         before === undefined
-          ? deleteUnit(shell, {
-              active: false,
-              configSha256: configDigest(valid),
-              enabled: false,
-              home: valid.home,
-              name: valid.name,
-              needDaemonReload: false,
-              path,
-              scope: valid.scope,
-              sha256,
-            }).pipe(Effect.orDie)
+          ? cleanupCreatedUnit(shell, valid, sha256).pipe(Effect.orDie)
           : Effect.void
       )
     );

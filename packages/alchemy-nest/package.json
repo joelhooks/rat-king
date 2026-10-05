@@ -9,6 +9,7 @@
     "./RatsNest": "./src/host.ts"
   },
   "scripts": {
+    "live": "ALCHEMY_TELEMETRY_DISABLED=1 node src/live.ts",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "ALCHEMY_TELEMETRY_DISABLED=1 pnpm -C ../.. exec vitest run --config packages/alchemy-nest/vitest.config.ts"
   },

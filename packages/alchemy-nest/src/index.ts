@@ -28,3 +28,9 @@ export type {
 } from "./files.ts";
 
 export type { BinaryProps } from "./release.ts";
+
+export { ObjectStore } from "./object-store.ts";
+
+export type { BucketOutput } from "./object-store.ts";
+
+export { Celld } from "./celld.ts";

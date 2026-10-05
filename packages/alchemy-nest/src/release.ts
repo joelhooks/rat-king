@@ -26,6 +26,10 @@ export const BinarySchema = Schema.Struct({
   asset: Schema.Union([
     Schema.Struct({ format: Schema.Literal("raw") }),
     Schema.Struct({
+      format: Schema.Literal("gz"),
+      memberSha256: sha256,
+    }),
+    Schema.Struct({
       format: Schema.Literal("tar.gz"),
       member: memberName,
       memberSha256: sha256,
@@ -136,8 +140,16 @@ export const verifiedBytes = Effect.fn("ReleaseBinary.verify")(
     const binary = yield* Effect.try({
       catch: () => refuse("Release archive refused."),
       try: () => {
+        const expanded = gunzipSync(bytes, {
+          maxOutputLength: 512 * 1024 * 1024,
+        });
+
+        if (asset.format === "gz") {
+          return new Uint8Array(expanded);
+        }
+
         const tar = tarReader(new Set([asset.member]), asset.root);
-        tar.push(gunzipSync(bytes, { maxOutputLength: 512 * 1024 * 1024 }));
+        tar.push(expanded);
 
         return tar.finish().members.get(asset.member);
       },
