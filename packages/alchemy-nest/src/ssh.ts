@@ -1,5 +1,5 @@
 import { Effect, Layer, Redacted, Schema, Semaphore, Stream } from "effect";
-import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { absent } from "./absent.ts";
 import { HostError, HostShell } from "./host-shell.ts";

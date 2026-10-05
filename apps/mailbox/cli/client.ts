@@ -5,7 +5,7 @@ import * as Runtime from "@rat-king/lexicon/runtime";
 import { Transport } from "@rat-king/lexicon/transport";
 import { TransportFailure } from "@rat-king/lexicon/transport-failure";
 import { Clock, Effect, Layer, Result, Schema } from "effect";
-import { HttpClient, HttpClientRequest } from "effect/unstable/http";
+import { HttpClient, HttpClientRequest } from "effect/http";
 
 import { base64url, serviceToken } from "../src/auth.ts";
 import { importSigning } from "./identity.ts";

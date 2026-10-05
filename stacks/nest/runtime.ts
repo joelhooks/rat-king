@@ -9,7 +9,7 @@ import * as Plan from "alchemy/Plan";
 import { evalStack } from "alchemy/Stack";
 import { localState } from "alchemy/State/LocalState";
 import { Config, Effect, FileSystem, Layer, Schema } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 
 import { provision } from "../../apps/mailbox/cli/provision.ts";
 import { Documents } from "../../apps/mailbox/src/auth.ts";

@@ -7,7 +7,7 @@ import * as Plan from "alchemy/Plan";
 import { evalStack } from "alchemy/Stack";
 import { localState } from "alchemy/State/LocalState";
 import { Config, Effect, Layer } from "effect";
-import { FetchHttpClient, HttpClient } from "effect/unstable/http";
+import { FetchHttpClient, HttpClient } from "effect/http";
 
 import { refuse } from "./files.ts";
 import { HostShell, must } from "./host-shell.ts";

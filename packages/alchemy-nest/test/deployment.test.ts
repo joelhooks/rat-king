@@ -1,6 +1,6 @@
 import * as Test from "alchemy/Test/Vitest";
 import { Context, Effect, Layer, Ref, Schema } from "effect";
-import { HttpClient, HttpClientResponse } from "effect/unstable/http";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import { expect } from "vitest";
 
 import { Deployment, DeploymentProvider } from "../src/deployment.ts";

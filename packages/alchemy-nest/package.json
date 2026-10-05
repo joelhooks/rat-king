@@ -14,13 +14,13 @@
     "test": "ALCHEMY_TELEMETRY_DISABLED=1 pnpm -C ../.. exec vitest run --config packages/alchemy-nest/vitest.config.ts"
   },
   "dependencies": {
-    "alchemy": "2.0.0-beta.79",
-    "effect": "4.0.0-rc.117",
+    "alchemy": "2.0.0-beta.80",
+    "effect": "4.0.1",
     "esbuild": "0.28.2"
   },
   "devDependencies": {
-    "@effect/platform-node": "4.0.0-rc.117",
-    "@effect/vitest": "4.0.0-rc.117",
+    "@effect/platform-node": "4.0.0",
+    "@effect/vitest": "4.0.1",
     "vitest": "5.0.1"
   }
 }

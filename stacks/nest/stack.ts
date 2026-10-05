@@ -1,7 +1,7 @@
 import { Stack, localState } from "alchemy";
 import * as Output from "alchemy/Output";
 import { Config, Effect, FileSystem, Layer, Path } from "effect";
-import { FetchHttpClient } from "effect/unstable/http";
+import { FetchHttpClient } from "effect/http";
 
 import { bindings } from "../../apps/mailbox/src/bindings.ts";
 import { Celld } from "../../packages/alchemy-nest/src/celld.ts";

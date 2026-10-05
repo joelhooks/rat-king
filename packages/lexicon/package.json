@@ -10,6 +10,6 @@
   "dependencies": {
     "@atproto/lex-data": "0.1.8",
     "@atproto/lexicon": "0.7.16",
-    "effect": "4.0.0-rc.117"
+    "effect": "4.0.1"
   }
 }
