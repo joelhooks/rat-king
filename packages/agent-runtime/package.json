@@ -6,6 +6,7 @@
   "exports": {
     ".": "./src/port.ts",
     "./pi-durable": "./src/pi-durable.ts",
+    "./model-access": "./src/model-access.ts",
     "./sqlite": "./src/sqlite.ts"
   },
   "dependencies": {
