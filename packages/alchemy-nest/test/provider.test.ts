@@ -15,12 +15,15 @@ import {
 } from "../src/providers.ts";
 import { ReleaseSource } from "../src/release.ts";
 import { reconcileUnit, deleteUnit } from "../src/systemd.ts";
+import { UnitStartup } from "../src/unit-startup.ts";
 import { checkedStack } from "./checked-stack.ts";
 import { service } from "./fixtures.ts";
 
 class Fake extends Context.Service<
   Fake,
-  Effect.Success<ReturnType<typeof makeFakeShell>>
+  Effect.Success<ReturnType<typeof makeFakeShell>> & {
+    readonly startupCalls: string[];
+  }
 >()("Test/FakeShell") {}
 
 const bytes = new TextEncoder().encode("invented binary");
@@ -28,9 +31,20 @@ const bytes = new TextEncoder().encode("invented binary");
 const fake = Layer.effectContext(
   Effect.gen(function* makeTestShell() {
     const shell = yield* makeFakeShell();
+    const startupCalls: string[] = [];
 
-    return Context.make(Fake, shell).pipe(
+    return Context.make(Fake, { ...shell, startupCalls }).pipe(
       Context.add(HostShell, shell.shell),
+      Context.add(UnitStartup, {
+        afterStart: () =>
+          Effect.sync(() => {
+            startupCalls.push("after");
+          }),
+        beforeStart: () =>
+          Effect.sync(() => {
+            startupCalls.push("before");
+          }),
+      }),
       Context.add(ReleaseSource, { get: () => Effect.succeed(bytes) })
     );
   })
@@ -57,6 +71,9 @@ test.provider(
         .pipe(Effect.orDie);
 
       expect(deployed.active).toBe(true);
+      const trace = yield* Fake;
+      expect(trace.startupCalls).toEqual(["before", "after"]);
+      trace.startupCalls.length = 0;
       yield* host.clear();
       yield* stack.deploy(SystemdUnit("unit", props)).pipe(Effect.orDie);
       expect(
@@ -69,6 +86,7 @@ test.provider(
         .pipe(Effect.orDie);
 
       expect(updated.sha256).not.toBe(deployed.sha256);
+      expect(trace.startupCalls).toEqual(["before", "after"]);
       yield* stack.destroy().pipe(Effect.orDie);
       const seed = yield* reconcileUnit(host.shell, next, undefined, false);
 

@@ -2,6 +2,7 @@ import { Effect } from "effect";
 
 import { HostShell, HostError } from "./host-shell.ts";
 import type { Interface, Result } from "./host-shell.ts";
+import { purgeScript, validatePurgePath } from "./purge.ts";
 
 export interface Call {
   readonly operation: string;
@@ -29,6 +30,7 @@ export const makeFakeShell = Effect.fn("HostShell.fake")(() =>
       ["/srv/example", 0o755],
     ]);
 
+    const symlinks = new Map<string, string>();
     const units = new Map<string, Unit>();
     const calls: Call[] = [];
     let failStart = false;
@@ -127,6 +129,39 @@ export const makeFakeShell = Effect.fn("HostShell.fake")(() =>
         record("exec", argv);
         const [program, scope, action = "", name = ""] = argv;
 
+        if (program === "python3" && argv[2] === purgeScript) {
+          const root = argv.at(3) ?? "";
+          const target = argv.at(4) ?? "";
+
+          if (
+            !validatePurgePath(target, root) ||
+            !directories.has(root) ||
+            [...symlinks.keys()].some(
+              (link) =>
+                link === root ||
+                root.startsWith(`${link}/`) ||
+                link === target ||
+                link.startsWith(`${target}/`)
+            )
+          ) {
+            return { code: 1, stdout: "" };
+          }
+
+          for (const key of files.keys()) {
+            if (key.startsWith(`${target}/`)) {
+              files.delete(key);
+            }
+          }
+
+          for (const key of directories.keys()) {
+            if (key === target || key.startsWith(`${target}/`)) {
+              directories.delete(key);
+            }
+          }
+
+          return { code: 0, stdout: "" };
+        }
+
         if (program === "chmod") {
           return chmod(argv);
         }
@@ -166,6 +201,11 @@ export const makeFakeShell = Effect.fn("HostShell.fake")(() =>
 
         return yield* Effect.void;
       }),
+      purgeRoots: [
+        "/srv/example",
+        "/home/example/.config/rat-king",
+        "/home/example/.local/share/rat-king",
+      ],
       read: Effect.fn("HostShell.fake.read")((path) =>
         Effect.sync(() => {
           record("read", [path]);
@@ -245,6 +285,10 @@ export const makeFakeShell = Effect.fn("HostShell.fake")(() =>
           failStart = true;
         }),
       shell: HostShell.of(shell),
+      symlink: (path: string, target: string) =>
+        Effect.sync(() => {
+          symlinks.set(path, target);
+        }),
     };
   })
 );

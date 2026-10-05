@@ -1,4 +1,5 @@
 import { Context, Effect, Layer } from "effect";
+import type { Redacted } from "effect";
 
 import { HostError } from "./host-error.ts";
 
@@ -12,10 +13,19 @@ export interface Entry {
 export interface Result {
   readonly code: number;
   readonly stdout: string;
+  readonly stderr?: string;
+}
+
+export interface Diagnostics {
+  readonly redactions: readonly Redacted.Redacted[];
 }
 
 export interface Interface {
-  readonly exec: (argv: readonly string[]) => Effect.Effect<Result, HostError>;
+  readonly purgeRoots: readonly string[];
+  readonly exec: (
+    argv: readonly string[],
+    diagnostics?: Diagnostics
+  ) => Effect.Effect<Result, HostError>;
   readonly read: (
     path: string
   ) => Effect.Effect<Uint8Array | undefined, HostError>;

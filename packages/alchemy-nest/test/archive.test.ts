@@ -57,6 +57,25 @@ const props = (bytes: Uint8Array, member: Uint8Array): BinaryProps => ({
 });
 
 describe("checksummed release archives", () => {
+  it.effect("verifies standalone gzip assets and their expanded binary", () =>
+    Effect.gen(function* standalone() {
+      const binary = new TextEncoder().encode("invented standalone binary");
+      const bytes = gzipSync(binary);
+
+      const input: BinaryProps = {
+        ...props(bytes, binary),
+        asset: { format: "gz", memberSha256: digest(binary) },
+      };
+
+      expect(yield* verifiedBytes(bytes, input)).toEqual(binary);
+      expect(
+        yield* verifiedBytes(bytes, {
+          ...input,
+          asset: { format: "gz", memberSha256: "0".repeat(64) },
+        }).pipe(Effect.isFailure)
+      ).toBe(true);
+    })
+  );
   it.effect(
     "verifies the archive before extracting and checks the exact member",
     () =>
