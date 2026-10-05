@@ -9,6 +9,7 @@ import {
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process";
 
+import { blobHash, isExempt } from "./exemptions.ts";
 import { Instance, privateArtifact, violations } from "./rules.ts";
 
 export class FenceError extends Schema.TaggedError<FenceError>()("FenceError", {
@@ -103,6 +104,19 @@ const nulPaths = (bytes: Uint8Array) =>
     .split("\0")
     .filter((value) => value !== "");
 
+const LeakFinding = Schema.Struct({
+  File: Schema.String,
+  RuleID: Schema.String,
+});
+
+const unapprovedLeakRules = (
+  detected: readonly (typeof LeakFinding.Type)[],
+  approved: (finding: typeof LeakFinding.Type) => boolean
+) =>
+  detected.flatMap((finding) =>
+    approved(finding) ? [] : [`gitleaks:${finding.RuleID}`]
+  );
+
 export const scan = Effect.fn("fence.scan")(function* scan({
   root,
   mode,
@@ -119,6 +133,12 @@ export const scan = Effect.fn("fence.scan")(function* scan({
   yield* fs.makeDirectory(scratch, { recursive: true });
   const directory = yield* fs.makeTempDirectoryScoped({ directory: scratch });
   const findings = new Set<string>();
+
+  const blobs = new Map<
+    string,
+    { readonly name: string; readonly sha256: string }
+  >();
+
   let count = 0;
 
   const inspect = Effect.fn("fence.inspect")(function* inspect({
@@ -130,10 +150,17 @@ export const scan = Effect.fn("fence.scan")(function* scan({
   }) {
     count += 1;
 
+    const sha256 = blobHash(bytes);
+
+    for (const rule of violations({ content: name, inventory })) {
+      findings.add(rule);
+    }
+
     for (const rule of violations({
-      content: `${name}\n${new TextDecoder().decode(bytes)}`,
+      content: new TextDecoder().decode(bytes),
       inventory,
       name,
+      sha256,
     })) {
       findings.add(rule);
     }
@@ -142,7 +169,9 @@ export const scan = Effect.fn("fence.scan")(function* scan({
       findings.add("private-artifact");
     }
 
-    yield* fs.writeFile(path.join(directory, String(count)), bytes);
+    const file = path.join(directory, String(count));
+    blobs.set(path.resolve(file), { name, sha256 });
+    yield* fs.writeFile(file, bytes);
   });
 
   if (mode === "history") {
@@ -211,6 +240,8 @@ export const scan = Effect.fn("fence.scan")(function* scan({
     }
   }
 
+  const report = path.join(directory, "gitleaks-report.json");
+
   const leaks = yield* execute({
     args: [
       "dir",
@@ -219,13 +250,42 @@ export const scan = Effect.fn("fence.scan")(function* scan({
       path.join(root, "tools", "fence", "gitleaks.toml"),
       "--redact",
       "--no-banner",
+      "--report-format",
+      "json",
+      "--report-path",
+      report,
     ],
     cwd: root,
     executable: "gitleaks",
   });
 
-  if (leaks.code !== 0) {
-    findings.add("gitleaks");
+  if (leaks.code === 1) {
+    const detected = yield* Schema.decodeUnknownEffect(
+      Schema.fromJsonString(Schema.Array(LeakFinding))
+    )(yield* fs.readFileString(report));
+
+    if (detected.length === 0) {
+      findings.add("gitleaks");
+    }
+
+    const unapproved = unapprovedLeakRules(detected, (finding) => {
+      const blob =
+        blobs.get(path.resolve(root, finding.File)) ??
+        blobs.get(path.resolve(directory, finding.File));
+
+      return (
+        blob !== undefined &&
+        isExempt(blob.name, blob.sha256, `gitleaks:${finding.RuleID}`)
+      );
+    });
+
+    for (const rule of unapproved) {
+      findings.add(rule);
+    }
+  } else if (leaks.code !== 0) {
+    return yield* new FenceError({
+      reason: "Gitleaks failed; refusing publication. Values redacted.",
+    });
   }
 
   if (findings.size > 0) {

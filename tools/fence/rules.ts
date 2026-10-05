@@ -1,9 +1,8 @@
-// @effect-diagnostics nodeBuiltinImport:off -- The license exception is keyed by a literal hash, not its email.
-import { createHash } from "node:crypto";
 // @effect-diagnostics nodeBuiltinImport:off -- Node tooling validates IP literals at the publication boundary.
 import { isIP } from "node:net";
 
 import type { Instance } from "../../packages/alchemy-nest/src/inventory-schema.ts";
+import { blobHash, isExempt } from "./exemptions.ts";
 
 export { Instance } from "../../packages/alchemy-nest/src/inventory-schema.ts";
 
@@ -50,10 +49,12 @@ export const violations = ({
   content,
   inventory,
   name = "",
+  sha256 = blobHash(content),
 }: {
   readonly content: string;
   readonly inventory: PrivateInstance | null;
   readonly name?: string;
+  readonly sha256?: string;
 }): readonly string[] => {
   const found = new Set<string>();
 
@@ -84,12 +85,7 @@ export const violations = ({
   for (const match of content.matchAll(
     /[A-Za-z0-9.!#$%&*+/=?^_`{|}~[\]-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?![A-Za-z0-9])/gu
   )) {
-    const licenseEmail =
-      name === "packages/alchemy-nest/LICENSE-homeflare-kit" &&
-      createHash("sha256").update(match[0]).digest("hex") ===
-        "cd3105c99447834c3bb6bf23f116151f442c5a0f0b6d38d573c50df45c12ef63";
-
-    if (match[0] !== BOT_EMAIL && !licenseEmail) {
+    if (match[0] !== BOT_EMAIL) {
       found.add("email");
     }
   }
@@ -116,7 +112,7 @@ export const violations = ({
     }
   }
 
-  return [...found].toSorted();
+  return [...found].filter((rule) => !isExempt(name, sha256, rule)).toSorted();
 };
 
 export const privateArtifact = (name: string): boolean =>
