@@ -14,7 +14,7 @@ class Commands extends Context.Service<
   Ref.Ref<readonly (readonly string[])[]>
 >()("Test/DeploymentCommands") {}
 
-const directory = "/srv/example/deployment";
+const directory = "/home/example/.config/rat-king/mailbox-deployment";
 
 const observedIdentity = Schema.Struct({
   commit: Schema.String,
@@ -30,7 +30,11 @@ const runtime = Layer.effectContext(
       ...fake.shell,
       exec: (argv: readonly string[]) =>
         Ref.update(commands, (calls) => [...calls, argv]).pipe(
-          Effect.as({ code: 0, stdout: "{}" })
+          Effect.andThen(
+            argv[0] === "python3"
+              ? fake.shell.exec(argv)
+              : Effect.succeed({ code: 0, stdout: "{}" })
+          )
         ),
     };
 
@@ -100,6 +104,10 @@ test.provider(
       expect(updated.version).toBe("v2");
       yield* Ref.set(commands, []);
       yield* stack.destroy();
-      expect(yield* Ref.get(commands)).toEqual([]);
+      expect((yield* Ref.get(commands)).map((argv) => argv[0])).toEqual([
+        "python3",
+      ]);
+      const shell = yield* HostShell;
+      expect(yield* shell.stat(directory)).toBeUndefined();
     })
 );
