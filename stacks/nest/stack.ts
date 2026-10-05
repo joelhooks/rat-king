@@ -3,7 +3,7 @@ import * as Output from "alchemy/Output";
 import { Config, Effect, FileSystem, Layer, Path } from "effect";
 import { FetchHttpClient } from "effect/http";
 
-import { bindings } from "../../apps/mailbox/src/bindings.ts";
+import { hostedBindings, hostedVars } from "../../apps/mailbox/src/bindings.ts";
 import {
   RuntimeFiles,
   RuntimeFilesProvider,
@@ -188,43 +188,22 @@ export const nest = Stack(
     const commit = yield* Config.String("RAT_KING_COMMIT");
     const serviceDid = yield* Config.String("RAT_KING_SERVICE_DID");
 
-    const vars = {
-      AGENT_MODEL: mode,
-      DID_DOCUMENTS: documents,
-      HOSTED_AGENTS: JSON.stringify([hostedDid]),
-      SERVICE_DID: serviceDid,
-    };
-
-    if (mode === "gateway") {
-      Object.assign(vars, {
-        MODEL_GATEWAY_BASE_URL: gatewayUrl,
-        MODEL_GATEWAY_MODEL: model,
-      });
-    }
-
-    if (sidecar) {
-      Object.assign(vars, {
-        CLAUDE_SIDECAR_BASE_URL: "http://127.0.0.1:18789/v1",
-      });
-    }
+    const vars = hostedVars({
+      documents,
+      gatewayModel: model,
+      gatewayUrl,
+      hostedDid,
+      model: mode,
+      serviceDid,
+      sidecar,
+    });
 
     const prepared = yield* prepareDeployment(
       path.resolve(
         import.meta.dirname,
         "../../apps/mailbox/src/hosted-worker.ts"
       ),
-      {
-        ...bindings,
-        durable_objects: {
-          bindings: [
-            ...bindings.durable_objects.bindings,
-            { class_name: "Agent", name: "AGENT" },
-          ],
-        },
-        migrations: [
-          { new_sqlite_classes: ["Mailbox", "AuthTokens", "Agent"], tag: "v1" },
-        ],
-      },
+      hostedBindings,
       {
         commit,
         vars,

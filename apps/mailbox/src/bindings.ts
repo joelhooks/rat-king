@@ -38,6 +38,56 @@ export const bindings = {
   name: "rat-king-mailbox",
 };
 
+const hostedObjects = [
+  ...bindings.durable_objects.bindings,
+  { class_name: "Agent", name: "AGENT" },
+];
+
+export const hostedBindings = {
+  ...bindings,
+  durable_objects: { bindings: hostedObjects },
+  migrations: [
+    {
+      new_sqlite_classes: hostedObjects.map((binding) => binding.class_name),
+      tag: "v1",
+    },
+  ],
+};
+
+export interface HostedBuild {
+  readonly documents: string;
+  readonly hostedDid: string;
+  readonly serviceDid: string;
+  readonly model: "faux" | "gateway";
+  readonly gatewayUrl: string;
+  readonly gatewayModel: string;
+  readonly sidecar: boolean;
+}
+
+export const hostedVars = (input: HostedBuild) => {
+  const vars = {
+    AGENT_MODEL: input.model,
+    DID_DOCUMENTS: input.documents,
+    HOSTED_AGENTS: JSON.stringify([input.hostedDid]),
+    SERVICE_DID: input.serviceDid,
+  };
+
+  if (input.model === "gateway") {
+    Object.assign(vars, {
+      MODEL_GATEWAY_BASE_URL: input.gatewayUrl,
+      MODEL_GATEWAY_MODEL: input.gatewayModel,
+    });
+  }
+
+  if (input.sidecar) {
+    Object.assign(vars, {
+      CLAUDE_SIDECAR_BASE_URL: "http://127.0.0.1:18789/v1",
+    });
+  }
+
+  return vars;
+};
+
 export const configuration = (main: string, build: Build) => ({
   ...bindings,
   define: {
