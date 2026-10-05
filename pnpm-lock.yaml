@@ -7,52 +7,46 @@ importers:
     configDependencies: {}
     packageManagerDependencies:
       '@pnpm/exe':
-        specifier: 11.3.0
-        version: 11.3.0
+        specifier: 11.28.2
+        version: 11.28.2
       pnpm:
-        specifier: 11.3.0
-        version: 11.3.0
+        specifier: 11.28.2
+        version: 11.28.2
 
 packages:
 
-  '@pnpm/exe@11.3.0':
-    resolution: {integrity: sha512-1ItrG3GdA8HC7IUMy79SmYqynjjfwXtIMlbpx9MzrU3ZXMYMfw3yuwjIXW7Aw2z0rRxxa2KtTYcLxqjIaVjUmg==}
+  '@pnpm/exe@11.28.2':
+    resolution: {integrity: sha512-SVI0DZfpdGpBNrMfT0WJNhDjPiyX6w0CnfixUQ9P7xosksUVl43KSCJra8gZ1YXstPLvLOZNzeBZpvSv4Wt7Bg==}
     hasBin: true
 
-  '@pnpm/linux-arm64@11.3.0':
-    resolution: {integrity: sha512-+VwGD4/l+TrGKwKeGhSkqzO6eJxK7CkYAoh18ORvBMeYXOlWYF66423VyRbrSK67dtvZ2O0nZ82sA5pxVUUWvQ==}
+  '@pnpm/linux-arm64@11.28.2':
+    resolution: {integrity: sha512-yBHcTdldTkhCMm2Z2hG72tBmWgTQzHO0474rxbYA5xiSuxxwsTruke8s+HQROH0L+K1kft0i5zJizvfWVE5jSQ==}
     cpu: [arm64]
     os: [linux]
 
-  '@pnpm/linux-x64@11.3.0':
-    resolution: {integrity: sha512-/Csxm8VN18Hcs7vSA83rSk/TTytIVZjgx4K61uLeREClxC7DjAlAc+3jmH9BM615vbUZws821otlWytHRTdVkQ==}
+  '@pnpm/linux-x64@11.28.2':
+    resolution: {integrity: sha512-eDwyK9rdllem+eYFaGvuRPmV/e2yzYuENns3/FTlplXbuP0Ym99agQZHOCHLC5Un4kfQaQP1PTMhQomy5x8EuQ==}
     cpu: [x64]
     os: [linux]
 
-  '@pnpm/linuxstatic-arm64@11.3.0':
-    resolution: {integrity: sha512-A+wiDUs+8pitTZw0FjWqdqVk4xXvvM3TwVagh6il54EtPr+JS/BkCc5S1lBYJp+ei2H27TBsfXX7Ff/qFfIC2g==}
-    cpu: [arm64]
-    os: [linux]
-    libc: [musl]
-
-  '@pnpm/linuxstatic-x64@11.3.0':
-    resolution: {integrity: sha512-6TuJt6AlUMZbdC3IQfBVKPgUnX9IDEra5DCS2jMHmu26bJZnzEgee8YLuC3j1/xTPrRVbF9Oo5nMbmxUVOCYew==}
+  '@pnpm/linuxstatic-x64@11.28.2':
+    resolution: {integrity: sha512-rTcJTsExAU4m+2eL2EnYhIcHfc4TZzY7+RkkVj2Q+VPxrgXo3KP0Ixsvl9eoSmIJ0I5SRfXr3V8N5s09BReRzg==}
     cpu: [x64]
     os: [linux]
     libc: [musl]
 
-  '@pnpm/macos-arm64@11.3.0':
-    resolution: {integrity: sha512-MXY3ml1zmFn6m710krku0lrTdapuyD44ipKxwaMVylmIJV/U2Co8tielk2p5KEY2pyHBgR8tBTXnvoTnQZ+tvA==}
+  '@pnpm/macos-arm64@11.28.2':
+    resolution: {integrity: sha512-+0CXCY9ZyGeGb89UFjz2uwb1UvqwOjnrYjDfTGX6sHAgT4/y/kv+0ONTuX0qKsNWy/ix2/cN0qxPJYts9ctMig==}
     cpu: [arm64]
     os: [darwin]
 
-  '@pnpm/win-arm64@11.3.0':
-    resolution: {integrity: sha512-lGjVPngNxeWwlugcO5cAdqWYpnVQ9JMo3gnvUICWsiXRaVi9QYf9aQNNDE8h3E5J+wFQn8zCTv9X3x1eDauFBw==}
+  '@pnpm/win-arm64@11.28.2':
+    resolution: {integrity: sha512-SiulKDhUxzZZhTVVR1RrF9lpCfUO9+WSyv5h3PiBBhbOIzM7XM6QHoi5PQgfJQV7wK+PPNbUTOIfu2YxSdIOew==}
     cpu: [arm64]
     os: [win32]
 
-  '@pnpm/win-x64@11.3.0':
-    resolution: {integrity: sha512-mq5PnEYv4sCAbIWG2vuicN4qlnxf+epXVpuoBEWR+BhwUS8Bb6GgCcRfhaj9AZW8cAxIz2XXkgb4OvJRAer/4A==}
+  '@pnpm/win-x64@11.28.2':
+    resolution: {integrity: sha512-+MoyjTBCzP78CB8DiEKeYLaXAGR09tiMpWVS+WSgyWELz+2JBvtT6mv4FW6aswagvWNQhYv9d2FPsVarDP84oA==}
     cpu: [x64]
     os: [win32]
 
@@ -116,45 +110,41 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  pnpm@11.3.0:
-    resolution: {integrity: sha512-LEA9ZZRScodnKx9wVjQ6H3w2NANqZ/+r/MKz11ldhDdo+HhxSNG1fPeVbJBga70ZKFfDY68Z6W0tDsnsV0HSFQ==}
+  pnpm@11.28.2:
+    resolution: {integrity: sha512-dVzi/jwFv9e7QStCr/PFxVzTjFKcbsqBBHVJeuNnRsVx5LbhgU5ufkuX1+6GS4oORGc8Oyl6UOCsKHccXOFdJw==}
     engines: {node: '>=22.13'}
     hasBin: true
 
 snapshots:
 
-  '@pnpm/exe@11.3.0':
+  '@pnpm/exe@11.28.2':
     dependencies:
       '@reflink/reflink': 0.1.19
       detect-libc: 2.1.2
     optionalDependencies:
-      '@pnpm/linux-arm64': 11.3.0
-      '@pnpm/linux-x64': 11.3.0
-      '@pnpm/linuxstatic-arm64': 11.3.0
-      '@pnpm/linuxstatic-x64': 11.3.0
-      '@pnpm/macos-arm64': 11.3.0
-      '@pnpm/win-arm64': 11.3.0
-      '@pnpm/win-x64': 11.3.0
+      '@pnpm/linux-arm64': 11.28.2
+      '@pnpm/linux-x64': 11.28.2
+      '@pnpm/linuxstatic-x64': 11.28.2
+      '@pnpm/macos-arm64': 11.28.2
+      '@pnpm/win-arm64': 11.28.2
+      '@pnpm/win-x64': 11.28.2
 
-  '@pnpm/linux-arm64@11.3.0':
+  '@pnpm/linux-arm64@11.28.2':
     optional: true
 
-  '@pnpm/linux-x64@11.3.0':
+  '@pnpm/linux-x64@11.28.2':
     optional: true
 
-  '@pnpm/linuxstatic-arm64@11.3.0':
+  '@pnpm/linuxstatic-x64@11.28.2':
     optional: true
 
-  '@pnpm/linuxstatic-x64@11.3.0':
+  '@pnpm/macos-arm64@11.28.2':
     optional: true
 
-  '@pnpm/macos-arm64@11.3.0':
+  '@pnpm/win-arm64@11.28.2':
     optional: true
 
-  '@pnpm/win-arm64@11.3.0':
-    optional: true
-
-  '@pnpm/win-x64@11.3.0':
+  '@pnpm/win-x64@11.28.2':
     optional: true
 
   '@reflink/reflink-darwin-arm64@0.1.19':
@@ -194,7 +184,7 @@ snapshots:
 
   detect-libc@2.1.2: {}
 
-  pnpm@11.3.0: {}
+  pnpm@11.28.2: {}
 
 ---
 lockfileVersion: '9.0'
