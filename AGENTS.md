@@ -8,7 +8,7 @@ Read installed Effect guidance and pinned source mirrors before Effect or XState
 
 The scaffold inherits rat-stack's type diagnostics, Oxlint plugins, Oxfmt and effect-tsgo patch. Keep these gates strict. Core must not import provider implementations. Every client surface projects one contract. No apps or packages belong in the foundation until a behavior needs them.
 
-Test with properties and models, not examples. Use `it.prop` from `@effect/vitest` with arbitraries derived from Schemas through `effect/Arbitrary`. Test stateful behavior as a model: drive real commands and check a small model after each step. Each claim gets one test that would fail if the claim broke. Delete tests that restate the implementation, repeat a case a property already covers, or check what the type checker already proves. List untested claims instead of padding coverage.
+Test with properties and models, not examples. Use `it.prop` from `@effect/vitest` with arbitraries derived from Schemas through `effect/Arbitrary`. Test stateful behavior as a model with fast-check commands (`asyncModelRun`): drive real commands and check a small model after each step. Effect has no model runner. Each claim gets one test that would fail if the claim broke. Delete tests that restate the implementation, repeat a case a property already covers, or check what the type checker already proves. List untested claims instead of padding coverage.
 
 Run `pnpm check` and `pnpm test`. Commit and push hooks run the private-data fence and gitleaks. Never bypass hooks. Missing or malformed instance configuration blocks local publication. CI has generic rules only.
 
