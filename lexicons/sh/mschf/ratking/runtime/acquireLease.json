@@ -1,0 +1,71 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.runtime.acquireLease",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Exclusive per DID, no stealing. Server mints leaseId and the next monotonically increasing generation, and clamps expiresAt to at most 5 minutes ahead.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "did",
+            "harness",
+            "expiresAt"
+          ],
+          "properties": {
+            "did": {
+              "type": "string",
+              "format": "did"
+            },
+            "harness": {
+              "type": "union",
+              "refs": [
+                "sh.mschf.ratking.runtime.lease#pi",
+                "sh.mschf.ratking.runtime.lease#claude",
+                "sh.mschf.ratking.runtime.lease#codex",
+                "sh.mschf.ratking.runtime.lease#opencode",
+                "sh.mschf.ratking.runtime.lease#other"
+              ],
+              "closed": false
+            },
+            "expiresAt": {
+              "type": "string",
+              "format": "datetime"
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "lease"
+          ],
+          "properties": {
+            "lease": {
+              "type": "ref",
+              "ref": "sh.mschf.ratking.runtime.lease"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "LeaseHeld"
+        }
+      ]
+    }
+  }
+}

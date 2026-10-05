@@ -9,6 +9,7 @@ import type {
   LexUserType,
   LexXrpcBody,
   LexXrpcParameters,
+  LexXrpcSubscription,
 } from "@atproto/lexicon";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import type { PlatformError } from "effect/PlatformError";
@@ -383,12 +384,43 @@ export type ${binding}Known = typeof ${binding}KnownValues[number];
 export const is${binding}Known = (value: ${binding}Value): value is ${binding}Known => ${binding}KnownValues.some((known) => known === value);`;
 };
 
+const subscriptionDeclaration = (
+  def: LexXrpcSubscription,
+  id: string,
+  expression: (field: Field) => string
+) => {
+  const params = def.parameters
+    ? expression({ ...def.parameters, type: "object" })
+    : "Schema.Undefined";
+
+  if (def.message?.schema === undefined) {
+    unsupported("Subscription must declare a message union");
+  }
+
+  return `export const Params = ${params};
+export type ParamsValue = typeof Params.Type;
+export const Message = ${expression(def.message.schema)};
+export type MessageValue = typeof Message.Type;
+${queryDeclarations(def.parameters)}
+export const KnownErrors = ${JSON.stringify(def.errors?.map((error) => error.name) ?? [])} as const;
+export type KnownError = typeof KnownErrors[number];
+export const isKnownError = (value: string): value is KnownError => KnownErrors.some((name) => name === value);
+export const Method = { nsid: ${quote(id)}, params: Params, path: ${quote(`/xrpc/${id}`)} } as const;`;
+};
+
 const hasParameters = (doc: LexiconDoc) =>
   Object.values(doc.defs).some(
     (def) =>
-      (def.type === "query" || def.type === "procedure") &&
+      (def.type === "query" ||
+        def.type === "procedure" ||
+        def.type === "subscription") &&
       def.parameters !== undefined
   );
+
+const parameterImports = (doc: LexiconDoc) =>
+  hasParameters(doc)
+    ? 'import { Effect, Schema } from "effect";\nimport * as Query from "./query.ts";'
+    : 'import { Schema } from "effect";\n';
 
 const renderDocument = (docs: readonly LexiconDoc[], doc: LexiconDoc) => {
   const render = renderer(docs, doc);
@@ -432,6 +464,11 @@ export const KnownErrors = ${JSON.stringify(errors)} as const;
 export type KnownError = typeof KnownErrors[number];
 export const isKnownError = (value: string): value is KnownError => KnownErrors.some((name) => name === value);
 export const Method = { defaults: ${JSON.stringify(defaults)}, error: ErrorBody, input: Input, inputEncoding: ${quote(def.type === "procedure" ? (def.input?.encoding ?? "") : "")}, method: ${quote(def.type === "query" ? "GET" : "POST")}, nsid: ${quote(doc.id)}, output: Output, outputEncoding: ${quote(def.output?.encoding ?? "")}, params: Params, path: ${quote(`/xrpc/${doc.id}`)} } as const;`
+      );
+    } else if (def.type === "subscription") {
+      declarations.set(
+        name,
+        subscriptionDeclaration(def, doc.id, render.expression)
       );
     } else if (def.type === "token") {
       declarations.set(
@@ -487,10 +524,7 @@ ${knownValuesDeclarations(def, binding)}`
     emit(name);
   }
 
-  const hasParams = hasParameters(doc);
-
-  return `import { ${hasParams ? "Effect, " : ""}Schema } from "effect";
-${hasParams ? 'import * as Query from "./query.ts";' : ""}
+  return `${parameterImports(doc)}
 import * as Runtime from "./runtime.ts";
 ${[...render.imports]
   .toSorted()

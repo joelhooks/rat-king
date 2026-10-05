@@ -132,6 +132,8 @@ export const handlersLayer = Layer.effect(
           return { receipt: transitionMessage(tx, message, "ack") };
         });
       }),
+      acquireLease: () => Effect.fail(failure("InvalidRequest")),
+      deliver: () => Effect.fail(failure("InvalidRequest")),
       list: Effect.fn("Mailbox.list")(function* list(params) {
         if (caller.did !== params.recipientDid) {
           return yield* Effect.fail(failure("Forbidden", 403));
@@ -197,6 +199,10 @@ export const handlersLayer = Layer.effect(
 
         return { events, throughSeq: cursor.throughSeq };
       }),
+      putDidDocument: () => Effect.fail(failure("InvalidRequest")),
+      releaseLease: () => Effect.fail(failure("InvalidRequest")),
+      renewLease: () => Effect.fail(failure("InvalidRequest")),
+      resolveLease: () => Effect.fail(failure("InvalidRequest")),
       send: Effect.fn("Mailbox.send")(function* send(input) {
         const { envelope } = input;
 

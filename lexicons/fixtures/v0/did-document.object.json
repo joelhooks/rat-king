@@ -1,0 +1,31 @@
+{
+  "id": "did:web:recipient.example.invalid",
+  "verificationMethod": [
+    {
+      "id": "did:web:recipient.example.invalid#atproto",
+      "controller": "did:web:recipient.example.invalid",
+      "publicKeyJwk": {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "invented-public-x",
+        "y": "invented-public-y"
+      }
+    },
+    {
+      "id": "did:web:recipient.example.invalid#encryption",
+      "controller": "did:web:recipient.example.invalid",
+      "publicKeyJwk": {
+        "kty": "EC",
+        "crv": "P-256",
+        "x": "invented-agreement-x",
+        "y": "invented-agreement-y"
+      }
+    }
+  ],
+  "authentication": [
+    "did:web:recipient.example.invalid#atproto"
+  ],
+  "keyAgreement": [
+    "did:web:recipient.example.invalid#encryption"
+  ]
+}

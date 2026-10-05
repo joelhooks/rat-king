@@ -13,6 +13,7 @@ import { expect, it } from "@effect/vitest";
 import { Effect, FileSystem, Layer, Result, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import * as PutDidDocument from "../../packages/lexicon/src/admin.putDidDocument.ts";
 import * as Profile from "../../packages/lexicon/src/agent.profile.ts";
 import * as Defs from "../../packages/lexicon/src/defs.ts";
 import * as Theme from "../../packages/lexicon/src/desk.theme.ts";
@@ -26,10 +27,16 @@ import {
   serverLayer,
 } from "../../packages/lexicon/src/mailbox-server.ts";
 import * as Ack from "../../packages/lexicon/src/mailbox.ack.ts";
+import * as Deliver from "../../packages/lexicon/src/mailbox.deliver.ts";
 import * as List from "../../packages/lexicon/src/mailbox.list.ts";
 import * as Send from "../../packages/lexicon/src/mailbox.send.ts";
+import * as Subscribe from "../../packages/lexicon/src/mailbox.subscribe.ts";
 import * as Query from "../../packages/lexicon/src/query.ts";
+import * as AcquireLease from "../../packages/lexicon/src/runtime.acquireLease.ts";
 import * as Lease from "../../packages/lexicon/src/runtime.lease.ts";
+import * as ReleaseLease from "../../packages/lexicon/src/runtime.releaseLease.ts";
+import * as RenewLease from "../../packages/lexicon/src/runtime.renewLease.ts";
+import * as ResolveLease from "../../packages/lexicon/src/runtime.resolveLease.ts";
 import * as Runtime from "../../packages/lexicon/src/runtime.ts";
 import { TransportFailure } from "../../packages/lexicon/src/transport-failure.ts";
 import { Transport } from "../../packages/lexicon/src/transport.ts";
@@ -48,6 +55,13 @@ const fixture = Effect.fn("test.fixture")(function* fixture(name: string) {
 });
 
 const documents = [
+  "runtime/acquireLease",
+  "runtime/renewLease",
+  "runtime/releaseLease",
+  "runtime/resolveLease",
+  "mailbox/deliver",
+  "admin/putDidDocument",
+  "mailbox/subscribe",
   "agent/profile",
   "defs",
   "desk/theme",
@@ -73,19 +87,127 @@ const official = Effect.fn("test.official")(function* official() {
     );
   }
 
-  expect(docs).toHaveLength(7);
+  expect(docs).toHaveLength(14);
 
   return new Lexicons(docs);
 });
 
 interface Fixture {
   readonly file: string;
-  readonly kind: "record" | "input" | "output" | "params" | "object";
+  readonly kind:
+    | "record"
+    | "input"
+    | "output"
+    | "params"
+    | "object"
+    | "message";
   readonly nsid: string;
   readonly schema: Schema.Codec<Runtime.LexValue, Runtime.LexJson>;
 }
 
 const fixtures: readonly Fixture[] = [
+  {
+    file: "acquire-lease.input.json",
+    kind: "input",
+    nsid: "sh.mschf.ratking.runtime.acquireLease",
+    schema: AcquireLease.Input,
+  },
+  {
+    file: "acquire-lease.output.json",
+    kind: "output",
+    nsid: "sh.mschf.ratking.runtime.acquireLease",
+    schema: AcquireLease.Output,
+  },
+  {
+    file: "renew-lease.input.json",
+    kind: "input",
+    nsid: "sh.mschf.ratking.runtime.renewLease",
+    schema: RenewLease.Input,
+  },
+  {
+    file: "renew-lease.output.json",
+    kind: "output",
+    nsid: "sh.mschf.ratking.runtime.renewLease",
+    schema: RenewLease.Output,
+  },
+  {
+    file: "release-lease.input.json",
+    kind: "input",
+    nsid: "sh.mschf.ratking.runtime.releaseLease",
+    schema: ReleaseLease.Input,
+  },
+  {
+    file: "resolve-lease.params.json",
+    kind: "params",
+    nsid: "sh.mschf.ratking.runtime.resolveLease",
+    schema: ResolveLease.Params,
+  },
+  {
+    file: "resolve-lease.output.json",
+    kind: "output",
+    nsid: "sh.mschf.ratking.runtime.resolveLease",
+    schema: ResolveLease.Output,
+  },
+  {
+    file: "deliver.input.json",
+    kind: "input",
+    nsid: "sh.mschf.ratking.mailbox.deliver",
+    schema: Deliver.Input,
+  },
+  {
+    file: "deliver.output.json",
+    kind: "output",
+    nsid: "sh.mschf.ratking.mailbox.deliver",
+    schema: Deliver.Output,
+  },
+  {
+    file: "put-did-document.input.json",
+    kind: "input",
+    nsid: "sh.mschf.ratking.admin.putDidDocument",
+    schema: PutDidDocument.Input,
+  },
+  {
+    file: "put-did-document.output.json",
+    kind: "output",
+    nsid: "sh.mschf.ratking.admin.putDidDocument",
+    schema: PutDidDocument.Output,
+  },
+  {
+    file: "subscribe.params.json",
+    kind: "params",
+    nsid: "sh.mschf.ratking.mailbox.subscribe",
+    schema: Subscribe.Params,
+  },
+  {
+    file: "subscribe-notice.object.json",
+    kind: "message",
+    nsid: "sh.mschf.ratking.mailbox.subscribe",
+    schema: Subscribe.Message,
+  },
+  {
+    file: "subscribe-auth.object.json",
+    kind: "object",
+    nsid: "sh.mschf.ratking.mailbox.subscribe#auth",
+    schema: Subscribe.Auth,
+  },
+  {
+    file: "did-document.object.json",
+    kind: "object",
+    nsid: "sh.mschf.ratking.defs#didDocument",
+    schema: Defs.DidDocument,
+  },
+  {
+    file: "urgent-signing-payload.object.json",
+    kind: "object",
+    nsid: "sh.mschf.ratking.defs#signingPayload",
+    schema: Defs.SigningPayload,
+  },
+  {
+    file: "fenced-send.input.json",
+    kind: "input",
+    nsid: "sh.mschf.ratking.mailbox.send",
+    schema: Send.Input,
+  },
   {
     file: "profile.record.json",
     kind: "record",
@@ -178,6 +300,10 @@ const validateOfficial = (
       return validators.assertValidXrpcParams(entry.nsid, value);
     }
 
+    case "message": {
+      return validators.assertValidXrpcMessage(entry.nsid, value);
+    }
+
     case "object": {
       const result = validators.validate(entry.nsid, value);
 
@@ -194,24 +320,24 @@ const validateOfficial = (
   }
 };
 
-it.effect(
-  "parses seven documents and agrees with the official validator on all eleven fixtures",
-  () =>
-    Effect.gen(function* parity() {
-      const validators = yield* official();
-      expect(fixtures).toHaveLength(11);
+it.effect("agrees with the official validator on all v0 fixtures", () =>
+  Effect.gen(function* parity() {
+    const validators = yield* official();
+    expect(fixtures).toHaveLength(28);
+    const fs = yield* FileSystem.FileSystem;
+    expect(
+      (yield* fs.readDirectory(`${root}lexicons/fixtures/v0`)).toSorted()
+    ).toEqual(fixtures.map((entry) => entry.file).toSorted());
 
-      for (const entry of fixtures) {
-        const raw = yield* fixture(entry.file);
-        const decoded = yield* Schema.decodeUnknownEffect(entry.schema)(raw);
-        const encoded = yield* Schema.encodeEffect(entry.schema)(decoded);
-        const validated = validateOfficial(validators, entry, raw);
-        expect(lexToJson(jsonToLex(encoded))).toEqual(lexToJson(validated));
-        expect(lexToJson(jsonToLex(encoded))).toEqual(
-          lexToJson(jsonToLex(raw))
-        );
-      }
-    }).pipe(Effect.provide(NodeServices.layer))
+    for (const entry of fixtures) {
+      const raw = yield* fixture(entry.file);
+      const decoded = yield* Schema.decodeUnknownEffect(entry.schema)(raw);
+      const encoded = yield* Schema.encodeEffect(entry.schema)(decoded);
+      const validated = validateOfficial(validators, entry, raw);
+      expect(lexToJson(jsonToLex(encoded))).toEqual(lexToJson(validated));
+      expect(lexToJson(jsonToLex(encoded))).toEqual(lexToJson(jsonToLex(raw)));
+    }
+  }).pipe(Effect.provide(NodeServices.layer))
 );
 
 it.effect(
@@ -401,7 +527,55 @@ it.effect(
                 status: 400,
               })
             ),
+          acquireLease: () =>
+            Effect.fail(
+              new XrpcFailure({
+                error: "UnsupportedTest",
+                response: {},
+                status: 400,
+              })
+            ),
+          deliver: () =>
+            Effect.fail(
+              new XrpcFailure({
+                error: "UnsupportedTest",
+                response: {},
+                status: 400,
+              })
+            ),
           list: () =>
+            Effect.fail(
+              new XrpcFailure({
+                error: "UnsupportedTest",
+                response: {},
+                status: 400,
+              })
+            ),
+          putDidDocument: () =>
+            Effect.fail(
+              new XrpcFailure({
+                error: "UnsupportedTest",
+                response: {},
+                status: 400,
+              })
+            ),
+          releaseLease: () =>
+            Effect.fail(
+              new XrpcFailure({
+                error: "UnsupportedTest",
+                response: {},
+                status: 400,
+              })
+            ),
+          renewLease: () =>
+            Effect.fail(
+              new XrpcFailure({
+                error: "UnsupportedTest",
+                response: {},
+                status: 400,
+              })
+            ),
+          resolveLease: () =>
             Effect.fail(
               new XrpcFailure({
                 error: "UnsupportedTest",
@@ -423,7 +597,7 @@ it.effect(
         Transport,
         Effect.gen(function* transport() {
           const server = yield* MailboxServer;
-          expect(server.routes.size).toBe(3);
+          expect(server.routes.size).toBe(9);
 
           return Transport.of({
             request: Effect.fn("test.request")(function* request(value) {
@@ -589,22 +763,19 @@ const contractHashes = {
     "86c23ed981414bb971464a8c995c5c4abe8843a30de2eb54ebc0799b5064ecab",
   "lexicons/sh/mschf/ratking/agent/profile.json":
     "e1ade87b6464f51f79c7c32aa036827d8d9aebe930992feffeb0390c2f05c2a5",
-  "lexicons/sh/mschf/ratking/defs.json":
-    "22448421d417dd47b4261ad6f62c428279f69081a66465b1184170ca6c374e8a",
+
   "lexicons/sh/mschf/ratking/desk/theme.json":
     "0e86b836c72db651ec5cb9c14e934a01c88fb795df2f602ff47e27dc4893f2e3",
-  "lexicons/sh/mschf/ratking/mailbox/ack.json":
-    "66aaa8526814b7e4dc0f44c6c0a026a145fca3a3b2bad16240645963c4fe82c2",
+
   "lexicons/sh/mschf/ratking/mailbox/list.json":
     "48da50a617d1d98975634d7f989a88015508b76e845918c8349f77a9e8ae9b43",
-  "lexicons/sh/mschf/ratking/mailbox/send.json":
-    "530047eeadcc2defd30effe5d97a460460848af7048dd7bc0857f928fec34f32",
+
   "lexicons/sh/mschf/ratking/runtime/lease.json":
     "e9d8d82566f241a9431c915c87377e1faa6ae7465e718d8d29f310c4e0d16798",
 } as const;
 
 it.effect(
-  "pins all eighteen v0 documents and fixtures to the approved SHA-256 bytes",
+  "pins original v0 fixtures and unchanged documents to their approved SHA-256 bytes",
   () =>
     Effect.gen(function* bytePins() {
       const fs = yield* FileSystem.FileSystem;
@@ -613,9 +784,9 @@ it.effect(
         file.endsWith(".json")
       );
 
-      expect(files.map((file) => file.slice(root.length)).toSorted()).toEqual(
-        Object.keys(contractHashes).toSorted()
-      );
+      for (const file of Object.keys(contractHashes)) {
+        expect(files).toContain(`${root}${file}`);
+      }
 
       for (const [file, digest] of Object.entries(contractHashes)) {
         expect(

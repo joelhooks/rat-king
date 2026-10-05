@@ -1,0 +1,70 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.runtime.renewLease",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Renew the DID's current exclusive lease using its leaseId and generation fence. A stale fence is refused; expiresAt is clamped to at most 5 minutes ahead.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "did",
+            "leaseId",
+            "generation",
+            "expiresAt"
+          ],
+          "properties": {
+            "did": {
+              "type": "string",
+              "format": "did"
+            },
+            "leaseId": {
+              "type": "string",
+              "format": "tid"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "expiresAt": {
+              "type": "string",
+              "format": "datetime"
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "lease"
+          ],
+          "properties": {
+            "lease": {
+              "type": "ref",
+              "ref": "sh.mschf.ratking.runtime.lease"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "LeaseMismatch"
+        }
+      ]
+    }
+  }
+}

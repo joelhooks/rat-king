@@ -1,0 +1,8 @@
+{
+  "did": "did:web:recipient.example.invalid",
+  "harness": {
+    "$type": "sh.mschf.ratking.runtime.lease#pi",
+    "sessionId": "invented-session"
+  },
+  "expiresAt": "2026-10-05T00:05:00.000Z"
+}

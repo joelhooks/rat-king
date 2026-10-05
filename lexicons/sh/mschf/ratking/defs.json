@@ -220,7 +220,63 @@
         "replyTo": {
           "type": "ref",
           "ref": "sh.mschf.ratking.defs#messageRef"
+        },
+        "urgent": {
+          "type": "boolean",
+          "const": true,
+          "description": "Sender asks to pierce the recipient's do-not-disturb. Signed and encrypted; recipients decide whom to honor. Absent means not urgent; false is not a valid encoding."
         }
+      }
+    },
+    "didDocument": {
+      "type": "object",
+      "description": "Public DID document for create-only registration. Contains public EC P-256 verification keys only, never private key material.",
+      "required": [
+        "id",
+        "verificationMethod",
+        "authentication",
+        "keyAgreement"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "format": "did"
+        },
+        "verificationMethod": {
+          "type": "array",
+          "items": { "type": "ref", "ref": "#didVerificationMethod" }
+        },
+        "authentication": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "keyAgreement": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "didVerificationMethod": {
+      "type": "object",
+      "required": ["id", "controller", "publicKeyJwk"],
+      "properties": {
+        "id": { "type": "string" },
+        "controller": { "type": "string" },
+        "publicKeyJwk": { "type": "ref", "ref": "#publicJwk" }
+      }
+    },
+    "publicJwk": {
+      "type": "object",
+      "required": ["kty", "crv", "x", "y"],
+      "properties": {
+        "kty": { "type": "string", "const": "EC" },
+        "crv": { "type": "string", "const": "P-256" },
+        "x": { "type": "string" },
+        "y": { "type": "string" }
       }
     },
     "birthContext": {

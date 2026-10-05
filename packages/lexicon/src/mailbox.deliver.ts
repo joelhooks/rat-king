@@ -9,17 +9,16 @@ export type ParamsValue = typeof Params.Type;
 
 export const Input = Schema.StructWithRest(
   Schema.Struct({
-    envelope: Defs.EncryptedEnvelope,
-    generation: Schema.optionalKey(
-      Schema.Int.check(
-        Schema.isGreaterThanOrEqualTo(1),
-        Schema.isLessThanOrEqualTo(9_007_199_254_740_991)
-      )
+    generation: Schema.Int.check(
+      Schema.isGreaterThanOrEqualTo(1),
+      Schema.isLessThanOrEqualTo(9_007_199_254_740_991)
     ),
-    leaseId: Schema.optionalKey(
-      Runtime.lexString({ format: "tid", type: "string" }).pipe(
-        Schema.brand("Lexicon:tid")
-      )
+    leaseId: Runtime.lexString({ format: "tid", type: "string" }).pipe(
+      Schema.brand("Lexicon:tid")
+    ),
+    message: Defs.MessageRef,
+    recipientDid: Runtime.lexString({ format: "did", type: "string" }).pipe(
+      Schema.brand("Lexicon:did")
     ),
   }),
   [Schema.Record(Schema.String, Runtime.Data)]
@@ -39,13 +38,12 @@ export const ErrorBody = Runtime.XrpcErrorBody;
 export type ErrorBodyValue = typeof ErrorBody.Type;
 
 export const KnownErrors = [
-  "LeaseMismatch",
   "InvalidRequest",
   "AuthRequired",
   "Forbidden",
-  "IdempotencyConflict",
-  "UnsupportedEnvelope",
-  "MailboxUnavailable",
+  "MessageNotFound",
+  "LeaseMismatch",
+  "InvalidTransition",
 ] as const;
 
 export type KnownError = (typeof KnownErrors)[number];
@@ -59,9 +57,9 @@ export const Method = {
   input: Input,
   inputEncoding: "application/json",
   method: "POST",
-  nsid: "sh.mschf.ratking.mailbox.send",
+  nsid: "sh.mschf.ratking.mailbox.deliver",
   output: Output,
   outputEncoding: "application/json",
   params: Params,
-  path: "/xrpc/sh.mschf.ratking.mailbox.send",
+  path: "/xrpc/sh.mschf.ratking.mailbox.deliver",
 } as const;

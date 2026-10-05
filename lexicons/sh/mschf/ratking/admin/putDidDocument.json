@@ -1,0 +1,54 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.admin.putDidDocument",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Create-only public DID registration in this version. An identical repeat returns the same output. Any different document for a registered DID is refused with DocumentConflict, so an operator call cannot swap an agent's keys. Rotation is a separate, later procedure.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "document"
+          ],
+          "properties": {
+            "document": {
+              "type": "ref",
+              "ref": "sh.mschf.ratking.defs#didDocument"
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "did"
+          ],
+          "properties": {
+            "did": {
+              "type": "string",
+              "format": "did"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "DocumentConflict"
+        }
+      ]
+    }
+  }
+}

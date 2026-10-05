@@ -119,6 +119,56 @@ export const isDeliveryStateKnown = (
 ): value is DeliveryStateKnown =>
   DeliveryStateKnownValues.some((known) => known === value);
 
+export const PublicJwk = Schema.StructWithRest(
+  Schema.Struct({
+    crv: Runtime.lexString({ const: "P-256", type: "string" }).pipe(
+      Schema.decodeTo(Schema.Literal("P-256"))
+    ),
+    kty: Runtime.lexString({ const: "EC", type: "string" }).pipe(
+      Schema.decodeTo(Schema.Literal("EC"))
+    ),
+    x: Runtime.lexString({ type: "string" }),
+    y: Runtime.lexString({ type: "string" }),
+  }),
+  [Schema.Record(Schema.String, Runtime.Data)]
+);
+
+export type PublicJwkValue = typeof PublicJwk.Type;
+
+export const DidVerificationMethod = Schema.StructWithRest(
+  Schema.Struct({
+    controller: Runtime.lexString({ type: "string" }),
+    id: Runtime.lexString({ type: "string" }),
+    publicKeyJwk: PublicJwk,
+  }),
+  [Schema.Record(Schema.String, Runtime.Data)]
+);
+
+export type DidVerificationMethodValue = typeof DidVerificationMethod.Type;
+
+export const DidDocument = Schema.StructWithRest(
+  Schema.Struct({
+    authentication: Schema.Array(Runtime.lexString({ type: "string" })).check(
+      Schema.isMinLength(0),
+      Schema.isMaxLength(9_007_199_254_740_991)
+    ),
+    id: Runtime.lexString({ format: "did", type: "string" }).pipe(
+      Schema.brand("Lexicon:did")
+    ),
+    keyAgreement: Schema.Array(Runtime.lexString({ type: "string" })).check(
+      Schema.isMinLength(0),
+      Schema.isMaxLength(9_007_199_254_740_991)
+    ),
+    verificationMethod: Schema.Array(DidVerificationMethod).check(
+      Schema.isMinLength(0),
+      Schema.isMaxLength(9_007_199_254_740_991)
+    ),
+  }),
+  [Schema.Record(Schema.String, Runtime.Data)]
+);
+
+export type DidDocumentValue = typeof DidDocument.Type;
+
 export const HpkeSuite = Schema.StructWithRest(
   Schema.Struct({
     aeadId: Schema.Int.check(
@@ -283,6 +333,7 @@ export const SigningPayload = Schema.StructWithRest(
     ),
     replyTo: Schema.optionalKey(MessageRef),
     suite: HpkeSuite,
+    urgent: Schema.optionalKey(Schema.Literal(true)),
     version: Schema.Int.check(
       Schema.isGreaterThanOrEqualTo(1),
       Schema.isLessThanOrEqualTo(9_007_199_254_740_991)
