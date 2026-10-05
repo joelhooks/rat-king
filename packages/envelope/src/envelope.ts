@@ -1,10 +1,5 @@
 /* oxlint-disable typescript/promise-function-async, promise/prefer-await-to-callbacks -- Effect's lazy HPKE Promise adapters do not need redundant async wrappers. */
-import {
-  Aes128Gcm,
-  CipherSuite,
-  DhkemP256HkdfSha256,
-  HkdfSha256,
-} from "@hpke/core";
+import { Aes128Gcm, CipherSuite, HkdfSha256 } from "@hpke/core";
 import * as Defs from "@rat-king/lexicon/defs";
 import { Effect, Schema } from "effect";
 
@@ -19,6 +14,7 @@ import {
 } from "./canonical.ts";
 import { sign, verify } from "./es256.ts";
 import { EnvelopeFailure } from "./failure.ts";
+import { CompatibleP256Kem } from "./hpke-p256.ts";
 import { cryptoOperation } from "./webcrypto.ts";
 
 export const reviewStatus = "unreviewed";
@@ -26,7 +22,7 @@ export const reviewStatus = "unreviewed";
 export const hpke = new CipherSuite({
   aead: new Aes128Gcm(),
   kdf: new HkdfSha256(),
-  kem: new DhkemP256HkdfSha256(),
+  kem: new CompatibleP256Kem(),
 });
 
 export const info = new TextEncoder().encode("sh.mschf.ratking.hpke.v1");

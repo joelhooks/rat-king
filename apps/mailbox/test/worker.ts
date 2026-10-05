@@ -4,6 +4,7 @@ import { Effect, Schema } from "effect";
 
 import type { Bindings } from "../src/bindings.ts";
 import production from "../src/worker.ts";
+import { hpkeProof } from "./hpke-proof.ts";
 
 export { AuthTokens, Mailbox } from "../src/worker.ts";
 
@@ -19,6 +20,10 @@ const Command = Schema.Struct({
 
 export default {
   fetch: (request: Request, env: Bindings) => {
+    if (new URL(request.url).pathname.startsWith("/test/hpke/")) {
+      return Effect.runPromise(hpkeProof(request));
+    }
+
     if (new URL(request.url).pathname === "/test/p256-raw") {
       return Effect.runPromise(
         Effect.gen(function* rawPublicKeyProbe() {

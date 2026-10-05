@@ -8,7 +8,13 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { it } from "@effect/vitest";
-import { open } from "@rat-king/envelope";
+import {
+  canonical,
+  canonicalDecode,
+  cryptoOperation,
+  open,
+} from "@rat-king/envelope";
+import * as Defs from "@rat-king/lexicon/defs";
 import { clientLayer, MailboxClient } from "@rat-king/lexicon/mailbox-client";
 import * as Ack from "@rat-king/lexicon/mailbox.ack";
 import * as List from "@rat-king/lexicon/mailbox.list";
@@ -23,6 +29,7 @@ import { Clock, Effect, Layer, Schema } from "effect";
 import { expect } from "vitest";
 
 import {
+  payload,
   recipientDid,
   sealed,
   senderDid,
@@ -394,7 +401,93 @@ export const outcomeProof = (
     expect(noAuth.status).toBe(401);
   });
 
+const exportBytes = (format: "pkcs8" | "spki", key: CryptoKey) =>
+  cryptoOperation(() => crypto.subtle.exportKey(format, key)).pipe(
+    Effect.flatMap(Schema.decodeUnknownEffect(Schema.instanceOf(ArrayBuffer))),
+    Effect.map((raw) => new Uint8Array(raw))
+  );
+
 const binary = process.env.RAT_KING_CELLD;
+
+it.live.skipIf(binary === undefined)(
+  "Node seals -> celld opens; celld seals -> Node opens (real HPKE)",
+  () =>
+    Effect.gen(function* hpkeIntegration() {
+      const sample = yield* sealed();
+
+      const docs = yield* documents(
+        sample.keys.sender.publicKey,
+        sample.keys.recipient.publicKey
+      );
+
+      const baseUrl = yield* celldNode(binary ?? "", JSON.stringify(docs));
+
+      const body = canonical({
+        envelope: sample.envelope,
+        recipientPrivate: yield* exportBytes(
+          "pkcs8",
+          sample.keys.recipient.privateKey
+        ),
+        recipientPublic: yield* exportBytes(
+          "spki",
+          sample.keys.recipient.publicKey
+        ),
+        signingPrivate: yield* exportBytes(
+          "pkcs8",
+          sample.keys.sender.privateKey
+        ),
+        signingPublic: yield* exportBytes("spki", sample.keys.sender.publicKey),
+      });
+
+      const call = (operation: "open" | "seal") =>
+        Effect.gen(function* probe() {
+          const response = yield* io(() =>
+            fetch(`${baseUrl}/test/hpke/${operation}`, {
+              body,
+              headers: { "content-type": "application/cbor" },
+              method: "POST",
+            })
+          );
+
+          if (response.status !== 200) {
+            return yield* Effect.fail(
+              new TestFailure({
+                message: `${operation}: ${yield* io(() => response.text())}`,
+              })
+            );
+          }
+
+          return yield* canonicalDecode(
+            new Uint8Array(yield* io(() => response.arrayBuffer()))
+          );
+        });
+
+      const plaintext = yield* Schema.decodeUnknownEffect(
+        Schema.toType(Defs.SigningPayload)
+      )(yield* call("open"));
+
+      expect(plaintext).toEqual(payload());
+
+      const reply = yield* Schema.decodeUnknownEffect(
+        Schema.toType(Defs.EncryptedEnvelope)
+      )(yield* call("seal"));
+
+      expect(reply.enc.byteLength).toBe(65);
+
+      const opened = yield* open({
+        envelope: reply,
+        recipientDid,
+        recipientKey: sample.keys.recipient.privateKey,
+        recipientKeyId: `${recipientDid}#encryption`,
+        resolveSigningKey: () => Effect.succeed(sample.keys.sender.publicKey),
+      });
+
+      expect(opened).toEqual({
+        ...payload(),
+        body: new TextEncoder().encode("reply from celld"),
+      });
+    }).pipe(Effect.scoped)
+);
 
 it.live.skipIf(binary === undefined)(
   "recipient outcome against celld dev (same base-URL suite for P6)",
