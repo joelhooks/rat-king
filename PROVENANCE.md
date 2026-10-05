@@ -6,4 +6,6 @@ The ship procedure, generic references, launchers, capability catalog and Effect
 
 Rat King replaces the project mapping, relocates the catalog and renderer into root tooling, removes the project-specific runner option, renames the inferred catalog type to satisfy inherited lint, and uses the pinned Effect CLI import. Every capability stays off. No drovr deployment command or authority carries over.
 
+The Linux and release providers in `packages/alchemy-nest/` adapt `taslabs-net/homeflare-kit` at `cf20298`; its MIT notice is retained in `packages/alchemy-nest/LICENSE-homeflare-kit`.
+
 The private-data fence and instance schema are new foundation tooling. Publication checks, shipping logic and their tests run on the pinned Node + Effect toolchain.

@@ -271,6 +271,25 @@ importers:
         specifier: 6.0.0-alpha.59
         version: 6.0.0-alpha.59
 
+  packages/alchemy-nest:
+    dependencies:
+      alchemy:
+        specifier: 2.0.0-beta.79
+        version: 2.0.0-beta.79(@effect/platform-node@4.0.0-rc.117(effect@4.0.0-rc.117)(redis@6.3.0))(@types/node@24.13.6)(effect@4.0.0-rc.117)(typescript@7.0.2)(vite@8.3.2(@types/node@24.13.6)(yaml@2.9.1))(vitest@5.0.1(@types/node@24.13.6)(vite@8.3.2(@types/node@24.13.6)(yaml@2.9.1)))(ws@8.22.0)
+      effect:
+        specifier: 4.0.0-rc.117
+        version: 4.0.0-rc.117
+    devDependencies:
+      '@effect/platform-node':
+        specifier: 4.0.0-rc.117
+        version: 4.0.0-rc.117(effect@4.0.0-rc.117)(redis@6.3.0)
+      '@effect/vitest':
+        specifier: 4.0.0-rc.117
+        version: 4.0.0-rc.117(effect@4.0.0-rc.117)(vitest@5.0.1(@types/node@24.13.6)(vite@8.3.2(@types/node@24.13.6)(yaml@2.9.1)))
+      vitest:
+        specifier: 5.0.1
+        version: 5.0.1(@types/node@24.13.6)(vite@8.3.2(@types/node@24.13.6)(yaml@2.9.1))
+
   packages/lexicon:
     dependencies:
       '@atproto/lex-data':

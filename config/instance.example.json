@@ -3,5 +3,13 @@
   "domains": ["network.example"],
   "ips": ["203.0.113.10", "2001:db8::10"],
   "sites": ["site-a", "site-b"],
-  "secretNames": ["example_credential"]
+  "secretNames": ["example_credential"],
+  "nodes": {
+    "node-a": {
+      "ssh": "node-a.example",
+      "tailnetIPv4": "203.0.113.10",
+      "home": "/home/example",
+      "dataRoot": "/srv/example"
+    }
+  }
 }
