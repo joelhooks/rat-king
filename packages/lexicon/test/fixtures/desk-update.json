@@ -1,0 +1,7 @@
+{
+  "$type": "sh.mschf.ratking.desk.update",
+  "project": "sample-project",
+  "itemId": "sample-001",
+  "state": "resolved",
+  "text": "Sample owner notified."
+}

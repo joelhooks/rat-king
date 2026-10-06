@@ -1,0 +1,43 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.desk.answer",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "tid",
+      "description": "Private envelope plaintext only; never publish desk contents as repository records.",
+      "record": {
+        "type": "object",
+        "required": [
+          "project",
+          "itemId",
+          "inReplyTo",
+          "values"
+        ],
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "itemId": {
+            "type": "string"
+          },
+          "inReplyTo": {
+            "type": "string",
+            "format": "tid"
+          },
+          "values": {
+            "type": "unknown",
+            "description": "Object mapping axis keys to option v strings. Consumers validate values against the referenced item."
+          },
+          "rows": {
+            "type": "unknown",
+            "description": "Object mapping row-group keys to arrays of selected row v strings."
+          },
+          "note": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

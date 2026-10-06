@@ -1,0 +1,13 @@
+{
+  "$type": "sh.mschf.ratking.desk.answer",
+  "project": "sample-project",
+  "itemId": "sample-001",
+  "inReplyTo": "3m5abcde23456",
+  "values": {
+    "path": "hold"
+  },
+  "rows": {
+    "checks": ["codec"]
+  },
+  "note": "Keep it reversible."
+}
