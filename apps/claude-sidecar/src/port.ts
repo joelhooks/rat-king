@@ -71,7 +71,7 @@ export const requireModel = Effect.fn("Sidecar.requireModel")(
   function* requireModel(model: string) {
     if (model !== MODEL) {
       return yield* new SidecarFailure({
-        reason: `Unsupported model: ${model}`,
+        reason: "Unsupported model",
       });
     }
 

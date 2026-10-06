@@ -8,6 +8,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 
 import { Effect, ManagedRuntime, Schema } from "effect";
 
+import { logHttpFailure } from "./diagnostics.ts";
 import {
   ChatRequest,
   MODEL,
@@ -54,6 +55,11 @@ export const serve = (
         supplied.length !== expected.length ||
         !timingSafeEqual(supplied, expected)
       ) {
+        logHttpFailure(
+          401,
+          "policy_refusal",
+          new Error("Authorization refused")
+        );
         response.writeHead(401).end();
 
         return;
@@ -68,10 +74,13 @@ export const serve = (
       }
 
       if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
+        logHttpFailure(404, "policy_refusal", new Error("Route not found"));
         response.writeHead(404).end();
 
         return;
       }
+
+      let failureKind = "stream_error";
 
       try {
         const chunks: Buffer[] = [];
@@ -91,6 +100,7 @@ export const serve = (
           chunks.push(bytes);
         }
 
+        failureKind = "policy_refusal";
         const input: unknown = JSON.parse(Buffer.concat(chunks).toString());
         const chat = Schema.decodeUnknownSync(ChatRequest)(input);
 
@@ -109,7 +119,10 @@ export const serve = (
           throw new Error("Command-form user text is not accepted");
         }
 
+        failureKind = "model_error";
         await runtime.runPromise(requireModel(chat.model));
+
+        failureKind = "sdk_error";
 
         const turn = await runtime.runPromise(
           Effect.gen(function* turnRequest() {
@@ -133,6 +146,7 @@ export const serve = (
           object: "chat.completion.chunk",
         };
 
+        failureKind = "stream_error";
         response.writeHead(200, {
           "cache-control": "no-cache",
           "content-type": "text/event-stream",
@@ -145,7 +159,14 @@ export const serve = (
         );
         response.end("data: [DONE]\n\n");
       } catch (error) {
-        await runtime.runPromise(Effect.logError(String(error)));
+        logHttpFailure(400, failureKind, error);
+
+        if (response.headersSent) {
+          response.destroy();
+
+          return;
+        }
+
         response.writeHead(400, { "content-type": "application/json" }).end(
           JSON.stringify({
             error: {

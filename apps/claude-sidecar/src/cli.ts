@@ -7,7 +7,11 @@ import { Config, Effect, Schema } from "effect";
 
 import { gatewayUrl } from "./gateway-url.ts";
 import { SidecarFailure } from "./port.ts";
-import { readPrivateFile, requireBearer } from "./private-file.ts";
+import {
+  logCredentialRefusal,
+  readPrivateFile,
+  requireBearer,
+} from "./private-file.ts";
 import { serve } from "./server.ts";
 
 const program = Effect.gen(function* launcher() {
@@ -15,8 +19,12 @@ const program = Effect.gen(function* launcher() {
   const executable = yield* Config.String("RAT_KING_CLAUDE_EXECUTABLE");
 
   const token = yield* Effect.tryPromise({
-    catch: (cause) => new SidecarFailure({ reason: String(cause) }),
-    try: async () => requireBearer(await readPrivateFile(tokenFile)),
+    catch: (cause) => {
+      logCredentialRefusal(cause, tokenFile);
+
+      return new SidecarFailure({ reason: "Bearer credential refused" });
+    },
+    try: async () => requireBearer(await readPrivateFile(tokenFile), tokenFile),
   });
 
   const endpointFile = yield* Config.String(
@@ -41,7 +49,12 @@ const program = Effect.gen(function* launcher() {
     catch: () => new SidecarFailure({ reason: "Invalid model gateway files" }),
     try: async () => {
       const endpoint = await readFile(endpointFile, "utf-8");
-      const key = await readPrivateFile(keyFile);
+
+      const key = await readPrivateFile(keyFile).catch((error: unknown) => {
+        logCredentialRefusal(error, keyFile);
+        throw new SidecarFailure({ reason: "Gateway credential refused" });
+      });
+
       const baseUrl = gatewayUrl(endpoint);
       const apiKeyFile = path.join(credentialDirectory, "key");
       await writeFile(apiKeyFile, key, { flag: "wx", mode: 0o600 });
