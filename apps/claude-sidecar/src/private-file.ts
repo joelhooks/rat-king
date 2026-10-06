@@ -1,10 +1,10 @@
 /* oxlint-disable eslint/no-bitwise, eslint/no-await-in-loop -- POSIX masks and root-to-leaf checks must run sequentially before opening a credential. */
-// @effect-diagnostics nodeBuiltinImport:off asyncFunction:off -- Host-only credential file boundary.
+// @effect-diagnostics nodeBuiltinImport:off asyncFunction:off globalConsole:off -- Host-only credential file boundary.
 import { Buffer } from "node:buffer";
 import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import type { Stats } from "node:fs";
-import { open } from "node:fs/promises";
+import { lstat, open } from "node:fs/promises";
 import path from "node:path";
 
 export const runningUid = () => {
@@ -20,6 +20,78 @@ export const isPrivateFile = (metadata: Stats, uid = runningUid()) =>
   metadata.uid === uid &&
   (metadata.mode & 0o7177) === 0 &&
   metadata.size > 0;
+
+export class CredentialRefusalError extends Error {
+  readonly check:
+    | "owner"
+    | "mode"
+    | "symlink"
+    | "file_type"
+    | "size"
+    | "length"
+    | "read";
+  readonly component: string;
+
+  constructor(
+    check:
+      | "owner"
+      | "mode"
+      | "symlink"
+      | "file_type"
+      | "size"
+      | "length"
+      | "read",
+    component: string
+  ) {
+    super(`Credential refused: ${check} at ${component}`);
+    this.name = "CredentialRefusalError";
+    this.check = check;
+    this.component = component;
+  }
+}
+
+export const validatePrivateFile = (
+  metadata: Stats,
+  component: string,
+  directory = false,
+  uid = runningUid()
+) => {
+  if (metadata.isSymbolicLink()) {
+    throw new CredentialRefusalError("symlink", component);
+  }
+
+  if (directory ? !metadata.isDirectory() : !metadata.isFile()) {
+    throw new CredentialRefusalError("file_type", component);
+  }
+
+  if (metadata.uid !== uid && !(directory && metadata.uid === 0)) {
+    throw new CredentialRefusalError("owner", component);
+  }
+
+  if ((metadata.mode & (directory ? 0o022 : 0o7177)) !== 0) {
+    throw new CredentialRefusalError("mode", component);
+  }
+
+  if (!directory && metadata.size <= 0) {
+    throw new CredentialRefusalError("size", component);
+  }
+};
+
+// oxlint-disable-next-line anti-slop/no-unknown-parameters -- Catch boundary classifies unknown failures without exposing raw detail.
+export const logCredentialRefusal = (error: unknown, file: string) => {
+  const refusal =
+    error instanceof CredentialRefusalError
+      ? error
+      : new CredentialRefusalError("read", path.resolve(file));
+
+  console.error(
+    JSON.stringify({
+      check: refusal.check,
+      component: refusal.component,
+      event: "sidecar_credential_refusal",
+    })
+  );
+};
 
 export const readPrivateFile = async (file: string) => {
   const uid = runningUid();
@@ -40,6 +112,8 @@ export const readPrivateFile = async (file: string) => {
   }
 
   for (const parent of directories) {
+    validatePrivateFile(await lstat(parent), parent, true, uid);
+
     const descriptor = await open(
       parent,
       constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_DIRECTORY
@@ -48,17 +122,13 @@ export const readPrivateFile = async (file: string) => {
     try {
       const metadata = await descriptor.stat();
 
-      if (
-        !metadata.isDirectory() ||
-        (metadata.mode & 0o022) !== 0 ||
-        (metadata.uid !== 0 && metadata.uid !== uid)
-      ) {
-        throw new Error("Credential directory must not be writable by others");
-      }
+      validatePrivateFile(metadata, parent, true, uid);
     } finally {
       await descriptor.close();
     }
   }
+
+  validatePrivateFile(await lstat(absolute), absolute, false, uid);
 
   const descriptor = await open(
     absolute,
@@ -68,11 +138,7 @@ export const readPrivateFile = async (file: string) => {
   try {
     const metadata = await descriptor.stat();
 
-    if (!isPrivateFile(metadata, uid)) {
-      throw new Error(
-        "Credential must be a nonempty owned private regular file"
-      );
-    }
+    validatePrivateFile(metadata, absolute, false, uid);
 
     return await descriptor.readFile("utf-8");
   } finally {
@@ -82,9 +148,9 @@ export const readPrivateFile = async (file: string) => {
 
 export const generateBearer = () => randomBytes(32).toString("hex");
 
-export const requireBearer = (token: string) => {
+export const requireBearer = (token: string, file = "bearer") => {
   if (Buffer.byteLength(token, "utf-8") < 32) {
-    throw new Error("Bearer token must have at least 32 bytes");
+    throw new CredentialRefusalError("length", path.resolve(file));
   }
 
   return token;

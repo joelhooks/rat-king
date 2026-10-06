@@ -154,7 +154,7 @@ it.live.prop(
         const target = path.join(directory, "credential");
         await writeFile(target, generateBearer(), { mode: safeMode });
         await expect(readPrivateFile(target)).rejects.toThrow(
-          "Credential directory must not be writable by others"
+          "Credential refused: mode at"
         );
       } finally {
         await rm(directory, { force: true, recursive: true });

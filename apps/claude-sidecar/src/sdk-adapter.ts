@@ -17,6 +17,7 @@ import {
 } from "pi-claude-bridge/src/prompt-stream.ts";
 import { createActor, createMachine } from "xstate";
 
+import { failureMessage } from "./diagnostics.ts";
 import {
   MODEL,
   ModelDriver,
@@ -274,7 +275,7 @@ class Session {
             );
 
             if (!tool) {
-              throw new Error(`Unserved tool call: ${block.name}`);
+              throw new Error("Unserved tool call");
             }
 
             calls.push({
@@ -374,12 +375,18 @@ export const sdkLayer = (executable: string, gateway: SdkGateway) =>
       });
 
       const cwd = yield* Effect.tryPromise({
-        catch: (cause) => new SidecarFailure({ reason: String(cause) }),
+        catch: () =>
+          new SidecarFailure({
+            reason: "Cannot create private working directory",
+          }),
         try: () => mkdtemp(path.join(temporaryRoot, "rat-king-claude-cwd-")),
       });
 
       const configDirectory = yield* Effect.tryPromise({
-        catch: (cause) => new SidecarFailure({ reason: String(cause) }),
+        catch: () =>
+          new SidecarFailure({
+            reason: "Cannot create private config directory",
+          }),
         try: () => mkdtemp(path.join(temporaryRoot, "rat-king-claude-config-")),
       });
 
@@ -407,7 +414,8 @@ export const sdkLayer = (executable: string, gateway: SdkGateway) =>
         yield* requireModel(request.model);
 
         return yield* Effect.tryPromise({
-          catch: (cause) => new SidecarFailure({ reason: String(cause) }),
+          catch: (cause) =>
+            new SidecarFailure({ reason: failureMessage(cause) }),
           try: async () => {
             const last = request.messages.at(-1);
 
