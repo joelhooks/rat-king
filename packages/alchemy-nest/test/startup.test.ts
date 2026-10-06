@@ -1,86 +1,139 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
-import { Arbitrary, Effect, Layer, Predicate, Result, Schema } from "effect";
+import { Arbitrary, Effect, Layer, Result, Schema } from "effect";
 import { expect } from "vitest";
 
 import { makeFakeShell } from "../src/fake-shell.ts";
 import { testLayer } from "../src/host-shell.ts";
-import { verifiedSidecarPid } from "../src/listeners.ts";
-import {
-  assessListeners,
-  startupLayer,
-  stopUnit,
-} from "../src/startup-contract.ts";
+import { assessListeners, readListeners } from "../src/listeners.ts";
+import { startupLayer, stopUnit } from "../src/startup-contract.ts";
 import { UnitStartup } from "../src/unit-startup.ts";
+
+const key = ({
+  unit,
+  bind,
+  port,
+}: {
+  unit: string;
+  bind: string;
+  port: number;
+}) => `${unit}|${bind}|${port}`;
 
 const address = "203.0.113.10";
 
-const line = (port: number, process = "weed", bind = "127.0.0.1") =>
-  `LISTEN 0 4096 ${bind}:${port} 0.0.0.0:* users:(("${process}",pid=12,fd=3))`;
+const storeUnit = "rat-king-seaweedfs.service";
 
-const store = [19_333, 18_081, 18_888, 18_333, 29_333, 28_081, 28_888, 28_333]
-  .map((port) => line(port))
-  .join("\n");
+const nodeUnit = "rat-king-celld.service";
 
-const complete = `${store}\n${line(18_788, "celld")}\n${line(18_787, "celld", address)}`;
+const sidecarUnit = "rat-king-claude-sidecar.service";
 
-it("requires exact process, interface and port sets", () => {
+const cgroup = (unit: string, uid = 1000) =>
+  `/user.slice/user-${uid}.slice/user@${uid}.service/rat.slice/rat-king.slice/${unit}`;
+
+const observedCgroup = (unit: string): string => {
+  if (unit === "missing") {
+    return "";
+  }
+
+  if (unit === "sshd.service") {
+    return "/system.slice/sshd.service";
+  }
+
+  if (unit === "foreign-user") {
+    return cgroup(storeUnit, 1001);
+  }
+
+  return cgroup(unit);
+};
+
+const unitCgroups = new Map(
+  [storeUnit, nodeUnit, sidecarUnit].map((unit) => [unit, cgroup(unit)])
+);
+
+const line = (
+  port: number,
+  unit = storeUnit,
+  bind = "127.0.0.1",
+  process = "anything"
+) =>
+  `LISTEN 0 4096 ${bind}:${port} 0.0.0.0:* users:(("${process}",pid=12,fd=3)) cgroup:${cgroup(unit)}`;
+
+const ports = [19_333, 18_081, 18_888, 18_333, 29_333, 28_081, 28_888, 28_333];
+
+const store = ports.map((port) => line(port)).join("\n");
+
+const complete = `${store}\n${line(18_788, nodeUnit)}\n${line(18_787, nodeUnit, address)}`;
+
+it("requires exact unit, interface and port sets", () => {
+  expect(assessListeners(store, address, false, false, unitCgroups)._tag).toBe(
+    "Ready"
+  );
   expect(
-    Predicate.isTagged(assessListeners(store, address, false), "Ready")
-  ).toBe(true);
-  expect(
-    Predicate.isTagged(assessListeners(complete, address, true), "Ready")
-  ).toBe(true);
-  expect(
-    Predicate.isTagged(assessListeners(store, address, true), "Waiting")
-  ).toBe(true);
+    assessListeners(complete, address, true, false, unitCgroups)._tag
+  ).toBe("Ready");
+  expect(assessListeners(store, address, true, false, unitCgroups)._tag).toBe(
+    "Waiting"
+  );
 
   for (const extra of [8181, 9101]) {
     expect(
-      Predicate.isTagged(
-        assessListeners(`${store}\n${line(extra)}`, address, false),
-        "Violation"
-      )
-    ).toBe(true);
+      assessListeners(
+        `${store}\n${line(extra)}`,
+        address,
+        false,
+        false,
+        unitCgroups
+      )._tag
+    ).toBe("Violation");
   }
 
   expect(
-    Predicate.isTagged(
-      assessListeners(
-        complete.replace("127.0.0.1:18788", "0.0.0.0:18788"),
-        address,
-        true
-      ),
-      "Violation"
-    )
-  ).toBe(true);
+    assessListeners(
+      complete.replace("127.0.0.1:18788", "0.0.0.0:18788"),
+      address,
+      true,
+      false,
+      unitCgroups
+    )._tag
+  ).toBe("Violation");
   expect(
-    Predicate.isTagged(
-      assessListeners(complete.replace('"celld"', '"weed"'), address, true),
-      "Violation"
-    )
-  ).toBe(true);
+    assessListeners(
+      complete.replace(cgroup(nodeUnit), cgroup(storeUnit)),
+      address,
+      true,
+      false,
+      unitCgroups
+    )._tag
+  ).toBe("Violation");
   expect(
-    Predicate.isTagged(
-      assessListeners(`${complete}\n${line(18_333)}`, address, true),
-      "Violation"
-    )
-  ).toBe(true);
+    assessListeners(
+      `${complete}\n${line(18_333)}`,
+      address,
+      true,
+      false,
+      unitCgroups
+    )._tag
+  ).toBe("Violation");
 });
 
 it("requires the sidecar as the eleventh listener and rejects its extra ports", () => {
-  const sidecar = line(18_789, "node");
-  const full = `${complete}\n${sidecar}`;
-  expect(assessListeners(full, address, true, true, "12")._tag).toBe("Ready");
-  expect(assessListeners(complete, address, true, true)._tag).toBe("Waiting");
-  expect(assessListeners(full, address, true, false)._tag).toBe("Violation");
+  const full = `${complete}\n${line(18_789, sidecarUnit, "127.0.0.1", "MainThread")}`;
+  expect(assessListeners(full, address, true, true, unitCgroups)._tag).toBe(
+    "Ready"
+  );
+  expect(assessListeners(complete, address, true, true, unitCgroups)._tag).toBe(
+    "Waiting"
+  );
+  expect(assessListeners(full, address, true, false, unitCgroups)._tag).toBe(
+    "Violation"
+  );
   expect(
     assessListeners(
-      `${full}\n${line(19_001, "node")}`,
+      `${full}\n${line(19_001, sidecarUnit)}`,
       address,
       true,
       true,
-      "12"
+      unitCgroups
     )._tag
   ).toBe("Violation");
   expect(
@@ -89,61 +142,158 @@ it("requires the sidecar as the eleventh listener and rejects its extra ports", 
       address,
       true,
       true,
-      "12"
+      unitCgroups
     )._tag
   ).toBe("Violation");
 });
 
+it.prop(
+  "only the declared unit/address/port set passes, independently of process names and PIDs",
+  {
+    extras: Arbitrary.schema(
+      Schema.Array(
+        Schema.Struct({
+          bind: Schema.Literals([
+            "127.0.0.1",
+            address,
+            "0.0.0.0",
+            "[::]",
+            [192, 168, 1, 20].join("."),
+            "[::1]",
+          ]),
+          port: Schema.Literals([...ports, 18_787, 18_788, 18_789, 22, 9101]),
+          unit: Schema.Literals([
+            storeUnit,
+            nodeUnit,
+            sidecarUnit,
+            "rat-king-unknown.service",
+            "sshd.service",
+            "foreign-user",
+            "missing",
+          ]),
+        })
+      )
+    ),
+    full: Arbitrary.schema(Schema.Boolean),
+    included: Arbitrary.schema(
+      Schema.Array(
+        Schema.Int.check(Schema.isBetween({ maximum: 10, minimum: 0 }))
+      )
+    ),
+    node: Arbitrary.schema(Schema.Boolean),
+    pid: Arbitrary.schema(
+      Schema.Int.check(Schema.isBetween({ maximum: 65_535, minimum: 1 }))
+    ),
+    process: Arbitrary.schema(
+      Schema.Literals([
+        "weed",
+        "celld",
+        "node",
+        "MainThread",
+        "sshd",
+        "rat-king",
+        "other",
+      ])
+    ),
+    sidecar: Arbitrary.schema(Schema.Boolean),
+  },
+  ({ node, sidecar, full, included, extras, process, pid }) => {
+    const allowed = [
+      ...ports.map((port) => ({ bind: "127.0.0.1", port, unit: storeUnit })),
+      ...(node
+        ? [
+            { bind: address, port: 18_787, unit: nodeUnit },
+            { bind: "127.0.0.1", port: 18_788, unit: nodeUnit },
+          ]
+        : []),
+      ...(sidecar
+        ? [{ bind: "127.0.0.1", port: 18_789, unit: sidecarUnit }]
+        : []),
+    ];
+
+    const listeners = [
+      ...allowed.filter((_, index) => full || included.includes(index)),
+      ...extras,
+    ];
+
+    const reserved = new Set([...ports, 18_787, 18_788, 18_789]);
+
+    const scoped = listeners.filter(
+      ({ unit, port }) =>
+        unit.startsWith("rat-king-") ||
+        unit === "foreign-user" ||
+        reserved.has(port)
+    );
+
+    const allowedKeys = new Set(allowed.map(key));
+    const seen = new Set(scoped.map(key));
+
+    const violation =
+      scoped.some((listener) => !allowedKeys.has(key(listener))) ||
+      seen.size !== scoped.length;
+
+    const accepted = seen.size === allowedKeys.size ? "Ready" : "Waiting";
+    const expected = violation ? "Violation" : accepted;
+
+    const output = listeners
+      .map(({ unit, bind, port }) => {
+        const path = observedCgroup(unit);
+
+        return line(port, unit, bind, process)
+          .replace(
+            `cgroup:${cgroup(unit)}`,
+            path === "" ? "" : `cgroup:${path}`
+          )
+          .replace("pid=12", `pid=${pid}`);
+      })
+      .join("\n");
+
+    expect(
+      assessListeners(output, address, node, sidecar, unitCgroups)._tag
+    ).toBe(expected);
+  }
+);
+
 it.effect(
-  "accepts Linux MainThread only for the unit PID and approved executable",
+  "reads exact user-unit cgroups and requests cgroup listener evidence",
   () =>
-    Effect.gen(function* testLinuxIdentity() {
+    Effect.gen(function* testCgroups() {
       const fake = yield* makeFakeShell();
-      const full = `${complete}\n${line(18_789, "MainThread")}`;
+      const commands: (readonly string[])[] = [];
 
-      for (const approved of [true, false]) {
-        const shell = {
-          ...fake.shell,
-          exec: (argv: readonly string[]) => {
-            if (argv[0] === "systemctl" && argv.includes("MainPID")) {
-              return Effect.succeed({ code: 0, stdout: "12\n" });
-            }
+      const shell = {
+        ...fake.shell,
+        exec: (argv: readonly string[]) => {
+          commands.push(argv);
 
-            if (argv[0] === "readlink") {
-              return Effect.succeed({
-                code: 0,
-                stdout:
-                  argv[2] === "/usr/local/bin/node" || approved
-                    ? "/opt/example/node\n"
-                    : "/opt/example/not-node\n",
-              });
-            }
+          return Effect.succeed({
+            code: 0,
+            stdout: argv[0] === "ss" ? complete : `${cgroup(argv[3] ?? "")}\n`,
+          });
+        },
+      };
 
-            return fake.shell.exec(argv);
-          },
-        };
-
-        const pid = yield* verifiedSidecarPid(shell);
-
-        expect(pid).toBe(approved ? "12" : undefined);
-        expect(assessListeners(full, address, true, true, pid)._tag).toBe(
-          approved ? "Ready" : "Violation"
-        );
-      }
-
-      for (const changed of [
-        full.replace('"MainThread",pid=12', '"MainThread",pid=13'),
-        full.replace("127.0.0.1:18789", "0.0.0.0:18789"),
-        `${full}\n${line(19_001, "MainThread")}`,
-        full.replace(
-          '"MainThread",pid=12,fd=3))',
-          '"MainThread",pid=12,fd=3),("node",pid=13,fd=4))'
-        ),
-      ]) {
-        expect(assessListeners(changed, address, true, true, "12")._tag).toBe(
-          "Violation"
-        );
-      }
+      const observed = yield* readListeners(shell);
+      expect(
+        assessListeners(
+          observed.text,
+          address,
+          true,
+          false,
+          observed.unitCgroups
+        )._tag
+      ).toBe("Ready");
+      expect(commands).toEqual([
+        ...[storeUnit, nodeUnit, sidecarUnit].map((unit) => [
+          "systemctl",
+          "--user",
+          "show",
+          unit,
+          "--property=ControlGroup",
+          "--value",
+        ]),
+        ["ss", "-H", "-ltnp", "--cgroup"],
+      ]);
     })
 );
 
@@ -163,6 +313,13 @@ it.effect.prop(
               code: 0,
               stdout: `${complete}\n${line(9101)}`,
             });
+          }
+
+          if (
+            argv[0] === "systemctl" &&
+            argv.includes("--property=ControlGroup")
+          ) {
+            return Effect.succeed({ code: 0, stdout: cgroup(argv[3] ?? "") });
           }
 
           if (argv[0] === "systemctl" && argv[2] === "stop") {

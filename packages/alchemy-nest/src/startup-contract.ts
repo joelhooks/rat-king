@@ -2,9 +2,9 @@ import type { Crypto, FileSystem } from "effect";
 import { Effect, Layer, Predicate, Result, Schema } from "effect";
 
 import { refuse } from "./files.ts";
-import { HostShell, must } from "./host-shell.ts";
+import { HostShell } from "./host-shell.ts";
 import type { Interface } from "./host-shell.ts";
-import { assessListeners, verifiedSidecarPid } from "./listeners.ts";
+import { assessListeners, readListeners } from "./listeners.ts";
 import { bootstrapProbe, probeEnvironment } from "./probes.ts";
 import type { ProbeRunnerMode } from "./probes.ts";
 import { s3Script } from "./s3-script.ts";
@@ -82,12 +82,14 @@ const assertStarted = Effect.fn("UnitStartup.assertStarted")(function* check(
   attempts = 40
 ) {
   for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const listeners = yield* readListeners(shell);
+
     const assessment = assessListeners(
-      yield* must(shell, ["ss", "-ltnp"]),
+      listeners.text,
       publicIPv4,
       nodeExpected,
       sidecarExpected,
-      sidecarExpected ? yield* verifiedSidecarPid(shell) : undefined
+      listeners.unitCgroups
     );
 
     if (Predicate.isTagged(assessment, "Ready")) {

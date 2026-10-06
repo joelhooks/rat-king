@@ -1,4 +1,5 @@
 import type { Node } from "./inventory-schema.ts";
+import { nodeListener, storeListener } from "./listener-contract.ts";
 import type { UnitProps } from "./systemd.ts";
 
 const quote = (value: string): string =>
@@ -33,7 +34,7 @@ export const storeUnit = (input: {
   readonly restartOn: readonly string[];
 }): UnitProps => ({
   home: input.home,
-  name: "rat-king-seaweedfs.service",
+  name: storeListener.unit,
   restartOn: input.restartOn,
   scope: "user",
   sections: [
@@ -51,18 +52,13 @@ export const storeUnit = (input: {
           [
             quote(input.binary),
             "server",
-            "-ip=127.0.0.1",
-            "-ip.bind=127.0.0.1",
-            "-master.port=19333",
-            "-master.port.grpc=29333",
-            "-volume.port=18081",
-            "-volume.port.grpc=28081",
+            `-ip=${storeListener.address}`,
+            `-ip.bind=${storeListener.address}`,
+            ...Object.entries(storeListener.ports).map(
+              ([flag, port]) => `-${flag}=${port}`
+            ),
             "-filer",
-            "-filer.port=18888",
-            "-filer.port.grpc=28888",
             "-s3",
-            "-s3.port=18333",
-            "-s3.port.grpc=28333",
             "-s3.port.iceberg=0",
             "-s3.port.lance=0",
             `-dir=${quote(input.data)}`,
@@ -103,7 +99,7 @@ export const nodeUnit = (input: {
   readonly restartOn: readonly string[];
 }): UnitProps => ({
   home: input.host.home,
-  name: "rat-king-celld.service",
+  name: nodeListener.unit,
   restartOn: input.restartOn,
   scope: "user",
   sections: [
@@ -120,7 +116,7 @@ export const nodeUnit = (input: {
       lines: [
         [
           "ExecStart",
-          `${quote(input.binary)} --listen ${input.workerIPv4 ?? input.host.tailnetIPv4}:18787 --internal-listen 127.0.0.1:18788`,
+          `${quote(input.binary)} --listen ${input.workerIPv4 ?? input.host.tailnetIPv4}:${nodeListener.port} --internal-listen ${nodeListener.internalAddress}:${nodeListener.internalPort}`,
         ],
         ["EnvironmentFile", input.environment.replaceAll("%", "%%")],
         ["WorkingDirectory", input.data.replaceAll("%", "%%")],
