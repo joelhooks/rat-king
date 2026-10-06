@@ -5,11 +5,13 @@ import * as Provider from "alchemy/Provider";
 import { Effect, Option, Schema } from "effect";
 
 import { absent } from "./absent.ts";
+import { recovering } from "./adoption.ts";
 import { refuse } from "./files.ts";
 import { HostShell } from "./host-shell.ts";
 import {
   deleteUnit,
   needsUpdate,
+  ownedUnit,
   readUnit,
   reconcileUnit,
   unitPath,
@@ -101,17 +103,24 @@ export const NodeProvider = () =>
 
           const live = { ...unit, ...urls(olds) };
 
-          return output === undefined
-            ? Unowned(live)
-            : {
-                ...live,
-                configSha256: output.configSha256,
-                sha256: output.sha256,
-              };
+          if (output === undefined) {
+            const owned = yield* ownedUnit(shell, olds, unit);
+
+            const recovered = (yield* recovering)
+              ? { ...live, configSha256: "" }
+              : live;
+
+            return owned ? recovered : Unowned(recovered);
+          }
+
+          return {
+            ...live,
+            configSha256: output.configSha256,
+            sha256: output.sha256,
+          };
         }),
         reconcile: Effect.fn("Celld.Node.reconcile")(function* operation({
           news,
-          olds,
           output,
         }) {
           const adopt = yield* Effect.serviceOption(AdoptPolicy).pipe(
@@ -122,12 +131,7 @@ export const NodeProvider = () =>
             yield* startup.value.beforeStart(news.name, news.home);
           }
 
-          const unit = yield* reconcileUnit(
-            shell,
-            news,
-            olds === undefined ? undefined : output,
-            adopt
-          );
+          const unit = yield* reconcileUnit(shell, news, output, adopt);
 
           if (Option.isSome(startup)) {
             yield* startup.value.afterStart(news.name);

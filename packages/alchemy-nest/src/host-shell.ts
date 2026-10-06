@@ -22,6 +22,7 @@ export interface Diagnostics {
 
 export interface Interface {
   readonly purgeRoots: readonly string[];
+  readonly checksum?: (path: string) => Effect.Effect<string, HostError>;
   readonly exec: (
     argv: readonly string[],
     diagnostics?: Diagnostics

@@ -1,6 +1,7 @@
 import { Effect, Schema } from "effect";
 
 import { absent } from "./absent.ts";
+import { ownedPath } from "./adoption.ts";
 import {
   AbsolutePath,
   deleteFile,
@@ -203,6 +204,35 @@ export const readUnit = Effect.fn("SystemdUnit.read")(function* readUnit(
     ...live,
   } satisfies UnitAttributes;
 });
+
+export const ownedUnit = Effect.fn("SystemdUnit.adopt.owned")(
+  function* ownedUnit(
+    shell: Interface,
+    props: UnitProps,
+    live: UnitAttributes
+  ) {
+    const file = yield* readFile(shell, unitPath(props));
+
+    if (file?.mode !== 0o644 || live.sha256 !== textDigest(renderUnit(props))) {
+      return yield* refuse("Only the exact declared unit may be adopted.");
+    }
+
+    const inSlice =
+      props.name === "rat-king.slice" ||
+      props.name.endsWith(".timer") ||
+      props.sections.some((part) =>
+        part.lines.some(
+          ([key, value]) => key === "Slice" && value === "rat-king.slice"
+        )
+      );
+
+    return (
+      props.name.startsWith("rat-king") &&
+      inSlice &&
+      (yield* ownedPath(shell, `${props.home}/.config/rat-king`))
+    );
+  }
+);
 
 export const needsUpdate = (
   props: UnitProps,

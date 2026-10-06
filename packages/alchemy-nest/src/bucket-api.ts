@@ -11,7 +11,8 @@ import {
 } from "effect";
 
 import { absent } from "./absent.ts";
-import { AbsolutePath, refuse } from "./files.ts";
+import { ownedPath } from "./adoption.ts";
+import { AbsolutePath, readFile, refuse } from "./files.ts";
 import { HostError, HostShell } from "./host-shell.ts";
 import type { Interface } from "./host-shell.ts";
 import { s3Script } from "./s3-script.ts";
@@ -261,9 +262,33 @@ export const BucketProvider = () =>
             );
           }
 
-          return live === undefined || output !== undefined
-            ? live
-            : Unowned(live);
+          if (live === undefined || output !== undefined) {
+            return live;
+          }
+
+          const store = olds.ownedStore;
+
+          if (store !== undefined) {
+            const unit = yield* readFile(
+              shell,
+              `${store.home}/.config/systemd/user/${store.name}`
+            );
+
+            if (
+              unit?.sha256 !== store.sha256 ||
+              unit.mode !== 0o644 ||
+              olds.config !== `${store.home}/.config/rat-king/s3.json` ||
+              !(yield* ownedPath(shell, olds.config))
+            ) {
+              return yield* refuse(
+                "Bucket adoption requires its exact owned store and configuration."
+              );
+            }
+
+            return live;
+          }
+
+          return Unowned(live);
         }),
         reconcile: Effect.fn("ObjectStore.provider.reconcile")(
           function* operation({ news, output }) {

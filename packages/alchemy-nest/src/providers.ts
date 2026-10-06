@@ -5,6 +5,7 @@ import * as Provider from "alchemy/Provider";
 import { Effect, Layer, Option, Schema } from "effect";
 
 import { absent } from "./absent.ts";
+import { ownedPath, recovering, rotatingFile } from "./adoption.ts";
 import {
   deleteDirectory,
   deleteFile,
@@ -40,6 +41,7 @@ import {
   deleteUnit,
   unitPath,
   validateUnit,
+  ownedUnit,
   UnitSchema,
 } from "./systemd.ts";
 import type { UnitAttributes, UnitProps } from "./systemd.ts";
@@ -135,18 +137,28 @@ export const RemoteFileProvider = () =>
           yield* validateFile(olds);
           const live = yield* readFile(shell, olds.path);
 
-          return live === undefined || output !== undefined
-            ? live
-            : Unowned(live);
+          if (live === undefined || output !== undefined) {
+            return live;
+          }
+
+          const rotation = yield* rotatingFile(shell, olds);
+
+          if (
+            !rotation &&
+            (live.sha256 !== textDigest(fileText(olds.content)) ||
+              live.mode !== (olds.mode ?? 0o644))
+          ) {
+            return yield* new HostError({
+              operation: "adopt",
+              reason: "Only a matching file may be adopted.",
+            });
+          }
+
+          return (yield* ownedPath(shell, olds.path)) ? live : Unowned(live);
         }),
         reconcile: Effect.fn("RemoteFile.provider.reconcile")(
-          function* operation({ news, olds, output }) {
-            return yield* reconcileFile(
-              shell,
-              news,
-              olds === undefined ? undefined : output,
-              yield* adoption
-            );
+          function* operation({ news, output }) {
+            return yield* reconcileFile(shell, news, output, yield* adoption);
           }
         ),
       });
@@ -215,16 +227,25 @@ export const HostDirectoryProvider = () =>
               ? undefined
               : directoryPolicy(olds, observed);
 
-          return live === undefined || output !== undefined
-            ? live
-            : Unowned(live);
+          if (live === undefined || output !== undefined) {
+            return live;
+          }
+
+          if (live.mode !== (olds.mode ?? 0o755)) {
+            return yield* new HostError({
+              operation: "adopt",
+              reason: "Only a matching directory may be adopted.",
+            });
+          }
+
+          return (yield* ownedPath(shell, olds.path)) ? live : Unowned(live);
         }),
         reconcile: Effect.fn("HostDirectory.provider.reconcile")(
-          function* operation({ news, olds, output }) {
+          function* operation({ news, output }) {
             return yield* reconcileDirectory(
               shell,
               news,
-              olds === undefined ? undefined : output,
+              output,
               yield* adoption
             );
           }
@@ -288,16 +309,25 @@ export const SystemdUnitProvider = () =>
             return absent;
           }
 
-          return output === undefined
-            ? Unowned(live)
-            : {
-                ...live,
-                configSha256: output.configSha256,
-                sha256: output.sha256,
-              };
+          if (output === undefined) {
+            const owned = yield* ownedUnit(shell, olds, live);
+
+            const recovered =
+              (yield* recovering) && olds.name === "rat-king-seaweedfs.service"
+                ? { ...live, configSha256: "" }
+                : live;
+
+            return owned ? recovered : Unowned(recovered);
+          }
+
+          return {
+            ...live,
+            configSha256: output.configSha256,
+            sha256: output.sha256,
+          };
         }),
         reconcile: Effect.fn("SystemdUnit.provider.reconcile")(
-          function* operation({ news, olds, output }) {
+          function* operation({ news, output }) {
             yield* validateUnit(news);
 
             const existed = yield* shell.stat(unitPath(news));
@@ -309,7 +339,7 @@ export const SystemdUnitProvider = () =>
             const attributes = yield* reconcileUnit(
               shell,
               news,
-              olds === undefined ? undefined : output,
+              output,
               yield* adoption
             );
 
@@ -377,17 +407,29 @@ export const ReleaseBinaryProvider = () =>
           yield* validateBinary(olds);
           const live = yield* readFile(shell, olds.path);
 
-          return live === undefined || output !== undefined
-            ? live
-            : Unowned(live);
+          if (live === undefined || output !== undefined) {
+            return live;
+          }
+
+          if (
+            live.sha256 !== binaryDigest(olds) ||
+            live.mode !== (olds.mode ?? 0o755)
+          ) {
+            return yield* new HostError({
+              operation: "adopt",
+              reason: "Only the pinned binary may be adopted.",
+            });
+          }
+
+          return (yield* ownedPath(shell, olds.path)) ? live : Unowned(live);
         }),
         reconcile: Effect.fn("ReleaseBinary.provider.reconcile")(
-          function* operation({ news, olds, output }) {
+          function* operation({ news, output }) {
             return yield* reconcileBinary(
               shell,
               source,
               news,
-              olds === undefined ? undefined : output,
+              output,
               yield* adoption
             );
           }

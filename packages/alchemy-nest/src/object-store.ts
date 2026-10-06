@@ -4,6 +4,7 @@ import { Random, RandomProvider } from "alchemy/Random";
 import { Effect, Layer, Redacted } from "effect";
 
 import { BucketProvider, BucketResource } from "./bucket-api.ts";
+import { textDigest } from "./files.ts";
 import type { Node } from "./inventory-schema.ts";
 import { weedBinary } from "./pins.ts";
 import {
@@ -14,6 +15,7 @@ import {
   providers as hostProviders,
 } from "./providers.ts";
 import { sliceUnit, storeUnit } from "./service-units.ts";
+import { renderUnit } from "./systemd.ts";
 
 export const Slice = (home: string, memoryMax = "4G", cpuQuota = "300%") =>
   SystemdUnit("rat-king-slice", sliceUnit(home, memoryMax, cpuQuota));
@@ -75,6 +77,21 @@ export const Bucket = (
     const access = yield* Random("access-key", { bytes: 16 });
     const secret = yield* Random("secret-key", { bytes: 32 });
 
+    const declaration = storeUnit({
+      binary: `${host.home}/.local/share/rat-king/bin/weed`,
+      config: `${host.home}/.config/rat-king/s3.json`,
+      data: `${host.dataRoot}/seaweedfs`,
+      home: host.home,
+      restartGate:
+        gate === undefined
+          ? undefined
+          : {
+              address: host.tailnetIPv4,
+              path: `${host.home}/.local/share/rat-king/bin/restart-gate.mjs`,
+            },
+      restartOn: [],
+    });
+
     const identity = yield* RemoteFile("identity", {
       content: Output.all(access.text, secret.text).pipe(
         Output.map(([accessKey, secretKey]) =>
@@ -98,6 +115,11 @@ export const Bucket = (
       ),
       mode: 0o600,
       path: Output.interpolate`${configuration.path}/s3.json`,
+      rotationOwner: {
+        home: host.home,
+        name: "rat-king-seaweedfs.service",
+        sha256: textDigest(renderUnit(declaration)),
+      },
     });
 
     const unit = yield* SystemdUnit(
@@ -111,26 +133,13 @@ export const Bucket = (
         props.slice,
         gate?.sha256 ?? props.slice
       ).pipe(
-        Output.map(
-          ([path, directory, config, configHash, binaryHash, , gateHash]) =>
-            storeUnit({
-              binary: path,
-              config,
-              data: directory,
-              home: host.home,
-              restartGate:
-                gate === undefined
-                  ? undefined
-                  : {
-                      address: host.tailnetIPv4,
-                      path: `${host.home}/.local/share/rat-king/bin/restart-gate.mjs`,
-                    },
-              restartOn:
-                gate === undefined
-                  ? [configHash, binaryHash]
-                  : [configHash, binaryHash, gateHash],
-            })
-        )
+        Output.map((values) => ({
+          ...declaration,
+          restartOn:
+            gate === undefined
+              ? [values[3], values[4]]
+              : [values[3], values[4], values[6]],
+        }))
       )
     );
 
