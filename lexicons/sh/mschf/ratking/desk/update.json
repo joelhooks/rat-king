@@ -1,0 +1,38 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.desk.update",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "tid",
+      "description": "Private envelope plaintext only; never publish desk contents as repository records.",
+      "record": {
+        "type": "object",
+        "required": [
+          "project",
+          "itemId",
+          "state"
+        ],
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "itemId": {
+            "type": "string"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "resolved",
+              "superseded",
+              "followup"
+            ]
+          },
+          "text": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

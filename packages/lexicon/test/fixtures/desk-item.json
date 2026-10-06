@@ -1,0 +1,46 @@
+{
+  "$type": "sh.mschf.ratking.desk.item",
+  "project": "sample-project",
+  "itemId": "sample-001",
+  "kind": "decision",
+  "title": "Choose the sample path",
+  "why": "Keep this demonstration reversible.",
+  "body": "Nothing has executed.",
+  "choices": [
+    {
+      "key": "path",
+      "label": "Path",
+      "suggest": "hold",
+      "options": [
+        {
+          "id": "hold",
+          "label": "Hold",
+          "outcome": "Leave the example unchanged."
+        },
+        {
+          "id": "try",
+          "label": "Try",
+          "outcome": "Run the synthetic demonstration."
+        }
+      ]
+    }
+  ],
+  "rows": {
+    "key": "checks",
+    "label": "Checks",
+    "items": [
+      {
+        "v": "codec",
+        "label": "Codec",
+        "on": true
+      },
+      {
+        "v": "ui",
+        "label": "UI",
+        "on": false
+      }
+    ]
+  },
+  "refs": ["Sample receipt"],
+  "createdAt": "2026-01-01T09:00:00.000Z"
+}

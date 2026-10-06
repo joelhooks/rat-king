@@ -1,0 +1,166 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.desk.item",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "tid",
+      "description": "Private envelope plaintext only; never publish desk contents as repository records.",
+      "record": {
+        "type": "object",
+        "required": [
+          "project",
+          "itemId",
+          "kind",
+          "title",
+          "why",
+          "body",
+          "choices",
+          "refs",
+          "createdAt"
+        ],
+        "properties": {
+          "project": {
+            "type": "string"
+          },
+          "itemId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "decision",
+              "approval",
+              "blocked",
+              "done",
+              "fyi"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "why": {
+            "type": "string"
+          },
+          "body": {
+            "type": "string"
+          },
+          "choices": {
+            "type": "array",
+            "items": {
+              "type": "ref",
+              "ref": "#choice"
+            }
+          },
+          "rows": {
+            "type": "ref",
+            "ref": "#rows"
+          },
+          "refs": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "datetime"
+          },
+          "supersedes": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "option": {
+      "type": "object",
+      "description": "Option id maps to Muster v; outcome carries the desk-report then text.",
+      "required": [
+        "id",
+        "label",
+        "outcome"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "outcome": {
+          "type": "string"
+        }
+      }
+    },
+    "choice": {
+      "type": "object",
+      "required": [
+        "key",
+        "label",
+        "suggest",
+        "options"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "suggest": {
+          "type": "string"
+        },
+        "options": {
+          "type": "array",
+          "minLength": 1,
+          "items": {
+            "type": "ref",
+            "ref": "#option"
+          }
+        }
+      }
+    },
+    "row": {
+      "type": "object",
+      "required": [
+        "v",
+        "label",
+        "on"
+      ],
+      "properties": {
+        "v": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "on": {
+          "type": "boolean"
+        }
+      }
+    },
+    "rows": {
+      "type": "object",
+      "required": [
+        "key",
+        "label",
+        "items"
+      ],
+      "properties": {
+        "key": {
+          "type": "string"
+        },
+        "label": {
+          "type": "string"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "ref",
+            "ref": "#row"
+          }
+        }
+      }
+    }
+  }
+}
