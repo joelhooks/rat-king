@@ -128,9 +128,3 @@ export const trafficPermission = (
     throw failure("Forbidden", 403);
   }
 };
-
-export const observerOnly = (
-  issuer: string,
-  operators: readonly string[],
-  observers: readonly string[]
-) => observers.includes(issuer) && !operators.includes(issuer);

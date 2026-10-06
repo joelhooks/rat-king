@@ -32,7 +32,7 @@ const Limit = Schema.Int.check(
 );
 
 it.effect.prop(
-  "observer reads metadata but cannot send, register, lease or read recipient content; strangers get 403 without data",
+  "observer access is additive: observers read metadata, other methods fall through to normal identity authorization, strangers get 403 without data",
   [Arbitrary.schema(Limit)],
   ([limit]) =>
     Effect.gen(function* authorization() {
@@ -80,20 +80,13 @@ it.effect.prop(
         "sh.mschf.ratking.runtime.acquireLease",
         "sh.mschf.ratking.mailbox.list",
       ]) {
-        const refused = yield* call(
-          nsid,
-          "did:web:observer.example.invalid",
-          nsid.endsWith(".list") ? "GET" : "POST"
-        );
-
-        if (refused === undefined) {
-          return yield* Effect.die("Expected observer refusal");
-        }
-
-        expect(refused.status).toBe(403);
-        expect(yield* Effect.promise(() => refused.json())).toEqual({
-          error: "Forbidden",
-        });
+        expect(
+          yield* call(
+            nsid,
+            "did:web:observer.example.invalid",
+            nsid.endsWith(".list") ? "GET" : "POST"
+          )
+        ).toBeUndefined();
       }
 
       const stranger = yield* call(

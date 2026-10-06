@@ -43,7 +43,6 @@ import { trafficSockets } from "./traffic-socket.ts";
 import {
   appendTraffic,
   listTraffic,
-  observerOnly,
   pendingTraffic,
   TrafficEntry,
   trafficDid,
@@ -570,15 +569,7 @@ export class Mailbox extends DurableObject<Bindings> {
             )
           );
 
-          if (
-            issuer !== attachment.recipientDid ||
-            observerOnly(
-              issuer,
-              didAllowlist(this.env.OPERATOR_DIDS),
-              didAllowlist(this.env.OBSERVER_DIDS)
-            ) ||
-            issuer === trafficDid
-          ) {
+          if (issuer !== attachment.recipientDid || issuer === trafficDid) {
             return yield* Effect.fail(failure("Forbidden", 403));
           }
 
