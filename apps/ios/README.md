@@ -23,7 +23,7 @@ The desk must confirm profile refresh authorization before setting `RK_PROVISION
 
 Marketing version starts at `0.2.0`; build number is the UTC `YYYYMMDDHHMM` timestamp. Both appear in the archive output. If Apple rejects the marketing version as too low, the desk may authorize one minor-version retry through `RK_MARKETING_VERSION`. The app displays its version, build and exact source commit.
 
-After the desk authorizes the exact upload, set `RK_UPLOAD_AUTHORIZED=1` and run `--upload`. It uses `xcodebuild -exportArchive` with `destination: upload` and the existing distribution certificate. It refuses an archive from a different commit or a dirty checkout. No API key or application password is required. A successful upload is not proof of processing, installation or live mail.
+After the desk authorizes the exact upload, set `RK_UPLOAD_AUTHORIZED=1` and run `--upload`. It uses `xcodebuild -exportArchive` with `destination: upload` and the existing distribution certificate. It refuses an archive from a different commit or a dirty checkout. No API key or application password is required. Private signing keychain and password-file paths come from `RK_SIGNING_KEYCHAIN_PATH` and `RK_SIGNING_KEYCHAIN_PASSWORD_FILE` in the ignored xcconfig. The script unlocks that keychain before archive and again before export through `security -i`; the password is never placed on argv or logged. It does not change the search list, lock timeout or key access permissions. A successful upload is not proof of processing, installation or live mail.
 
 ## Join and prove
 

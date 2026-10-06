@@ -5,3 +5,6 @@ RK_PHONE_DID = did:web:phone.example.invalid
 RK_MAILBOX_AUDIENCE = did:web:mailbox.example.invalid
 // The empty substitution prevents xcconfig from treating // as a comment.
 RK_MAILBOX_URL = https:/$()/mailbox.example.invalid
+// Invented paths. The password file is read privately and piped to security.
+RK_SIGNING_KEYCHAIN_PATH = /tmp/example-signing.keychain-db
+RK_SIGNING_KEYCHAIN_PASSWORD_FILE = /tmp/example-signing-password.txt

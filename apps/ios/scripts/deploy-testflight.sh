@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+set +x
 cd "$(dirname "$0")/.."
 mode="${1:---archive-only}"
 case "$mode" in
@@ -17,6 +18,24 @@ umask 077
 # Xcode owns its signed-in account. Never extract account tokens or mint keys.
 xcodebuild -project RatKing.xcodeproj -scheme RatKing -showBuildSettings -json > build/settings.json
 team="$(python3 -c 'import json; print(next(x["buildSettings"]["DEVELOPMENT_TEAM"] for x in json.load(open("build/settings.json")) if x["target"] == "RatKing"))')"
+unlock_signing_keychain() {
+  # Private paths come from ignored configuration, not public source. The
+  # password travels only through stdin, never argv, an environment value or logs.
+  python3 - <<'PY' | security -i >/dev/null 2>&1
+import json,pathlib
+settings=next(x['buildSettings'] for x in json.load(open('build/settings.json')) if x['target'] == 'RatKing')
+keychain=settings.get('RK_SIGNING_KEYCHAIN_PATH','')
+password_file=settings.get('RK_SIGNING_KEYCHAIN_PASSWORD_FILE','')
+if not keychain or not password_file or not pathlib.Path(keychain).is_file() or not pathlib.Path(password_file).is_file():
+    raise SystemExit('Missing private signing keychain configuration')
+password=pathlib.Path(password_file).read_text().rstrip('\r\n')
+if not password or any(c in password+keychain for c in '\r\n\0'):
+    raise SystemExit('Invalid signing keychain input')
+def quoted(value): return '"'+value.replace('\\','\\\\').replace('"','\\"')+'"'
+print('unlock-keychain -p '+quoted(password)+' '+quoted(keychain))
+PY
+}
+unlock_signing_keychain
 security find-identity -v -p codesigning > build/signing-identities.txt
 certificate="$(python3 - "$team" <<'PY'
 import re,sys
@@ -59,6 +78,7 @@ with open('ExportOptions.plist','rb') as f: options=plistlib.load(f)
 options.update(teamID=sys.argv[1],signingCertificate=sys.argv[2])
 with open('build/ExportOptions.private.plist','wb') as f: plistlib.dump(options,f)
 PY
+unlock_signing_keychain
 xcodebuild -exportArchive -archivePath build/RatKing.xcarchive \
   -exportPath build/export -exportOptionsPlist build/ExportOptions.private.plist \
   -allowProvisioningUpdates
