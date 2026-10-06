@@ -13,6 +13,7 @@
   <key>CFBundleVersion</key><string>$(CURRENT_PROJECT_VERSION)</string>
   <key>LSRequiresIPhoneOS</key><true/>
   <key>UILaunchScreen</key><dict/>
+  <key>UIRequiresFullScreen</key><true/>
   <key>UISupportedInterfaceOrientations</key><array><string>UIInterfaceOrientationPortrait</string></array>
   <key>RKMailboxURL</key><string>$(RK_MAILBOX_URL)</string>
   <key>RKMailboxAudience</key><string>$(RK_MAILBOX_AUDIENCE)</string>
