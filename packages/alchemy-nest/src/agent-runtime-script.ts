@@ -1,3 +1,5 @@
+import { sidecarListener } from "./listener-contract.ts";
+
 export const runtimeScript = String.raw`
 import hashlib, json, os, pathlib, re, secrets, stat, subprocess, sys, urllib.request
 
@@ -108,7 +110,7 @@ def main():
         if not re.fullmatch('[a-f0-9]{64}', bearer):
             raise ValueError('Bearer shape')
         bindings['CLAUDE_SIDECAR_CREDENTIAL'] = bearer
-        env = {'RAT_KING_SIDECAR_PORT': '18789', 'RAT_KING_CLAUDE_EXECUTABLE': str(binary),
+        env = {'RAT_KING_SIDECAR_PORT': '${sidecarListener.port}', 'RAT_KING_CLAUDE_EXECUTABLE': str(binary),
                'RAT_KING_SIDECAR_TOKEN_FILE': str(bearer_path),
                'RAT_KING_MODEL_GATEWAY_KEY_FILE': str(root/'gateway.key'),
                'RAT_KING_MODEL_GATEWAY_ENDPOINT_FILE': str(root/'endpoint'),

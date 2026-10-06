@@ -9,9 +9,8 @@ import {
 import { HttpClient } from "effect/http";
 
 import { refuse } from "./files.ts";
-import { must } from "./host-shell.ts";
 import type { Interface } from "./host-shell.ts";
-import { assessListeners, verifiedSidecarPid } from "./listeners.ts";
+import { assessListeners, readListeners } from "./listeners.ts";
 import { s3Script } from "./s3-script.ts";
 
 export type ProbeRunnerMode = "scope" | "service";
@@ -306,12 +305,14 @@ export const listenerProbe = Effect.fn("Celld.listenerProbe")(
     nodeExpected: boolean,
     sidecarExpected?: boolean
   ) {
+    const evidence = yield* readListeners(shell);
+
     const assessment = assessListeners(
-      yield* must(shell, ["ss", "-ltnp"]),
+      evidence.text,
       publicIPv4,
       nodeExpected,
       sidecarExpected === true,
-      sidecarExpected === true ? yield* verifiedSidecarPid(shell) : undefined
+      evidence.unitCgroups
     );
 
     if (!Predicate.isTagged(assessment, "Ready")) {

@@ -7,6 +7,7 @@ import { absent } from "./absent.ts";
 import { runtimeScript } from "./agent-runtime-script.ts";
 import { AbsolutePath, deleteDirectory, refuse, textDigest } from "./files.ts";
 import { HostShell, must } from "./host-shell.ts";
+import { sidecarListener } from "./listener-contract.ts";
 import { deleteDeclaredUnit } from "./systemd.ts";
 import type { UnitProps } from "./systemd.ts";
 
@@ -87,7 +88,7 @@ export const validateRuntimeFiles = Effect.fn("AgentRuntimeFiles.validate")(
 
 export const sidecarUnit = (home: string, ready: string): UnitProps => ({
   home,
-  name: "rat-king-claude-sidecar.service",
+  name: sidecarListener.unit,
   restartOn: [ready],
   scope: "user",
   sections: [
