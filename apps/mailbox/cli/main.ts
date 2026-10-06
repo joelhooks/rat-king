@@ -24,6 +24,7 @@ import { provision } from "./provision.ts";
 import { registerDocument } from "./register-document.ts";
 import { provisionAgent } from "./register.ts";
 import { secretStoreLayer } from "./secrets.ts";
+import { sendBody } from "./send-body.ts";
 
 type MutableSendOptions = {
   -readonly [K in keyof SendOptions]: SendOptions[K];
@@ -123,14 +124,20 @@ const fence = (
 const sendCommand = Command.make(
   "send",
   {
-    body: Flag.String("body"),
+    body: Flag.String("body").pipe(Flag.optional),
     from: Flag.String("from"),
     generation: Flag.Int("generation").pipe(Flag.optional),
     leaseId: Flag.String("lease-id").pipe(Flag.optional),
+    record: Flag.String("record").pipe(Flag.optional),
     to: Flag.String("to"),
     urgent: Flag.Boolean("urgent"),
   },
   Effect.fn("MailboxCli.send")(function* send(args) {
+    const body = yield* sendBody({
+      body: Option.getOrUndefined(args.body),
+      record: Option.getOrUndefined(args.record),
+    });
+
     const clientCall = Effect.gen(function* call() {
       const client = yield* RatKingMailbox;
       const leaseId = Option.getOrUndefined(args.leaseId);
@@ -153,7 +160,7 @@ const sendCommand = Command.make(
       }
 
       return yield* Schema.encodeEffect(Send.Output)(
-        yield* client.send(args.to, args.body, opts)
+        yield* client.send(args.to, body, opts)
       );
     });
 

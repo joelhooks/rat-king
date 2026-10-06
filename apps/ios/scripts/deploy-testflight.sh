@@ -4,8 +4,8 @@ set +x
 cd "$(dirname "$0")/.."
 mode="${1:---archive-only}"
 case "$mode" in
-  --archive-only|--upload) ;;
-  *) echo "Usage: $0 [--archive-only|--upload]" >&2; exit 2 ;;
+  --archive-only|--export|--upload) ;;
+  *) echo "Usage: $0 [--archive-only|--export|--upload]" >&2; exit 2 ;;
 esac
 [[ "${RK_PROVISIONING_AUTHORIZED:-0}" == 1 ]] || { echo "Desk must confirm profile refresh authorization" >&2; exit 1; }
 if [[ "$mode" == --upload && "${RK_UPLOAD_AUTHORIZED:-0}" != 1 ]]; then echo "Desk must authorize this exact upload" >&2; exit 1; fi
@@ -92,10 +92,10 @@ archive_commit="$(/usr/libexec/PlistBuddy -c 'Print :RKBuildCommit' "$plist")"
 [[ "$archive_commit" == "$commit" ]] || { echo "Archive does not match committed candidate" >&2; exit 1; }
 # Pin the existing certificate. Profile creation/refresh is authorized; new
 # certificates, revocation and deletion are not.
-python3 - "$team" "$certificate" <<'PY'
+python3 - "$team" "$certificate" "$mode" <<'PY'
 import plistlib,sys
 with open('ExportOptions.plist','rb') as f: options=plistlib.load(f)
-options.update(teamID=sys.argv[1],signingCertificate=sys.argv[2])
+options.update(teamID=sys.argv[1],signingCertificate=sys.argv[2],destination='export' if sys.argv[3] == '--export' else 'upload')
 with open('build/ExportOptions.private.plist','wb') as f: plistlib.dump(options,f)
 PY
 unlock_signing_keychain
@@ -104,4 +104,9 @@ unlock_signing_keychain
 PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH" xcodebuild -exportArchive -archivePath build/RatKing.xcarchive \
   -exportPath build/export -exportOptionsPlist build/ExportOptions.private.plist \
   -allowProvisioningUpdates
-echo "Upload command succeeded. Verify Apple's upload receipt; installation and live mail remain separate."
+if [[ "$mode" == --export ]]; then
+  echo "Signed IPA exported locally. Nothing uploaded."
+  find build/export -maxdepth 1 -name '*.ipa' -exec shasum -a 256 {} \;
+else
+  echo "Upload command succeeded. Verify Apple's upload receipt; installation and live mail remain separate."
+fi

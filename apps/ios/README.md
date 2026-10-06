@@ -40,11 +40,23 @@ The phone resolves only its own lease, so it does not need `LEASE_RESOLVERS` mem
 
 - Live delivery is foreground-only. There is no APNs/background push promise. Going inactive cancels the owned socket/task; reopening renews the retained lease or waits for an expired lease to be reacquired.
 - `InboxStore.swift` has one switch-based lifecycle projection and generation-token fencing for stale tasks. The desk approved this native projection instead of embedding a JS runtime.
-- A list snapshot keeps `afterSeq` fixed across pages and checks the watermark. It advances the in-memory checkpoint only after processing all pages. Process restarts replay from zero; decrypted message bodies are never persisted or logged.
-- Encrypted pending sends are saved device-locally before admission. Retry uses the same message ID and sealed bytes with fresh JWT and lease fence. A pending send is retried explicitly; editing the draft does not replace it.
+- A list snapshot keeps `afterSeq` fixed across pages and checks the watermark. It advances the in-memory checkpoint only after processing all pages. Process restarts replay from zero and deduplicate against the local inbox. Decrypted threads and visibility preferences stay in an atomic, complete-file-protected Application Support store excluded from backup. Bodies never enter logs or notifications.
+- Pending sends save the sealed envelope before admission. Desk answers also save their local thread key and answer projection under complete file protection, so retry marks the original thread sent and retains its selections. Retry uses the same message ID and sealed bytes with fresh JWT and lease fence. A pending send is retried explicitly; editing the draft does not replace it.
 - Keychain stores Secure Enclave-wrapped key references with `WhenUnlockedThisDeviceOnly`, not exportable scalars. The app does not rotate keys after a Keychain read failure.
 - Canonical encoding preserves unknown integer/string/map/array/byte/bool/null fields. Unsupported floating-point values and CID tags fail closed. All fixture extension fields participate in AAD/signature bytes.
 - Expired, acked or failed historical admissions are displayed without offering ACK until their later receipt establishes the current state. Unknown event kinds stop catch-up rather than silently skip.
+
+## Desk inbox
+
+The inbox groups desk threads by project and plain chat by sender DID. A desk item owns one thread; only updates from that same sender and project can close it. Unknown record types remain chat. Malformed known desk records fail closed.
+
+Options show the suggested pick, its outcome, row toggles and a note. Sending seals `desk.answer` to the item's sender, with the original message TID in `inReplyTo`. Admission marks it sent; `desk.update` marks it resolved or superseded. A sent answer is not proof that the desk acted.
+
+Swipe to snooze for an hour, the next local 18:00, tomorrow 09:00 or seven calendar days. Snooze neither sends nor acknowledges. The local notification contains no project, sender or body. It restores visibility at the deadline; foreground sync cancels reminders for closed items. Archive acknowledges delivered mail and hides the thread without answering. The Archived view restores visibility, not the mailbox acknowledgment.
+
+TS and Swift share invented fixtures in `packages/lexicon/test/fixtures`. Swift tests drive generated thread command sequences and verify local storage round trips and backup exclusion. The complete-file-protection attribute test requires a physical phone; the simulator skips it. Foreground-only mailbox sync still applies; there is no APNs relay.
+
+`deploy-testflight.sh --export` exports the exact committed archive to a signed IPA locally, with no upload. The desk owns the upload and real-phone answer proof.
 
 ## Evidence and remaining proof
 

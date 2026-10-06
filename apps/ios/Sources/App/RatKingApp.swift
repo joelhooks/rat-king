@@ -55,21 +55,7 @@ struct TerminalView: View {
         }
     }
     private var inbox: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 12) {
-                if store.messages.isEmpty { Text("Waiting for encrypted mail.\nKeep the app open with Tailscale connected.").foregroundStyle(TUITheme.dim).padding(.vertical, 20) }
-                ForEach(store.messages) { item in
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack { Text("FROM " + item.sender).foregroundStyle(TUITheme.teal); Spacer(); Text(item.receipt.uppercased()).foregroundStyle(TUITheme.dim) }
-                        Text(item.text).textSelection(.enabled)
-                        HStack {
-                            Button("[REPLY]") { recipient = item.sender; tab = 1 }
-                            if item.receipt == "delivered" { Button("[ACK READ]") { Task { await store.acknowledge(item) } }.disabled(store.state != .live) }
-                        }.foregroundStyle(TUITheme.accent)
-                    }.padding(12).background(TUITheme.panel)
-                }
-            }.padding(12)
-        }
+        DeskInboxView(store: store) { sender in recipient = sender; tab = 1 }
     }
     private var compose: some View {
         VStack(alignment: .leading, spacing: 12) {
