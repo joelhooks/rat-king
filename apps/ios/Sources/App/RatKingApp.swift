@@ -25,37 +25,44 @@ struct TerminalView: View {
             HStack {
                 Text("RAT KING").foregroundStyle(TUITheme.accent).font(TUITheme.titleFont)
                 Spacer()
-                Circle().fill(store.state == .live ? TUITheme.ok : TUITheme.warn).frame(width: 5, height: 5)
-                Text(store.state.rawValue.uppercased()).font(TUITheme.microFont)
+                Circle().fill((tab == 3 ? store.traffic?.state == .live : store.state == .live) ? TUITheme.ok : TUITheme.warn).frame(width: 5, height: 5)
+                Text(tab == 3 ? (store.traffic?.state.rawValue.uppercased() ?? "PAUSED") : store.state.rawValue.uppercased()).font(TUITheme.microFont)
             }.padding(8).background(TUITheme.panel)
             ThinDivider()
             HStack(spacing: 24) {
-                ForEach(Array(["MAIL", "COMPOSE", "IDENTITY"].enumerated()), id: \.offset) { index, label in
+                ForEach(Array(["MAIL", "COMPOSE", "IDENTITY", "TRAFFIC"].enumerated()), id: \.offset) { index, label in
                     Button { tab = index } label: { Text("[\(label)]").foregroundStyle(tab == index ? TUITheme.accent : TUITheme.dim) }
                 }
                 Spacer()
             }.padding(8)
             ThinDivider()
-            if let waiting = store.waitingMessage { Text(waiting).foregroundStyle(TUITheme.warn).frame(maxWidth: .infinity, alignment: .leading).padding(8) }
-            if let error = store.lastError { Text("! " + error).foregroundStyle(TUITheme.err).frame(maxWidth: .infinity, alignment: .leading).padding(12).textSelection(.enabled) }
+            if tab != 3, let waiting = store.waitingMessage { Text(waiting).foregroundStyle(TUITheme.warn).frame(maxWidth: .infinity, alignment: .leading).padding(8) }
+            if tab != 3 || store.traffic == nil, let error = store.lastError { Text("! " + error).foregroundStyle(TUITheme.err).frame(maxWidth: .infinity, alignment: .leading).padding(12).textSelection(.enabled) }
             Group {
                 switch tab {
                 case 0: inbox
                 case 1: compose
+                case 3:
+                    if let traffic = store.traffic { TrafficView(store: traffic) } else { Text("Phone identity required for traffic.").foregroundStyle(TUITheme.warn) }
                 default: identity
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
             ThinDivider()
             HStack {
-                Text("E2EE / P-256 / SECURE ENCLAVE")
+                Text(tab == 3 ? "AUTHENTICATED METADATA / NO CONTENT" : "E2EE / P-256 / SECURE ENCLAVE")
                 Spacer()
-                Text("\(store.messages.count) MAIL")
+                Text(tab == 3 ? "\(store.traffic?.journal.entries.count ?? 0) EVENTS" : "\(store.messages.count) MAIL")
             }.font(TUITheme.microFont).foregroundStyle(TUITheme.dim).padding(12)
         }
         .font(TUITheme.monoFont).foregroundStyle(TUITheme.fg).background(TUITheme.bg)
         .preferredColorScheme(.dark)
-        .task { if scenePhase == .active { store.start() } }
-        .onChange(of: scenePhase) { _, phase in if phase == .active { store.start() } else { store.stop(); draft = "" } }
+        .task { if scenePhase == .active { store.start(); if tab == 3 { store.traffic?.start() } } }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { store.start(); if tab == 3 { store.traffic?.start() } } else { store.stop(); draft = "" }
+        }
+        .onChange(of: tab) { _, selected in
+            if selected == 3, scenePhase == .active { store.traffic?.start() } else { store.traffic?.stop() }
+        }
         .fileImporter(isPresented: $importing, allowedContentTypes: [.json]) { result in
             if case let .success(url) = result {
                 let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }

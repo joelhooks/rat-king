@@ -88,18 +88,27 @@ struct Mailbox: Sendable {
     func socket(_ lease: Lease) throws -> URLSessionWebSocketTask {
         session.webSocketTask(with: try url("mailbox.subscribe", params: ["recipientDid": identity.did, "leaseId": lease.id, "generation": String(lease.generation)], websocket: true))
     }
-    func authenticate(_ socket: URLSessionWebSocketTask) async throws {
-        let auth: Value = .map(["$type": .string(Self.namespace + "mailbox.subscribe#auth"), "token": .string(try identity.token(audience: configuration.audience, method: Self.namespace + "mailbox.subscribe"))])
+    func authenticate(_ socket: URLSessionWebSocketTask, method: String = "mailbox.subscribe") async throws {
+        let auth: Value = .map(["$type": .string(Self.namespace + method + "#auth"), "token": .string(try identity.token(audience: configuration.audience, method: Self.namespace + method))])
         try await socket.send(.string(String(decoding: auth.jsonData(), as: UTF8.self)))
     }
-    func notice(_ socket: URLSessionWebSocketTask) async throws -> Int64 {
+    func notice(_ socket: URLSessionWebSocketTask, method: String = "mailbox.subscribe") async throws -> Int64 {
         let frame = try await socket.receive()
         let bytes: Data
         switch frame { case let .data(d): bytes = d; case let .string(s): bytes = Data(s.utf8); @unknown default: throw ProtocolError.invalid("Unknown socket frame") }
         guard bytes.count <= 4096 else { throw ProtocolError.invalid("Socket frame too large") }
         let value = try Value.json(bytes)
-        guard value["$type"] == .string(Self.namespace + "mailbox.subscribe#notice") else { throw ProtocolError.invalid("Unexpected socket notice") }
-        return try value.required("seq").number
+        if let error = value["error"], case let .string(code) = error { throw XRPCError(code: code, status: code == "Forbidden" ? 403 : 401) }
+        guard value["$type"] == .string(Self.namespace + method + "#notice") else { throw ProtocolError.invalid("Unexpected socket notice") }
+        let seq = try value.required("seq").number
+        guard seq >= 0 else { throw ProtocolError.invalid("Invalid socket watermark") }; return seq
+    }
+    func trafficTransport() -> TrafficTransport {
+        TrafficTransport(open: {
+            let socket = self.session.webSocketTask(with: try self.url("mailbox.subscribeTraffic", websocket: true)); socket.resume()
+            return TrafficConnection(authenticate: { try await self.authenticate(socket, method: "mailbox.subscribeTraffic") },
+                notice: { try await self.notice(socket, method: "mailbox.subscribeTraffic") }, close: { socket.cancel(with: .goingAway, reason: nil) })
+        }, list: { cursor in try await TrafficPage(self.call("mailbox.listTraffic", params: ["cursor": String(cursor), "limit": "100"])) })
     }
     func transition(_ method: String, message: Value, lease: Lease) async throws -> Value {
         var fields = lease.fence; fields["recipientDid"] = .string(identity.did); fields["message"] = message
