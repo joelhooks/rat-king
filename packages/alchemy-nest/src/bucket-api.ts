@@ -2,13 +2,26 @@ import { Resource } from "alchemy";
 import { AdoptPolicy, Unowned } from "alchemy/AdoptPolicy";
 import { isResolved } from "alchemy/Diff";
 import * as Provider from "alchemy/Provider";
-import { Effect, Option, Schedule, Schema } from "effect";
+import {
+  Effect,
+  Option,
+  Result as EffectResult,
+  Schedule,
+  Schema,
+} from "effect";
 
 import { absent } from "./absent.ts";
 import { AbsolutePath, refuse } from "./files.ts";
-import { HostShell } from "./host-shell.ts";
+import { HostError, HostShell } from "./host-shell.ts";
 import type { Interface } from "./host-shell.ts";
 import { s3Script } from "./s3-script.ts";
+import { startOwnedUnit } from "./systemd.ts";
+
+const OwnedStore = Schema.Struct({
+  home: AbsolutePath,
+  name: Schema.Literal("rat-king-seaweedfs.service"),
+  sha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+});
 
 const Props = Schema.Struct({
   config: AbsolutePath,
@@ -16,6 +29,7 @@ const Props = Schema.Struct({
   name: Schema.String.check(
     Schema.isPattern(/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/u)
   ),
+  ownedStore: Schema.optionalKey(OwnedStore),
   purgeOnDelete: Schema.optionalKey(Schema.Boolean),
   ready: Schema.String,
   region: Schema.Literal("us-east-1"),
@@ -29,6 +43,7 @@ export interface BucketAttributes {
   readonly region: "us-east-1";
   readonly config: string;
   readonly purgeOnDelete: boolean;
+  readonly ownedStore?: typeof OwnedStore.Type;
 }
 
 export type S3BucketResource = Resource<
@@ -96,14 +111,65 @@ const read = Effect.fn("ObjectStore.read")(function* read(
     return yield* refuse("Bucket must have never enabled versioning.");
   }
 
-  return {
+  const attributes = {
     config: props.config,
     endpoint: props.endpoint,
     name: props.name,
     purgeOnDelete: props.purgeOnDelete ?? false,
     region: props.region,
   } satisfies BucketAttributes;
+
+  return props.ownedStore === undefined
+    ? attributes
+    : { ...attributes, ownedStore: props.ownedStore };
 });
+
+const recoveryError = () =>
+  new HostError({
+    operation: "bucket-delete-recovery",
+    reason:
+      "Store unavailable for bucket drain; recovery of owned user unit rat-king-seaweedfs.service failed or ownership was not proven.",
+  });
+
+const deleteVersion = Effect.fn("ObjectStore.deleteVersion")(
+  function* deleteVersion(
+    shell: Interface,
+    output: BucketAttributes,
+    olds: BucketProps
+  ) {
+    const before = yield* bucketRequest(shell, output, "version").pipe(
+      Effect.result
+    );
+
+    if (EffectResult.isSuccess(before) && before.success.status < 500) {
+      return before.success;
+    }
+
+    const suffix = "/.config/rat-king/s3.json";
+
+    const legacy = output.config.endsWith(suffix)
+      ? {
+          home: output.config.slice(0, -suffix.length),
+          name: "rat-king-seaweedfs.service",
+          sha256: olds.ready,
+        }
+      : undefined;
+
+    const owned = yield* Schema.decodeUnknownEffect(OwnedStore)(
+      output.ownedStore ?? legacy
+    ).pipe(Effect.mapError(recoveryError));
+
+    yield* startOwnedUnit(shell, owned).pipe(Effect.mapError(recoveryError));
+
+    return yield* bucketRequest(shell, output, "version").pipe(
+      Effect.filterOrFail((response) => response.status < 500, recoveryError),
+      Effect.retry(
+        Schedule.spaced("1 second").pipe(Schedule.upTo({ times: 20 }))
+      ),
+      Effect.mapError(recoveryError)
+    );
+  }
+);
 
 export const BucketProvider = () =>
   Provider.effect(
@@ -114,8 +180,9 @@ export const BucketProvider = () =>
       return BucketResource.Provider.of({
         delete: Effect.fn("ObjectStore.provider.delete")(function* operation({
           output,
+          olds,
         }) {
-          const version = yield* bucketRequest(shell, output, "version");
+          const version = yield* deleteVersion(shell, output, olds);
 
           if (
             version.status !== 404 &&
@@ -166,7 +233,9 @@ export const BucketProvider = () =>
           return {
             action:
               (yield* read(shell, news)) === undefined ||
-              output?.purgeOnDelete !== (news.purgeOnDelete ?? false)
+              output?.purgeOnDelete !== (news.purgeOnDelete ?? false) ||
+              output?.ownedStore?.sha256 !== news.ownedStore?.sha256 ||
+              output?.ownedStore?.home !== news.ownedStore?.home
                 ? "update"
                 : "noop",
           };

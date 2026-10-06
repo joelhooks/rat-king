@@ -150,6 +150,31 @@ const status = Effect.fn("SystemdUnit.status")(function* status(
   };
 });
 
+export const startOwnedUnit = Effect.fn("SystemdUnit.startOwned")(
+  function* startOwned(
+    shell: Interface,
+    output: Pick<UnitAttributes, "home" | "name" | "sha256">
+  ) {
+    const file = yield* readFile(shell, unitPath(output));
+
+    if (
+      file === undefined ||
+      file.mode !== 0o644 ||
+      file.sha256 !== output.sha256
+    ) {
+      return yield* refuse("Owned unit file changed or absent; start refused.");
+    }
+
+    const live = yield* status(shell, output);
+
+    if (live.needDaemonReload) {
+      return yield* refuse("Owned unit needs daemon reload; start refused.");
+    }
+
+    return yield* ctl(shell, "start", output.name);
+  }
+);
+
 export const readUnit = Effect.fn("SystemdUnit.read")(function* readUnit(
   shell: Interface,
   props: UnitProps
