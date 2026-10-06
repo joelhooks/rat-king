@@ -32,6 +32,9 @@ targets:
     platform: iOS
     sources:
       - path: Tests
+      - path: ../../packages/lexicon/test/fixtures
+        type: folder
+        buildPhase: resources
       - path: ../../packages/envelope/test/vectors
         type: folder
         buildPhase: resources

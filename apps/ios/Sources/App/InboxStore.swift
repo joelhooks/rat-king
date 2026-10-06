@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 import Observation
+import UserNotifications
 
 // Native projection of packages/mailbox-client/src/watch.ts's auth-ready/list/live
 // lifecycle. The desk approved the Swift projection instead of embedding XState.
@@ -23,6 +24,16 @@ struct MailItem: Identifiable {
     let sender: String
     let text: String
     var receipt: String
+    func record() throws -> DeskRecord? {
+        guard let bytes = text.data(using: .utf8), let value = try? Value.json(bytes) else { return nil }
+        return try DeskRecord.decode(value)
+    }
+    var wire: Value { .map(["id": .string(id), "message": message, "sender": .string(sender), "text": .string(text), "receipt": .string(receipt)]) }
+    init(id: String, message: Value, sender: String, text: String, receipt: String) { self.id = id; self.message = message; self.sender = sender; self.text = text; self.receipt = receipt }
+    init(_ value: Value) throws {
+        self.init(id: try value.required("id").text, message: try value.required("message"), sender: try value.required("sender").text, text: try value.required("text").text, receipt: try value.required("receipt").text)
+        _ = try record()
+    }
 }
 @MainActor @Observable
 final class InboxStore {
@@ -42,6 +53,10 @@ final class InboxStore {
     private var through: Int64 = 0
     private var pending: Value?
     private var lastTid: UInt64 = 0
+    private(set) var preferences: [String: ThreadPreferences] = [:]
+    private(set) var now = Date()
+    private var snoozeTimer: Task<Void, Never>?
+    var threads: [InboxThread] { (try? inboxThreads(messages, preferences: preferences)) ?? [] }
 
     init() {
         do {
@@ -51,20 +66,22 @@ final class InboxStore {
             if let data = try readLocal("peers.json") { try installPeers(data, save: false) }
             if let url = Bundle.main.url(forResource: "PeerDocuments.private", withExtension: "json") { try installPeers(Data(contentsOf: url), save: false) }
             if let data = try readLocal("outbox.json") { pending = try Value.json(data); hasPendingSend = true }
-        } catch { lastError = error.localizedDescription }
+            if let data = try readLocal("inbox.json") {
+                let saved = try Value.json(data)
+                messages = try saved.required("messages").list().map(MailItem.init)
+                preferences = try saved.required("preferences").object().mapValues(ThreadPreferences.init)
+            }
+        } catch { client = nil; lastError = error.localizedDescription }
     }
     var publicDocument: String { guard let identity, let data = try? identity.document.jsonData() else { return "Identity unavailable" }; return String(decoding: data, as: UTF8.self) }
     private func directory() throws -> URL {
         let dir = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("RatKing", isDirectory: true)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        var values = URLResourceValues(); values.isExcludedFromBackup = true; var url = dir; try url.setResourceValues(values)
-        return dir
+        return try ProtectedLocalStore(directory: dir).directory
     }
     private func readLocal(_ name: String) throws -> Data? {
-        let url = try directory().appendingPathComponent(name)
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }; return try Data(contentsOf: url)
+        try ProtectedLocalStore(directory: directory()).read(name)
     }
-    private func writeLocal(_ name: String, _ bytes: Data) throws { try bytes.write(to: directory().appendingPathComponent(name), options: [.atomic, .completeFileProtection]) }
+    private func writeLocal(_ name: String, _ bytes: Data) throws { try ProtectedLocalStore(directory: directory()).write(name, bytes: bytes) }
     func importPeers(_ bytes: Data) { do { try installPeers(bytes, save: true); lastError = nil } catch { lastError = error.localizedDescription } }
     private func installPeers(_ bytes: Data, save: Bool) throws {
         guard bytes.count <= 200_000 else { throw ProtocolError.invalid("Peer document file too large") }
@@ -84,11 +101,13 @@ final class InboxStore {
     private func current(_ token: UInt64) throws { try Task.checkCancellation(); guard generation == token else { throw CancellationError() } }
     func start() {
         guard run == nil, let client else { return }
+        now = Date(); armSnoozeTimer()
         generation &+= 1; let token = generation
         run = Task { [weak self] in await self?.connect(client, token: token) }
     }
     func stop() {
         generation &+= 1; run?.cancel(); run = nil
+        snoozeTimer?.cancel(); snoozeTimer = nil
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
         move(.background)
         // Lease expires within five minutes. Retain its fence for a fast foreground
@@ -157,14 +176,15 @@ final class InboxStore {
             cursor = try page["cursor"]?.text
         } while cursor != nil
         try current(token); through = watermark ?? through
-        // No disk checkpoint: on process restart replay encrypted history from zero.
-        // Decrypted bodies never go to disk, logs, backups, or a notification.
+        // Replay encrypted history from zero. The protected local projection
+        // deduplicates it; no decrypted text enters backups or notifications.
+        try saveInbox()
     }
     private func process(_ event: Value, client: Mailbox, lease: Lease, token: UInt64) async throws {
         let receipt = try event.required("receipt"), message = try receipt.required("message")
         let sender = try message.required("senderDid").text, tid = try message.required("messageId").text
         let id = sender + "/" + tid, status = try receipt.required("state").text
-        if let index = messages.firstIndex(where: { $0.id == id }) { messages[index].receipt = status }
+        if let index = messages.firstIndex(where: { $0.id == id }) { messages[index].receipt = status; try saveInbox() }
         guard let envelope = event["envelope"] else {
             guard event["$type"] == .string(Mailbox.namespace + "defs#receiptEvent") else { throw ProtocolError.invalid("Unknown mailbox event") }; return
         }
@@ -177,6 +197,8 @@ final class InboxStore {
         }
         let body = try payload.required("body").data
         let text = String(data: body, encoding: .utf8) ?? "[binary: \(body.count) bytes]"
+        let item = MailItem(id: id, message: message, sender: sender, text: text, receipt: status)
+        _ = try item.record()
         var displayed = status
         if status == "accepted" || status == "queued" {
             do {
@@ -190,13 +212,68 @@ final class InboxStore {
             }
         }
         try current(token); messages.append(MailItem(id: id, message: message, sender: sender, text: text, receipt: displayed))
+        try saveInbox()
+        cancelClosedNotifications()
     }
     func acknowledge(_ item: MailItem) async {
         guard state == .live, let client, let lease else { return }; let token = generation
         do {
             let receipt = try await client.transition("ack", message: item.message, lease: lease); try current(token)
-            if let i = messages.firstIndex(where: { $0.id == item.id }) { messages[i].receipt = try receipt.required("state").text }
+            if let i = messages.firstIndex(where: { $0.id == item.id }) { messages[i].receipt = try receipt.required("state").text; try saveInbox() }
         } catch { if generation == token { lastError = error.localizedDescription } }
+    }
+    private func savePreferences(_ prefs: ThreadPreferences, for id: String) throws {
+        let previous = preferences[id]; preferences[id] = prefs
+        do { try saveInbox() } catch { preferences[id] = previous; throw error }
+    }
+    private func saveInbox() throws {
+        try writeLocal("inbox.json", Value.map(["messages": .array(messages.map(\.wire)), "preferences": .map(preferences.mapValues(\.wire))]).jsonData())
+    }
+    func archive(_ thread: InboxThread) async {
+        guard state == .live else { return }
+        for item in messages.filter({ thread.mailIds.contains($0.id) && $0.receipt == "delivered" }) {
+            await acknowledge(item)
+            guard messages.first(where: { $0.id == item.id })?.receipt == "acked" else { return }
+        }
+        do {
+            var prefs = preferences[thread.id] ?? ThreadPreferences(); prefs.archived = true; prefs.snoozedUntil = nil
+            try savePreferences(prefs, for: thread.id)
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [thread.id])
+        } catch { lastError = error.localizedDescription }
+    }
+    func restore(_ thread: InboxThread) {
+        do {
+            var prefs = preferences[thread.id] ?? ThreadPreferences(); prefs.archived = false
+            try savePreferences(prefs, for: thread.id)
+        } catch { lastError = error.localizedDescription }
+    }
+    func snooze(_ thread: InboxThread, choice: SnoozeChoice) async {
+        guard thread.state == .open || thread.state == .sent else { return }
+        do {
+            let center = UNUserNotificationCenter.current()
+            guard try await center.requestAuthorization(options: [.alert, .sound]) else { throw ProtocolError.invalid("Allow notifications to snooze with a reminder") }
+            guard let current = threads.first(where: { $0.id == thread.id }), current.state == .open || current.state == .sent else { return }
+            let until = choice.date(from: Date())
+            let content = UNMutableNotificationContent(); content.title = "Rat King"; content.body = "A snoozed thread is ready."; content.sound = .default
+            try await center.add(UNNotificationRequest(identifier: thread.id, content: content, trigger: UNTimeIntervalNotificationTrigger(timeInterval: max(1, until.timeIntervalSinceNow), repeats: false)))
+            var prefs = preferences[thread.id] ?? ThreadPreferences(); prefs.snoozedUntil = until
+            try savePreferences(prefs, for: thread.id); now = Date(); armSnoozeTimer()
+        } catch {
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [thread.id]); lastError = error.localizedDescription
+        }
+    }
+    private func cancelClosedNotifications() {
+        let closed = threads.filter { $0.state == .resolved || $0.state == .superseded }.map(\.id)
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: closed); center.removeDeliveredNotifications(withIdentifiers: closed)
+    }
+    private func armSnoozeTimer() {
+        snoozeTimer?.cancel()
+        guard let next = threads.compactMap(\.snoozedUntil).filter({ $0 > now }).min() else { return }
+        snoozeTimer = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(max(0, next.timeIntervalSinceNow))) } catch { return }
+            guard let self else { return }; self.now = Date(); self.armSnoozeTimer()
+        }
     }
     private func tid() -> String {
         let timestamp = UInt64(Date().timeIntervalSince1970 * 1_000_000)
@@ -206,19 +283,39 @@ final class InboxStore {
         for _ in 0..<13 { result.insert(alphabet[Int(value & 31)], at: result.startIndex); value >>= 5 }; return result
     }
     func send(to did: String, text: String) async {
+        await sendBytes(to: did, bytes: Data(text.utf8))
+    }
+    func answer(_ thread: InboxThread, values: [String: String], rows: [String: [String]], note: String) async {
+        guard !hasPendingSend, let currentThread = threads.first(where: { $0.id == thread.id }), currentThread.state == .open, let card = currentThread.card, let tid = currentThread.cardTid else { return }
+        do {
+            let record = try DeskRecord.answer(card: card, inReplyTo: tid, values: values, rows: rows, note: note)
+            await sendBytes(to: thread.sender, bytes: try record.jsonData(), threadId: thread.id)
+        } catch { lastError = error.localizedDescription }
+    }
+    private func sendBytes(to did: String, bytes: Data, threadId: String? = nil) async {
         guard state == .live, !sending, let client, let lease else { return }
         sending = true; defer { sending = false }; let token = generation
         do {
             if pending == nil {
-                guard text.utf8.count <= 60_000, !text.isEmpty, let peer = peers[did] else { throw ProtocolError.invalid("Select an imported peer and enter a message (up to 60 KB)") }
+                guard bytes.count <= 60_000, !bytes.isEmpty, let peer = peers[did] else { throw ProtocolError.invalid("Select an imported peer and enter a message (up to 60 KB)") }
                 let (id, key) = try peer.encryptionKey()
-                let payload: Value = .map(["version": .int(1), "suite": Envelope.suite, "aad": .map(["senderDid": .string(client.identity.did), "recipientDid": .string(did), "recipientKeyId": .string(id), "messageId": .string(tid())]), "body": .bytes(Data(text.utf8))])
+                let payload: Value = .map(["version": .int(1), "suite": Envelope.suite, "aad": .map(["senderDid": .string(client.identity.did), "recipientDid": .string(did), "recipientKeyId": .string(id), "messageId": .string(tid())]), "body": .bytes(bytes)])
                 let sealed = try Envelope.seal(payload: payload, signingKeyId: client.identity.signingId, sign: client.identity.sign, recipient: key)
-                try writeLocal("outbox.json", sealed.jsonData()); pending = sealed; hasPendingSend = true
+                var saved: [String: Value] = ["envelope": sealed]
+                if let threadId { saved["threadId"] = .string(threadId); saved["answer"] = try Value.json(bytes) }
+                let entry = Value.map(saved)
+                try writeLocal("outbox.json", entry.jsonData()); pending = entry; hasPendingSend = true
             }
             guard let pending else { return }
-            var body = lease.fence; body["envelope"] = pending
+            // Legacy encrypted outbox entries remain retryable after upgrade.
+            var body = lease.fence; body["envelope"] = pending["envelope"] ?? pending
             let receipt = try await client.call("mailbox.send", body: .map(body)).required("receipt"); try current(token)
+            let accepted = try receipt.required("state").text
+            guard ["accepted", "queued", "delivered", "acked"].contains(accepted) else { throw ProtocolError.invalid("Send not admitted: " + accepted) }
+            if let target = try pending["threadId"]?.text {
+                var prefs = preferences[target] ?? ThreadPreferences(); prefs.state = threadState(prefs.state, .answered); prefs.answer = pending["answer"]
+                try savePreferences(prefs, for: target)
+            }
             try FileManager.default.removeItem(at: directory().appendingPathComponent("outbox.json"))
             self.pending = nil; hasPendingSend = false; lastSend = try receipt.required("state").text; lastError = nil
         } catch { if generation == token { lastError = error.localizedDescription } }

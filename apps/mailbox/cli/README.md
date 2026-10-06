@@ -38,10 +38,13 @@ node /tmp/mailbox.mjs identity --as example --did did:web:example.invalid
 
 ```sh
 node /tmp/mailbox.mjs send --from example --to did:web:recipient.invalid --body 'proof message' --urgent
+node /tmp/mailbox.mjs send --from example --to did:web:recipient.invalid --record packages/lexicon/test/fixtures/desk-item.json
 node /tmp/mailbox.mjs list --as example --after-seq 0 --limit 50
 node /tmp/mailbox.mjs list --as example --cursor '<cursor from previous page>'
 node /tmp/mailbox.mjs open --as example --file /tmp/envelope.json
 ```
+
+`send` requires exactly one of `--body` or `--record`. The record path reads a JSON desk item, answer or update, validates its generated codec and seals that JSON as the envelope body. Shared fixtures contain invented data; private cards stay outside this repository. The standalone record-input suite runs with `pnpm exec vitest run --config apps/mailbox/cli/vitest.config.ts`.
 
 `send` can take `--lease-id` and `--generation` together when the sender holds a lease. `--urgent` is signed inside the encrypted payload. `list` prints the generated wire format, including byte wrappers. Follow every cursor with the other parameters unchanged, then checkpoint `throughSeq`. Save a message event's `envelope` field for `open`. `open` decrypts, verifies the application signature and bound metadata, then prints sender DID, TID, body, optional reply and urgent fields, and `verified: true`. Failed verification never prints a verified body.
 
