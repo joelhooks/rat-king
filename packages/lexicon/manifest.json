@@ -1,7 +1,7 @@
 {
   "effect": "4.0.1",
   "generatorVersion": "0.1.0",
-  "sourceDigest": "7091e0a97df7329534c30276c407845d030e86c1bfa6195d80eca8202a93dab8",
+  "sourceDigest": "5de4edc752d93f55337db0368132011c580ff1daefd66cdcf5ac685249a8ec0f",
   "sources": [
     "lexicons/sh/mschf/ratking/admin/putDidDocument.json",
     "lexicons/sh/mschf/ratking/agent/profile.json",
@@ -13,8 +13,10 @@
     "lexicons/sh/mschf/ratking/mailbox/ack.json",
     "lexicons/sh/mschf/ratking/mailbox/deliver.json",
     "lexicons/sh/mschf/ratking/mailbox/list.json",
+    "lexicons/sh/mschf/ratking/mailbox/listTraffic.json",
     "lexicons/sh/mschf/ratking/mailbox/send.json",
     "lexicons/sh/mschf/ratking/mailbox/subscribe.json",
+    "lexicons/sh/mschf/ratking/mailbox/subscribeTraffic.json",
     "lexicons/sh/mschf/ratking/runtime/acquireLease.json",
     "lexicons/sh/mschf/ratking/runtime/lease.json",
     "lexicons/sh/mschf/ratking/runtime/releaseLease.json",

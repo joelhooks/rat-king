@@ -1,0 +1,58 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.mailbox.subscribeTraffic",
+  "defs": {
+    "main": {
+      "type": "subscription",
+      "description": "Observer/operator global watermark notices. First frame #auth with fresh method-bound JWT within five seconds, never in URL. Initial notice is ready barrier. ListTraffic is the durable catch-up path. At most 32 sockets, each expires after 60 seconds; reconnect and resume cursor. No leases.",
+      "parameters": {
+        "type": "params",
+        "properties": {}
+      },
+      "message": {
+        "schema": {
+          "type": "union",
+          "refs": [
+            "#notice"
+          ],
+          "closed": false
+        }
+      },
+      "errors": [
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "MailboxUnavailable"
+        }
+      ]
+    },
+    "notice": {
+      "type": "object",
+      "required": [
+        "seq"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      }
+    },
+    "auth": {
+      "type": "object",
+      "required": [
+        "token"
+      ],
+      "properties": {
+        "token": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

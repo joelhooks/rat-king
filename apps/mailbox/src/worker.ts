@@ -5,8 +5,10 @@ import { MailboxServer, serverLayer } from "@rat-king/lexicon/mailbox-server";
 import * as Ack from "@rat-king/lexicon/mailbox.ack";
 import * as Deliver from "@rat-king/lexicon/mailbox.deliver";
 import * as List from "@rat-king/lexicon/mailbox.list";
+import * as Traffic from "@rat-king/lexicon/mailbox.listTraffic";
 import * as Send from "@rat-king/lexicon/mailbox.send";
 import * as Subscribe from "@rat-king/lexicon/mailbox.subscribe";
+import * as SubscribeTraffic from "@rat-king/lexicon/mailbox.subscribeTraffic";
 import * as Runtime from "@rat-king/lexicon/runtime";
 import * as Acquire from "@rat-king/lexicon/runtime.acquireLease";
 import * as Release from "@rat-king/lexicon/runtime.releaseLease";
@@ -17,7 +19,7 @@ import type { XrpcFailure } from "@rat-king/lexicon/xrpc-failure";
 import { DurableObject } from "cloudflare:workers";
 import { Clock, Effect, Layer, Schema } from "effect";
 
-import { authenticate, ReplayAuthority } from "./auth.ts";
+import { authenticate, authenticateClaims, ReplayAuthority } from "./auth.ts";
 import type { Bindings } from "./bindings.ts";
 import { documentsLayer, didAllowlist } from "./documents.ts";
 import { failure } from "./failure.ts";
@@ -32,9 +34,22 @@ import {
 import { SenderFence } from "./sender-fence.ts";
 import { SocketAttachment, socketStep, socketCodes } from "./socket.ts";
 import { sqliteStore } from "./sqlite.ts";
-import { MailboxStore } from "./store.ts";
+import type { Sql } from "./sqlite.ts";
+import { MailboxStore, storageOperation } from "./store.ts";
 import type { LeaseValue, Event } from "./store.ts";
 import { TerminalDelivery, terminalLayer } from "./terminal.ts";
+import { trafficRequest } from "./traffic-http.ts";
+import { trafficSockets } from "./traffic-socket.ts";
+import {
+  appendTraffic,
+  listTraffic,
+  observerOnly,
+  pendingTraffic,
+  TrafficEntry,
+  trafficDid,
+  trafficPermission,
+  trafficWatermark,
+} from "./traffic-store.ts";
 
 declare const __BUNDLE_VERSION__: string;
 
@@ -78,8 +93,45 @@ const replayLayer = (env: Bindings) =>
     })
   );
 
+const armTraffic = Effect.fn("Traffic.arm")(function* arm(
+  ctx: DurableObjectState
+) {
+  const now = yield* Clock.currentTimeMillis;
+  const alarm = yield* Effect.promise(() => ctx.storage.getAlarm());
+
+  if (alarm === null || alarm > now + 1000) {
+    yield* Effect.promise(() => ctx.storage.setAlarm(now + 1000));
+  }
+});
+
+const flushTraffic = Effect.fn("Traffic.flush")(function* flush(
+  sql: Sql,
+  env: Bindings
+) {
+  const entries = yield* storageOperation(() => pendingTraffic(sql));
+
+  if (entries.length === 0) {
+    return;
+  }
+
+  yield* Effect.tryPromise({
+    catch: () => failure("MailboxUnavailable", 503),
+    try: () =>
+      Promise.resolve(
+        env.MAILBOX.getByName(trafficDid).recordTraffic(JSON.stringify(entries))
+      ),
+  });
+  yield* storageOperation(() => {
+    for (const entry of entries) {
+      sql.exec("DELETE FROM traffic_outbox WHERE seq=?", entry.recipientSeq);
+    }
+  });
+});
+
 export class Mailbox extends DurableObject<Bindings> {
   private readonly store;
+  private readonly sql;
+  private readonly feedSockets;
   constructor(ctx: DurableObjectState, env: Bindings) {
     super(ctx, env);
     const recipient = ctx.id.name;
@@ -91,17 +143,86 @@ export class Mailbox extends DurableObject<Bindings> {
     ctx.storage.sql.exec(
       "CREATE TABLE IF NOT EXISTS wake_attempts (id INTEGER PRIMARY KEY, sender TEXT NOT NULL, tid TEXT NOT NULL, outcome TEXT NOT NULL)"
     );
+    this.sql = {
+      exec: (query: string, ...values: readonly (string | number)[]) =>
+        ctx.storage.sql.exec(query, ...values),
+      transaction: <A>(operation: () => A) =>
+        ctx.storage.transactionSync(operation),
+    };
+    this.feedSockets = trafficSockets(
+      ctx,
+      (token) =>
+        authenticateClaims({
+          audience: `${env.SERVICE_DID}#mailbox`,
+          authorization: `Bearer ${token}`,
+          now: Effect.runSync(Clock.currentTimeMillis),
+          nsid: SubscribeTraffic.Method.nsid,
+        }).pipe(
+          Effect.provide(Layer.merge(documentsLayer(env), replayLayer(env))),
+          Effect.tap((claims) =>
+            storageOperation(() => {
+              trafficPermission(
+                claims.iss,
+                didAllowlist(env.OPERATOR_DIDS),
+                didAllowlist(env.OBSERVER_DIDS)
+              );
+            })
+          )
+        ),
+      () => trafficWatermark(this.sql)
+    );
     this.store = sqliteStore(
-      {
-        exec: (query, ...values) => ctx.storage.sql.exec(query, ...values),
-        transaction: (operation) => ctx.storage.transactionSync(operation),
-      },
+      this.sql,
       recipient,
       (events, lease) => {
         this.committed(events, lease);
-      }
+      },
+      armTraffic(this.ctx)
     );
   }
+  recordTraffic(json: string) {
+    const entries = Schema.decodeUnknownSync(
+      Schema.fromJsonString(
+        Schema.Array(TrafficEntry).check(Schema.isMaxLength(100))
+      )
+    )(json);
+
+    if (this.ctx.id.name !== trafficDid) {
+      throw failure("Forbidden", 403);
+    }
+
+    appendTraffic(this.sql, entries);
+    this.feedSockets.broadcast();
+  }
+
+  readTraffic(json: string, issuer: string) {
+    return Effect.runPromise(
+      storageOperation(() => {
+        trafficPermission(
+          issuer,
+          didAllowlist(this.env.OPERATOR_DIDS),
+          didAllowlist(this.env.OBSERVER_DIDS)
+        );
+
+        const params = Schema.decodeUnknownSync(
+          Schema.fromJsonString(Traffic.Params)
+        )(json);
+
+        return {
+          body: JSON.stringify(listTraffic(this.sql, params)),
+          status: 200,
+        };
+      }).pipe(
+        Effect.catchTag("XrpcFailure", (error) =>
+          Effect.succeed({
+            body: JSON.stringify({ error: error.error }),
+            status: error.status,
+          })
+        )
+      )
+    );
+  }
+
   recordWake(sender: string, tid: string, outcome: "accepted" | "unavailable") {
     this.ctx.storage.sql.exec(
       "INSERT INTO wake_attempts (sender,tid,outcome) VALUES (?,?,?)",
@@ -275,6 +396,21 @@ export class Mailbox extends DurableObject<Bindings> {
   }
 
   private committed(events: readonly Event[], lease: LeaseValue | undefined) {
+    if (events.length > 0) {
+      this.ctx.waitUntil(
+        Effect.runPromise(
+          flushTraffic(this.sql, this.env).pipe(
+            Effect.tapError(() =>
+              Effect.logWarning(
+                "Traffic journal unavailable; durable outbox will retry"
+              )
+            ),
+            Effect.ignore
+          )
+        )
+      );
+    }
+
     for (const socket of this.ctx.getWebSockets()) {
       const attachment = Schema.decodeUnknownSync(SocketAttachment)(
         socket.deserializeAttachment()
@@ -317,6 +453,10 @@ export class Mailbox extends DurableObject<Bindings> {
   }
 
   override fetch(request: Request) {
+    if (this.ctx.id.name === trafficDid) {
+      return this.feedSockets.fetch(request);
+    }
+
     return Effect.runPromise(
       Effect.gen(
         function* upgrade(this: Mailbox) {
@@ -379,6 +519,10 @@ export class Mailbox extends DurableObject<Bindings> {
   }
 
   override webSocketMessage(socket: WebSocket, message: string | ArrayBuffer) {
+    if (this.ctx.id.name === trafficDid) {
+      return this.feedSockets.message(socket, message);
+    }
+
     const attachment = Schema.decodeUnknownSync(SocketAttachment)(
       socket.deserializeAttachment()
     );
@@ -426,7 +570,15 @@ export class Mailbox extends DurableObject<Bindings> {
             )
           );
 
-          if (issuer !== attachment.recipientDid) {
+          if (
+            issuer !== attachment.recipientDid ||
+            observerOnly(
+              issuer,
+              didAllowlist(this.env.OPERATOR_DIDS),
+              didAllowlist(this.env.OBSERVER_DIDS)
+            ) ||
+            issuer === trafficDid
+          ) {
             return yield* Effect.fail(failure("Forbidden", 403));
           }
 
@@ -491,6 +643,12 @@ export class Mailbox extends DurableObject<Bindings> {
   }
 
   override webSocketClose(socket: WebSocket) {
+    if (this.ctx.id.name === trafficDid) {
+      this.feedSockets.close(socket);
+
+      return this.feedSockets.alarm();
+    }
+
     const attachment = Schema.decodeUnknownSync(SocketAttachment)(
       socket.deserializeAttachment()
     );
@@ -501,12 +659,32 @@ export class Mailbox extends DurableObject<Bindings> {
   }
 
   override webSocketError(socket: WebSocket) {
+    if (this.ctx.id.name === trafficDid) {
+      this.feedSockets.close(socket);
+
+      return this.feedSockets.alarm();
+    }
+
     Mailbox.closeSocket(socket, socketCodes.auth, "Socket error");
 
     return this.alarm();
   }
 
   override alarm() {
+    if (this.ctx.id.name === trafficDid) {
+      return this.feedSockets.alarm();
+    }
+
+    return Effect.runPromise(
+      flushTraffic(this.sql, this.env).pipe(
+        Effect.tapError(() => Effect.logWarning("Traffic retry pending")),
+        Effect.ignore,
+        Effect.flatMap(() => Effect.promise(() => this.mailboxAlarm()))
+      )
+    );
+  }
+
+  private mailboxAlarm() {
     let deadline = Number.POSITIVE_INFINITY;
 
     for (const socket of this.ctx.getWebSockets()) {
@@ -528,6 +706,13 @@ export class Mailbox extends DurableObject<Bindings> {
           deadline = Math.min(deadline, attachment.deadline);
         }
       }
+    }
+
+    if (pendingTraffic(this.sql).length > 0) {
+      deadline = Math.min(
+        deadline,
+        Effect.runSync(Clock.currentTimeMillis) + 1000
+      );
     }
 
     return Number.isFinite(deadline)
@@ -614,6 +799,13 @@ export const fetchRequest = (
 
     const nsid = url.pathname.slice("/xrpc/".length);
 
+    if (url.pathname === SubscribeTraffic.Method.path) {
+      return yield* Effect.tryPromise({
+        catch: () => failure("MailboxUnavailable", 503),
+        try: () => env.MAILBOX.getByName(trafficDid).fetch(request),
+      });
+    }
+
     if (url.pathname === Subscribe.Method.path) {
       const params = yield* Subscribe.decodeParams([
         ...url.searchParams.entries(),
@@ -637,7 +829,7 @@ export const fetchRequest = (
 
     if (
       !url.pathname.startsWith("/xrpc/") ||
-      ![...procedures, List.Method, Resolve.Method].some(
+      ![...procedures, List.Method, Traffic.Method, Resolve.Method].some(
         (method) => method.nsid === nsid
       )
     ) {
@@ -650,6 +842,27 @@ export const fetchRequest = (
       now: yield* Clock.currentTimeMillis,
       nsid,
     }).pipe(Effect.provide(Layer.merge(documentsLayer(env), replayLayer(env))));
+
+    const trafficResponse = yield* trafficRequest({
+      issuer,
+      nsid,
+      observers: didAllowlist(env.OBSERVER_DIDS),
+      operators: didAllowlist(env.OPERATOR_DIDS),
+      read: (params, caller) =>
+        Effect.tryPromise({
+          catch: () => failure("MailboxUnavailable", 503),
+          try: () =>
+            env.MAILBOX.getByName(trafficDid).readTraffic(
+              JSON.stringify(params),
+              caller
+            ),
+        }),
+      request,
+    });
+
+    if (trafficResponse !== undefined) {
+      return trafficResponse;
+    }
 
     let recipient: string;
     let transport: XrpcRequest;
@@ -751,6 +964,10 @@ export const fetchRequest = (
         nsid,
         params: undefined,
       };
+    }
+
+    if (recipient === trafficDid) {
+      return yield* Effect.fail(failure("Forbidden", 403));
     }
 
     const response = yield* Effect.tryPromise({

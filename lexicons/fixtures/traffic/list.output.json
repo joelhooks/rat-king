@@ -1,0 +1,4 @@
+{
+  "cursor": "1",
+  "events": [{ "seq": 1, "recipientSeq": 1, "time": "2026-10-06T00:00:00Z", "senderDid": "did:web:sender.example.invalid", "recipientDid": "did:web:recipient.example.invalid", "messageId": "3jzfcijpj2z2a", "ciphertextSize": 64, "state": "accepted" }]
+}
