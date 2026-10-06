@@ -46,6 +46,7 @@ struct MailItem: Identifiable {
 final class InboxStore {
     private(set) var state: ConnectionState = .stopped
     private(set) var identity: PhoneIdentity?
+    private(set) var traffic: TrafficStore?
     private(set) var messages: [MailItem] = []
     private(set) var peers: [String: DIDDocument] = [:]
     private(set) var lastError: String?
@@ -73,7 +74,8 @@ final class InboxStore {
             let configuration = try ClientConfiguration.load()
             storageScope = Self.scope(did: configuration.did, audience: configuration.audience)
             let id = try PhoneIdentity(did: configuration.did)
-            identity = id; client = Mailbox(configuration: configuration, identity: id)
+            identity = id; let mailbox = Mailbox(configuration: configuration, identity: id); client = mailbox
+            traffic = TrafficStore(transport: mailbox.trafficTransport())
             if let data = try readLocal("peers.json") { try installPeers(data, save: false) }
             if let url = Bundle.main.url(forResource: "PeerDocuments.private", withExtension: "json") { try installPeers(Data(contentsOf: url), save: false) }
             if let data = try readLocal("outbox.json") { pending = try Value.json(data); hasPendingSend = true }
@@ -126,6 +128,7 @@ final class InboxStore {
         run = Task { [weak self] in await self?.connect(client, token: token) }
     }
     func stop() {
+        traffic?.stop()
         generation &+= 1; run?.cancel(); run = nil
         snoozeTimer?.cancel(); snoozeTimer = nil
         socket?.cancel(with: .goingAway, reason: nil); socket = nil

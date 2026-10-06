@@ -61,6 +61,16 @@ TS and Swift share invented fixtures in `packages/lexicon/test/fixtures`. Swift 
 
 `deploy-testflight.sh --export` exports the exact committed archive to a signed IPA locally, with no upload. The desk owns the upload and real-phone answer proof.
 
+## Traffic
+
+The Traffic tab is an observer-only metadata journal, independent of the inbox lease. The desk grants the phone DID observer access; the app receives no operator credentials. Rows show observation time/date, abbreviated sender → recipient, message ID, ciphertext byte count and delivery state, newest first. Each journal event keeps its global and recipient sequence; repeated states for the same message remain separate events. Bodies and envelopes never enter this projection.
+
+Selecting Traffic while foregrounded opens `mailbox.subscribeTraffic` without URL parameters or a lease. Its first frame carries a fresh method-bound JWT; the first notice is the ready barrier. `mailbox.listTraffic` then catches up in pages of 100. Only a completely validated page advances the cursor; notice watermarks do not. Socket expiry/loss closes that socket and reconnects with a new JWT and bounded backoff. One generation-fenced task owns the stream, so cancelled requests cannot alter a later session.
+
+Leaving the tab or backgrounding pauses the stream. The in-memory journal and cursor survive tab, foreground and socket reconnects. A process restart replays from zero; no metadata cache is written to disk. Capture begins at server deployment with no earlier backfill. The LIVE/PAUSED indicator reflects this stream, not the inbox lease; RECONNECT explicitly restarts it. A forbidden list response pauses instead of retrying indefinitely.
+
+Tests compare generated append/replay/malformed-page commands against a small journal model. A fake observer service drives the real lifecycle through auth/ready, multiple catch-up pages, socket rollover, pause, late notices and foreground resume. These tests do not prove a deployed observer grant or a physical-phone stream.
+
 ## Evidence and remaining proof
 
 Interop tests cover the existing Go/TS application vectors, canonical-byte equality and their rejection corpus, all 257 RFC HPKE decryptions, and Swift sealing opened by TS. The iOS SDK typecheck proves that CryptoKit accepts the Secure Enclave recipient type; simulator tests do not prove hardware behavior.
