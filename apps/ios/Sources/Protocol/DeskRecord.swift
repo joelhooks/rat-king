@@ -15,7 +15,7 @@ enum DeskRecord: Equatable {
     case item(Value, DeskCard), answer(Value), update(Value, String, String, String, String?)
     var value: Value { switch self { case let .item(v, _), let .answer(v), let .update(v, _, _, _, _): return v } }
     static func decode(_ value: Value) throws -> DeskRecord? {
-        guard let tag = try value["$type"]?.text, [namespace + "item", namespace + "answer", namespace + "update"].contains(tag) else { return nil }
+        guard case let .string(tag)? = value["$type"], [namespace + "item", namespace + "answer", namespace + "update"].contains(tag) else { return nil }
         let project = try value.required("project").text, itemId = try value.required("itemId").text
         switch tag {
         case namespace + "item":

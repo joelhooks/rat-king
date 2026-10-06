@@ -20,6 +20,7 @@ final class DeskTests: XCTestCase {
         var malformed = try fixture("item").object(); malformed["choices"] = .array([.map(["key": .string("path")])])
         XCTAssertThrowsError(try DeskRecord.decode(.map(malformed)))
         XCTAssertNil(try DeskRecord.decode(.map(["$type": .string("future.record")])))
+        XCTAssertNil(try DeskRecord.decode(.map(["$type": .int(5)])))
     }
     func testThreadModelAcrossGeneratedCommandSequences() throws {
         let card = try fixture("item")
