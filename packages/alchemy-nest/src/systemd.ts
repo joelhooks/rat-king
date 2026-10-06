@@ -29,7 +29,7 @@ export const UnitSchema = Schema.Struct({
   home: AbsolutePath,
   name: Schema.String.check(
     Schema.isPattern(
-      /^[A-Za-z0-9][A-Za-z0-9_@:-]*(?:\.[A-Za-z0-9_@:-]+)*\.(?:service|slice)$/u
+      /^[A-Za-z0-9][A-Za-z0-9_@:-]*(?:\.[A-Za-z0-9_@:-]+)*\.(?:service|slice|timer)$/u
     )
   ),
   restartOn: Schema.optionalKey(Schema.Array(directive)),

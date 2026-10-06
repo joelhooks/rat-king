@@ -1,16 +1,28 @@
+import { objectArchiveScript } from "./object-archive-script.ts";
+
 export const s3Script = String.raw`
-import concurrent.futures, datetime, hashlib, hmac, http.client, json, sys, threading, urllib.parse, uuid, xml.etree.ElementTree as ET
+import concurrent.futures, datetime, hashlib, hmac, http.client, io, json, pathlib, sys, tarfile, threading, urllib.parse, uuid, xml.etree.ElementTree as ET
 config, endpoint, bucket, operation = sys.argv[1:5]
 with open(config) as f:
     credential = json.load(f)['identities'][0]['credentials'][0]
 access, secret = credential['accessKey'], credential['secretKey']
+if bucket == '@environment' and operation in {'export', 'import'}:
+    lines = (pathlib.Path(config).parent / 'celld.env').read_text().splitlines()
+    values = {line.split('=', 1)[0]: line.split('=', 1)[1] for line in lines if '=' in line}
+    location = json.loads(values['CELLD_BUCKET'])
+    if not location.startswith('s3://'):
+        raise RuntimeError('Expected store bucket')
+    bucket = location[5:]
+    if json.loads(values['S3_ENDPOINT']) != endpoint:
+        raise RuntimeError('Backup endpoint mismatch')
 base = urllib.parse.urlsplit(endpoint)
 
-def request(method, key='', query='', conditional=False):
+def request(method, key='', query='', conditional=False, payload=None):
     path = '/' + bucket + ('/' + urllib.parse.quote(key, safe='/~') if key else '')
     now = datetime.datetime.now(datetime.timezone.utc)
     stamp, day = now.strftime('%Y%m%dT%H%M%SZ'), now.strftime('%Y%m%d')
-    payload = b'proof' if method == 'PUT' and key else b''
+    if payload is None:
+        payload = b'proof' if method == 'PUT' and key else b''
     hashed = hashlib.sha256(payload).hexdigest()
     headers = {'host': base.netloc, 'x-amz-content-sha256': hashed, 'x-amz-date': stamp}
     if conditional:
@@ -33,7 +45,66 @@ def request(method, key='', query='', conditional=False):
     finally:
         connection.close()
 
-if operation == 'race':
+${objectArchiveScript}
+
+if operation == 'export':
+    target = pathlib.Path(sys.argv[5])
+    token, seen, index = '', set(), []
+    with tarfile.open(target, 'x') as archive:
+        while True:
+            parameters = {'list-type': '2', 'max-keys': '1000'}
+            if token:
+                parameters['continuation-token'] = token
+            query = urllib.parse.urlencode(sorted(parameters.items()), quote_via=urllib.parse.quote, safe='~')
+            status, body = request('GET', query=query)
+            if status != 200:
+                raise RuntimeError('Backup bucket listing failed')
+            page = ET.fromstring(body)
+            for item in page.findall('./{*}Contents/{*}Key'):
+                key = item.text or ''
+                if key == 'fleet/peer-auth.json':
+                    continue
+                require_safe_key(key)
+                if key in seen:
+                    raise RuntimeError('Duplicate export object')
+                seen.add(key)
+                code, value = request('GET', key)
+                if code != 200:
+                    raise RuntimeError('Backup object read failed')
+                if access.encode() in value or secret.encode() in value:
+                    raise RuntimeError('Backup object contains store credentials')
+                member = 'objects/' + hashlib.sha256(key.encode()).hexdigest() + '.blob'
+                info = tarfile.TarInfo(member)
+                info.size = len(value)
+                info.mode = 0o600
+                archive.addfile(info, io.BytesIO(value))
+                index.append({'key': key, 'member': member, 'sha256': hashlib.sha256(value).hexdigest()})
+            if page.findtext('./{*}IsTruncated', 'false') != 'true':
+                break
+            next_cursor = page.findtext('./{*}NextContinuationToken', '')
+            if not next_cursor or next_cursor == token:
+                raise RuntimeError('Invalid backup listing cursor')
+            token = next_cursor
+        value = json.dumps({'format': 1, 'objects': index}).encode()
+        info = tarfile.TarInfo('index.json')
+        info.size = len(value)
+        info.mode = 0o600
+        archive.addfile(info, io.BytesIO(value))
+    print('LOGICAL_OBJECT_EXPORT_PASSED ' + str(len(index)))
+elif operation == 'import':
+    source = pathlib.Path(sys.argv[5])
+    with tarfile.open(source) as archive:
+        index = validate_export(archive)
+        for entry in index['objects']:
+            value = archive.extractfile(entry['member']).read()
+            status, _ = request('PUT', entry['key'], payload=value)
+            if status != 200:
+                raise RuntimeError('Object restore write failed')
+            code, copied = request('GET', entry['key'])
+            if code != 200 or hashlib.sha256(copied).hexdigest() != entry['sha256']:
+                raise RuntimeError('Object restore readback mismatch')
+    print('LOGICAL_OBJECT_IMPORT_PASSED ' + str(len(index['objects'])))
+elif operation == 'race':
     key = 'rat-king-probe/' + str(uuid.uuid4())
     barrier = threading.Barrier(50)
     def put(_):

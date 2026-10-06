@@ -1,4 +1,4 @@
-import type { Crypto, FileSystem } from "effect";
+import type { Crypto, FileSystem, Redacted } from "effect";
 import { Effect, Layer, Predicate, Result, Schema } from "effect";
 
 import { refuse } from "./files.ts";
@@ -74,43 +74,109 @@ const stopBoth = Effect.fn("UnitStartup.stopBoth")(function* stop(
   }
 });
 
-const assertStarted = Effect.fn("UnitStartup.assertStarted")(function* check(
-  shell: Interface,
-  publicIPv4: string,
-  nodeExpected: boolean,
-  sidecarExpected: boolean,
-  attempts = 40
-) {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const listeners = yield* readListeners(shell);
+export const assertStarted = Effect.fn("UnitStartup.assertStarted")(
+  function* check(
+    shell: Pick<Interface, "exec">,
+    publicIPv4: string,
+    nodeExpected: boolean,
+    sidecarExpected: boolean,
+    attempts = 40
+  ) {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const listeners = yield* readListeners(shell);
 
-    const assessment = assessListeners(
-      listeners.text,
-      publicIPv4,
-      nodeExpected,
-      sidecarExpected,
-      listeners.unitCgroups
+      const assessment = assessListeners(
+        listeners.text,
+        publicIPv4,
+        nodeExpected,
+        sidecarExpected,
+        listeners.unitCgroups
+      );
+
+      if (Predicate.isTagged(assessment, "Ready")) {
+        yield* Effect.log("STARTUP_LISTENERS_PASSED", assessment.receipt);
+
+        return yield* Effect.void;
+      }
+
+      if (Predicate.isTagged(assessment, "Violation")) {
+        return yield* refuse(
+          `Startup listener contract violated; both units must stop.\n${assessment.receipt}`
+        );
+      }
+
+      yield* Effect.sleep("250 millis");
+    }
+
+    return yield* refuse(
+      "Startup listener deadline exceeded; both units must stop."
     );
+  }
+);
 
-    if (Predicate.isTagged(assessment, "Ready")) {
-      yield* Effect.log("STARTUP_LISTENERS_PASSED", assessment.receipt);
-
+const importRestoredObjects = Effect.fn("UnitStartup.importRestoredObjects")(
+  function* importRestoredObjects(
+    shell: Interface,
+    home: string,
+    archive: string | undefined,
+    redactions: readonly Redacted.Redacted[]
+  ) {
+    if (archive === undefined) {
       return yield* Effect.void;
     }
 
-    if (Predicate.isTagged(assessment, "Violation")) {
+    const file = yield* shell.stat(archive);
+
+    if (file === undefined) {
+      return yield* Effect.void;
+    }
+
+    if (file.kind !== "file" || file.mode !== 0o600) {
+      return yield* refuse("Restore object archive has unsafe custody");
+    }
+
+    const state = yield* shell.exec([
+      "systemctl",
+      "--user",
+      "show",
+      "rat-king-celld.service",
+      "--property=ActiveState",
+      "--value",
+    ]);
+
+    if (
+      state.code !== 0 ||
+      !["inactive", "failed"].includes(state.stdout.trim())
+    ) {
+      return yield* refuse("Object restore requires celld stopped");
+    }
+
+    const imported = yield* shell.exec(
+      [
+        "python3",
+        "-c",
+        s3Script,
+        `${home}/.config/rat-king/s3.json`,
+        "http://127.0.0.1:18333",
+        "@environment",
+        "import",
+        archive,
+      ],
+      { redactions }
+    );
+
+    if (imported.code !== 0) {
       return yield* refuse(
-        `Startup listener contract violated; both units must stop.\n${assessment.receipt}`
+        `Object import failed before celld startup.\n${imported.stderr ?? ""}`
       );
     }
 
-    yield* Effect.sleep("250 millis");
-  }
+    yield* shell.remove(archive);
+    yield* Effect.log("RESTORED_OBJECTS_IMPORTED", imported.stdout.trim());
 
-  return yield* refuse(
-    "Startup listener deadline exceeded; both units must stop."
-  );
-});
+    return yield* Effect.void;
+  }
+);
 
 const Pointer = Schema.Struct({
   status: Schema.Int,
@@ -119,7 +185,8 @@ const Pointer = Schema.Struct({
 
 export const startupLayer = (
   publicIPv4: string,
-  runnerMode: ProbeRunnerMode = "scope"
+  runnerMode: ProbeRunnerMode = "scope",
+  restoreArchive?: string
 ) =>
   Layer.effect(
     UnitStartup,
@@ -185,6 +252,13 @@ export const startupLayer = (
 
           return Effect.gen(function* seed() {
             const environment = yield* probeEnvironment(shell, home);
+
+            yield* importRestoredObjects(
+              shell,
+              home,
+              restoreArchive,
+              environment.redactions
+            );
 
             const result = yield* shell.exec(
               [

@@ -71,21 +71,34 @@ export const Node = (
         environment.path,
         environment.sha256,
         binary.sha256,
-        bucket.resource.name
+        bucket.resource.name,
+        bucket.restartGate?.sha256 ?? bucket.resource.name
       ).pipe(
-        Output.map(([path, directory, env, envHash, binaryHash]) => ({
-          ...nodeUnit({
-            binary: path,
-            data: directory,
-            environment: env,
-            host,
-            restartOn: [envHash, binaryHash],
-            workerIPv4,
-          }),
-          internalUrl: "http://127.0.0.1:18788",
-          publicUrl: `http://${workerIPv4}:18787`,
-          version: "v0.6.1" as const,
-        }))
+        Output.map(
+          ([path, directory, env, envHash, binaryHash, , gateHash]) => ({
+            ...nodeUnit({
+              binary: path,
+              data: directory,
+              environment: env,
+              host,
+              restartGate:
+                bucket.restartGate === undefined
+                  ? undefined
+                  : {
+                      address: workerIPv4,
+                      path: `${host.home}/.local/share/rat-king/bin/restart-gate.mjs`,
+                    },
+              restartOn:
+                bucket.restartGate === undefined
+                  ? [envHash, binaryHash]
+                  : [envHash, binaryHash, gateHash],
+              workerIPv4,
+            }),
+            internalUrl: "http://127.0.0.1:18788",
+            publicUrl: `http://${workerIPv4}:18787`,
+            version: "v0.6.1" as const,
+          })
+        )
       )
     );
 

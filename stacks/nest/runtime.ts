@@ -25,6 +25,7 @@ import { listenerProbe } from "../../packages/alchemy-nest/src/probes.ts";
 import { stopUnits } from "../../packages/alchemy-nest/src/startup-contract.ts";
 import { deleteDeclaredUnit } from "../../packages/alchemy-nest/src/systemd.ts";
 import { removeStoreSockets } from "../../packages/alchemy-nest/src/unit-cleanup.ts";
+import { backupScript } from "./backup-script.ts";
 import { stageName, workerIPv4 } from "./config.ts";
 import { connection, nest } from "./stack.ts";
 
@@ -40,15 +41,36 @@ export type Action =
   | "prepare"
   | "plan"
   | "deploy"
+  | "backup"
+  | "restore"
   | "listeners"
   | "destroy-plan"
   | "destroy"
   | "teardown-probe"
   | "recover-delete";
 
+const requireFleet = (stage: string) =>
+  stage === "fleet"
+    ? Effect.void
+    : refuse("Backup and restore require fleet stage");
+
 export const run = (action: Action) =>
   Effect.gen(function* runNestAction() {
     const stage = yield* stageName;
+
+    if (action === "backup") {
+      yield* requireFleet(stage);
+
+      yield* must(yield* HostShell, [
+        "systemctl",
+        "--user",
+        "start",
+        "rat-king-mailbox-backup.service",
+      ]);
+      yield* Effect.log("MAILBOX_BACKUP_FINISHED");
+
+      return yield* Effect.void;
+    }
 
     if (action === "stop") {
       yield* must(yield* HostShell, [
@@ -127,14 +149,14 @@ export const run = (action: Action) =>
         path: cliPath,
       });
 
-      if (stage === "pilot") {
+      if (stage !== "proof") {
         if (!(yield* fs.exists(yield* Config.String("RAT_KING_DOCUMENTS")))) {
           return yield* refuse(
-            "Pilot public operator documents must exist before prepare"
+            "Mailbox-only public operator documents must exist before prepare"
           );
         }
 
-        yield* Effect.log("PILOT_PREPARED");
+        yield* Effect.log("MAILBOX_ONLY_PREPARED");
 
         return yield* Effect.void;
       }
@@ -316,6 +338,24 @@ export const run = (action: Action) =>
       ))
     ) {
       return yield* refuse("Prepare must record Claude mtimes before deploy");
+    }
+
+    if (action === "restore") {
+      yield* requireFleet(stage);
+
+      const target = yield* (yield* Host).node(
+        yield* Config.String("RAT_KING_LIVE_NODE")
+      );
+
+      yield* must(yield* HostShell, [
+        "python3",
+        "-c",
+        backupScript,
+        "restore",
+        target.dataRoot,
+        yield* Config.String("RAT_KING_BACKUP_ROOT"),
+      ]);
+      yield* Effect.log("MAILBOX_DATA_RESTORED_BEFORE_DEPLOY");
     }
 
     yield* deploy({ stack: nest, stage }).pipe(adopt(true));

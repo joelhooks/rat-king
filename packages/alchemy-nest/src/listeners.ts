@@ -69,7 +69,7 @@ export const assessListeners = (
 };
 
 export const readListeners = Effect.fn("Listeners.read")(function* read(
-  shell: Interface
+  shell: Pick<Interface, "exec">
 ) {
   const unitCgroups = new Map<string, string>();
 
