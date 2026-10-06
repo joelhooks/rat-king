@@ -11,10 +11,6 @@ settings:
     GENERATE_INFOPLIST_FILE: YES
     INFOPLIST_KEY_CFBundleDisplayName: Rat King
     INFOPLIST_KEY_UILaunchScreen_Generation: YES
-    INFOPLIST_KEY_RKMailboxURL: $(RK_MAILBOX_URL)
-    INFOPLIST_KEY_RKMailboxAudience: $(RK_MAILBOX_AUDIENCE)
-    INFOPLIST_KEY_RKPhoneDID: $(RK_PHONE_DID)
-    INFOPLIST_KEY_RKBuildCommit: $(RK_BUILD_COMMIT)
     PRODUCT_BUNDLE_IDENTIFIER: $(RK_BUNDLE_ID)
     DEVELOPMENT_TEAM: $(RK_TEAM_ID)
 configFiles:
@@ -29,6 +25,8 @@ targets:
     settings:
       base:
         CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: NO
+        INFOPLIST_FILE: Sources/App/Info.plist
   RatKingTests:
     type: bundle.unit-test
     platform: iOS

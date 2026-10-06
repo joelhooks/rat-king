@@ -46,6 +46,24 @@ if not match: raise SystemExit('No existing distribution identity for the config
 print(match)
 PY
 )"
+verify_archive() {
+  python3 - "$commit" <<'PY'
+import json,plistlib,sys,urllib.parse
+settings=next(x['buildSettings'] for x in json.load(open('build/settings.json')) if x['target'] == 'RatKing')
+with open('build/RatKing.xcarchive/Products/Applications/RatKing.app/Info.plist','rb') as f: info=plistlib.load(f)
+for key,setting in [('RKMailboxURL','RK_MAILBOX_URL'),('RKMailboxAudience','RK_MAILBOX_AUDIENCE'),('RKPhoneDID','RK_PHONE_DID')]:
+    value=info.get(key)
+    if not value or '$(' in value or value != settings.get(setting):
+        raise SystemExit('Archive runtime configuration is missing or mismatched; refusing upload')
+if info.get('RKBuildCommit') != sys.argv[1]:
+    raise SystemExit('Archive source commit is missing or mismatched')
+url=urllib.parse.urlparse(info['RKMailboxURL'])
+if url.scheme != 'https' or not url.hostname or url.username or url.password:
+    raise SystemExit('Archive mailbox endpoint is invalid')
+print('Archive runtime configuration and source commit verified; private values suppressed')
+PY
+  codesign --verify --deep --strict build/RatKing.xcarchive/Products/Applications/RatKing.app
+}
 if [[ "$mode" == --archive-only ]]; then
   security find-certificate -c 'Apple Development' -p | openssl x509 -noout -subject > build/development-subject.txt
   python3 - "$team" <<'PY'
@@ -63,10 +81,12 @@ PY
     -archivePath build/RatKing.xcarchive -destination 'generic/platform=iOS' \
     -allowProvisioningUpdates CODE_SIGN_STYLE=Automatic CODE_SIGN_IDENTITY='Apple Development' \
     RK_BUILD_COMMIT="$commit" MARKETING_VERSION="$marketing" CURRENT_PROJECT_VERSION="$build_number" archive
+  verify_archive
   echo "Archive ready. Not uploaded."
   exit 0
 fi
 [[ -d build/RatKing.xcarchive ]] || { echo "Archive first" >&2; exit 1; }
+verify_archive
 plist=build/RatKing.xcarchive/Products/Applications/RatKing.app/Info.plist
 archive_commit="$(/usr/libexec/PlistBuddy -c 'Print :RKBuildCommit' "$plist")"
 [[ "$archive_commit" == "$commit" ]] || { echo "Archive does not match committed candidate" >&2; exit 1; }
