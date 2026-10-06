@@ -5,7 +5,7 @@ import { Effect } from "effect";
 
 import { failure } from "./failure.ts";
 import { storageOperation } from "./store.ts";
-import { observerOnly, trafficPermission } from "./traffic-store.ts";
+import { trafficPermission } from "./traffic-store.ts";
 
 export const trafficRequest = Effect.fn("Traffic.request")(
   function* trafficRequest(input: {
@@ -44,10 +44,6 @@ export const trafficRequest = Effect.fn("Traffic.request")(
         },
         status: response.status,
       });
-    }
-
-    if (observerOnly(input.issuer, input.operators, input.observers)) {
-      return yield* Effect.fail(failure("Forbidden", 403));
     }
 
     return yield* Effect.void;
