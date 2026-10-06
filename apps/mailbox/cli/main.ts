@@ -5,7 +5,11 @@ import * as Deliver from "@rat-king/lexicon/mailbox.deliver";
 import * as List from "@rat-king/lexicon/mailbox.list";
 import * as Send from "@rat-king/lexicon/mailbox.send";
 import * as Lease from "@rat-king/lexicon/runtime.lease";
-import { RatKingMailbox, layer } from "@rat-king/mailbox-client";
+import {
+  RatKingMailbox,
+  layer,
+  transportLayer,
+} from "@rat-king/mailbox-client";
 import type { OpenedMessage, SendOptions } from "@rat-king/mailbox-client";
 import {
   Config,
@@ -25,6 +29,7 @@ import { registerDocument } from "./register-document.ts";
 import { provisionAgent } from "./register.ts";
 import { secretStoreLayer } from "./secrets.ts";
 import { sendBody } from "./send-body.ts";
+import { traffic } from "./traffic.ts";
 
 type MutableSendOptions = {
   -readonly [K in keyof SendOptions]: SendOptions[K];
@@ -435,10 +440,33 @@ const ackCommand = Command.make(
   })
 );
 
+const trafficCommand = Command.make(
+  "traffic",
+  {
+    as: Flag.String("as"),
+    cursor: Flag.String("cursor").pipe(Flag.withDefault("0")),
+    follow: Flag.Boolean("follow"),
+  },
+  Effect.fn("MailboxCli.trafficCommand")(function* trafficCommand(args) {
+    const env = yield* environment;
+    const identity = yield* readIdentity(env.home, args.as);
+    yield* traffic(args).pipe(
+      Effect.provide(
+        transportLayer(
+          env.endpoint,
+          `${env.serviceDid}#mailbox`,
+          identity
+        ).pipe(Layer.provide(FetchHttpClient.layer))
+      )
+    );
+  })
+);
+
 const command = Command.make("mailbox").pipe(
   Command.withSubcommands([
     sendCommand,
     listCommand,
+    trafficCommand,
     openCommand,
     identityCommand,
     provisionCommand,

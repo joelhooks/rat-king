@@ -1,10 +1,11 @@
 import * as Defs from "@rat-king/lexicon/defs";
 import * as List from "@rat-king/lexicon/mailbox.list";
-import { Layer, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 
 import { base64url, unbase64url } from "./auth.ts";
 import { Lease, MailboxStore, storageOperation } from "./store.ts";
 import type { Event, LeaseValue, Message, Transaction } from "./store.ts";
+import { projectTraffic, trafficTables } from "./traffic-store.ts";
 
 export interface Sql {
   readonly exec: (
@@ -47,7 +48,8 @@ const firstValue = (
 export const sqliteStore = (
   sql: Sql,
   recipient: string,
-  committed?: (events: readonly Event[], lease: LeaseValue | undefined) => void
+  committed?: (events: readonly Event[], lease: LeaseValue | undefined) => void,
+  beforeTransaction: Effect.Effect<void> = Effect.void
 ) => {
   sql.exec(
     "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
@@ -69,6 +71,8 @@ export const sqliteStore = (
     "INSERT OR IGNORE INTO metadata (key,value) VALUES ('cursorSecret',?)",
     base64url(crypto.getRandomValues(new Uint8Array(32)))
   );
+
+  trafficTables(sql);
 
   const transaction: Transaction = {
     append: (event: Event) => {
@@ -176,23 +180,38 @@ export const sqliteStore = (
     MailboxStore,
     MailboxStore.of({
       transaction: (operation) =>
-        storageOperation(() => {
-          const appended: Event[] = [];
+        beforeTransaction.pipe(
+          Effect.andThen(
+            storageOperation(() => {
+              const appended: Event[] = [];
 
-          const result = sql.transaction(() =>
-            operation({
-              ...transaction,
-              append: (event) => {
-                transaction.append(event);
-                appended.push(event);
-              },
+              const result = sql.transaction(() => {
+                const value = operation({
+                  ...transaction,
+                  append: (event) => {
+                    transaction.append(event);
+                    appended.push(event);
+                  },
+                });
+
+                for (const event of appended) {
+                  const entry = projectTraffic(transaction, event);
+                  sql.exec(
+                    "INSERT INTO traffic_outbox (seq,value) VALUES (?,?)",
+                    entry.recipientSeq,
+                    JSON.stringify(entry)
+                  );
+                }
+
+                return value;
+              });
+
+              committed?.(appended, transaction.lease());
+
+              return result;
             })
-          );
-
-          committed?.(appended, transaction.lease());
-
-          return result;
-        }),
+          )
+        ),
     })
   );
 };

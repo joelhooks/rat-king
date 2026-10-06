@@ -39,8 +39,8 @@ const json = (text: string) =>
     try: () => new TextDecoder().decode(unbase64url(text)),
   });
 
-export const authenticate = Effect.fn("ServiceAuth.authenticate")(
-  function* authenticate(request: AuthenticateRequest) {
+export const authenticateClaims = Effect.fn("ServiceAuth.authenticateClaims")(
+  function* authenticateClaims(request: AuthenticateRequest) {
     const token = request.authorization?.match(
       /^Bearer (?<token>[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/u
     )?.groups?.token;
@@ -103,8 +103,13 @@ export const authenticate = Effect.fn("ServiceAuth.authenticate")(
     const replay = yield* ReplayAuthority;
     yield* replay.consume(claims, request.now);
 
-    return claims.iss;
+    return claims;
   }
+);
+
+export const authenticate = Effect.fn("ServiceAuth.authenticate")(
+  (request: AuthenticateRequest) =>
+    authenticateClaims(request).pipe(Effect.map((claims) => claims.iss))
 );
 
 export { ReplayAuthority } from "./replay.ts";

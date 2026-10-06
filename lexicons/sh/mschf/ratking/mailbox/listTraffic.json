@@ -1,0 +1,118 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.mailbox.listTraffic",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Observer or operator metadata-only journal. Global seq orders journal ingestion, recipientSeq orders each mailbox. Captures events after feed activation; time is mailbox observation time. Cursor is an exclusive global sequence; repeat it to follow. No recipient fan-out.",
+      "parameters": {
+        "type": "params",
+        "properties": {
+          "cursor": {
+            "type": "string"
+          },
+          "limit": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 100,
+            "default": 50
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "events",
+            "cursor"
+          ],
+          "properties": {
+            "events": {
+              "type": "array",
+              "maxLength": 100,
+              "items": {
+                "type": "ref",
+                "ref": "#entry"
+              }
+            },
+            "cursor": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "InvalidCursor"
+        },
+        {
+          "name": "MailboxUnavailable"
+        }
+      ]
+    },
+    "entry": {
+      "type": "object",
+      "required": [
+        "seq",
+        "recipientSeq",
+        "time",
+        "senderDid",
+        "recipientDid",
+        "messageId",
+        "ciphertextSize",
+        "state"
+      ],
+      "properties": {
+        "seq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "recipientSeq": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "time": {
+          "type": "string",
+          "format": "datetime"
+        },
+        "senderDid": {
+          "type": "string",
+          "format": "did"
+        },
+        "recipientDid": {
+          "type": "string",
+          "format": "did"
+        },
+        "messageId": {
+          "type": "string",
+          "format": "tid"
+        },
+        "ciphertextSize": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "state": {
+          "type": "string",
+          "knownValues": [
+            "accepted",
+            "queued",
+            "delivered",
+            "acked",
+            "expired",
+            "failed"
+          ]
+        }
+      }
+    }
+  }
+}

@@ -256,6 +256,11 @@ export const nestStack = (restore?: RestoreRequest) =>
         "RAT_KING_OPERATOR_DIDS"
       ).pipe(Config.withDefault([]));
 
+      const observers = yield* Config.schema(
+        Schema.fromJsonString(Schema.Array(Schema.NonEmptyString)),
+        "RAT_KING_OBSERVER_DIDS"
+      ).pipe(Config.withDefault([]));
+
       const resolvers = yield* Config.schema(
         Schema.fromJsonString(Schema.Array(Schema.NonEmptyString)),
         "RAT_KING_LEASE_RESOLVERS"
@@ -278,9 +283,15 @@ export const nestStack = (restore?: RestoreRequest) =>
         }
       }
 
-      if (mailboxOnly || operators.length > 0 || resolvers.length > 0) {
+      if (
+        mailboxOnly ||
+        operators.length > 0 ||
+        observers.length > 0 ||
+        resolvers.length > 0
+      ) {
         Object.assign(vars, {
           LEASE_RESOLVERS: JSON.stringify(resolvers),
+          OBSERVER_DIDS: JSON.stringify(observers),
           OPERATOR_DIDS: JSON.stringify(operators),
         });
       }
