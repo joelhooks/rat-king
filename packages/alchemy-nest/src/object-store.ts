@@ -116,6 +116,13 @@ export const Bucket = (
       config: identity.path,
       endpoint: "http://127.0.0.1:18333",
       name: props.name,
+      ownedStore: Output.all(unit.home, unit.sha256).pipe(
+        Output.map(([home, sha256]) => ({
+          home,
+          name: "rat-king-seaweedfs.service" as const,
+          sha256,
+        }))
+      ),
       purgeOnDelete: props.purgeOnDelete ?? false,
       ready: unit.sha256,
       region: "us-east-1",
