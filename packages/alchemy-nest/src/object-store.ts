@@ -25,6 +25,7 @@ export const Bucket = (
     readonly name: string;
     readonly purgeOnDelete?: boolean;
     readonly slice: Output.Output<string>;
+    readonly restartGateBundle?: string | undefined;
   }
 ) =>
   Effect.gen(function* bucket() {
@@ -62,6 +63,15 @@ export const Bucket = (
       path: Output.interpolate`${bin.path}/weed`,
     });
 
+    const gate =
+      props.restartGateBundle === undefined
+        ? undefined
+        : yield* RemoteFile("restart-gate", {
+            content: props.restartGateBundle,
+            mode: 0o600,
+            path: Output.interpolate`${bin.path}/restart-gate.mjs`,
+          });
+
     const access = yield* Random("access-key", { bytes: 16 });
     const secret = yield* Random("secret-key", { bytes: 32 });
 
@@ -98,16 +108,28 @@ export const Bucket = (
         identity.path,
         identity.sha256,
         binary.sha256,
-        props.slice
+        props.slice,
+        gate?.sha256 ?? props.slice
       ).pipe(
-        Output.map(([path, directory, config, configHash, binaryHash]) =>
-          storeUnit({
-            binary: path,
-            config,
-            data: directory,
-            home: host.home,
-            restartOn: [configHash, binaryHash],
-          })
+        Output.map(
+          ([path, directory, config, configHash, binaryHash, , gateHash]) =>
+            storeUnit({
+              binary: path,
+              config,
+              data: directory,
+              home: host.home,
+              restartGate:
+                gate === undefined
+                  ? undefined
+                  : {
+                      address: host.tailnetIPv4,
+                      path: `${host.home}/.local/share/rat-king/bin/restart-gate.mjs`,
+                    },
+              restartOn:
+                gate === undefined
+                  ? [configHash, binaryHash]
+                  : [configHash, binaryHash, gateHash],
+            })
         )
       )
     );
@@ -138,6 +160,7 @@ export const Bucket = (
       endpoint: resource.endpoint,
       region: resource.region,
       resource,
+      restartGate: gate,
       secretKey: secret.text,
     };
   }).pipe(Namespace.push(id));

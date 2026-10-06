@@ -48,7 +48,7 @@ export class HostShell extends Context.Service<HostShell, Interface>()(
 ) {}
 
 export const must = Effect.fn("HostShell.must")(function* must(
-  shell: Interface,
+  shell: Pick<Interface, "exec">,
   argv: readonly string[]
 ) {
   const result = yield* shell.exec(argv);

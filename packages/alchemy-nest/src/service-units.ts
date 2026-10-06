@@ -31,6 +31,9 @@ export const storeUnit = (input: {
   readonly binary: string;
   readonly data: string;
   readonly config: string;
+  readonly restartGate?:
+    | { readonly path: string; readonly address: string }
+    | undefined;
   readonly restartOn: readonly string[];
 }): UnitProps => ({
   home: input.home,
@@ -71,6 +74,14 @@ export const storeUnit = (input: {
             "-volume.max=8",
           ].join(" "),
         ],
+        ...(input.restartGate === undefined
+          ? []
+          : [
+              [
+                "ExecStartPost",
+                `/usr/local/bin/node ${quote(input.restartGate.path)} ${quote(input.restartGate.address)} store`,
+              ] satisfies readonly [string, string],
+            ]),
         ["WorkingDirectory", input.data.replaceAll("%", "%%")],
         ["Environment", "SENTRY_DSN="],
         ["Environment", "OTEL_SDK_DISABLED=true"],
@@ -96,6 +107,9 @@ export const nodeUnit = (input: {
   readonly binary: string;
   readonly data: string;
   readonly environment: string;
+  readonly restartGate?:
+    | { readonly path: string; readonly address: string }
+    | undefined;
   readonly restartOn: readonly string[];
 }): UnitProps => ({
   home: input.host.home,
@@ -118,6 +132,14 @@ export const nodeUnit = (input: {
           "ExecStart",
           `${quote(input.binary)} --listen ${input.workerIPv4 ?? input.host.tailnetIPv4}:${nodeListener.port} --internal-listen ${nodeListener.internalAddress}:${nodeListener.internalPort}`,
         ],
+        ...(input.restartGate === undefined
+          ? []
+          : [
+              [
+                "ExecStartPost",
+                `/usr/local/bin/node ${quote(input.restartGate.path)} ${quote(input.restartGate.address)} node`,
+              ] satisfies readonly [string, string],
+            ]),
         ["EnvironmentFile", input.environment.replaceAll("%", "%%")],
         ["WorkingDirectory", input.data.replaceAll("%", "%%")],
         ["Environment", "CELLD_OTEL=0"],

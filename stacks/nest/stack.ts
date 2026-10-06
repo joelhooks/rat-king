@@ -1,6 +1,14 @@
 import { Stack, localState } from "alchemy";
 import * as Output from "alchemy/Output";
-import { Config, Effect, FileSystem, Layer, Path, Schema } from "effect";
+import {
+  Config,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  Path,
+  Schema,
+} from "effect";
 import { FetchHttpClient } from "effect/http";
 
 import { Documents } from "../../apps/mailbox/src/auth.ts";
@@ -29,6 +37,10 @@ import {
 } from "../../packages/alchemy-nest/src/host.ts";
 import { ObjectStore } from "../../packages/alchemy-nest/src/object-store.ts";
 import {
+  operatorBundle,
+  optionalOperatorBundle,
+} from "../../packages/alchemy-nest/src/operator-build.ts";
+import {
   RemoteFile,
   SystemdUnit,
 } from "../../packages/alchemy-nest/src/providers.ts";
@@ -38,6 +50,7 @@ import {
   layer as sshLayer,
 } from "../../packages/alchemy-nest/src/ssh.ts";
 import { startupLayer } from "../../packages/alchemy-nest/src/startup-contract.ts";
+import { backupTimer, backupUnit } from "./backup-units.ts";
 import {
   configuration,
   stageName,
@@ -68,12 +81,14 @@ const startup = Layer.unwrap(
 
     const stage = yield* stageName;
 
+    const node = yield* hosts.node(yield* Config.String("RAT_KING_LIVE_NODE"));
+
     return startupLayer(
-      stageWorkerIPv4(
-        stage,
-        yield* hosts.node(yield* Config.String("RAT_KING_LIVE_NODE"))
-      ),
-      stage === "pilot" ? "service" : "scope"
+      stageWorkerIPv4(stage, node),
+      stage === "pilot" ? "service" : "scope",
+      stage === "fleet"
+        ? `${node.dataRoot}/.mailbox-restore-objects.tar`
+        : undefined
     );
   })
 ).pipe(Layer.provide(connection), Layer.orDie);
@@ -110,7 +125,7 @@ export const nest = Stack(
       memoryMax,
       mode,
       model,
-      pilot,
+      mailboxOnly,
       remoteAgent,
       secretName,
       sidecar,
@@ -118,6 +133,15 @@ export const nest = Stack(
       workerIPv4,
       workerUrl,
     } = yield* configuration(node);
+
+    const fleet = (yield* stageName) === "fleet";
+
+    const restartGateBundle = Option.getOrUndefined(
+      yield* optionalOperatorBundle(
+        fleet,
+        path.resolve(import.meta.dirname, "restart-gate.ts")
+      )
+    );
 
     const slice = yield* ObjectStore.Slice(node.home, memoryMax, cpuQuota);
 
@@ -127,6 +151,7 @@ export const nest = Stack(
         Config.withDefault("rat-king-cells")
       ),
       purgeOnDelete: true,
+      restartGateBundle,
       slice: slice.sha256,
     });
 
@@ -137,7 +162,7 @@ export const nest = Stack(
       workerIPv4,
     });
 
-    const runtime = pilot
+    const runtime = mailboxOnly
       ? undefined
       : yield* RuntimeFiles(
           "agent-runtime-files",
@@ -176,7 +201,7 @@ export const nest = Stack(
     const commit = yield* Config.String("RAT_KING_COMMIT");
     const serviceDid = yield* Config.String("RAT_KING_SERVICE_DID");
 
-    const vars = pilot
+    const vars = mailboxOnly
       ? { DID_DOCUMENTS: documents, SERVICE_DID: serviceDid }
       : hostedVars({
           documents,
@@ -198,7 +223,7 @@ export const nest = Stack(
       "RAT_KING_LEASE_RESOLVERS"
     ).pipe(Config.withDefault([]));
 
-    if (pilot) {
+    if (mailboxOnly) {
       const publicDocuments = yield* Schema.decodeUnknownEffect(
         Schema.fromJsonString(Documents)
       )(documents);
@@ -210,12 +235,12 @@ export const nest = Stack(
         )
       ) {
         return yield* Effect.die(
-          "Pilot requires static public documents for every operator DID"
+          "Mailbox-only stages require static public documents for every operator DID"
         );
       }
     }
 
-    if (pilot || operators.length > 0 || resolvers.length > 0) {
+    if (mailboxOnly || operators.length > 0 || resolvers.length > 0) {
       Object.assign(vars, {
         LEASE_RESOLVERS: JSON.stringify(resolvers),
         OPERATOR_DIDS: JSON.stringify(operators),
@@ -225,11 +250,11 @@ export const nest = Stack(
     const prepared = yield* prepareDeployment(
       path.resolve(
         import.meta.dirname,
-        pilot
+        mailboxOnly
           ? "../../apps/mailbox/src/worker.ts"
           : "../../apps/mailbox/src/hosted-worker.ts"
       ),
-      pilot ? bindings : hostedBindings,
+      mailboxOnly ? bindings : hostedBindings,
       {
         commit,
         vars,
@@ -278,7 +303,7 @@ export const nest = Stack(
             workerUrl: values[0],
           };
 
-          if (!pilot) {
+          if (!mailboxOnly) {
             return { ...props, bindingsFile: values[5] };
           }
 
@@ -286,6 +311,47 @@ export const nest = Stack(
         })
       )
     );
+
+    if (fleet) {
+      const backupRoot = yield* Config.String("RAT_KING_BACKUP_ROOT");
+
+      const backup = yield* RemoteFile("mailbox-backup-runner", {
+        content: yield* operatorBundle(
+          path.resolve(import.meta.dirname, "backup-runner.ts")
+        ),
+        mode: 0o600,
+        path: Output.interpolate`${bucket.bin}/mailbox-backup.mjs`,
+      });
+
+      const backupLock = yield* RemoteFile("mailbox-backup-lock", {
+        content: "",
+        mode: 0o600,
+        path: Output.interpolate`${bucket.configuration}/mailbox-backup.lock`,
+      });
+
+      const backupService = yield* SystemdUnit(
+        "mailbox-backup-service",
+        Output.all(backup.sha256, deployment.commit, backupLock.sha256).pipe(
+          Output.map(([ready]) =>
+            backupUnit({
+              backupRoot,
+              commit,
+              dataRoot: node.dataRoot,
+              home: node.home,
+              ready,
+              version,
+            })
+          )
+        )
+      );
+
+      yield* SystemdUnit(
+        "mailbox-backup-timer",
+        backupService.sha256.pipe(
+          Output.map((ready) => backupTimer(node.home, ready))
+        )
+      );
+    }
 
     return {
       commit: deployment.commit,

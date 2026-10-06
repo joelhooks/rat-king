@@ -2,10 +2,10 @@
 
 This program deploys the mailbox and a hosted agent Durable Object on an inventory-selected host. It composes the user slice, object-store bucket, celld node, CLI and generated mailbox deployment. The node startup guard seeds a deployment pointer before opening listeners. Deployment then replaces that pointer, reloads the internal listener and checks the expected mailbox version and commit through the Worker listener.
 
-Run `node stacks/nest/cli.ts prepare|plan|deploy|listeners|stop|destroy-plan|destroy|teardown-probe` with private inputs:
+Run `node stacks/nest/cli.ts prepare|plan|deploy|backup|restore|listeners|stop|destroy-plan|destroy|teardown-probe` with private inputs:
 
 - `RATS_NEST_INSTANCE`, `RAT_KING_LIVE_NODE`, `RAT_KING_STATE_DIR`
-- `RAT_KING_STAGE=proof|pilot` (`proof` is the default)
+- `RAT_KING_STAGE=proof|pilot|fleet` (`proof` is the default)
 - `RAT_KING_LOCAL_AGENT`, `RAT_KING_LOCAL_DID`
 - `RAT_KING_REMOTE_AGENT`, `RAT_KING_REMOTE_DID`
 - `RAT_KING_SERVICE_DID`, `RAT_KING_DOCUMENTS`, `RAT_KING_CLI_OUTPUT`
@@ -52,6 +52,26 @@ With the same private environment and stage selected:
 - **Delete the example VM:** `orb delete mailbox-example`, only after stage destruction and a passing teardown probe. This is a separate irreversible action.
 
 Rollback redeploys the previous commit with the same stage inputs, or stops the stage. It does not restore data. A stage namespace isolates Alchemy state, not Linux service names; never run proof and pilot against the same VM/user.
+
+## Standing fleet mailbox
+
+`RAT_KING_STAGE=fleet` uses a separate `nest/fleet` namespace. It deploys only the mailbox Worker, Mailbox and AuthTokens Durable Objects. Like pilot, it refuses hosted models and sidecars and never declares runtime files or leases a gateway key. Unlike pilot, its Worker binds the inventory tailnet IPv4 on 18787. The other nine listeners remain loopback. Its slice is fixed at 4G and 200%; a different memory override is refused. Proof and pilot behavior is unchanged.
+
+Supply static public operator documents, operator DIDs and the service DID. `prepare` does not mint or copy client private keys. Client custody stays in the operator's credential daemon. Generated files, inventory and Alchemy state remain private.
+
+Both fleet service units run the same cgroup/address/port gate used by deployment through a bundled `ExecStartPost`. A gate failure queues a nonblocking stop of both units, fails startup and logs the violation. Nonblocking stop avoids waiting for the hook's own start job. Services remain enabled under `default.target` with `Restart=on-failure`; the host owner must have enabled lingering. Reboot survival still requires live proof.
+
+Set `RAT_KING_BACKUP_ROOT` to an approved directory on an **existing CIFS mount**. The backup service runs in `rat-king.slice` with 256M / 25% / 64-task caps. Its user timer runs at 10:00 UTC each day and catches missed runs. The timer is enabled under `default.target`; timers themselves have no process cgroup.
+
+`backup` runs that service. It refuses an absent SMB mount or inactive mailbox, locks against concurrent backups, stops celld gracefully and requires a successful shutdown. Weed stays up, but celld is the only application writer and remains stopped throughout the export. The job exports S3 objects logically, excluding `fleet/peer-auth.json`, then snapshots celld's local data. Raw weed volumes are never copied: they contain the internal peer key. Export and local snapshot validation refuse known key/config filename patterns, and exported objects cannot contain the current S3 credential values. The job starts celld behind its hook, then copies the two archives to a fresh dated directory on the mount. It hashes each archive, verifies the published bytes, and publishes a manifest last. Incomplete directories are never restore candidates. Configuration, S3 credentials, client private keys and Alchemy state are excluded. No share directory is overwritten or deleted; retention is manual. Only this invocation's local staging archives are removed after successful publication. The journal records lifecycle states, outage duration and total duration. Snapshot failure attempts guarded recovery; restart-gate failure leaves the stack stopped and the backup failed.
+
+`restore` requires `RAT_KING_START_APPROVED=true`, a prepared operator state directory and a fresh target with an empty data root and stopped units. It selects the newest complete mounted-share backup, validates both hashes and all archive paths before extracting, then deploys. A fresh Alchemy namespace/state mints fresh internal S3 credentials and rewires celld; never import the source namespace's random credential rows. Before celld starts, the startup provider imports and reads back every exported object using those fresh credentials. It validates the entire object archive before the first write and removes only the local import archive after successful import. Celld regenerates its excluded peer-auth key. This is safe for the single-node mailbox; it is not a multi-node peer-key rotation procedure. Public registrations and encrypted messages are part of the restored data. Client keys stay with clients. The command refuses an occupied data root rather than deleting or overwriting it. Partial extraction leaves data in place for operator inspection and refuses an automatic retry.
+
+Do not deploy, stop or destroy concurrently with a backup. Before any live change, notify the host owner. A drill or teardown needs its own approval. Capture the backup directory, file count and bytes before teardown and after restore; they must match. Destroy never receives the backup root as a purge root. After the teardown probe, wait for the host owner's clean verdict before restore. Before cutover, require a previously registered recipient to decrypt a message sent before the backup, without re-registering that identity. A backup completion or successful deployment alone proves none of this.
+
+The cheapest unauthenticated celld health path is `/.well-known/celld/health` on the tailnet Worker listener. Code rollback redeploys the previous known-good version; it does not restore arbitrary data. Backup/restore is an explicit data operation, not rollback.
+
+Untested until live qualification: SMB failure during publication, disk exhaustion, interrupted shutdown/extraction, host reboot, migration to a different Linux host, registered-identity preservation and recipient decrypt after restore.
 
 ## Hosted agent and optional Claude sidecar
 
