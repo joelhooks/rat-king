@@ -20,6 +20,7 @@ struct XRPCError: Error, LocalizedError {
     let code: String
     let status: Int
     var errorDescription: String? { "\(code) (HTTP \(status))" }
+    var isLeaseHeld: Bool { code == "LeaseHeld" && status == 409 }
 }
 struct Lease: Sendable {
     let value: Value
@@ -75,6 +76,9 @@ struct Mailbox: Sendable {
     func acquire() async throws -> Lease {
         let request: Value = .map(["did": .string(identity.did), "harness": .map(["$type": .string(Self.namespace + "runtime.lease#other"), "kind": .string("ios")]), "expiresAt": .string(ISO8601DateFormatter.fractional.string(from: Date().addingTimeInterval(300)))])
         return try await Lease(call("runtime.acquireLease", body: request).required("lease"), did: identity.did)
+    }
+    func resolveOwnLease() async throws -> Lease {
+        try await Lease(call("runtime.resolveLease", params: ["did": identity.did]).required("lease"), did: identity.did)
     }
     func renew(_ lease: Lease) async throws -> Lease {
         var fields = lease.fence; fields["did"] = .string(identity.did)

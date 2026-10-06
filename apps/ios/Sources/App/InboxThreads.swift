@@ -17,7 +17,10 @@ struct InboxThread: Identifiable {
     var mailIds: [String] = []; var card: DeskCard?; var cardTid: String?
     var state: ThreadState = .open; var archived = false; var snoozedUntil: Date?
     var lines: [String] = []
+    var latestSummary = ""
     var title: String { card?.title ?? sender }
+    var summary: String { latestSummary.isEmpty ? title : title + " / " + latestSummary }
+    static func firstLine(_ text: String) -> String { String(text.split(whereSeparator: \.isNewline).first ?? "").trimmingCharacters(in: .whitespaces) }
     func visible(at date: Date, archivedView: Bool) -> Bool { archivedView ? archived : !archived && (snoozedUntil.map { $0 <= date } ?? true) }
 }
 struct ThreadPreferences {
@@ -30,6 +33,7 @@ struct ThreadPreferences {
         return .map(fields)
     }
     init() {}
+    mutating func received() { archived = false; snoozedUntil = nil }
     init(_ value: Value) throws {
         guard let state = ThreadState(rawValue: try value.required("state").text), case let .bool(archived) = try value.required("archived") else { throw ProtocolError.invalid("Invalid thread preferences") }
         self.state = state; self.archived = archived
@@ -39,19 +43,33 @@ struct ThreadPreferences {
         if let time = value["snoozedUntil"] { snoozedUntil = Date(timeIntervalSince1970: Double(try time.number)) }
     }
 }
+func inboxThreadKey(sender: String, project: String, itemId: String?) throws -> String {
+    String(decoding: try Value.array([.string(sender), .string(project), itemId.map(Value.string) ?? .null]).jsonData(), as: UTF8.self)
+}
+func inboxThreadAddress(_ mail: MailItem) throws -> (project: String, itemId: String?) {
+    switch try mail.record() {
+    case let .item(_, card): return (card.project, card.itemId)
+    case let .update(_, project, itemId, _, _): return (project, itemId)
+    case let .answer(value): return (try value.required("project").text, try value.required("itemId").text)
+    case nil: return ("CHAT", nil)
+    }
+}
+@discardableResult
+func appendInboxMessage(_ mail: MailItem, messages: inout [MailItem], preferences: inout [String: ThreadPreferences]) throws -> Bool {
+    guard !messages.contains(where: { $0.id == mail.id }) else { return false }
+    let address = try inboxThreadAddress(mail)
+    let key = try inboxThreadKey(sender: mail.sender, project: address.project, itemId: address.itemId)
+    messages.append(mail)
+    if var prefs = preferences[key] { prefs.received(); preferences[key] = prefs }
+    return true
+}
 func inboxThreads(_ messages: [MailItem], preferences: [String: ThreadPreferences]) throws -> [InboxThread] {
     var threads: [InboxThread] = []
     for mail in messages {
         let record = try mail.record()
-        let project: String; let itemId: String?
-        switch record {
-        case let .item(_, card): project = card.project; itemId = card.itemId
-        case let .update(_, p, id, _, _): project = p; itemId = id
-        case .answer: continue
-        case nil: project = "CHAT"; itemId = nil
-        }
+        let (project, itemId) = try inboxThreadAddress(mail)
         // JSON array keys are unambiguous even if a project/item contains '/'.
-        let id = String(decoding: try Value.array([.string(mail.sender), .string(project), itemId.map(Value.string) ?? .null]).jsonData(), as: UTF8.self)
+        let id = try inboxThreadKey(sender: mail.sender, project: project, itemId: itemId)
         if !threads.contains(where: { $0.id == id }) { threads.append(InboxThread(id: id, sender: mail.sender, project: project, itemId: itemId)) }
         guard let index = threads.firstIndex(where: { $0.id == id }) else { continue }
         threads[index].mailIds.append(mail.id)
@@ -59,11 +77,18 @@ func inboxThreads(_ messages: [MailItem], preferences: [String: ThreadPreference
         case let .item(_, card):
             // First card owns the thread. Revised decisions get a new item id.
             if threads[index].card == nil { threads[index].card = card; threads[index].cardTid = try mail.message.required("messageId").text }
+            threads[index].latestSummary = InboxThread.firstLine(card.why)
             if let previous = card.supersedes, let old = threads.firstIndex(where: { $0.sender == mail.sender && $0.project == project && $0.itemId == previous }) { threads[old].state = threadState(threads[old].state, .superseded) }
         case let .update(_, _, _, state, text):
             threads[index].state = threadState(threads[index].state, state == "resolved" ? .resolved : state == "superseded" ? .superseded : .followup)
             if let text { threads[index].lines.append(text) }
-        default: threads[index].lines.append(mail.text)
+            threads[index].latestSummary = InboxThread.firstLine(text ?? state)
+        case let .answer(value):
+            let options = try value.required("values").object().sorted { $0.key < $1.key }.map { try $0.key + ": " + $0.value.text }
+            let line = "Reply: " + options.joined(separator: ", ")
+            let note = try value["note"]?.text
+            threads[index].lines.append(line + (note.map { "\n" + $0 } ?? "")); threads[index].latestSummary = InboxThread.firstLine(note ?? line)
+        default: threads[index].lines.append(mail.text); threads[index].latestSummary = InboxThread.firstLine(mail.text)
         }
     }
     // Apply supersession again so it does not depend on mailbox arrival order.

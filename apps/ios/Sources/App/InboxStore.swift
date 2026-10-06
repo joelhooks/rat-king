@@ -5,16 +5,17 @@ import UserNotifications
 
 // Native projection of packages/mailbox-client/src/watch.ts's auth-ready/list/live
 // lifecycle. The desk approved the Swift projection instead of embedding XState.
-enum ConnectionState: String { case stopped, acquiring, authenticating, catchingUp, live, retrying }
-enum ConnectionEvent { case start, leaseReady, socketReady, notice, caughtUp, lost, background }
+enum ConnectionState: String { case stopped, acquiring, waiting, authenticating, catchingUp, live, retrying }
+enum ConnectionEvent { case start, held, leaseReady, socketReady, notice, caughtUp, lost, background }
 func nextState(_ state: ConnectionState, _ event: ConnectionEvent) -> ConnectionState {
     switch (state, event) {
     case (_, .background): return .stopped
-    case (.stopped, .start), (.retrying, .start): return .acquiring
+    case (.stopped, .start), (.retrying, .start), (.waiting, .start): return .acquiring
+    case (.acquiring, .held): return .waiting
     case (.acquiring, .leaseReady): return .authenticating
     case (.authenticating, .socketReady), (.live, .notice): return .catchingUp
     case (.catchingUp, .caughtUp): return .live
-    case (.acquiring, .lost), (.authenticating, .lost), (.catchingUp, .lost), (.live, .lost): return .retrying
+    case (.acquiring, .lost), (.waiting, .lost), (.authenticating, .lost), (.catchingUp, .lost), (.live, .lost): return .retrying
     default: return state
     }
 }
@@ -53,6 +54,9 @@ final class InboxStore {
     private var through: Int64 = 0
     private var pending: Value?
     private var lastTid: UInt64 = 0
+    private var storageScope: String?
+    private(set) var previousSession: LeaseWait?
+    var waitingMessage: String? { previousSession?.message(at: now) }
     private(set) var preferences: [String: ThreadPreferences] = [:]
     private(set) var now = Date()
     private var snoozeTimer: Task<Void, Never>?
@@ -61,6 +65,7 @@ final class InboxStore {
     init() {
         do {
             let configuration = try ClientConfiguration.load()
+            storageScope = Self.scope(did: configuration.did, audience: configuration.audience)
             let id = try PhoneIdentity(did: configuration.did)
             identity = id; client = Mailbox(configuration: configuration, identity: id)
             if let data = try readLocal("peers.json") { try installPeers(data, save: false) }
@@ -70,13 +75,22 @@ final class InboxStore {
                 let saved = try Value.json(data)
                 messages = try saved.required("messages").list().map(MailItem.init)
                 preferences = try saved.required("preferences").object().mapValues(ThreadPreferences.init)
+            } else {
+                // A fresh transport has no local threads to remind about. Retire
+                // previous-network reminders without deleting its stored inbox.
+                let notifications = UNUserNotificationCenter.current()
+                notifications.removeAllPendingNotificationRequests(); notifications.removeAllDeliveredNotifications()
             }
         } catch { client = nil; lastError = error.localizedDescription }
     }
     var publicDocument: String { guard let identity, let data = try? identity.document.jsonData() else { return "Identity unavailable" }; return String(decoding: data, as: UTF8.self) }
+    static func scope(did: String, audience: String) -> String {
+        SHA256.hash(data: Data((did + "\n" + audience).utf8)).map { String(format: "%02x", $0) }.joined()
+    }
     private func directory() throws -> URL {
         let dir = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true).appendingPathComponent("RatKing", isDirectory: true)
-        return try ProtectedLocalStore(directory: dir).directory
+        guard let storageScope else { throw ProtocolError.invalid("Missing local transport scope") }
+        return try ProtectedLocalStore(directory: dir.appendingPathComponent(storageScope, isDirectory: true)).directory
     }
     private func readLocal(_ name: String) throws -> Data? {
         try ProtectedLocalStore(directory: directory()).read(name)
@@ -109,7 +123,7 @@ final class InboxStore {
         generation &+= 1; run?.cancel(); run = nil
         snoozeTimer?.cancel(); snoozeTimer = nil
         socket?.cancel(with: .goingAway, reason: nil); socket = nil
-        move(.background)
+        previousSession = nil; move(.background)
         // Lease expires within five minutes. Retain its fence for a fast foreground
         // resume; no unowned background task or operator credential is needed.
     }
@@ -150,7 +164,24 @@ final class InboxStore {
             } catch {
                 guard generation == token, !Task.isCancelled else { return }
                 socket?.cancel(with: .goingAway, reason: nil); socket = nil
-                lastError = state.rawValue.uppercased() + ": " + error.localizedDescription; move(.lost)
+                if let held = error as? XRPCError, held.isLeaseHeld, state == .acquiring {
+                    do {
+                        let prior = try await client.resolveOwnLease(); try current(token)
+                        lease = nil; lastError = nil; move(.held)
+                        let wait = LeaseWait(until: prior.expiresAt); previousSession = wait
+                        while wait.remaining(at: Date()) > 0 {
+                            try current(token); now = Date()
+                            try await Task.sleep(for: .seconds(max(0.01, min(1, prior.expiresAt.timeIntervalSinceNow))))
+                        }
+                        try current(token); previousSession = nil; now = Date(); continue
+                    } catch {
+                        guard generation == token, !Task.isCancelled else { return }
+                        previousSession = nil
+                        if let missing = error as? XRPCError, missing.code == "LeaseNotFound" { move(.lost); continue }
+                        lastError = "LEASE LOOKUP: " + error.localizedDescription
+                    }
+                } else { lastError = state.rawValue.uppercased() + ": " + error.localizedDescription }
+                move(.lost)
                 if let error = error as? XRPCError, error.code == "LeaseMismatch" { lease = nil }
                 do { try await Task.sleep(for: .seconds(delay)) } catch { return }; delay = min(delay * 2, 30)
             }
@@ -211,9 +242,15 @@ final class InboxStore {
                 displayed = "historical"
             }
         }
-        try current(token); messages.append(MailItem(id: id, message: message, sender: sender, text: text, receipt: displayed))
+        try current(token)
+        let received = MailItem(id: id, message: message, sender: sender, text: text, receipt: displayed)
+        guard try appendInboxMessage(received, messages: &messages, preferences: &preferences) else { return }
+        let address = try inboxThreadAddress(received)
+        let threadId = try inboxThreadKey(sender: sender, project: address.project, itemId: address.itemId)
         try saveInbox()
-        cancelClosedNotifications()
+        let center = UNUserNotificationCenter.current()
+        center.removePendingNotificationRequests(withIdentifiers: [threadId]); center.removeDeliveredNotifications(withIdentifiers: [threadId])
+        now = Date(); armSnoozeTimer(); cancelClosedNotifications()
     }
     func acknowledge(_ item: MailItem) async {
         guard state == .live, let client, let lease else { return }; let token = generation
@@ -236,6 +273,7 @@ final class InboxStore {
             guard messages.first(where: { $0.id == item.id })?.receipt == "acked" else { return }
         }
         do {
+            guard state == .live, threads.first(where: { $0.id == thread.id })?.mailIds == thread.mailIds else { return }
             var prefs = preferences[thread.id] ?? ThreadPreferences(); prefs.archived = true; prefs.snoozedUntil = nil
             try savePreferences(prefs, for: thread.id)
             UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: [thread.id])
@@ -252,10 +290,11 @@ final class InboxStore {
         do {
             let center = UNUserNotificationCenter.current()
             guard try await center.requestAuthorization(options: [.alert, .sound]) else { throw ProtocolError.invalid("Allow notifications to snooze with a reminder") }
-            guard let current = threads.first(where: { $0.id == thread.id }), current.state == .open || current.state == .sent else { return }
+            guard let current = threads.first(where: { $0.id == thread.id }), current.mailIds == thread.mailIds, current.state == .open || current.state == .sent else { return }
             let until = choice.date(from: Date())
             let content = UNMutableNotificationContent(); content.title = "Rat King"; content.body = "A snoozed thread is ready."; content.sound = .default
             try await center.add(UNNotificationRequest(identifier: thread.id, content: content, trigger: UNTimeIntervalNotificationTrigger(timeInterval: max(1, until.timeIntervalSinceNow), repeats: false)))
+            guard threads.first(where: { $0.id == thread.id })?.mailIds == thread.mailIds else { center.removePendingNotificationRequests(withIdentifiers: [thread.id]); return }
             var prefs = preferences[thread.id] ?? ThreadPreferences(); prefs.snoozedUntil = until
             try savePreferences(prefs, for: thread.id); now = Date(); armSnoozeTimer()
         } catch {

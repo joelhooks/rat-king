@@ -53,17 +53,37 @@ struct PhoneIdentity: Sendable {
     init(did: String) throws {
         guard did.hasPrefix("did:web:"), SecureEnclave.isAvailable else { throw ProtocolError.invalid("Secure Enclave unavailable. Identity creation requires a physical device; no software fallback.") }
         self.did = did
-        let service = (Bundle.main.bundleIdentifier ?? "ratking") + ".identity." + did
-        if let record = try Self.load(service) {
+        let prefix = (Bundle.main.bundleIdentifier ?? "ratking") + ".identity."
+        let service = prefix + "device"
+        let stable = try Self.load(service)
+        let current = try Self.load(prefix + did)
+        let record = try IdentityReferences.select(stable: stable, current: current, legacy: stable == nil ? Self.legacy(prefix: prefix, excluding: service) : [])
+        if let record {
             let keys = try Value.json(record)
             encryption = try SecureEnclave.P256.KeyAgreement.PrivateKey(dataRepresentation: keys.required("encryption").data)
             signing = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: keys.required("signing").data)
+            if stable == nil { try Self.save(record, service: service) }
         } else {
             encryption = try SecureEnclave.P256.KeyAgreement.PrivateKey()
             signing = try SecureEnclave.P256.Signing.PrivateKey()
             let data = try Value.map(["encryption": .bytes(encryption.dataRepresentation), "signing": .bytes(signing.dataRepresentation)]).jsonData()
-            let status = SecItemAdd([kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: "keys", kSecValueData: data, kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly] as CFDictionary, nil)
-            guard status == errSecSuccess else { throw ProtocolError.invalid("Cannot save identity (\(status))") }
+            try Self.save(data, service: service)
+        }
+    }
+    private static func save(_ data: Data, service: String) throws {
+        let status = SecItemAdd([kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: "keys", kSecValueData: data, kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly] as CFDictionary, nil)
+        if status == errSecDuplicateItem, try load(service) == data { return }
+        guard status == errSecSuccess else { throw ProtocolError.invalid("Cannot save device identity (\(status)); refusing to replace keys") }
+    }
+    private static func legacy(prefix: String, excluding: String) throws -> [Data] {
+        var result: CFTypeRef?
+        let status = SecItemCopyMatching([kSecClass: kSecClassGenericPassword, kSecAttrAccount: "keys", kSecReturnAttributes: true, kSecReturnData: true, kSecMatchLimit: kSecMatchLimitAll] as CFDictionary, &result)
+        if status == errSecItemNotFound { return [] }
+        guard status == errSecSuccess, let records = result as? [[String: Any]] else { throw ProtocolError.invalid("Cannot inspect prior device identities (\(status)); refusing to rotate keys") }
+        return try records.compactMap { row in
+            guard let service = row[kSecAttrService as String] as? String, service.hasPrefix(prefix), service != excluding else { return nil }
+            guard let data = row[kSecValueData as String] as? Data else { throw ProtocolError.invalid("Unreadable prior identity; refusing to rotate keys") }
+            return data
         }
     }
     private static func load(_ service: String) throws -> Data? {

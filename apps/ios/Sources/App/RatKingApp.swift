@@ -19,15 +19,16 @@ struct TerminalView: View {
                 Spacer()
                 Circle().fill(store.state == .live ? TUITheme.ok : TUITheme.warn).frame(width: 5, height: 5)
                 Text(store.state.rawValue.uppercased()).font(TUITheme.microFont)
-            }.padding(12).background(TUITheme.panel)
+            }.padding(8).background(TUITheme.panel)
             ThinDivider()
             HStack(spacing: 24) {
                 ForEach(Array(["MAIL", "COMPOSE", "IDENTITY"].enumerated()), id: \.offset) { index, label in
                     Button { tab = index } label: { Text("[\(label)]").foregroundStyle(tab == index ? TUITheme.accent : TUITheme.dim) }
                 }
                 Spacer()
-            }.padding(12)
+            }.padding(8)
             ThinDivider()
+            if let waiting = store.waitingMessage { Text(waiting).foregroundStyle(TUITheme.warn).frame(maxWidth: .infinity, alignment: .leading).padding(8) }
             if let error = store.lastError { Text("! " + error).foregroundStyle(TUITheme.err).frame(maxWidth: .infinity, alignment: .leading).padding(12).textSelection(.enabled) }
             Group {
                 switch tab {
