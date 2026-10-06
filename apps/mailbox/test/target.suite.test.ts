@@ -2,12 +2,9 @@
 // @effect-diagnostics globalFetch:off -- Signed-out ingress/version probes only.
 // @effect-diagnostics asyncFunction:off -- fast-check owns asynchronous model commands.
 /* oxlint-disable typescript/promise-function-async, promise/prefer-await-to-callbacks -- Lazy Node and HTTP adapters. */
-import { execFile } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { writeFile } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
@@ -45,6 +42,7 @@ import {
   launch,
   ProofFailure,
 } from "../../../packages/agent-runtime/test/celld-process.ts";
+import { testDirectory } from "../../../tools/test/temp-directory.ts";
 import { transportLayer } from "../cli/client.ts";
 import { importSigning } from "../cli/identity.ts";
 import type { IdentityValue } from "../cli/identity.ts";
@@ -807,9 +805,6 @@ it.live.skipIf(
   suiteDeadline
 );
 
-// oxlint-disable-next-line typescript/strict-void-return -- Node promisify consumes the callback overload.
-const execute = promisify(execFile);
-
 const binary = process.env.RAT_KING_CELLD;
 
 it.live.skipIf(binary === undefined || binary === "")(
@@ -817,9 +812,9 @@ it.live.skipIf(binary === undefined || binary === "")(
   () =>
     Effect.gen(function* localTarget() {
       const directory = yield* Effect.acquireRelease(
-        io(() => mkdtemp(path.join(tmpdir(), "rat-king-p6-suite-"))),
-        (owned) => io(() => execute("trash", [owned])).pipe(Effect.orDie)
-      );
+        io(() => testDirectory("rat-king-p6-suite-")),
+        (owned) => io(owned.remove).pipe(Effect.orDie)
+      ).pipe(Effect.map((owned) => owned.directory));
 
       const privateFile = path.join(directory, "identities.json");
 
