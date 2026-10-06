@@ -28,13 +28,21 @@ print(match)
 PY
 )"
 if [[ "$mode" == --archive-only ]]; then
+  security find-certificate -c 'Apple Development' -p | openssl x509 -noout -subject > build/development-subject.txt
+  python3 - "$team" <<'PY'
+import re,sys
+subject=open('build/development-subject.txt').read()
+unit=re.search(r'(?:^|[,/])\s*OU\s*=\s*([^,/]+)',subject)
+if not unit or unit.group(1).strip() != sys.argv[1]:
+    raise SystemExit('No existing development certificate for this team; refusing certificate creation')
+PY
   marketing="${RK_MARKETING_VERSION:-0.2.0}"
   [[ "$marketing" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Malformed marketing version" >&2; exit 1; }
   build_number="$(date -u +%Y%m%d%H%M)"
   echo "Archive candidate: version $marketing, build $build_number, commit $commit"
   xcodebuild -project RatKing.xcodeproj -scheme RatKing \
     -archivePath build/RatKing.xcarchive -destination 'generic/platform=iOS' \
-    -allowProvisioningUpdates CODE_SIGN_STYLE=Automatic CODE_SIGN_IDENTITY="$certificate" \
+    -allowProvisioningUpdates CODE_SIGN_STYLE=Automatic CODE_SIGN_IDENTITY='Apple Development' \
     RK_BUILD_COMMIT="$commit" MARKETING_VERSION="$marketing" CURRENT_PROJECT_VERSION="$build_number" archive
   echo "Archive ready. Not uploaded."
   exit 0

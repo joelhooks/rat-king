@@ -19,7 +19,7 @@ bash apps/ios/scripts/deploy-testflight.sh --archive-only
 
 `ios:check` runs Swift tests on an iPhone 17 Pro simulator and opens the Swift-produced envelope with the TS package. Set `IOS_TEST_DESTINATION` for another installed simulator. Simulator tests use published synthetic software keys only. The app refuses software identity fallback on a simulator.
 
-The desk must confirm profile refresh authorization before setting `RK_PROVISIONING_AUTHORIZED=1`. `--archive-only` uses Xcode's signed-in account and pins an existing Apple Distribution identity for the team in the local configuration. It may create or refresh a provisioning profile. It must not create a certificate, revoke anything or extract account credentials. It does not upload.
+The desk must confirm profile refresh authorization before setting `RK_PROVISIONING_AUTHORIZED=1`. `--archive-only` uses Xcode's signed-in account and checks existing Apple Development and Distribution identities for the team in the local configuration. Xcode automatically signs the archive for development; export pins the existing distribution identity. It may create or refresh a provisioning profile. It must not create a certificate, revoke anything or extract account credentials. It does not upload.
 
 Marketing version starts at `0.2.0`; build number is the UTC `YYYYMMDDHHMM` timestamp. Both appear in the archive output. If Apple rejects the marketing version as too low, the desk may authorize one minor-version retry through `RK_MARKETING_VERSION`. The app displays its version, build and exact source commit.
 
