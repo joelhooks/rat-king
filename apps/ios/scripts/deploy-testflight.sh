@@ -99,7 +99,9 @@ options.update(teamID=sys.argv[1],signingCertificate=sys.argv[2])
 with open('build/ExportOptions.private.plist','wb') as f: plistlib.dump(options,f)
 PY
 unlock_signing_keychain
-xcodebuild -exportArchive -archivePath build/RatKing.xcarchive \
+# Xcode's IPA step runs /usr/bin/rsync (openrsync), which spawns its receiver
+# from PATH. A newer Homebrew rsync there rejects -E, so pin the system tools.
+PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH" xcodebuild -exportArchive -archivePath build/RatKing.xcarchive \
   -exportPath build/export -exportOptionsPlist build/ExportOptions.private.plist \
   -allowProvisioningUpdates
 echo "Upload command succeeded. Verify Apple's upload receipt; installation and live mail remain separate."
