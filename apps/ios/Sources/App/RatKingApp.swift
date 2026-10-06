@@ -3,7 +3,15 @@ import UniformTypeIdentifiers
 
 @main
 struct RatKingApp: App {
-    var body: some Scene { WindowGroup { TerminalView() } }
+    var body: some Scene {
+        WindowGroup {
+            #if DEBUG
+            if ProcessInfo.processInfo.arguments.contains("--terminal-gesture-test") { TerminalGestureHarness() } else { TerminalView() }
+            #else
+            TerminalView()
+            #endif
+        }
+    }
 }
 struct TerminalView: View {
     @State private var store = InboxStore()

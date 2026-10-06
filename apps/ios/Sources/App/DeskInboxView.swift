@@ -5,8 +5,9 @@ struct DeskInboxView: View {
     let reply: (String) -> Void
     @State private var archived = false
     @State private var snoozing: InboxThread?
+    @State private var path: [String] = []
     var body: some View {
-        NavigationStack {
+        NavigationStack(path: $path) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
                     Button(archived ? "[INBOX]" : "[ARCHIVED]") { archived.toggle() }.foregroundStyle(TUITheme.accent).padding(.vertical, 4)
@@ -16,22 +17,20 @@ struct DeskInboxView: View {
                         Text(project.uppercased()).foregroundStyle(TUITheme.dim).font(TUITheme.microFont).padding(.top, 4)
                         ForEach(threads.filter { $0.project == project }) { thread in
                             TerminalSwipeRow(archiveLabel: "[ARCHIVE]", snoozeLabel: archived ? "[RESTORE]" : "[SNOOZE]",
-                                canArchive: !archived && store.state == .live, canSnooze: archived || thread.state == .open || thread.state == .sent,
+                                canArchive: canArchiveThread(thread, connection: store.state), canSnooze: archived || thread.state == .open || thread.state == .sent,
                                 archive: { Task { await store.archive(thread) } },
-                                snooze: { if archived { store.restore(thread) } else { snoozing = thread } }) {
-                                NavigationLink {
-                                    DeskThreadView(store: store, threadId: thread.id, reply: reply)
-                                } label: {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        Text(thread.summary).foregroundStyle(TUITheme.teal).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
-                                        Text(thread.state.rawValue.uppercased() + " / \(thread.mailIds.count) MAIL").foregroundStyle(TUITheme.dim).font(TUITheme.microFont)
-                                    }.contentShape(Rectangle())
-                                }.buttonStyle(.plain)
+                                snooze: { if archived { store.restore(thread) } else { snoozing = thread } },
+                                open: { path.append(thread.id) }) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(thread.summary).foregroundStyle(TUITheme.teal).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                                    Text(thread.state.rawValue.uppercased() + " / \(thread.mailIds.count) MAIL").foregroundStyle(TUITheme.dim).font(TUITheme.microFont)
+                                }
                             }
                         }
                     }
                 }.padding(8)
             }.background(TUITheme.bg).toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(for: String.self) { threadId in DeskThreadView(store: store, threadId: threadId, reply: reply) }
             .overlay {
                 if let thread = snoozing {
                     ZStack {
