@@ -1,21 +1,13 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Private fixture files belong outside the repository.
 /* oxlint-disable typescript/promise-function-async, promise/prefer-await-to-callbacks -- Lazy filesystem adapters. */
-import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import {
-  lstat,
-  mkdtemp,
-  readFile,
-  realpath,
-  writeFile,
-} from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { lstat, readFile, realpath, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 
 import { NodeServices } from "@effect/platform-node";
 import { Effect, Schema } from "effect";
 
+import { testDirectory } from "../../../tools/test/temp-directory.ts";
 import { CliError, Identity, readIdentity } from "../cli/identity.ts";
 import { provision } from "../cli/provision.ts";
 import { Documents } from "../src/auth.ts";
@@ -33,9 +25,6 @@ const io = <A>(run: () => Promise<A>) =>
       new CliError({ reason: "Suite identity file operation failed" }),
     try: run,
   });
-
-// oxlint-disable-next-line typescript/strict-void-return -- Node promisify consumes the callback overload.
-const execute = promisify(execFile);
 
 const outsideRepository = Effect.fn("Suite.outsideRepository")(
   function* outsideRepository(file: string) {
@@ -77,9 +66,9 @@ export const generateIdentities = Effect.fn("Suite.generateIdentities")(
     }
 
     const home = yield* Effect.acquireRelease(
-      io(() => mkdtemp(path.join(tmpdir(), "rat-king-suite-keys-"))),
-      (owned) => io(() => execute("trash", [owned])).pipe(Effect.orDie)
-    );
+      io(() => testDirectory("rat-king-suite-keys-")),
+      (owned) => io(owned.remove).pipe(Effect.orDie)
+    ).pipe(Effect.map((owned) => owned.directory));
 
     const run = randomUUID();
     const documents: (typeof Documents.Type)[number][] = [];

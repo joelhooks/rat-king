@@ -4,9 +4,8 @@ import type { Buffer } from "node:buffer";
 import { execFile, spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { readFile, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -15,6 +14,7 @@ import { Effect, Schema } from "effect";
 import { build } from "esbuild";
 import { expect } from "vitest";
 
+import { testDirectory } from "../../../tools/test/temp-directory.ts";
 import { generateBearer } from "../src/private-file.ts";
 
 class ProofFailure extends Schema.TaggedError<ProofFailure>()("ProofFailure", {
@@ -170,9 +170,10 @@ it.live.skipIf(
         "91f6d7a470720c300efddf75e666f121c0f51bbaf7a245d9d76efffaefeecf57"
       );
 
-      const directory = yield* io(() =>
-        mkdtemp(path.join(tmpdir(), "rat-king-sidecar-proof-"))
-      );
+      const directory = yield* Effect.acquireRelease(
+        io(() => testDirectory("rat-king-sidecar-proof-")),
+        (owned) => io(owned.remove).pipe(Effect.orDie)
+      ).pipe(Effect.map((owned) => owned.directory));
 
       const token = generateBearer();
       const tokenFile = path.join(directory, "bearer");
@@ -261,11 +262,6 @@ it.live.skipIf(
           `SIDECAR_CREDENTIAL=${token}\n`,
           { mode: 0o600 }
         )
-      );
-      yield* Effect.addFinalizer(() =>
-        io(() =>
-          execute("trash", [tokenFile, path.join(directory, ".dev.vars")])
-        ).pipe(Effect.orDie)
       );
       const port = yield* freePort;
 

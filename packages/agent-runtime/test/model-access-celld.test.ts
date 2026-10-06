@@ -1,17 +1,15 @@
 // @effect-diagnostics nodeBuiltinImport:off -- This real-node proof owns private temporary config and subprocess cleanup.
 /* oxlint-disable typescript/promise-function-async -- Files and esbuild expose Promise thunks. */
-import { execFile } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { promisify } from "node:util";
 
 import { it } from "@effect/vitest";
 import { Cause, Effect, Schema } from "effect";
 import { build } from "esbuild";
 import { expect } from "vitest";
 
+import { testDirectory } from "../../../tools/test/temp-directory.ts";
 import { Settlement, SubmissionId } from "../src/port.ts";
 import { freePort, io, json, launch, ProofFailure } from "./celld-process.ts";
 
@@ -34,9 +32,6 @@ const binary = process.env.RAT_KING_CELLD;
 const keyFile = process.env.RAT_KING_MODEL_GATEWAY_KEY_FILE;
 
 const endpointFile = process.env.RAT_KING_MODEL_GATEWAY_ENDPOINT_FILE;
-
-// oxlint-disable-next-line typescript/strict-void-return -- Node promisify consumes execFile's callback overload.
-const execute = promisify(execFile);
 
 const Admission = Schema.Struct({ id: SubmissionId });
 
@@ -85,9 +80,9 @@ const realProof = (model: "gpt-6-sol" | "claude-opus-5-5") =>
 
     return yield* Effect.gen(function* turn() {
       const directory = yield* Effect.acquireRelease(
-        io(() => mkdtemp(path.join(tmpdir(), "rat-king-model-gateway-proof-"))),
-        (owned) => io(() => execute("trash", [owned])).pipe(Effect.orDie)
-      );
+        io(() => testDirectory("rat-king-model-gateway-proof-")),
+        (owned) => io(owned.remove).pipe(Effect.orDie)
+      ).pipe(Effect.map((owned) => owned.directory));
 
       const built = yield* io(() =>
         build({

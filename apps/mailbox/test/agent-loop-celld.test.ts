@@ -4,8 +4,7 @@
 /* oxlint-disable typescript/promise-function-async, promise/prefer-await-to-callbacks -- Lazy Node adapters. */
 import { execFile } from "node:child_process";
 import { accessSync, constants } from "node:fs";
-import { mkdtemp, readFile, writeFile, stat } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, writeFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -27,6 +26,7 @@ import {
   ProofFailure,
   json,
 } from "../../../packages/agent-runtime/test/celld-process.ts";
+import { testDirectory } from "../../../tools/test/temp-directory.ts";
 import { transportLayer } from "../cli/client.ts";
 import { readIdentity } from "../cli/identity.ts";
 import { provision } from "../cli/provision.ts";
@@ -124,9 +124,9 @@ it.live.skipIf(
 
       return yield* Effect.gen(function* run() {
         const directory = yield* Effect.acquireRelease(
-          io(() => mkdtemp(path.join(tmpdir(), "rat-king-mailbox-loop-"))),
-          (owned) => io(() => execute("trash", [owned])).pipe(Effect.orDie)
-        );
+          io(() => testDirectory("rat-king-mailbox-loop-")),
+          (owned) => io(owned.remove).pipe(Effect.orDie)
+        ).pipe(Effect.map((owned) => owned.directory));
 
         const clientLabel =
           process.env.RAT_KING_MAILBOX_CLIENT_LABEL ?? "sender";
