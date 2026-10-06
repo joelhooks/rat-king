@@ -13,6 +13,8 @@ script, object_script, encoded = sys.argv[1:4]
 payload = base64.b64decode(encoded)
 with tempfile.TemporaryDirectory() as tmp:
     root = pathlib.Path(tmp).resolve()
+    import os
+    os.umask(0o002)
     data, backup, config = root/'data', root/'backup', root/'s3.json'
     (data/'celld').mkdir(parents=True)
     (data/'celld/state').write_bytes(payload)
@@ -32,7 +34,11 @@ with tempfile.TemporaryDirectory() as tmp:
         sys.argv = ['backup', action, str(target), str(backup), *args]
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
-            exec(compile(script, 'backup-adapter', 'exec'), {})
+            try:
+                exec(compile(script, 'backup-adapter', 'exec'), {})
+            except SystemExit as stopped:
+                if stopped.code not in (None, 0):
+                    raise
         return output.getvalue().strip()
     objects = {'cells/example/state': payload, 'fleet/peer-auth.json': b'forbidden peer key'}
     expected_access = 'source-access'
@@ -75,7 +81,13 @@ with tempfile.TemporaryDirectory() as tmp:
     with tarfile.open(source/'celld.tar') as archive:
         assert set(archive.getnames()) == {'celld', 'celld/state'}
     restored = root/'restored'
-    run('restore', restored)
+    selected = run('restore-preflight', restored)
+    assert not restored.exists(), 'Preflight gained directory ownership'
+    restored.mkdir(mode=0o700)
+    (restored/'celld').mkdir(mode=0o700)
+    run('restore', restored, selected)
+    assert (restored/'celld').stat().st_mode & 0o777 == 0o700
+    assert (restored/'celld/state').stat().st_mode & 0o777 == 0o600
     assert (restored/'celld/state').read_bytes() == payload
     objects = {}
     expected_access = 'fresh-target-access'
@@ -84,7 +96,7 @@ with tempfile.TemporaryDirectory() as tmp:
     assert objects == {'cells/example/state': payload}
     assert not (restored/'seaweedfs').exists()
     try:
-        run('restore', restored)
+        run('restore', restored, selected)
         raise AssertionError('Occupied root was overwritten')
     except RuntimeError:
         assert (restored/'celld/state').read_bytes() == payload
@@ -98,7 +110,7 @@ with tempfile.TemporaryDirectory() as tmp:
         stream.write(b'corrupt')
     refused = root/'refused'
     try:
-        run('restore', refused)
+        run('restore-preflight', refused)
         raise AssertionError('Corrupt archive was restored')
     except RuntimeError:
         assert not refused.exists()
