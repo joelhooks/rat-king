@@ -23,6 +23,7 @@ struct InboxThread: Identifiable {
     static func firstLine(_ text: String) -> String { String(text.split(whereSeparator: \.isNewline).first ?? "").trimmingCharacters(in: .whitespaces) }
     func visible(at date: Date, archivedView: Bool) -> Bool { archivedView ? archived : !archived && (snoozedUntil.map { $0 <= date } ?? true) }
 }
+func canArchiveThread(_ thread: InboxThread, connection: ConnectionState) -> Bool { !thread.archived && connection == .live }
 struct ThreadPreferences {
     var state: ThreadState = .open; var archived = false; var snoozedUntil: Date?
     var answer: Value?

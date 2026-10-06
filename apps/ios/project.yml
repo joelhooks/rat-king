@@ -43,6 +43,17 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: $(RK_BUNDLE_ID).tests
+  RatKingUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources:
+      - path: UITests
+    dependencies:
+      - target: RatKing
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: $(RK_BUNDLE_ID).uitests
+        TEST_TARGET_NAME: RatKing
 schemes:
   RatKing:
     build:
@@ -51,3 +62,4 @@ schemes:
     test:
       targets:
         - RatKingTests
+        - RatKingUITests
