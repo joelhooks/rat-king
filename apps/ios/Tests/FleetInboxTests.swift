@@ -48,6 +48,33 @@ final class FleetInboxTests: XCTestCase {
         let thread = try XCTUnwrap(inboxThreads(messages, preferences: prefs).first)
         XCTAssertEqual(thread.summary, sender + " / First line"); XCTAssertFalse(thread.archived); XCTAssertNil(thread.snoozedUntil)
     }
+    func testSignedPlainReplyLinksRestoreOnlyTheMatchingPeersThread() throws {
+        let sender = "did:web:sample.example.invalid", phone = "did:web:phone.example.invalid", cardTid = "3m5abcde23456"
+        let card = MailItem(id: sender + "/" + cardTid, message: .map(["messageId": .string(cardTid)]), sender: sender, text: String(decoding: try fixture("item").jsonData(), as: UTF8.self), receipt: "delivered")
+        let key = try inboxThreadKey(sender: sender, project: "sample-project", itemId: "sample-001")
+        for count in 1...64 {
+            let sent: Value = .map(["senderDid": .string(phone), "messageId": .string("sent-\(count)")])
+            var hidden = ThreadPreferences(); hidden.answer = try fixture("answer"); hidden.outgoingRef = sent; hidden.archived = true; hidden.snoozedUntil = .distantFuture
+            hidden = try ThreadPreferences(Value.json(hidden.wire.jsonData()))
+            var prefs = [key: hidden], messages = [card]
+            let reply = MailItem(id: sender + "/reply-\(count)", message: .map(["messageId": .string("reply-\(count)")]), sender: sender, text: "Reply first line\nMore context", receipt: "delivered", replyTo: sent)
+            let decoded = try MailItem(Value.json(reply.wire.jsonData()))
+            XCTAssertEqual(decoded.replyTo, sent)
+            try appendInboxMessage(decoded, messages: &messages, preferences: &prefs)
+            let thread = try XCTUnwrap(inboxThreads(messages, preferences: prefs).first)
+            XCTAssertEqual(thread.id, key); XCTAssertEqual(thread.mailIds.count, 2); XCTAssertFalse(thread.archived); XCTAssertNil(thread.snoozedUntil)
+            XCTAssertTrue(thread.summary.hasSuffix("Reply first line"))
+            prefs[key] = hidden
+            XCTAssertFalse(try appendInboxMessage(decoded, messages: &messages, preferences: &prefs)); XCTAssertEqual(prefs[key]?.archived, true)
+            let chain = MailItem(id: sender + "/chain-\(count)", message: .map(["messageId": .string("chain-\(count)")]), sender: sender, text: "Chained reply", receipt: "delivered", replyTo: .map(["senderDid": .string(sender), "messageId": .string("reply-\(count)")]))
+            try appendInboxMessage(chain, messages: &messages, preferences: &prefs)
+            XCTAssertEqual(try inboxThreads(messages, preferences: prefs).count, 1); XCTAssertEqual(prefs[key]?.archived, false)
+            prefs[key] = hidden
+            let spoof = MailItem(id: "other-\(count)", message: .map(["messageId": .string("other-\(count)")]), sender: "did:web:other.example.invalid", text: "Not this peer", receipt: "delivered", replyTo: sent)
+            try appendInboxMessage(spoof, messages: &messages, preferences: &prefs)
+            XCTAssertEqual(prefs[key]?.archived, true); XCTAssertEqual(try inboxThreads(messages, preferences: prefs).count, 2)
+        }
+    }
     func testDIDChangesKeepWrappedReferencesAndRefuseAmbiguity() throws {
         for count in 1...256 {
             let old = Data(repeating: UInt8(count % 255), count: count)

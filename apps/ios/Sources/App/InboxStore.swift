@@ -25,15 +25,21 @@ struct MailItem: Identifiable {
     let sender: String
     let text: String
     var receipt: String
+    let replyTo: Value?
     func record() throws -> DeskRecord? {
         guard let bytes = text.data(using: .utf8), let value = try? Value.json(bytes) else { return nil }
         return try DeskRecord.decode(value)
     }
-    var wire: Value { .map(["id": .string(id), "message": message, "sender": .string(sender), "text": .string(text), "receipt": .string(receipt)]) }
-    init(id: String, message: Value, sender: String, text: String, receipt: String) { self.id = id; self.message = message; self.sender = sender; self.text = text; self.receipt = receipt }
+    var wire: Value {
+        var fields: [String: Value] = ["id": .string(id), "message": message, "sender": .string(sender), "text": .string(text), "receipt": .string(receipt)]
+        if let replyTo { fields["replyTo"] = replyTo }
+        return .map(fields)
+    }
+    init(id: String, message: Value, sender: String, text: String, receipt: String, replyTo: Value? = nil) { self.id = id; self.message = message; self.sender = sender; self.text = text; self.receipt = receipt; self.replyTo = replyTo }
     init(_ value: Value) throws {
-        self.init(id: try value.required("id").text, message: try value.required("message"), sender: try value.required("sender").text, text: try value.required("text").text, receipt: try value.required("receipt").text)
+        self.init(id: try value.required("id").text, message: try value.required("message"), sender: try value.required("sender").text, text: try value.required("text").text, receipt: try value.required("receipt").text, replyTo: value["replyTo"])
         _ = try record()
+        if let replyTo { _ = try replyTo.required("senderDid").text; _ = try replyTo.required("messageId").text }
     }
 }
 @MainActor @Observable
@@ -228,8 +234,9 @@ final class InboxStore {
         }
         let body = try payload.required("body").data
         let text = String(data: body, encoding: .utf8) ?? "[binary: \(body.count) bytes]"
-        let item = MailItem(id: id, message: message, sender: sender, text: text, receipt: status)
+        let item = MailItem(id: id, message: message, sender: sender, text: text, receipt: status, replyTo: payload["replyTo"])
         _ = try item.record()
+        _ = try inboxThreadAddress(item, messages: messages, preferences: preferences)
         var displayed = status
         if status == "accepted" || status == "queued" {
             do {
@@ -243,9 +250,9 @@ final class InboxStore {
             }
         }
         try current(token)
-        let received = MailItem(id: id, message: message, sender: sender, text: text, receipt: displayed)
+        let received = MailItem(id: id, message: message, sender: sender, text: text, receipt: displayed, replyTo: payload["replyTo"])
+        let address = try inboxThreadAddress(received, messages: messages, preferences: preferences)
         guard try appendInboxMessage(received, messages: &messages, preferences: &preferences) else { return }
-        let address = try inboxThreadAddress(received)
         let threadId = try inboxThreadKey(sender: sender, project: address.project, itemId: address.itemId)
         try saveInbox()
         let center = UNUserNotificationCenter.current()
@@ -353,6 +360,8 @@ final class InboxStore {
             guard ["accepted", "queued", "delivered", "acked"].contains(accepted) else { throw ProtocolError.invalid("Send not admitted: " + accepted) }
             if let target = try pending["threadId"]?.text {
                 var prefs = preferences[target] ?? ThreadPreferences(); prefs.state = threadState(prefs.state, .answered); prefs.answer = pending["answer"]
+                let aad = try (pending["envelope"] ?? pending).required("aad")
+                prefs.outgoingRef = .map(["senderDid": try aad.required("senderDid"), "messageId": try aad.required("messageId")])
                 try savePreferences(prefs, for: target)
             }
             try FileManager.default.removeItem(at: directory().appendingPathComponent("outbox.json"))
