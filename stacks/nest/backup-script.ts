@@ -25,8 +25,8 @@ def mounted_share():
     if not mount.is_absolute() or not (backup == mount or mount in backup.parents):
         fail('Backup path is not on the existing SMB mount')
     backup.mkdir(parents=True, exist_ok=True)
-def inactive(restoring=False):
-    units = ['rat-king-celld.service', 'rat-king-seaweedfs.service'] if restoring else ['rat-king-celld.service']
+def inactive(restoring=False, store_stopped=False):
+    units = ['rat-king-celld.service', 'rat-king-seaweedfs.service'] if store_stopped else ['rat-king-celld.service']
     for unit in units:
         result = subprocess.run(['systemctl', '--user', 'show', unit, '--property=ActiveState,Result'], capture_output=True, text=True, check=True)
         fields = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
@@ -121,14 +121,31 @@ elif operation == 'publish':
         (staging / name).unlink()
     staging.rmdir()
     print('BACKUP_PUBLISHED ' + target.name)
-elif operation == 'restore':
-    inactive(restoring=True)
-    if data.exists() and any(data.iterdir()):
-        fail('Restore requires a fresh empty data root; existing data is preserved')
+elif operation in ['restore-preflight', 'restore']:
+    if operation == 'restore-preflight':
+        inactive(restoring=True, store_stopped=True)
+        if data.exists() and any(data.iterdir()):
+            fail('Restore requires a fresh empty data root; existing data is preserved')
+    else:
+        inactive(restoring=True)
+        if not (data / 'celld').is_dir() or (data / 'celld').stat().st_mode & 0o777 != 0o700:
+            fail('Restore requires the resource-owned celld directory at mode 0700')
+        if any((data / 'celld').iterdir()):
+            fail('Restore refuses an occupied celld directory')
+        if any(path.name not in {'celld', 'seaweedfs'} for path in data.iterdir()):
+            fail('Restore refuses undeclared data-root children')
     candidates = sorted([path for path in backup.iterdir() if path.is_dir() and not path.is_symlink() and (path / 'manifest.json').is_file()], reverse=True)
     if not candidates:
         fail('No complete backup')
-    source = candidates[0]
+    if operation == 'restore':
+        selected = sys.argv[4]
+        if pathlib.PurePosixPath(selected).name != selected or selected in {'.', '..'}:
+            fail('Invalid backup selection')
+        source = backup / selected
+        if source not in candidates:
+            fail('Selected backup is not complete')
+    else:
+        source = candidates[0]
     no_links(source)
     manifest_path = source / 'manifest.json'
     if manifest_path.is_symlink() or manifest_path.stat().st_size > 16384:
@@ -144,10 +161,19 @@ elif operation == 'restore':
         validate_export(archive)
     with tarfile.open(source / 'celld.tar') as archive:
         validate_celld(archive)
-    data.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(data, 0o700)
+    if operation == 'restore-preflight':
+        print(source.name)
+        sys.exit(0)
+    no_links(data / 'celld')
+    def secured_member(member, destination):
+        safe = tarfile.data_filter(member, destination)
+        return safe.replace(mode=0o700 if safe.isdir() else 0o600)
     with tarfile.open(source / 'celld.tar') as archive:
-        archive.extractall(data, filter='data')
+        archive.extractall(data, filter=secured_member)
+    # Never rely on the operator's umask, including when it is 002.
+    os.chmod(data / 'celld', 0o700)
+    if (data / 'celld').stat().st_mode & 0o777 != 0o700:
+        fail('Restored celld directory mode assertion failed')
     target = data / '.mailbox-restore-objects.tar'
     with (source / 'objects.tar').open('rb') as src, target.open('xb') as dst:
         shutil.copyfileobj(src, dst, length=1024 * 1024)

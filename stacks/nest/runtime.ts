@@ -25,9 +25,9 @@ import { listenerProbe } from "../../packages/alchemy-nest/src/probes.ts";
 import { stopUnits } from "../../packages/alchemy-nest/src/startup-contract.ts";
 import { deleteDeclaredUnit } from "../../packages/alchemy-nest/src/systemd.ts";
 import { removeStoreSockets } from "../../packages/alchemy-nest/src/unit-cleanup.ts";
-import { backupScript } from "./backup-script.ts";
 import { stageName, workerIPv4 } from "./config.ts";
-import { connection, nest } from "./stack.ts";
+import { preflightRestore } from "./restore.ts";
+import { connection, nestStack, nest } from "./stack.ts";
 
 export const claudeMtimeScript = String.raw`
 import glob, json, os, sys
@@ -340,25 +340,26 @@ export const run = (action: Action) =>
       return yield* refuse("Prepare must record Claude mtimes before deploy");
     }
 
-    if (action === "restore") {
-      yield* requireFleet(stage);
+    const stack =
+      action === "restore"
+        ? yield* Effect.gen(function* restoreStack() {
+            yield* requireFleet(stage);
 
-      const target = yield* (yield* Host).node(
-        yield* Config.String("RAT_KING_LIVE_NODE")
-      );
+            const target = yield* (yield* Host).node(
+              yield* Config.String("RAT_KING_LIVE_NODE")
+            );
 
-      yield* must(yield* HostShell, [
-        "python3",
-        "-c",
-        backupScript,
-        "restore",
-        target.dataRoot,
-        yield* Config.String("RAT_KING_BACKUP_ROOT"),
-      ]);
-      yield* Effect.log("MAILBOX_DATA_RESTORED_BEFORE_DEPLOY");
-    }
+            const request = yield* preflightRestore(
+              yield* HostShell,
+              target.dataRoot,
+              yield* Config.String("RAT_KING_BACKUP_ROOT")
+            );
 
-    yield* deploy({ stack: nest, stage }).pipe(adopt(true));
+            return nestStack(request);
+          })
+        : nest;
+
+    yield* deploy({ stack, stage }).pipe(adopt(true));
     const shell = yield* HostShell;
 
     const host = yield* (yield* Host).node(

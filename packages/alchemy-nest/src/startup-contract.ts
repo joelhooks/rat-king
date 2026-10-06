@@ -3,7 +3,7 @@ import { Effect, Layer, Predicate, Result, Schema } from "effect";
 
 import { refuse } from "./files.ts";
 import { HostShell } from "./host-shell.ts";
-import type { Interface } from "./host-shell.ts";
+import type { HostError, Interface } from "./host-shell.ts";
 import { assessListeners, readListeners } from "./listeners.ts";
 import { bootstrapProbe, probeEnvironment } from "./probes.ts";
 import type { ProbeRunnerMode } from "./probes.ts";
@@ -186,7 +186,8 @@ const Pointer = Schema.Struct({
 export const startupLayer = (
   publicIPv4: string,
   runnerMode: ProbeRunnerMode = "scope",
-  restoreArchive?: string
+  restoreArchive?: string,
+  restoreData?: Effect.Effect<void, HostError>
 ) =>
   Layer.effect(
     UnitStartup,
@@ -251,6 +252,8 @@ export const startupLayer = (
           }
 
           return Effect.gen(function* seed() {
+            yield* restoreData ?? Effect.void;
+
             const environment = yield* probeEnvironment(shell, home);
 
             yield* importRestoredObjects(
