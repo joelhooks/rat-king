@@ -7,38 +7,48 @@ struct DeskInboxView: View {
     @State private var snoozing: InboxThread?
     var body: some View {
         NavigationStack {
-            List {
-                Button(archived ? "[INBOX]" : "[ARCHIVED]") { archived.toggle() }.foregroundStyle(TUITheme.accent).listRowBackground(TUITheme.panel)
-                let threads = store.threads.filter { $0.visible(at: store.now, archivedView: archived) }
-                if threads.isEmpty { Text(archived ? "No archived threads." : "Waiting for encrypted mail.\nKeep the app open to sync.").foregroundStyle(TUITheme.dim).listRowBackground(TUITheme.panel) }
-                ForEach(Array(Set(threads.map(\.project))).sorted(), id: \.self) { project in
-                    Section(project) {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    Button(archived ? "[INBOX]" : "[ARCHIVED]") { archived.toggle() }.foregroundStyle(TUITheme.accent).padding(.vertical, 4)
+                    let threads = store.threads.filter { $0.visible(at: store.now, archivedView: archived) }
+                    if threads.isEmpty { Text(archived ? "No archived threads." : "Waiting for encrypted mail. Keep the app open to sync.").foregroundStyle(TUITheme.dim) }
+                    ForEach(Array(Set(threads.map(\.project))).sorted(), id: \.self) { project in
+                        Text(project.uppercased()).foregroundStyle(TUITheme.dim).font(TUITheme.microFont).padding(.top, 4)
                         ForEach(threads.filter { $0.project == project }) { thread in
-                            NavigationLink {
-                                DeskThreadView(store: store, threadId: thread.id, reply: reply)
-                            } label: {
-                                VStack(alignment: .leading, spacing: 8) {
-                                    Text(thread.title).foregroundStyle(TUITheme.teal)
-                                    Text(thread.state.rawValue.uppercased() + " / \(thread.mailIds.count) MAIL").foregroundStyle(TUITheme.dim).font(TUITheme.microFont)
-                                }.padding(.vertical, 8)
-                            }.listRowBackground(TUITheme.panel)
-                            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-                                if archived { Button("UNDO") { store.restore(thread) }.tint(TUITheme.accent) }
-                                else {
-                                    Button("ARCHIVE") { Task { await store.archive(thread) } }.tint(TUITheme.dim).disabled(store.state != .live)
-                                    if thread.state == .open || thread.state == .sent { Button("SNOOZE") { snoozing = thread }.tint(TUITheme.warn) }
-                                }
+                            TerminalSwipeRow(archiveLabel: "[ARCHIVE]", snoozeLabel: archived ? "[RESTORE]" : "[SNOOZE]",
+                                canArchive: !archived && store.state == .live, canSnooze: archived || thread.state == .open || thread.state == .sent,
+                                archive: { Task { await store.archive(thread) } },
+                                snooze: { if archived { store.restore(thread) } else { snoozing = thread } }) {
+                                NavigationLink {
+                                    DeskThreadView(store: store, threadId: thread.id, reply: reply)
+                                } label: {
+                                    VStack(alignment: .leading, spacing: 3) {
+                                        Text(thread.summary).foregroundStyle(TUITheme.teal).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                                        Text(thread.state.rawValue.uppercased() + " / \(thread.mailIds.count) MAIL").foregroundStyle(TUITheme.dim).font(TUITheme.microFont)
+                                    }.contentShape(Rectangle())
+                                }.buttonStyle(.plain)
                             }
                         }
                     }
+                }.padding(8)
+            }.background(TUITheme.bg).toolbar(.hidden, for: .navigationBar)
+            .overlay {
+                if let thread = snoozing {
+                    ZStack {
+                        Color.black.opacity(0.75).ignoresSafeArea().onTapGesture { snoozing = nil }
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("SNOOZE / PHONE ONLY").foregroundStyle(TUITheme.warn).font(TUITheme.titleFont)
+                            Text(thread.title).foregroundStyle(TUITheme.dim).lineLimit(1)
+                            ThinDivider()
+                            ForEach(SnoozeChoice.allCases) { choice in
+                                Button("[" + choice.rawValue + "]") { Task { await store.snooze(thread, choice: choice) }; snoozing = nil }
+                                    .frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 6).foregroundStyle(TUITheme.fg)
+                            }
+                            ThinDivider()
+                            Button("[CANCEL]") { snoozing = nil }.foregroundStyle(TUITheme.accent).padding(.vertical, 6)
+                        }.font(TUITheme.monoFont).padding(12).background(TUITheme.panel).border(TUITheme.grid).padding(20)
+                    }
                 }
-            }.listStyle(.plain).scrollContentBackground(.hidden).background(TUITheme.bg)
-            .toolbar(.hidden, for: .navigationBar)
-            .confirmationDialog("Snooze on this phone only", isPresented: Binding(get: { snoozing != nil }, set: { if !$0 { snoozing = nil } }), titleVisibility: .visible) {
-                ForEach(SnoozeChoice.allCases) { choice in
-                    Button(choice.rawValue) { if let thread = snoozing { Task { await store.snooze(thread, choice: choice) } }; snoozing = nil }
-                }
-                Button("CANCEL", role: .cancel) { snoozing = nil }
             }
         }.tint(TUITheme.accent)
     }
@@ -52,7 +62,7 @@ struct DeskThreadView: View {
     private var thread: InboxThread? { store.threads.first { $0.id == threadId } }
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 8) {
                 Button("[BACK]") { dismiss() }.foregroundStyle(TUITheme.accent)
                 if let thread {
                     Text(thread.project + " / " + thread.state.rawValue.uppercased()).foregroundStyle(TUITheme.dim)
@@ -62,14 +72,14 @@ struct DeskThreadView: View {
                         Text(card.why).foregroundStyle(TUITheme.warn)
                         Text(card.body).textSelection(.enabled)
                         ForEach(card.choices) { axis in
-                            VStack(alignment: .leading, spacing: 8) {
+                            VStack(alignment: .leading, spacing: 4) {
                                 Text(axis.label).foregroundStyle(TUITheme.teal)
                                 ForEach(axis.options) { option in
                                     Button { values[axis.id] = option.id } label: {
-                                        VStack(alignment: .leading, spacing: 4) {
+                                        VStack(alignment: .leading, spacing: 3) {
                                             Text((values[axis.id] == option.id ? "[x] " : "[ ] ") + option.label + (axis.suggest == option.id ? " (suggested)" : ""))
                                             Text("then: " + option.outcome).foregroundStyle(TUITheme.dim)
-                                        }.frame(maxWidth: .infinity, alignment: .leading).padding(10).background(TUITheme.panel)
+                                        }.frame(maxWidth: .infinity, alignment: .leading).padding(6).background(TUITheme.panel)
                                     }.foregroundStyle(TUITheme.fg).disabled(thread.state != .open)
                                 }
                             }
@@ -88,7 +98,7 @@ struct DeskThreadView: View {
                         if thread.state != .open, let saved = store.preferences[thread.id]?.answer, let sentNote = try? saved["note"]?.text { Text("SENT NOTE: " + sentNote).foregroundStyle(TUITheme.dim) }
                         if thread.state == .open {
                             Text("NOTE (overrides ticks if they conflict)").foregroundStyle(TUITheme.dim)
-                            TextEditor(text: $note).font(TUITheme.monoFont).scrollContentBackground(.hidden).frame(minHeight: 100).padding(8).background(TUITheme.panel)
+                            TextEditor(text: $note).font(TUITheme.monoFont).scrollContentBackground(.hidden).frame(minHeight: 64).padding(6).background(TUITheme.panel)
                             Button("[SEAL + SEND ANSWER]") { Task { await store.answer(thread, values: values, rows: rows, note: note) } }
                                 .disabled(store.state != .live || store.sending || store.hasPendingSend).foregroundStyle(TUITheme.accent)
                             if store.hasPendingSend { Text("A sealed send is pending. Retry it from Compose before answering another item.").foregroundStyle(TUITheme.warn) }
@@ -104,7 +114,7 @@ struct DeskThreadView: View {
                         }
                     }
                 }
-            }.padding(12)
+            }.padding(8)
         }.background(TUITheme.bg).toolbar(.hidden, for: .navigationBar)
         .task {
             guard let card = thread?.card else { return }
