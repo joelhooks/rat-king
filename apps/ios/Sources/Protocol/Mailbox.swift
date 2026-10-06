@@ -10,7 +10,10 @@ struct ClientConfiguration: Sendable {
         }
         let text = try setting("RKMailboxURL")
         guard let url = URL(string: text), url.scheme == "https", url.host != nil, url.user == nil, url.password == nil, url.query == nil, url.fragment == nil else { throw ProtocolError.invalid("Mailbox requires a credential-free HTTPS URL") }
-        return try Self(endpoint: url, audience: setting("RKMailboxAudience"), did: setting("RKPhoneDID"))
+        // Service auth audience is the mailbox service id, `<service DID>#mailbox`, not the bare DID.
+        let audience = try setting("RKMailboxAudience")
+        guard audience.hasPrefix("did:"), audience.hasSuffix("#mailbox") else { throw ProtocolError.invalid("RKMailboxAudience must be <service DID>#mailbox") }
+        return try Self(endpoint: url, audience: audience, did: setting("RKPhoneDID"))
     }
 }
 struct XRPCError: Error, LocalizedError {

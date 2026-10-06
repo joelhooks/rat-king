@@ -131,7 +131,7 @@ final class InboxStore {
             } catch {
                 guard generation == token, !Task.isCancelled else { return }
                 socket?.cancel(with: .goingAway, reason: nil); socket = nil
-                lastError = error.localizedDescription; move(.lost)
+                lastError = state.rawValue.uppercased() + ": " + error.localizedDescription; move(.lost)
                 if let error = error as? XRPCError, error.code == "LeaseMismatch" { lease = nil }
                 do { try await Task.sleep(for: .seconds(delay)) } catch { return }; delay = min(delay * 2, 30)
             }
