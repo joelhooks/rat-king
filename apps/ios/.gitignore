@@ -1,0 +1,7 @@
+Config/Local.xcconfig
+Sources/Resources/PeerDocuments.private.json
+*.xcodeproj/
+build/
+.DS_Store
+*.ipa
+*.xcarchive/

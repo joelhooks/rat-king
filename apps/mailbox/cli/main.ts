@@ -21,6 +21,7 @@ import { FetchHttpClient } from "effect/http";
 
 import { CliError, readIdentity } from "./identity.ts";
 import { provision } from "./provision.ts";
+import { registerDocument } from "./register-document.ts";
 import { provisionAgent } from "./register.ts";
 import { secretStoreLayer } from "./secrets.ts";
 
@@ -81,6 +82,7 @@ type CliOutput =
   | typeof Lease.Main.Encoded
   | Effect.Success<ReturnType<typeof provision>>
   | Effect.Success<ReturnType<typeof provisionAgent>>
+  | Effect.Success<ReturnType<typeof registerDocument>>
   | OpenedMessage
   | { released: true };
 
@@ -268,6 +270,26 @@ const provisionCommand = Command.make(
   })
 );
 
+const registerCommand = Command.make(
+  "register",
+  {
+    did: Flag.String("did"),
+    document: Flag.String("document"),
+  },
+  Effect.fn("MailboxCli.register")(function* register(args) {
+    const env = yield* environment;
+    const fs = yield* FileSystem.FileSystem;
+    yield* print(
+      yield* registerDocument({
+        ...env,
+        did: args.did,
+        json: yield* fs.readFileString(args.document),
+        operatorSecret: yield* Config.String("RAT_KING_OPERATOR_IDENTITY"),
+      }).pipe(Effect.provide([FetchHttpClient.layer, secretStoreLayer({})]))
+    );
+  })
+);
+
 const acquireCommand = Command.make(
   "acquire",
   {
@@ -413,6 +435,7 @@ const command = Command.make("mailbox").pipe(
     openCommand,
     identityCommand,
     provisionCommand,
+    registerCommand,
     leaseCommand,
     deliverCommand,
     ackCommand,
