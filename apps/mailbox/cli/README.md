@@ -11,6 +11,8 @@ Supply the public documents file, endpoint and service DID through `RAT_KING_DOC
 
 ## Provision an agent
 
+`register --did <did> --document <public-json>` registers an externally held identity without minting or exporting its keys. It refuses private material anywhere in the document and requires its id to match `--did`. It uses the existing operator configuration and the idempotent `putDidDocument` route.
+
 `provision` keeps both P-256 private keys in `agent-secrets`. `RAT_KING_OPERATOR_IDENTITY` names an identity JSON secret authorized by the server's `OPERATOR_DIDS` binding. The command leases it to register the agent's public DID document.
 
 ```sh

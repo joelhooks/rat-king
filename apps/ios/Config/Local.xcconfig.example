@@ -1,0 +1,7 @@
+// Invented values only. Copy to Local.xcconfig; never commit real configuration.
+RK_TEAM_ID = EXAMPLETEAM
+RK_BUNDLE_ID = invalid.example.ratking.phone
+RK_PHONE_DID = did:web:phone.example.invalid
+RK_MAILBOX_AUDIENCE = did:web:mailbox.example.invalid
+// The empty substitution prevents xcconfig from treating // as a comment.
+RK_MAILBOX_URL = https:/$()/mailbox.example.invalid

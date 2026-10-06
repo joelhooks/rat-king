@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "lib": ["ESNext", "DOM"],
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": ["scripts/*.ts"]
+}
