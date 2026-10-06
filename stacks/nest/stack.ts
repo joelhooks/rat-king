@@ -17,6 +17,7 @@ import {
   hostedBindings,
   hostedVars,
 } from "../../apps/mailbox/src/bindings.ts";
+import { StateRecovery } from "../../packages/alchemy-nest/src/adoption.ts";
 import {
   RuntimeFiles,
   RuntimeFilesProvider,
@@ -102,6 +103,22 @@ const startup = (restore?: RestoreRequest) =>
     })
   ).pipe(Layer.provide(connection), Layer.orDie);
 
+const stateRecovery = Effect.fn("Nest.stateRecovery")(function* stateRecovery(
+  mailboxOnly: boolean
+) {
+  const enabled = yield* Config.Boolean("RAT_KING_RECOVER_STATE").pipe(
+    Config.withDefault(false)
+  );
+
+  if (enabled && !mailboxOnly) {
+    return yield* Effect.die(
+      "State recovery currently supports mailbox-only stages"
+    );
+  }
+
+  return enabled;
+});
+
 export const nestStack = (restore?: RestoreRequest) =>
   Stack(
     "nest",
@@ -112,6 +129,15 @@ export const nestStack = (restore?: RestoreRequest) =>
         DeploymentProvider(),
         RuntimeFilesProvider()
       ).pipe(
+        Layer.provide(
+          Layer.effect(
+            StateRecovery,
+            Config.Boolean("RAT_KING_RECOVER_STATE").pipe(
+              Config.withDefault(false),
+              Effect.orDie
+            )
+          )
+        ),
         Layer.provide(startup(restore)),
         Layer.provide(connection),
         Layer.provide(sourceLayer.pipe(Layer.orDie)),
@@ -146,6 +172,8 @@ export const nestStack = (restore?: RestoreRequest) =>
 
       const fleet = (yield* stageName) === "fleet";
 
+      const recoverState = yield* stateRecovery(mailboxOnly);
+
       const restartGateBundle = Option.getOrUndefined(
         yield* optionalOperatorBundle(
           fleet,
@@ -160,7 +188,7 @@ export const nestStack = (restore?: RestoreRequest) =>
         name: yield* Config.String("RAT_KING_BUCKET").pipe(
           Config.withDefault("rat-king-cells")
         ),
-        purgeOnDelete: true,
+        purgeOnDelete: !recoverState,
         restartGateBundle,
         slice: slice.sha256,
       });
@@ -168,7 +196,7 @@ export const nestStack = (restore?: RestoreRequest) =>
       const cells = yield* Celld.Node("celld", {
         bucket,
         host: node,
-        purgeOnDelete: true,
+        purgeOnDelete: !recoverState,
         workerIPv4,
       });
 

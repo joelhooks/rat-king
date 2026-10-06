@@ -26,6 +26,7 @@ import { stopUnits } from "../../packages/alchemy-nest/src/startup-contract.ts";
 import { deleteDeclaredUnit } from "../../packages/alchemy-nest/src/systemd.ts";
 import { removeStoreSockets } from "../../packages/alchemy-nest/src/unit-cleanup.ts";
 import { stageName, workerIPv4 } from "./config.ts";
+import { isDeferredAdoption, qualifyRecoveryPlan } from "./recovery-plan.ts";
 import { preflightRestore } from "./restore.ts";
 import { connection, nestStack, nest } from "./stack.ts";
 
@@ -306,6 +307,7 @@ export const run = (action: Action) =>
         stage,
       }).pipe(adopt(true));
 
+      yield* qualifyRecoveryPlan(plan);
       const summary = Plan.describePlan(plan);
 
       const actions = Object.values(summary.resources).map(
@@ -320,6 +322,12 @@ export const run = (action: Action) =>
         JSON.stringify({
           actions,
           noop: actions.every((entry) => entry === "noop"),
+          resources: summary.resources.map((row) => ({
+            ...row,
+            recovery: isDeferredAdoption(plan, row.fqn)
+              ? "deferred-adoption"
+              : row.action,
+          })),
         })
       );
 

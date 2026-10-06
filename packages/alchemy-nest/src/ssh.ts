@@ -163,6 +163,22 @@ export const layer = (node: Node) =>
       }
 
       const shell: Interface = {
+        checksum: Effect.fn("HostShell.checksum")(function* checksum(path) {
+          const result = yield* checked(
+            `test ! -L ${shellQuote(path)} && sha256sum -- ${shellQuote(path)}`
+          );
+
+          const [sha256] = result.split(" ");
+
+          if (sha256 === undefined || !/^[a-f0-9]{64}$/u.test(sha256)) {
+            return yield* new HostError({
+              operation: "checksum",
+              reason: "Malformed remote checksum.",
+            });
+          }
+
+          return sha256;
+        }),
         exec: Effect.fn("HostShell.exec")((argv, diagnostics) =>
           run(`exec ${argvText(argv)}`, undefined, diagnostics)
         ),

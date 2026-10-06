@@ -73,6 +73,18 @@ The cheapest unauthenticated celld health path is `/.well-known/celld/health` on
 
 Untested until live qualification: SMB failure during publication, disk exhaustion, interrupted shutdown/extraction, host reboot, migration to a different Linux host, registered-identity preservation and recipient decrypt after restore.
 
+## Recover lost local state
+
+For mailbox-only stages, set `RAT_KING_RECOVER_STATE=true` and select a fresh external `RAT_KING_STATE_DIR`. Keep the original stage, inventory, public documents, bundles and deployed version/commit. Notify the host owner, then run `plan` only. Never move or overwrite the real `.alchemy` directory to test recovery.
+
+The pinned Alchemy beta.80 reports cold owned resources as `adopted`. Dependencies show `create` with `deferredAdoption` until apply can resolve their inputs and run the same provider read. The plan log labels those rows `deferred-adoption`. Exactly two plain creates are expected: the store's Random access and secret keys. Any other plain create, delete or replace fails recovery qualification. A read-only plan cannot prove the deferred reads will succeed.
+
+Matching files, pinned binaries and exact unit content prove ownership inside the inventory's mode-700 roots. Credential rotation validates the existing generated configuration on the host without recovering its secret values. Recovery deliberately mints new keys, rewrites the store and celld credential files, and restarts both units behind the existing startup gate. Existing deployment bytes and live version must match. Foreign content refuses, including with explicit adoption enabled. Hosted runtime custody recovery is not supported.
+
+Recovery keeps directory and bucket purge disabled; keep the recovery flag on afterwards. Restoring purge authority requires a separate explicit operator action and is outside this procedure.
+
+An apply needs separate startup approval. After an approved recovery apply, require a literal noop plan, the listener gate and recipient-level encrypted delivery. Do not recover by copying old Alchemy state or old credential rows. Recovery changes credentials, not application data; rollback of code does not restore either.
+
 ## Hosted agent and optional Claude sidecar
 
 The default is `RAT_KING_AGENT_MODEL=faux`: no gateway origin or credential enters generated Worker configuration, and no sidecar is declared. The hosted DID is `RAT_KING_REMOTE_DID`; its private identity stays in the existing remote mode-600 file-custody shortcut (door 3). Preparation records the user's `.claude*` and `.local/bin/claude` mtimes in private operator state before writing any deployment files. Use a fresh state directory; preparation refuses to overwrite that snapshot.

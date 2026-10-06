@@ -6,6 +6,7 @@ import { Effect, Result, Schedule, Schema } from "effect";
 import { HttpClient } from "effect/http";
 
 import { absent } from "./absent.ts";
+import { ownedPath } from "./adoption.ts";
 import {
   DeploymentError,
   GeneratedConfiguration,
@@ -240,10 +241,48 @@ export const DeploymentProvider = () =>
           yield* validate(olds);
 
           if (!(yield* installed(olds))) {
+            if (
+              output === undefined &&
+              (yield* shell.stat(olds.directory)) !== undefined
+            ) {
+              return yield* new DeploymentError({
+                reason: "Only the exact declared deployment may be adopted",
+              });
+            }
+
             return absent;
           }
 
-          return output ?? Unowned({ ...olds, sha256: fingerprint(olds) });
+          if (output !== undefined) {
+            return output;
+          }
+
+          const attrs = { ...olds, sha256: fingerprint(olds) };
+
+          if (!(yield* ownedPath(shell, olds.directory))) {
+            return Unowned(attrs);
+          }
+
+          const directory = yield* shell.stat(olds.directory);
+          const bundle = yield* shell.stat(`${olds.directory}/worker.mjs`);
+
+          const config = yield* shell.stat(
+            `${olds.directory}/${olds.bindingsFile === undefined ? "wrangler.json" : "wrangler.public.json"}`
+          );
+
+          if (
+            directory?.mode !== 0o700 ||
+            bundle?.mode !== 0o600 ||
+            config?.mode !== 0o600
+          ) {
+            return yield* new DeploymentError({
+              reason: "Deployment adoption requires private file modes",
+            });
+          }
+
+          yield* version(olds);
+
+          return attrs;
         }),
         reconcile: Effect.fn("Celld.Deployment.reconcile")(function* reconcile({
           news,
@@ -251,6 +290,15 @@ export const DeploymentProvider = () =>
         }) {
           yield* validate(news);
           const directory = yield* shell.stat(news.directory);
+
+          if (
+            output?.sha256 === fingerprint(news) &&
+            (yield* installed(news))
+          ) {
+            yield* version(news);
+
+            return output;
+          }
 
           if (
             output === undefined &&

@@ -3,12 +3,14 @@ import * as Output from "alchemy/Output";
 import { Effect, Redacted } from "effect";
 
 import { Deployment, DeploymentProvider } from "./deployment.ts";
+import { textDigest } from "./files.ts";
 import type { Node as HostNode } from "./inventory-schema.ts";
 import { NodeProvider, NodeResource } from "./node-provider.ts";
 import type { BucketOutput } from "./object-store.ts";
 import { celldBinary } from "./pins.ts";
 import { HostDirectory, ReleaseBinary, RemoteFile } from "./providers.ts";
 import { nodeUnit } from "./service-units.ts";
+import { renderUnit } from "./systemd.ts";
 
 const envQuote = (value: string): string =>
   `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("\n", "\\n")}"`;
@@ -38,6 +40,22 @@ export const Node = (
       path: Output.interpolate`${bucket.bin}/celld`,
     });
 
+    const declaration = nodeUnit({
+      binary: `${host.home}/.local/share/rat-king/bin/celld`,
+      data: `${host.dataRoot}/celld`,
+      environment: `${host.home}/.config/rat-king/celld.env`,
+      host,
+      restartGate:
+        bucket.restartGate === undefined
+          ? undefined
+          : {
+              address: workerIPv4,
+              path: `${host.home}/.local/share/rat-king/bin/restart-gate.mjs`,
+            },
+      restartOn: [],
+      workerIPv4,
+    });
+
     const environment = yield* RemoteFile("environment", {
       content: Output.all(
         bucket.accessKey,
@@ -61,6 +79,11 @@ export const Node = (
       ),
       mode: 0o600,
       path: Output.interpolate`${bucket.configuration}/celld.env`,
+      rotationOwner: {
+        home: host.home,
+        name: "rat-king-celld.service",
+        sha256: textDigest(renderUnit(declaration)),
+      },
     });
 
     const unit = yield* NodeResource(
@@ -74,31 +97,16 @@ export const Node = (
         bucket.resource.name,
         bucket.restartGate?.sha256 ?? bucket.resource.name
       ).pipe(
-        Output.map(
-          ([path, directory, env, envHash, binaryHash, , gateHash]) => ({
-            ...nodeUnit({
-              binary: path,
-              data: directory,
-              environment: env,
-              host,
-              restartGate:
-                bucket.restartGate === undefined
-                  ? undefined
-                  : {
-                      address: workerIPv4,
-                      path: `${host.home}/.local/share/rat-king/bin/restart-gate.mjs`,
-                    },
-              restartOn:
-                bucket.restartGate === undefined
-                  ? [envHash, binaryHash]
-                  : [envHash, binaryHash, gateHash],
-              workerIPv4,
-            }),
-            internalUrl: "http://127.0.0.1:18788",
-            publicUrl: `http://${workerIPv4}:18787`,
-            version: "v0.6.1" as const,
-          })
-        )
+        Output.map((values) => ({
+          ...declaration,
+          internalUrl: "http://127.0.0.1:18788",
+          publicUrl: `http://${workerIPv4}:18787`,
+          restartOn:
+            bucket.restartGate === undefined
+              ? [values[3], values[4]]
+              : [values[3], values[4], values[6]],
+          version: "v0.6.1" as const,
+        }))
       )
     );
 

@@ -22,6 +22,16 @@ export const FileSchema = Schema.Struct({
   content: Schema.Union([Schema.String, Schema.Redacted(Schema.String)]),
   mode: Schema.optionalKey(Mode),
   path: AbsolutePath,
+  rotationOwner: Schema.optionalKey(
+    Schema.Struct({
+      home: AbsolutePath,
+      name: Schema.Literals([
+        "rat-king-seaweedfs.service",
+        "rat-king-celld.service",
+      ]),
+      sha256: Schema.String.check(Schema.isPattern(/^[a-f0-9]{64}$/u)),
+    })
+  ),
 });
 
 export type FileProps = typeof FileSchema.Type;
@@ -113,6 +123,16 @@ export const readFile = Effect.fn("RemoteFile.read")(function* readFile(
 
   if (entry.kind !== "file") {
     return yield* refuse("Expected a regular file.");
+  }
+
+  if (shell.checksum !== undefined) {
+    const sha256 = yield* shell.checksum(path);
+
+    if (!/^[a-f0-9]{64}$/u.test(sha256)) {
+      return yield* refuse("Malformed remote file checksum.");
+    }
+
+    return { mode: entry.mode, path, sha256 } satisfies FileAttributes;
   }
 
   const bytes = yield* shell.read(path);
