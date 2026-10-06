@@ -6,61 +6,52 @@ case "$mode" in
   --archive-only|--upload) ;;
   *) echo "Usage: $0 [--archive-only|--upload]" >&2; exit 2 ;;
 esac
+[[ "${RK_PROVISIONING_AUTHORIZED:-0}" == 1 ]] || { echo "Desk must confirm profile refresh authorization" >&2; exit 1; }
 if [[ "$mode" == --upload && "${RK_UPLOAD_AUTHORIZED:-0}" != 1 ]]; then echo "Desk must authorize this exact upload" >&2; exit 1; fi
-[[ "${RK_PROVISIONING_AUTHORIZED:-0}" == 1 ]] || { echo "Desk must confirm Joel's provisioning authorization before this runs" >&2; exit 1; }
 [[ -f Config/Local.xcconfig ]] || { echo "Missing Config/Local.xcconfig" >&2; exit 1; }
 [[ -z "$(git status --porcelain --untracked-files=normal)" ]] || { echo "Checkout is dirty; refusing publication" >&2; exit 1; }
 commit="$(git rev-parse HEAD)"
-command -v xcodegen >/dev/null || { echo "Install XcodeGen: brew install xcodegen" >&2; exit 1; }
 xcodegen generate
 mkdir -p build
-# Credentials are leased only after explicit provisioning/upload authorization.
 umask 077
-keydir="$(mktemp -d "${TMPDIR:-/tmp}/ratking-asc.XXXXXX")"
-keypath=""
-cleanup() {
-  if [[ -n "$keypath" && -f "$keypath" ]]; then rm -- "$keypath"; fi
-  if [[ -f "$keydir/versions.json" ]]; then rm -- "$keydir/versions.json"; fi
-  rmdir -- "$keydir"
-}
-trap cleanup EXIT
-keyid="$(secrets lease asc_api_key_id --ttl 15m --client-id ratking-ios-upload)"
-issuer="$(secrets lease asc_api_issuer_id --ttl 15m --client-id ratking-ios-upload)"
-[[ "$keyid" =~ ^[A-Z0-9]+$ ]] || { echo "Malformed ASC key ID" >&2; exit 1; }
-keypath="$keydir/AuthKey_${keyid}.p8"
-secrets lease asc_api_key_p8 --ttl 15m --client-id ratking-ios-upload > "$keypath"
-chmod 600 "$keypath"
-auth=(-allowProvisioningUpdates -authenticationKeyPath "$keypath" -authenticationKeyID "$keyid" -authenticationKeyIssuerID "$issuer")
+# Xcode owns its signed-in account. Never extract account tokens or mint keys.
 xcodebuild -project RatKing.xcodeproj -scheme RatKing -showBuildSettings -json > build/settings.json
-bundle="$(python3 -c 'import json; print(next(x["buildSettings"]["PRODUCT_BUNDLE_IDENTIFIER"] for x in json.load(open("build/settings.json")) if x["target"] == "RatKing"))')"
-# Read existing TestFlight history before choosing versions. Never create an app.
-swift scripts/asc-version.swift "$keypath" "$keyid" "$issuer" "$bundle" 0.2.0 > "$keydir/versions.json"
-marketing="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["marketingVersion"])' "$keydir/versions.json")"
-build_number="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["buildNumber"])' "$keydir/versions.json")"
-printf 'ASC version preflight: '; python3 -m json.tool "$keydir/versions.json"
+team="$(python3 -c 'import json; print(next(x["buildSettings"]["DEVELOPMENT_TEAM"] for x in json.load(open("build/settings.json")) if x["target"] == "RatKing"))')"
+security find-identity -v -p codesigning > build/signing-identities.txt
+certificate="$(python3 - "$team" <<'PY'
+import re,sys
+text=open('build/signing-identities.txt').read()
+identities=re.findall(r'\) ([A-F0-9]{40}) "Apple Distribution: [^"\n]+ \(([^)]+)\)"',text)
+match=next((sha for sha,team in identities if team == sys.argv[1]),None)
+if not match: raise SystemExit('No existing distribution identity for the configured team; refusing certificate creation')
+print(match)
+PY
+)"
 if [[ "$mode" == --archive-only ]]; then
+  marketing="${RK_MARKETING_VERSION:-0.2.0}"
+  [[ "$marketing" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Malformed marketing version" >&2; exit 1; }
+  build_number="$(date -u +%Y%m%d%H%M)"
+  echo "Archive candidate: version $marketing, build $build_number, commit $commit"
   xcodebuild -project RatKing.xcodeproj -scheme RatKing \
     -archivePath build/RatKing.xcarchive -destination 'generic/platform=iOS' \
-    CODE_SIGN_STYLE=Automatic RK_BUILD_COMMIT="$commit" \
-    MARKETING_VERSION="$marketing" CURRENT_PROJECT_VERSION="$build_number" \
-    "${auth[@]}" archive
-  echo "Archive ready. Not uploaded; --upload needs separate desk authorization."
+    -allowProvisioningUpdates CODE_SIGN_STYLE=Automatic CODE_SIGN_IDENTITY="$certificate" \
+    RK_BUILD_COMMIT="$commit" MARKETING_VERSION="$marketing" CURRENT_PROJECT_VERSION="$build_number" archive
+  echo "Archive ready. Not uploaded."
   exit 0
 fi
 [[ -d build/RatKing.xcarchive ]] || { echo "Archive first" >&2; exit 1; }
 plist=build/RatKing.xcarchive/Products/Applications/RatKing.app/Info.plist
 archive_commit="$(/usr/libexec/PlistBuddy -c 'Print :RKBuildCommit' "$plist")"
 [[ "$archive_commit" == "$commit" ]] || { echo "Archive does not match committed candidate" >&2; exit 1; }
-python3 - "$plist" "$keydir/versions.json" <<'PY'
-import json,plistlib,sys
-with open(sys.argv[1],'rb') as f: archive=plistlib.load(f)
-with open(sys.argv[2]) as f: preflight=json.load(f)
-if archive['CFBundleShortVersionString'] != preflight['marketingVersion'] or int(archive['CFBundleVersion']) <= int(preflight['maxExistingBuild']):
-    raise SystemExit('ASC history changed or archive version is stale; rearchive before upload')
+# Pin the existing certificate. Profile creation/refresh is authorized; new
+# certificates, revocation and deletion are not.
+python3 - "$team" "$certificate" <<'PY'
+import plistlib,sys
+with open('ExportOptions.plist','rb') as f: options=plistlib.load(f)
+options.update(teamID=sys.argv[1],signingCertificate=sys.argv[2])
+with open('build/ExportOptions.private.plist','wb') as f: plistlib.dump(options,f)
 PY
 xcodebuild -exportArchive -archivePath build/RatKing.xcarchive \
-  -exportPath build/export -exportOptionsPlist ExportOptions.plist "${auth[@]}"
-API_PRIVATE_KEYS_DIR="$keydir" xcrun altool --upload-app \
-  -f build/export/RatKing.ipa -t ios --api-key "$keyid" --api-issuer "$issuer" \
-  --output-format json
-echo "Upload submitted. Not proof of TestFlight installation or live mail."
+  -exportPath build/export -exportOptionsPlist build/ExportOptions.private.plist \
+  -allowProvisioningUpdates
+echo "Upload command succeeded. Verify Apple's upload receipt; installation and live mail remain separate."

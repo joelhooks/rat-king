@@ -19,11 +19,11 @@ bash apps/ios/scripts/deploy-testflight.sh --archive-only
 
 `ios:check` runs Swift tests on an iPhone 17 Pro simulator and opens the Swift-produced envelope with the TS package. Set `IOS_TEST_DESTINATION` for another installed simulator. Simulator tests use published synthetic software keys only. The app refuses software identity fallback on a simulator.
 
-The desk must confirm Joel's provisioning authorization before setting `RK_PROVISIONING_AUTHORIZED=1`. `--archive-only` then leases the ASC API key, reads the existing app's TestFlight history, and uses Xcode automatic provisioning for archive signing. It does not upload. The script never creates an API credential or App Store Connect app record.
+The desk must confirm profile refresh authorization before setting `RK_PROVISIONING_AUTHORIZED=1`. `--archive-only` uses Xcode's signed-in account and pins an existing Apple Distribution identity for the team in the local configuration. It may create or refresh a provisioning profile. It must not create a certificate, revoke anything or extract account credentials. It does not upload.
 
-Marketing version starts at `0.2.0`; if it is not above the existing versions, the preflight bumps the minor version. Build number is the UTC `YYYYMMDDHHMM` timestamp. Both appear in the preflight output. The app displays its version, build and exact source commit.
+Marketing version starts at `0.2.0`; build number is the UTC `YYYYMMDDHHMM` timestamp. Both appear in the archive output. If Apple rejects the marketing version as too low, the desk may authorize one minor-version retry through `RK_MARKETING_VERSION`. The app displays its version, build and exact source commit.
 
-After the desk authorizes the exact upload, set `RK_UPLOAD_AUTHORIZED=1` and run `--upload`. It exports the matching clean committed archive with automatic signing and checks the current TestFlight versions again. Both modes lease `asc_api_key_p8`, `asc_api_key_id` and `asc_api_issuer_id` for 15 minutes. The script writes the key to a temporary 0600 file and removes it on exit. A successful upload is not proof of processing, installation or live mail.
+After the desk authorizes the exact upload, set `RK_UPLOAD_AUTHORIZED=1` and run `--upload`. It uses `xcodebuild -exportArchive` with `destination: upload` and the existing distribution certificate. It refuses an archive from a different commit or a dirty checkout. No API key or application password is required. A successful upload is not proof of processing, installation or live mail.
 
 ## Join and prove
 
