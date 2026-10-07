@@ -10,7 +10,12 @@ struct DeskInboxView: View {
         NavigationStack(path: $path) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
-                    Button(archived ? "[INBOX]" : "[ARCHIVED]") { archived.toggle() }.foregroundStyle(TUITheme.accent).padding(.vertical, 4)
+                    HStack {
+                        Text(archived ? "[ARCHIVED]" : "[INBOX]").foregroundStyle(TUITheme.accent)
+                        Spacer()
+                        Button(archived ? "[inbox]" : "[archived]") { archived.toggle() }.foregroundStyle(TUITheme.dim)
+                    }.padding(.vertical, 8)
+                    TerminalHints(text: archived ? "tap → thread · swipe right → restore" : "tap → thread · ← archive · snooze →")
                     let threads = store.threads.filter { $0.visible(at: store.now, archivedView: archived) }
                     if threads.isEmpty { Text(archived ? "No archived threads." : "Waiting for encrypted mail. Keep the app open to sync.").foregroundStyle(TUITheme.dim) }
                     ForEach(Array(Set(threads.map(\.project))).sorted(), id: \.self) { project in
@@ -22,7 +27,10 @@ struct DeskInboxView: View {
                                 snooze: { if archived { store.restore(thread) } else { snoozing = thread } },
                                 open: { path.append(thread.id) }) {
                                 VStack(alignment: .leading, spacing: 3) {
-                                    Text(thread.summary).foregroundStyle(TUITheme.teal).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                                    HStack(spacing: 6) {
+                                        Text("›").foregroundStyle(TUITheme.accent)
+                                        Text(thread.summary).foregroundStyle(TUITheme.fg).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                                    }
                                     Text(thread.state.rawValue.uppercased() + " / \(thread.mailIds.count) MAIL").foregroundStyle(TUITheme.dim).font(TUITheme.microFont)
                                 }
                             }
@@ -35,8 +43,7 @@ struct DeskInboxView: View {
                 if let thread = snoozing {
                     ZStack {
                         Color.black.opacity(0.75).ignoresSafeArea().onTapGesture { snoozing = nil }
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("SNOOZE / PHONE ONLY").foregroundStyle(TUITheme.warn).font(TUITheme.titleFont)
+                        TerminalPanel(title: "SNOOZE / PHONE ONLY") {
                             Text(thread.title).foregroundStyle(TUITheme.dim).lineLimit(1)
                             ThinDivider()
                             ForEach(SnoozeChoice.allCases) { choice in
@@ -45,7 +52,7 @@ struct DeskInboxView: View {
                             }
                             ThinDivider()
                             Button("[CANCEL]") { snoozing = nil }.foregroundStyle(TUITheme.accent).padding(.vertical, 6)
-                        }.font(TUITheme.monoFont).padding(12).background(TUITheme.panel).border(TUITheme.grid).padding(20)
+                        }.font(TUITheme.monoFont).padding(20)
                     }
                 }
             }
@@ -69,7 +76,7 @@ struct DeskThreadView: View {
                     if let card = thread.card {
                         Text(card.title).font(TUITheme.titleFont).foregroundStyle(TUITheme.accent)
                         Text(card.why).foregroundStyle(TUITheme.warn)
-                        Text(card.body).textSelection(.enabled)
+                        TerminalMessage(text: card.body)
                         ForEach(card.choices) { axis in
                             VStack(alignment: .leading, spacing: 4) {
                                 Text(axis.label).foregroundStyle(TUITheme.teal)
@@ -78,7 +85,8 @@ struct DeskThreadView: View {
                                         VStack(alignment: .leading, spacing: 3) {
                                             Text((values[axis.id] == option.id ? "[x] " : "[ ] ") + option.label + (axis.suggest == option.id ? " (suggested)" : ""))
                                             Text("then: " + option.outcome).foregroundStyle(TUITheme.dim)
-                                        }.frame(maxWidth: .infinity, alignment: .leading).padding(6).background(TUITheme.panel)
+                                        }.frame(maxWidth: .infinity, alignment: .leading).padding(10).background(TUITheme.panel)
+                                            .overlay(Rectangle().stroke(values[axis.id] == option.id ? TUITheme.accent : TUITheme.grid, lineWidth: 1))
                                     }.foregroundStyle(TUITheme.fg).disabled(thread.state != .open)
                                 }
                             }
@@ -105,7 +113,7 @@ struct DeskThreadView: View {
                     } else {
                         Button("[REPLY]") { reply(thread.sender); dismiss() }.foregroundStyle(TUITheme.accent)
                     }
-                    ForEach(Array(thread.lines.enumerated()), id: \.offset) { _, line in Text(line).textSelection(.enabled) }
+                    ForEach(Array(thread.lines.enumerated()), id: \.offset) { _, line in TerminalMessage(text: line) }
                     ForEach(store.messages.filter { thread.mailIds.contains($0.id) }) { item in
                         HStack {
                             Text(item.receipt.uppercased()).foregroundStyle(TUITheme.dim)
