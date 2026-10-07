@@ -107,6 +107,7 @@ export const nodeUnit = (input: {
   readonly binary: string;
   readonly data: string;
   readonly environment: string;
+  readonly storageDiagnostic?: string;
   readonly restartGate?:
     | { readonly path: string; readonly address: string }
     | undefined;
@@ -138,6 +139,14 @@ export const nodeUnit = (input: {
               [
                 "ExecStartPost",
                 `/usr/local/bin/node ${quote(input.restartGate.path)} ${quote(input.restartGate.address)} node`,
+              ] satisfies readonly [string, string],
+            ]),
+        ...(input.storageDiagnostic === undefined
+          ? []
+          : [
+              [
+                "ExecStopPost",
+                `-/usr/bin/python3 ${quote(input.storageDiagnostic)} diagnose`,
               ] satisfies readonly [string, string],
             ]),
         ["EnvironmentFile", input.environment.replaceAll("%", "%%")],
