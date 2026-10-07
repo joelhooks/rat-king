@@ -113,7 +113,12 @@ const makeLeases = (store: typeof MailboxStore.Service): LeaseInterface =>
 
         const current = tx.lease();
 
-        if (current && current.expiresAt > now) {
+        if (
+          current &&
+          current.expiresAt > now &&
+          (input.leaseId !== current.leaseId ||
+            input.generation !== current.generation)
+        ) {
           throw failure("LeaseHeld", 409);
         }
 

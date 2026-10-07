@@ -15,7 +15,7 @@ import { Socket } from "effect/socket";
 import { base64url, serviceToken } from "./auth.ts";
 import { clientError, MailboxClientError } from "./error.ts";
 import { importSigning } from "./identity.ts";
-import type { Batch, ClientConfig, LeaseFence } from "./index.ts";
+import type { Batch, ClientConfig, LeaseFence } from "./mailbox.ts";
 
 export class WebSocketPort extends Context.Service<
   WebSocketPort,

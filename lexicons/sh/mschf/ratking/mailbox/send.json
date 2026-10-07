@@ -54,7 +54,7 @@
           "description": "Authenticated DID is not authorized."
         },
         {
-          "name": "IdempotencyConflict",
+          "name": "Conflict",
           "description": "The same sender DID plus TID exists with a different envelope or recipient."
         },
         {

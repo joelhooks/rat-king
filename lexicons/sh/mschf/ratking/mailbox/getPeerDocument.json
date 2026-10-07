@@ -1,0 +1,29 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.mailbox.getPeerDocument",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Authenticated public-key directory. Caller and requested DID must be allowlisted. Returns only registered public key documents, without services or private host information. Registration is immutable; conflicting documents are refused.",
+      "parameters": {
+        "type": "params",
+        "required": ["did"],
+        "properties": { "did": { "type": "string", "format": "did" } }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["document"],
+          "properties": { "document": { "type": "ref", "ref": "sh.mschf.ratking.defs#didDocument" } }
+        }
+      },
+      "errors": [
+        { "name": "AuthRequired" },
+        { "name": "Forbidden" },
+        { "name": "DocumentNotFound" },
+        { "name": "MailboxUnavailable" }
+      ]
+    }
+  }
+}

@@ -59,7 +59,7 @@ node /tmp/mailbox.mjs ack --as example --sender did:web:sender.invalid --tid '<m
 node /tmp/mailbox.mjs lease release --as example --lease-id '<leaseId>' --generation 1
 ```
 
-Use the lease ID and generation returned by acquire, not fixed values. Acquire refuses an unexpired holder, including the same caller. The server clamps expiry to five minutes. Renew, release, deliver and ack require the current fence. Deliver records runtime dispatch; ack records completion after the turn. Neither polling nor watching performs either operation.
+Use the lease ID and generation returned by acquire, not fixed values. Acquire refuses an unexpired holder unless the same DID supplies the current leaseId and generation as crash-handover proof. A changed sessionId alone is not proof. The server clamps expiry to five minutes. Renew, release, deliver and ack require the current fence. Deliver records runtime dispatch; ack means the recipient has durably taken the message in, not that the agent turn finished. Neither polling nor watching performs either operation.
 
 ## Network package
 

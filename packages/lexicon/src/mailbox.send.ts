@@ -43,7 +43,7 @@ export const KnownErrors = [
   "InvalidRequest",
   "AuthRequired",
   "Forbidden",
-  "IdempotencyConflict",
+  "Conflict",
   "UnsupportedEnvelope",
   "MailboxUnavailable",
 ] as const;
