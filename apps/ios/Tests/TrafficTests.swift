@@ -48,6 +48,33 @@ final class TrafficTests: XCTestCase {
             XCTAssertEqual(TrafficEntry.shortName("did:web:" + name + ".example.invalid"), name + ".example.invalid")
         }
     }
+    func testDetailProjectionAgainstGeneratedJournalCommands() throws {
+        var seed: UInt64 = 563
+        for _ in 0..<100 {
+            var journal = TrafficJournal(), model: [TrafficEntry] = []
+            var selected: TrafficEntry?
+            for seq in 1...80 {
+                seed = seed &* 6364136223846793005 &+ 1
+                var wire = try trafficWire(Int64(seq)).object()
+                let messageId = (seed >> 32) % 3 == 0 ? "3m5abcde23456" : "3m5abcde23457"
+                wire["messageId"] = .string(messageId)
+                wire["time"] = .string("2026-01-01T12:00:\(String(format: "%02d", 80 - seq > 59 ? 59 : 80 - seq)).000Z")
+                let entry = try TrafficEntry(.map(wire))
+                try journal.append(trafficPage([.map(wire)], cursor: Int64(seq))); model.append(entry)
+                if selected == nil || (seed >> 40) % 11 == 0 { selected = entry }
+                let anchor = try XCTUnwrap(selected)
+                let detail = TrafficDetail(selected: anchor, entries: journal.entries)
+                let expected = model.filter { $0.messageId == anchor.messageId }
+                XCTAssertEqual(detail.selected, anchor)
+                XCTAssertEqual(detail.events, expected) // arrival sequence, not skewed clocks
+                for state in TrafficDetail.stages {
+                    XCTAssertEqual(detail.observations(for: state), expected.filter { $0.state == state })
+                }
+                XCTAssertEqual(detail.otherEvents, expected.filter { !TrafficDetail.stages.contains($0.state) })
+                XCTAssertEqual(journal.entries, model) // display never mutates the source
+            }
+        }
+    }
     @MainActor func testRealLifecycleCommandsCatchUpReconnectAndRejectStoppedTaskResults() async throws {
         let reached = expectation(description: "second connection live and waiting for notices")
         let service = TrafficModelService(reached: reached)

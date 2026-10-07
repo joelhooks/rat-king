@@ -49,6 +49,19 @@ struct TrafficJournal {
     }
 }
 
+// Detail Lens: read-only projection. Identity is a message ID, never a list offset.
+struct TrafficDetail: Sendable {
+    static let stages = ["accepted", "queued", "delivered", "acked"]
+    let selected: TrafficEntry
+    let events: [TrafficEntry]
+    init(selected: TrafficEntry, entries: [TrafficEntry]) {
+        self.selected = selected
+        events = entries.filter { $0.messageId == selected.messageId }.sorted { $0.seq < $1.seq }
+    }
+    func observations(for state: String) -> [TrafficEntry] { events.filter { $0.state == state } }
+    var otherEvents: [TrafficEntry] { events.filter { !Self.stages.contains($0.state) } }
+}
+
 // Observer-shaped ports: there is no lease, delivery/ack operation or payload.
 struct TrafficConnection: Sendable {
     let authenticate: @Sendable () async throws -> Void

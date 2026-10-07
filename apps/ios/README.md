@@ -69,6 +69,24 @@ Selecting Traffic while foregrounded opens `mailbox.subscribeTraffic` without UR
 
 Leaving the tab or backgrounding pauses the stream. The in-memory journal and cursor survive tab, foreground and socket reconnects. A process restart replays from zero; no metadata cache is written to disk. Capture begins at server deployment with no earlier backfill. The LIVE/PAUSED indicator reflects this stream, not the inbox lease; RECONNECT explicitly restarts it. A forbidden list response pauses instead of retrying indefinitely.
 
+Tap any Traffic event to inspect its full sender and recipient DIDs, message ID and ciphertext size. The detail groups all captured events with that message ID into accepted → queued → delivered → acked stages, showing every observed UTC timestamp and both sequence numbers. Missing stages say `not observed`, not pending or successful. Repeated observations remain visible; failed, expired and future states appear separately. Selection stays anchored to the tapped event while new traffic arrives. These are journal observation times, not inferred transport times.
+
+The message-text section is a placeholder only. No sealed CC, content fetch, envelope persistence or decryption of another agent's mail is added.
+
+### Pi TUI presentation
+
+The native views adapt these [Pi TUI patterns](https://pi-tui.ratstack.sh/patterns.md); they do not embed the Pi runtime:
+
+- [Detail Lens](https://pi-tui.ratstack.sh/patterns/detail-lens.md): Traffic metadata and stage sections project one read-only journal snapshot.
+- [Identity Anchor](https://pi-tui.ratstack.sh/patterns/identity-anchor.md): Traffic navigation stores the event sequence, not a row offset; later events do not change the selected message.
+- [Tab Deck](https://pi-tui.ratstack.sh/patterns/tab-deck.md): numbered Mail, Compose, Identity and Traffic strip; hardware keyboard Command+1–4 selects tabs without capturing draft numerals.
+- [Status Ribbon](https://pi-tui.ratstack.sh/patterns/status-ribbon.md): compact transport/security and count footer with a narrow-width fallback.
+- [Shared Shell](https://pi-tui.ratstack.sh/patterns/shared-shell.md): straight borders, section titles and common spacing around the snooze dialog, Identity sections and Traffic detail.
+- [Message Fold](https://pi-tui.ratstack.sh/patterns/message-fold.md): long thread bodies have a four-line preview and explicit full-message control. Option selection has a marked border and `[x]` indicator.
+- [Palette Deck](https://pi-tui.ratstack.sh/patterns/palette-deck.md): centralized semantic dark/light colours follow the device appearance. The existing pixel font stays.
+
+Hints describe actual touch gestures. Traffic also binds `r` to reconnect and Escape to back. The swipe recognizer, arbitration and four real-touch tests are unchanged. Terminal-column and ANSI-style checks do not apply to SwiftUI; native width/theme review is separate from the reference catalog's 40/60/80/120-column checks. The launch-only Traffic preview uses invented metadata and compiles out of Release.
+
 Tests compare generated append/replay/malformed-page commands against a small journal model. A fake observer service drives the real lifecycle through auth/ready, multiple catch-up pages, socket rollover, pause, late notices and foreground resume. These tests do not prove a deployed observer grant or a physical-phone stream.
 
 ## Evidence and remaining proof
