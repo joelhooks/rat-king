@@ -2,6 +2,8 @@ import SwiftUI
 
 struct TrafficView: View {
     let store: TrafficStore
+    var copies: [CarbonCopy] = []
+    private var unlinked: [CarbonCopy] { copies.filter { copy in !store.journal.entries.contains(where: copy.matches) } }
     @State private var path: [Int64] = []
     var body: some View {
         NavigationStack(path: $path) {
@@ -11,12 +13,18 @@ struct TrafficView: View {
                     Spacer()
                     Button("[r reconnect]") { store.stop(); store.start() }.keyboardShortcut("r", modifiers: []).foregroundStyle(TUITheme.accent)
                 }.padding(12)
-                TerminalHints(text: "tap row → details · metadata only")
+                TerminalHints(text: "tap row → details · sealed copies when available")
                 if let error = store.lastError { Text("! " + error).foregroundStyle(TUITheme.err).padding(12) }
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 0) {
                         if store.journal.entries.isEmpty {
                             Text("No captured traffic yet. Capture starts at deploy.").foregroundStyle(TUITheme.dim).padding(12)
+                        }
+                        ForEach(unlinked) { copy in
+                            TerminalPanel(title: "UNLINKED COPY") {
+                                CopyContentView(copy: copy)
+                                Text("No matching primary observed. Not attached to a traffic row.").foregroundStyle(TUITheme.warn)
+                            }.padding(12)
                         }
                         ForEach(store.journal.entries.reversed()) { entry in
                             Button { path.append(entry.seq) } label: {
@@ -40,7 +48,7 @@ struct TrafficView: View {
             }.background(TUITheme.bg).toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: Int64.self) { seq in
                 if let selected = store.journal.entries.first(where: { $0.seq == seq }) {
-                    TrafficDetailView(detail: TrafficDetail(selected: selected, entries: store.journal.entries))
+                    TrafficDetailView(detail: TrafficDetail(selected: selected, entries: store.journal.entries), copies: copies.filter { $0.matches(selected) })
                 }
             }
         }.font(TUITheme.monoFont).foregroundStyle(TUITheme.fg).tint(TUITheme.accent)
@@ -49,6 +57,7 @@ struct TrafficView: View {
 
 struct TrafficDetailView: View {
     let detail: TrafficDetail
+    var copies: [CarbonCopy] = []
     @Environment(\.dismiss) private var dismiss
     private func timestamp(_ date: Date) -> String { ISO8601DateFormatter.fractional.string(from: date) }
     var body: some View {
@@ -76,9 +85,13 @@ struct TrafficDetailView: View {
                         observation(event)
                     }
                 }
-                TerminalPanel(title: "MESSAGE TEXT / NOT AVAILABLE") {
-                    Text("Traffic contains metadata, not message text.").foregroundStyle(TUITheme.dim)
-                    Text("A sealed copy to this phone is not enabled. Content policy is pending; no other agent's mail is decrypted here.").foregroundStyle(TUITheme.dim)
+                TerminalPanel(title: copies.isEmpty ? "MESSAGE TEXT / NOT COPIED" : "MESSAGE TEXT / CC COPY") {
+                    if copies.isEmpty {
+                        Text("content not copied to this phone").foregroundStyle(TUITheme.dim)
+                    } else {
+                        ForEach(copies) { copy in CopyContentView(copy: copy) }
+                        Text("Copy received by this phone. Primary delivery is shown only in the journal above.").foregroundStyle(TUITheme.dim)
+                    }
                 }.accessibilityIdentifier("traffic-content-placeholder")
             }.padding(12)
         }.background(TUITheme.bg).toolbar(.hidden, for: .navigationBar)
@@ -93,6 +106,20 @@ struct TrafficDetailView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(timestamp(event.time)).textSelection(.enabled)
             Text("journal #\(event.seq) · recipient #\(event.recipientSeq)").font(TUITheme.microFont).foregroundStyle(TUITheme.dim)
+        }
+    }
+}
+
+struct CopyContentView: View {
+    let copy: CarbonCopy
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(copy.linkValid ? "CC COPY / VERIFIED SENDER" : "CC COPY / UNLINKED").foregroundStyle(TUITheme.warn)
+            Text("FROM " + copy.sender).textSelection(.enabled)
+            Text("TO " + (copy.recipient ?? "unknown")).textSelection(.enabled)
+            Text("PRIMARY " + (copy.primaryMessageId ?? "unknown")).foregroundStyle(TUITheme.dim)
+            Text("COPY RECEIVED " + copy.time).font(TUITheme.microFont).foregroundStyle(TUITheme.dim)
+            Text(copy.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
         }
     }
 }

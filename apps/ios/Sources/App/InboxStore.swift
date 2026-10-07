@@ -48,6 +48,7 @@ final class InboxStore {
     private(set) var identity: PhoneIdentity?
     private(set) var traffic: TrafficStore?
     private(set) var messages: [MailItem] = []
+    private(set) var copies: [CarbonCopy] = []
     private(set) var peers: [String: DIDDocument] = [:]
     private(set) var lastError: String?
     private(set) var sending = false
@@ -83,6 +84,7 @@ final class InboxStore {
                 let saved = try Value.json(data)
                 messages = try saved.required("messages").list().map(MailItem.init)
                 preferences = try saved.required("preferences").object().mapValues(ThreadPreferences.init)
+                copies = try saved["copies"]?.list().map(CarbonCopy.init) ?? []
             } else {
                 // A fresh transport has no local threads to remind about. Retire
                 // previous-network reminders without deleting its stored inbox.
@@ -224,7 +226,14 @@ final class InboxStore {
         let receipt = try event.required("receipt"), message = try receipt.required("message")
         let sender = try message.required("senderDid").text, tid = try message.required("messageId").text
         let id = sender + "/" + tid, status = try receipt.required("state").text
+        let kind = event["$type"]
+        guard kind == .string(Mailbox.namespace + "defs#messageEvent") || kind == .string(Mailbox.namespace + "defs#receiptEvent") else { throw ProtocolError.invalid("Unknown mailbox event") }
         if let index = messages.firstIndex(where: { $0.id == id }) { messages[index].receipt = status; try saveInbox() }
+        if let index = copies.firstIndex(where: { $0.id == id }) {
+            copies[index].receipt = status; try saveInbox()
+            try await receiveCopy(copies[index], client: client, lease: lease, token: token)
+            return
+        }
         guard let envelope = event["envelope"] else {
             guard event["$type"] == .string(Mailbox.namespace + "defs#receiptEvent") else { throw ProtocolError.invalid("Unknown mailbox event") }; return
         }
@@ -235,9 +244,17 @@ final class InboxStore {
         let payload = try Envelope.open(envelope, did: client.identity.did, keyId: client.identity.encryptionId, key: client.identity.encryption) { did, id in
             guard let peer = peers[did] else { throw ProtocolError.invalid("Import the sender's public DID document before reading") }; return try peer.signingKey(id)
         }
-        let body = try payload.required("body").data
-        let text = String(data: body, encoding: .utf8) ?? "[binary: \(body.count) bytes]"
-        let item = MailItem(id: id, message: message, sender: sender, text: text, receipt: status, replyTo: payload["replyTo"])
+        let routed = try OpenedPhoneMessage.route(payload, message: message,
+            time: receipt["time"].flatMap { try? $0.text } ?? ISO8601DateFormatter.fractional.string(from: Date()), receipt: status)
+        let item: MailItem
+        switch routed {
+        case let .copy(copy):
+            copies.append(copy); try saveInbox()
+            try await receiveCopy(copy, client: client, lease: lease, token: token)
+            return
+        case let .mail(mail): item = mail
+        }
+        let text = item.text
         _ = try item.record()
         _ = try inboxThreadAddress(item, messages: messages, preferences: preferences)
         var displayed = status
@@ -262,6 +279,20 @@ final class InboxStore {
         center.removePendingNotificationRequests(withIdentifiers: [threadId]); center.removeDeliveredNotifications(withIdentifiers: [threadId])
         now = Date(); armSnoozeTimer(); cancelClosedNotifications()
     }
+    private func receiveCopy(_ copy: CarbonCopy, client: Mailbox, lease: Lease, token: UInt64) async throws {
+        // Both transitions address only the independently sealed copy. Ack means
+        // received by this phone, never that the primary recipient read it.
+        var status = copy.receipt
+        do {
+            status = try await copy.receive { operation, message in
+                let receipt = try await client.transition(operation, message: message, lease: lease); try current(token)
+                return try receipt.required("state").text
+            }
+        } catch let error as XRPCError where error.code == "InvalidTransition" {
+            status = "historical" // Later receipt events establish the real copy state.
+        }
+        if let index = copies.firstIndex(where: { $0.id == copy.id }) { copies[index].receipt = status; try saveInbox() }
+    }
     func acknowledge(_ item: MailItem) async {
         guard state == .live, let client, let lease else { return }; let token = generation
         do {
@@ -274,7 +305,7 @@ final class InboxStore {
         do { try saveInbox() } catch { preferences[id] = previous; throw error }
     }
     private func saveInbox() throws {
-        try writeLocal("inbox.json", Value.map(["messages": .array(messages.map(\.wire)), "preferences": .map(preferences.mapValues(\.wire))]).jsonData())
+        try writeLocal("inbox.json", Value.map(["messages": .array(messages.map(\.wire)), "copies": .array(copies.map(\.wire)), "preferences": .map(preferences.mapValues(\.wire))]).jsonData())
     }
     func archive(_ thread: InboxThread) async {
         guard state == .live else { return }

@@ -56,7 +56,7 @@ struct TrafficDetail: Sendable {
     let events: [TrafficEntry]
     init(selected: TrafficEntry, entries: [TrafficEntry]) {
         self.selected = selected
-        events = entries.filter { $0.messageId == selected.messageId }.sorted { $0.seq < $1.seq }
+        events = entries.filter { $0.messageId == selected.messageId && $0.senderDid == selected.senderDid && $0.recipientDid == selected.recipientDid }.sorted { $0.seq < $1.seq }
     }
     func observations(for state: String) -> [TrafficEntry] { events.filter { $0.state == state } }
     var otherEvents: [TrafficEntry] { events.filter { !Self.stages.contains($0.state) } }

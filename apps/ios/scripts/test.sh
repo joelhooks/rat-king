@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/../../.."
 [[ -f apps/ios/Config/Local.xcconfig ]] || cp apps/ios/Config/Local.xcconfig.example apps/ios/Config/Local.xcconfig
+node apps/ios/scripts/cc-vector.ts
 xcodegen generate --spec apps/ios/project.yml
 mkdir -p apps/ios/build
 log="apps/ios/build/interop-$(date +%s).log"
