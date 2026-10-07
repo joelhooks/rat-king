@@ -32,6 +32,9 @@ targets:
     platform: iOS
     sources:
       - path: Tests
+      - path: build/cc-v1.json
+        optional: true
+        buildPhase: resources
       - path: ../../packages/lexicon/test/fixtures
         type: folder
         buildPhase: resources

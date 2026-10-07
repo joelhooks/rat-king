@@ -52,14 +52,14 @@ struct TerminalView: View {
                 case 0: inbox
                 case 1: compose
                 case 3:
-                    if let traffic = store.traffic { TrafficView(store: traffic) } else { Text("Phone identity required for traffic.").foregroundStyle(TUITheme.warn) }
+                    if let traffic = store.traffic { TrafficView(store: traffic, copies: store.copies) } else { Text("Phone identity required for traffic.").foregroundStyle(TUITheme.warn) }
                 default: identity
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
             ThinDivider()
             ViewThatFits(in: .horizontal) {
                 HStack {
-                    Text(tab == 3 ? "OBSERVER / NO CONTENT" : "E2EE / SECURE ENCLAVE")
+                    Text(tab == 3 ? "OBSERVER / SEALED CC" : "E2EE / SECURE ENCLAVE")
                     Spacer()
                     Text(tab == 3 ? "\(store.traffic?.journal.entries.count ?? 0) EVENTS" : "\(store.messages.count) MAIL")
                 }

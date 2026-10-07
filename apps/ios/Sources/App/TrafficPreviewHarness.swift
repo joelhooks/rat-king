@@ -18,8 +18,16 @@ struct TrafficPreviewHarness: View {
         } : []
         return try TrafficPage(.map(["cursor": .string("4"), "events": .array(events)]))
     })
+    private var copies: [CarbonCopy] {
+        guard ProcessInfo.processInfo.arguments.contains("--traffic-copy-test") else { return [] }
+        let primary: Value = .map(["senderDid": .string("did:web:sample-sender.example.invalid"), "recipientDid": .string("did:web:sample-recipient.example.invalid"), "messageId": .string("3m5abcde23456")])
+        guard let body = try? Value.map(["$type": .string(CarbonCopy.marker), "primary": primary, "body": .string("Synthetic copied content")]).jsonData(),
+              let copy = try? CarbonCopy.decode(.map(["aad": .map(["senderDid": .string("did:web:sample-sender.example.invalid"), "recipientDid": .string("did:web:phone.example.invalid"), "messageId": .string("3m5abcde23457")]),
+                "replyTo": .map(["senderDid": .string("did:web:sample-sender.example.invalid"), "messageId": .string("3m5abcde23456")]), "body": .bytes(body)]), time: "2026-01-01T12:00:05.000Z", receipt: "acked") else { return [] }
+        return [copy]
+    }
     var body: some View {
-        TrafficView(store: store)
+        TrafficView(store: store, copies: copies)
             .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("Dark") ? .dark : .light)
             .task { store.start() }.onDisappear { store.stop() }
     }
