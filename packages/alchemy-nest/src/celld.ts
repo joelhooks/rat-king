@@ -53,6 +53,7 @@ export const Node = (
               path: `${host.home}/.local/share/rat-king/bin/restart-gate.mjs`,
             },
       restartOn: [],
+      storageDiagnostic: `${host.home}/.local/share/rat-king/bin/storage-maintenance.py`,
       workerIPv4,
     });
 
@@ -95,7 +96,8 @@ export const Node = (
         environment.sha256,
         binary.sha256,
         bucket.resource.name,
-        bucket.restartGate?.sha256 ?? bucket.resource.name
+        bucket.restartGate?.sha256 ?? bucket.resource.name,
+        bucket.storageMaintenance.sha256
       ).pipe(
         Output.map((values) => ({
           ...declaration,
@@ -103,8 +105,8 @@ export const Node = (
           publicUrl: `http://${workerIPv4}:18787`,
           restartOn:
             bucket.restartGate === undefined
-              ? [values[3], values[4]]
-              : [values[3], values[4], values[6]],
+              ? [values[3], values[4], values[7]]
+              : [values[3], values[4], values[6], values[7]],
           version: "v0.6.1" as const,
         }))
       )

@@ -15,6 +15,11 @@ import {
   providers as hostProviders,
 } from "./providers.ts";
 import { sliceUnit, storeUnit } from "./service-units.ts";
+import { storageMaintenanceScript } from "./storage-maintenance-script.ts";
+import {
+  storageRetentionTimer,
+  storageRetentionUnit,
+} from "./storage-maintenance.ts";
 import { renderUnit } from "./systemd.ts";
 
 export const Slice = (home: string, memoryMax = "4G", cpuQuota = "300%") =>
@@ -143,6 +148,37 @@ export const Bucket = (
       )
     );
 
+    const maintenance = yield* RemoteFile("storage-maintenance", {
+      content: storageMaintenanceScript,
+      mode: 0o600,
+      path: Output.interpolate`${bin.path}/storage-maintenance.py`,
+    });
+
+    const retention = yield* SystemdUnit(
+      "storage-retention",
+      Output.all(
+        maintenance.path,
+        maintenance.sha256,
+        unit.sha256,
+        props.slice
+      ).pipe(
+        Output.map(([path, scriptHash, unitHash, sliceHash]) =>
+          storageRetentionUnit(host.home, path, [
+            scriptHash,
+            unitHash,
+            sliceHash,
+          ])
+        )
+      )
+    );
+
+    yield* SystemdUnit(
+      "storage-retention-timer",
+      Output.all(retention.sha256, maintenance.sha256).pipe(
+        Output.map((ready) => storageRetentionTimer(host.home, ready))
+      )
+    );
+
     const resource = yield* BucketResource("bucket", {
       config: identity.path,
       endpoint: "http://127.0.0.1:18333",
@@ -171,6 +207,7 @@ export const Bucket = (
       resource,
       restartGate: gate,
       secretKey: secret.text,
+      storageMaintenance: maintenance,
     };
   }).pipe(Namespace.push(id));
 
