@@ -88,7 +88,7 @@ const refused = <A, E>(effect: Effect.Effect<A, E>, error: string) =>
     )
   );
 
-type Kind = "acquire" | "renew" | "advance" | "release" | "stale";
+type Kind = "acquire" | "renew" | "advance" | "release" | "stale" | "handover";
 
 const checkModel = async (model: Model, real: Real) => {
   const actual = await real.run(real.tx((tx) => tx.lease()));
@@ -138,6 +138,33 @@ class Command implements fc.AsyncCommand<Model, Real> {
   check(model: Readonly<Model>) {
     return this.kind !== "stale" || model.old.length > 0;
   }
+  async handover(model: Model, real: Real) {
+    const previous = model.holder;
+
+    if (!previous || Date.parse(previous.expiresAt) <= model.now) {
+      return;
+    }
+
+    const input = Schema.decodeUnknownSync(Acquire.Input)({
+      ...acquireInput(model.now, Math.max(1, this.delta)),
+      ...fenceInput(previous),
+      harness: {
+        $type: "sh.mschf.ratking.runtime.lease#pi",
+        sessionId: `restart-${model.generation}`,
+      },
+    });
+
+    const lease = await real.run(real.leases.acquire(input));
+    model.old.push(previous);
+    model.generation += 1;
+    expect(lease.generation).toBe(model.generation);
+    expect(lease.harness).toEqual(input.harness);
+    model.holder = lease;
+    await real.run(refused(real.leases.acquire(input), "LeaseHeld"));
+    await real.run(
+      refused(real.leases.release(fenceInput(previous)), "LeaseMismatch")
+    );
+  }
   async run(model: Model, real: Real) {
     const live =
       model.holder !== undefined &&
@@ -168,6 +195,11 @@ class Command implements fc.AsyncCommand<Model, Real> {
           model.now + Math.min(this.delta, 300_000)
         );
         model.holder = lease;
+        break;
+      }
+
+      case "handover": {
+        await this.handover(model, real);
         break;
       }
 
@@ -311,7 +343,14 @@ const Delta = Schema.Int.check(
 
 const CommandSpec = Schema.Struct({
   delta: Delta,
-  kind: Schema.Literals(["acquire", "renew", "advance", "release", "stale"]),
+  kind: Schema.Literals([
+    "acquire",
+    "renew",
+    "advance",
+    "release",
+    "stale",
+    "handover",
+  ]),
 });
 
 it.effect.prop(

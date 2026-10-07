@@ -345,7 +345,7 @@ export const mailboxHandlers = (policy: MailboxPolicy) =>
 
             if (existing) {
               if (existing.canonicalBytes !== bytes) {
-                throw failure("IdempotencyConflict", 409);
+                throw failure("Conflict", 409);
               }
 
               return { receipt: existing.admission };

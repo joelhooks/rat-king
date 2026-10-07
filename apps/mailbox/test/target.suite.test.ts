@@ -351,7 +351,7 @@ const messageCommand = Effect.fn("Suite.messageCommand")(
           real.sender.send({
             envelope: { ...envelope, ciphertext: new Uint8Array([1]) },
           }),
-          "IdempotencyConflict",
+          "Conflict",
           409
         );
         break;

@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Exclusive per DID, no stealing. Server mints leaseId and the next monotonically increasing generation, and clamps expiresAt to at most 5 minutes ahead.",
+      "description": "Exclusive per DID. A signed request from the same DID with the current leaseId and generation may hand over to a new harness session, fencing the old holder. Otherwise a live lease returns LeaseHeld. Server clamps expiresAt to at most 5 minutes ahead.",
       "input": {
         "encoding": "application/json",
         "schema": {
@@ -15,6 +15,8 @@
             "expiresAt"
           ],
           "properties": {
+            "leaseId": { "type": "string", "format": "tid" },
+            "generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
             "did": {
               "type": "string",
               "format": "did"

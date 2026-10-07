@@ -4,6 +4,7 @@ import * as Defs from "@rat-king/lexicon/defs";
 import { MailboxServer, serverLayer } from "@rat-king/lexicon/mailbox-server";
 import * as Ack from "@rat-king/lexicon/mailbox.ack";
 import * as Deliver from "@rat-king/lexicon/mailbox.deliver";
+import * as Peer from "@rat-king/lexicon/mailbox.getPeerDocument";
 import * as List from "@rat-king/lexicon/mailbox.list";
 import * as Traffic from "@rat-king/lexicon/mailbox.listTraffic";
 import * as Send from "@rat-king/lexicon/mailbox.send";
@@ -21,7 +22,7 @@ import { Clock, Effect, Layer, Schema } from "effect";
 
 import { authenticate, authenticateClaims, ReplayAuthority } from "./auth.ts";
 import type { Bindings } from "./bindings.ts";
-import { documentsLayer, didAllowlist } from "./documents.ts";
+import { documentsLayer, didAllowlist, peerDocument } from "./documents.ts";
 import { failure } from "./failure.ts";
 import { validLease } from "./lease.ts";
 import {
@@ -820,9 +821,13 @@ export const fetchRequest = (
 
     if (
       !url.pathname.startsWith("/xrpc/") ||
-      ![...procedures, List.Method, Traffic.Method, Resolve.Method].some(
-        (method) => method.nsid === nsid
-      )
+      ![
+        ...procedures,
+        List.Method,
+        Traffic.Method,
+        Resolve.Method,
+        Peer.Method,
+      ].some((method) => method.nsid === nsid)
     ) {
       return Response.json({ error: "InvalidRequest" }, { status: 404 });
     }
@@ -833,6 +838,24 @@ export const fetchRequest = (
       now: yield* Clock.currentTimeMillis,
       nsid,
     }).pipe(Effect.provide(Layer.merge(documentsLayer(env), replayLayer(env))));
+
+    if (nsid === Peer.Method.nsid) {
+      if (request.method !== "GET") {
+        return yield* Effect.fail(failure("InvalidRequest"));
+      }
+
+      const params = yield* Peer.decodeParams([
+        ...url.searchParams.entries(),
+      ]).pipe(Effect.mapError(() => failure("InvalidRequest")));
+
+      const document = yield* peerDocument(env, issuer, params.did);
+
+      const output = yield* Schema.decodeUnknownEffect(Peer.Output)({
+        document,
+      }).pipe(Effect.mapError(() => failure("MailboxUnavailable", 503)));
+
+      return Response.json(yield* Schema.encodeEffect(Peer.Output)(output));
+    }
 
     const trafficResponse = yield* trafficRequest({
       issuer,

@@ -15,6 +15,12 @@ export const Input = Schema.StructWithRest(
     expiresAt: Runtime.lexString({ format: "datetime", type: "string" }).pipe(
       Schema.brand("Lexicon:datetime")
     ),
+    generation: Schema.optionalKey(
+      Schema.Int.check(
+        Schema.isGreaterThanOrEqualTo(1),
+        Schema.isLessThanOrEqualTo(9_007_199_254_740_991)
+      )
+    ),
     harness: Schema.Union([
       Schema.StructWithRest(
         Schema.Struct({
@@ -164,6 +170,11 @@ export const Input = Schema.StructWithRest(
         )
       ),
     ]),
+    leaseId: Schema.optionalKey(
+      Runtime.lexString({ format: "tid", type: "string" }).pipe(
+        Schema.brand("Lexicon:tid")
+      )
+    ),
   }),
   [Schema.Record(Schema.String, Runtime.Data)]
 );
