@@ -1,7 +1,7 @@
 import { objectArchiveScript } from "../../packages/alchemy-nest/src/object-archive-script.ts";
 
 export const backupScript = String.raw`
-import datetime, hashlib, json, os, pathlib, shutil, stat, subprocess, sys, tarfile, uuid
+import datetime, hashlib, json, os, pathlib, shutil, signal, sqlite3, stat, subprocess, sys, tarfile, tempfile, uuid
 operation, data_arg, backup_arg = sys.argv[1:4]
 data, backup = pathlib.Path(data_arg), pathlib.Path(backup_arg)
 ${objectArchiveScript}
@@ -59,35 +59,56 @@ def staging_path():
         fail('Foreign staging path refused')
     return staging
 def validate_celld(archive):
-    seen = set()
-    for member in archive.getmembers():
-        path = pathlib.PurePosixPath(member.name)
-        if path.is_absolute() or '..' in path.parts or not path.parts or path.parts[0] != 'celld' or not (member.isdir() or member.isfile()) or member.name in seen:
-            fail('Unsafe celld snapshot member refused')
-        require_safe_key(member.name)
-        seen.add(member.name)
+    with tempfile.TemporaryDirectory() as tmp, sqlite3.connect(str(pathlib.Path(tmp) / 'seen.sqlite')) as seen:
+        seen.execute('PRAGMA cache_size=-2048')
+        seen.execute('CREATE TABLE names (name TEXT PRIMARY KEY)')
+        for member in archive:
+            path = pathlib.PurePosixPath(member.name)
+            if path.is_absolute() or '..' in path.parts or not path.parts or path.parts[0] != 'celld' or not (member.isdir() or member.isfile()):
+                fail('Unsafe celld snapshot member refused')
+            require_safe_key(member.name)
+            seen.execute('INSERT INTO names VALUES (?)', (member.name,))
+            archive.members.clear()
 no_links(data)
-mounted_share()
+if operation not in {'snapshot', 'arm', 'disarm'}:
+    mounted_share()
 if operation == 'preflight':
     checked_tree(data / 'celld')
     print('BACKUP_PREFLIGHT_PASSED')
+elif operation == 'arm':
+    marker = data / '.mailbox-backup-restart-required'
+    with marker.open('x') as stream:
+        stream.write('restart required\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+    print('BACKUP_RECOVERY_ARMED')
+elif operation == 'disarm':
+    (data / '.mailbox-backup-restart-required').unlink(missing_ok=True)
+    print('BACKUP_RECOVERY_DISARMED')
 elif operation == 'stage':
-    inactive()
     staging = data / ('.mailbox-backup-' + uuid.uuid4().hex)
     staging.mkdir(mode=0o700)
     print(str(staging))
 elif operation == 'snapshot':
+    signal.signal(signal.SIGALRM, lambda *_: fail('Local snapshot exceeded 5 second stop budget'))
+    signal.alarm(5)
     inactive()
     staging = staging_path()
     checked_tree(data / 'celld')
     target = staging / 'celld.tar'
-    with tarfile.open(target, 'x') as archive:
-        archive.add(data / 'celld', arcname='celld', recursive=True)
-    for name in ['objects.tar', 'celld.tar']:
-        sync_file(staging / name)
-        os.chmod(staging / name, 0o600)
-    with tarfile.open(staging / 'objects.tar') as archive:
-        validate_export(archive)
+    with target.open('xb') as destination, tarfile.open(fileobj=destination, mode='w|') as archive:
+        root = data / 'celld'
+        archive.add(root, arcname='celld', recursive=False)
+        for directory, _, files in os.walk(root):
+            parent = pathlib.Path(directory)
+            if parent != root:
+                archive.add(parent, arcname=parent.relative_to(data).as_posix(), recursive=False)
+            for name in files:
+                path = parent / name
+                archive.add(path, arcname=path.relative_to(data).as_posix(), recursive=False)
+                archive.members.clear()
+    sync_file(target)
+    os.chmod(target, 0o600)
     print('SNAPSHOT_KEY_PATTERN_ASSERTION_PASSED')
 elif operation == 'publish':
     staging = staging_path()
@@ -117,9 +138,17 @@ elif operation == 'publish':
         stream.flush()
         os.fsync(stream.fileno())
     (target / 'manifest.pending').rename(target / 'manifest.json')
-    for name in ['objects.tar', 'celld.tar']:
-        (staging / name).unlink()
-    staging.rmdir()
+    # Only recognized staging directories, only after manifest publication.
+    allowed = {'objects.tar', 'celld.tar', 'objects.tar.sqlite', 'objects.tar.sqlite-journal', 'objects.tar.data'}
+    for candidate in data.glob('.mailbox-backup-*'):
+        suffix = candidate.name.removeprefix('.mailbox-backup-')
+        if len(suffix) != 32 or any(ch not in '0123456789abcdef' for ch in suffix) or candidate.is_symlink() or not candidate.is_dir():
+            continue
+        children = list(candidate.iterdir())
+        if all(child.name in allowed and child.is_file() and not child.is_symlink() for child in children):
+            for child in children:
+                child.unlink()
+            candidate.rmdir()
     print('BACKUP_PUBLISHED ' + target.name)
 elif operation in ['restore-preflight', 'restore']:
     if operation == 'restore-preflight':
@@ -169,7 +198,9 @@ elif operation in ['restore-preflight', 'restore']:
         safe = tarfile.data_filter(member, destination)
         return safe.replace(mode=0o700 if safe.isdir() else 0o600)
     with tarfile.open(source / 'celld.tar') as archive:
-        archive.extractall(data, filter=secured_member)
+        for member in archive:
+            archive.extract(member, data, filter=secured_member)
+            archive.members.clear()
     # Never rely on the operator's umask, including when it is 002.
     os.chmod(data / 'celld', 0o700)
     if (data / 'celld').stat().st_mode & 0o777 != 0o700:

@@ -152,6 +152,7 @@ export const nodeUnit = (input: {
         ["EnvironmentFile", input.environment.replaceAll("%", "%%")],
         ["WorkingDirectory", input.data.replaceAll("%", "%%")],
         ["Environment", "CELLD_OTEL=0"],
+        ["Environment", "CELLD_LTX_RETENTION_SECS=604800"],
         ["Environment", quote(`CELLD_TEST_DATA_DIR=${input.data}`)],
         ["Slice", "rat-king.slice"],
         ["MemoryMax", "3G"],

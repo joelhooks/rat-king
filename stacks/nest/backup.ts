@@ -46,30 +46,40 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
   yield* ctl("is-active", "rat-king-seaweedfs.service");
   yield* ctl("is-active", "rat-king-celld.service");
   const began = yield* Clock.currentTimeMillis;
-  yield* checkpoint("ready");
-  yield* Effect.gen(function* quiesceSnapshotPublish() {
-    yield* ctl("stop", "rat-king-celld.service");
-    yield* checkpoint("stopped");
-    const staging = (yield* script("stage")).trim();
-    yield* must(shell, [
+  const staging = (yield* script("stage")).trim();
+
+  const objects = (action: string) =>
+    must(shell, [
       "python3",
       "-c",
       s3Script,
       `${input.home}/.config/rat-king/s3.json`,
       "http://127.0.0.1:18333",
       "@environment",
-      "export",
+      action,
       `${staging}/objects.tar`,
     ]);
+
+  yield* checkpoint("ready");
+  yield* objects("prepare");
+  yield* checkpoint("prepared");
+  yield* script("arm");
+  const stoppedAt = yield* Clock.currentTimeMillis;
+  yield* Effect.gen(function* quiesceSnapshotPublish() {
+    yield* ctl("stop", "rat-king-celld.service");
+    yield* checkpoint("stopped");
+    yield* objects("export-final");
     yield* checkpoint("exported");
     yield* script("snapshot", staging);
     yield* checkpoint("copied");
     yield* ctl("start", "rat-king-celld.service");
+    yield* script("disarm");
     yield* checkpoint("started");
     yield* Effect.log(
       "BACKUP_QUIESCE_MS",
-      (yield* Clock.currentTimeMillis) - began
+      (yield* Clock.currentTimeMillis) - stoppedAt
     );
+    yield* objects("pack");
     yield* Effect.log(
       (yield* script("publish", staging, input.version, input.commit)).trim()
     );
@@ -77,23 +87,10 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
   }).pipe(
     Effect.onError(() =>
       Effect.gen(function* recover() {
-        const restartRefused = state.matches("restartingCelld");
-
         yield* checkpoint("failed");
-
-        if (restartRefused) {
-          yield* must(shell, [
-            "systemctl",
-            "--user",
-            "stop",
-            "rat-king-celld.service",
-            "rat-king-seaweedfs.service",
-          ]);
-          yield* checkpoint("refused");
-        } else {
-          yield* ctl("start", "rat-king-celld.service");
-          yield* checkpoint("recovered");
-        }
+        yield* ctl("start", "rat-king-celld.service");
+        yield* script("disarm");
+        yield* checkpoint("recovered");
       }).pipe(
         Effect.catch((error) =>
           Effect.logError("BACKUP_RECOVERY_FAILED", error)

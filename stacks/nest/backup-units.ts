@@ -1,4 +1,5 @@
 import type { UnitProps } from "../../packages/alchemy-nest/src/systemd.ts";
+import { backupRecoveryScript } from "./backup-recovery.ts";
 
 const quote = (value: string): string =>
   `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("%", "%%").replaceAll("$", "$$")}"`;
@@ -28,6 +29,11 @@ export const backupUnit = (input: {
           "ExecStart",
           `/usr/bin/flock --nonblock ${quote(`${input.home}/.config/rat-king/mailbox-backup.lock`)} /usr/local/bin/node ${quote(`${input.home}/.local/share/rat-king/bin/mailbox-backup.mjs`)} ${[input.dataRoot, input.backupRoot, input.version, input.commit, input.home].map(quote).join(" ")}`,
         ],
+        [
+          "ExecStopPost",
+          `/usr/bin/python3 -c ${quote(`exec(${JSON.stringify(backupRecoveryScript)})`)} ${quote(input.dataRoot)}`,
+        ],
+        ["OOMPolicy", "stop"],
         ["Slice", "rat-king.slice"],
         ["MemoryMax", "256M"],
         ["MemorySwapMax", "0"],
