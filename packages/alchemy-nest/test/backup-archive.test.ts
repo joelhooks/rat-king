@@ -19,13 +19,10 @@ with tempfile.TemporaryDirectory() as tmp:
     (data/'celld').mkdir(parents=True)
     (data/'celld/state').write_bytes(payload)
     (data/'seaweedfs').mkdir()
-    (data/'seaweedfs/raw-volume').write_text('peer secret must never enter backup')
-    (data/'credentials.json').write_text('excluded invented key')
     backup.mkdir()
     original = subprocess.run
     def command(argv, **kwargs):
         if argv[0] == 'findmnt':
-            assert sys.argv[1] not in {'snapshot', 'arm', 'disarm'}, 'Stopped section accessed SMB mount'
             return subprocess.CompletedProcess(argv, 0, str(backup) + '\n', '')
         if argv[0] == 'systemctl':
             return subprocess.CompletedProcess(argv, 0, 'ActiveState=inactive\nResult=success\n', '')
@@ -41,7 +38,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 if stopped.code not in (None, 0):
                     raise
         return output.getvalue().strip()
-    objects = {'cells/example/state': payload, 'fleet/peer-auth.json': b'forbidden peer key'}
+    objects = {}
     expected_access = 'source-access'
     class Connection:
         def __init__(self, *args, **kwargs): pass
@@ -53,7 +50,6 @@ with tempfile.TemporaryDirectory() as tmp:
                 body = ('<ListBucketResult>' + ''.join('<Contents><Key>'+key+'</Key><ETag>&quot;'+hashlib.md5(objects[key]).hexdigest()+'&quot;</ETag></Contents>' for key in sorted(objects)) + '<IsTruncated>false</IsTruncated></ListBucketResult>').encode()
             else:
                 key = urllib.parse.unquote(self.url.split('/bucket/', 1)[1])
-                assert key != 'fleet/peer-auth.json', 'Peer key was accessed for export/import'
                 if self.method == 'PUT': objects[key] = self.body
                 body = objects[key] if self.method == 'GET' else b''
             response = io.BytesIO(body)
@@ -69,48 +65,27 @@ with tempfile.TemporaryDirectory() as tmp:
         with contextlib.redirect_stdout(io.StringIO()):
             exec(compile(object_script, 'object-adapter', 'exec'), {})
     write_credentials()
-    # Credential matching must span the streaming chunk boundary.
-    objects['cells/leaked'] = b'x' * (1024 * 1024 - 6) + expected_access.encode()
-    try:
-        object_action('prepare', root/'refused-objects.tar')
-        raise AssertionError('Split credential bytes were exported')
-    except RuntimeError:
-        pass
-    del objects['cells/leaked']
-    stale = data / ('.mailbox-backup-' + 'a' * 32)
-    stale.mkdir()
-    (stale/'objects.tar').write_bytes(b'old incomplete export')
-    foreign = data / ('.mailbox-backup-' + 'b' * 32)
-    foreign.mkdir()
-    (foreign/'user-work').write_bytes(b'preserve')
-    staging = pathlib.Path(run('stage', data))
-    objects['cells/removed'] = b'old'
-    object_action('prepare', staging/'objects.tar')
-    del objects['cells/removed']
-    objects['cells/example/state'] = b'changed'
-    object_action('export-final', staging/'objects.tar')
-    object_action('pack', staging/'objects.tar')
-    try:
-        run('publish', data, str(staging), 'invented-version', 'invented-commit')
-        raise AssertionError('Incomplete snapshot was published')
-    except FileNotFoundError:
-        assert stale.exists(), 'Failed publication cleaned stale staging'
-    run('snapshot', data, str(staging))
-    run('publish', data, str(staging), 'invented-version', 'invented-commit')
-    assert not stale.exists()
-    assert (foreign/'user-work').read_bytes() == b'preserve'
-    snapshots = list(backup.iterdir())
-    assert len(snapshots) == 1
-    source = snapshots[0]
-    assert set(path.name for path in source.iterdir()) == {'objects.tar.gz', 'celld.tar.gz', 'manifest.json'}
-    assert json.loads((source/'manifest.json').read_text())['format'] == 3
-    with tarfile.open(source/'objects.tar.gz') as archive:
-        assert json.load(archive.extractfile('format.json')) == {'format': 2}
-        entry = json.load(archive.extractfile('entry.json'))
-        assert entry['key'] == 'cells/example/state'
-        assert archive.extractfile(entry['member']).read() == b'changed'
-    with tarfile.open(source/'celld.tar.gz') as archive:
-        assert set(archive.getnames()) == {'celld', 'celld/state'}
+    # Build a format-3 backup by hand, as the retired exporter wrote it.
+    def member(archive, name, value):
+        info = tarfile.TarInfo(name)
+        info.size = len(value)
+        archive.addfile(info, io.BytesIO(value))
+    source = backup / ('20000102T030405.123456Z-' + 'd' * 32)
+    source.mkdir()
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode='w') as archive:
+        member(archive, 'format.json', b'{"format":2}')
+        entry = {'key': 'cells/example/state', 'member': 'objects/'+hashlib.sha256(b'cells/example/state').hexdigest()+'.blob', 'sha256': hashlib.sha256(b'changed').hexdigest()}
+        member(archive, 'entry.json', json.dumps(entry).encode())
+        member(archive, entry['member'], b'changed')
+    (source/'objects.tar.gz').write_bytes(gzip.compress(stream.getvalue()))
+    stream = io.BytesIO()
+    with tarfile.open(fileobj=stream, mode='w') as archive:
+        info = tarfile.TarInfo('celld'); info.type = tarfile.DIRTYPE
+        archive.addfile(info)
+        member(archive, 'celld/state', payload)
+    (source/'celld.tar.gz').write_bytes(gzip.compress(stream.getvalue()))
+    (source/'manifest.json').write_text(json.dumps({'format': 3, 'sha256': {name: hashlib.sha256((source/name).read_bytes()).hexdigest() for name in ['objects.tar.gz', 'celld.tar.gz']}}))
     restored = root/'restored'
     selected = run('restore-preflight', restored)
     assert not restored.exists(), 'Preflight gained directory ownership'
@@ -168,12 +143,11 @@ with tempfile.TemporaryDirectory() as tmp:
         raise AssertionError('Corrupt archive was restored')
     except RuntimeError:
         assert not refused.exists()
-    assert not staging.exists()
-    print('LOGICAL_DATA_ONLY_ROUNDTRIP_AND_REFUSALS_PASSED')
+    print('LEGACY_RESTORE_AND_REFUSALS_PASSED')
 `;
 
 it.effect.prop(
-  "logical snapshot excludes peer/store keys, imports with fresh credentials and refuses corruption or occupied roots",
+  "legacy format-2/3 backups still restore and import with fresh credentials, and corruption or occupied roots are refused",
   {
     payload: Arbitrary.schema(Schema.Uint8Array),
   },
@@ -191,8 +165,6 @@ it.effect.prop(
       ]);
 
       expect(result.code).toBe(0);
-      expect(result.stdout.trim()).toBe(
-        "LOGICAL_DATA_ONLY_ROUNDTRIP_AND_REFUSALS_PASSED"
-      );
+      expect(result.stdout.trim()).toBe("LEGACY_RESTORE_AND_REFUSALS_PASSED");
     }).pipe(Effect.provide(NodeServices.layer))
 );

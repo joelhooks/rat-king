@@ -1,6 +1,5 @@
 import { cacheIoScript } from "./cache-io-script.ts";
 import { objectArchiveScript } from "./object-archive-script.ts";
-import { objectExportScript } from "./object-export-script.ts";
 
 export const s3Script = String.raw`
 import concurrent.futures, datetime, hashlib, hmac, http.client, io, json, os, pathlib, sys, tarfile, threading, urllib.parse, uuid, xml.etree.ElementTree as ET
@@ -8,7 +7,7 @@ config, endpoint, bucket, operation = sys.argv[1:5]
 with open(config) as f:
     credential = json.load(f)['identities'][0]['credentials'][0]
 access, secret = credential['accessKey'], credential['secretKey']
-if bucket == '@environment' and operation in {'prepare', 'export-final', 'pack', 'export', 'import'}:
+if bucket == '@environment' and operation == 'import':
     lines = (pathlib.Path(config).parent / 'celld.env').read_text().splitlines()
     values = {line.split('=', 1)[0]: line.split('=', 1)[1] for line in lines if '=' in line}
     location = json.loads(values['CELLD_BUCKET'])
@@ -69,21 +68,8 @@ def request(method, key='', query='', conditional=False, payload=None, sink=None
 
 ${cacheIoScript}
 ${objectArchiveScript}
-${objectExportScript}
 
-if operation in {'prepare', 'export-final', 'pack', 'export'}:
-    target = pathlib.Path(sys.argv[5])
-    if operation in {'prepare', 'export-final'}:
-        import signal
-        def deadline(*_):
-            raise RuntimeError('Pre-copy exceeded 18 minute budget' if operation == 'prepare' else 'Final delta exceeded 15 second stop budget')
-        signal.signal(signal.SIGALRM, deadline)
-        signal.alarm(18 * 60 if operation == 'prepare' else 15)
-    if operation != 'pack':
-        collect_export(target, strict=operation == 'export-final')
-    if operation in {'pack', 'export'}:
-        pack_export(target)
-elif operation == 'import':
+if operation == 'import':
     source = pathlib.Path(sys.argv[5])
     import tempfile
     with cache_tar(source) as archive:

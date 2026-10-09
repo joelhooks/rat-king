@@ -20,6 +20,7 @@ const program = Effect.gen(function* launcher() {
       "deploy",
       "backup",
       "restore",
+      "restore-snapshot",
       "listeners",
       "destroy-plan",
       "destroy",
