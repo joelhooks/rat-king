@@ -1,6 +1,7 @@
 export const cacheIoScript = String.raw`
 import os
 CACHE_WINDOW = 8 * 1024 * 1024
+PUBLISH_WINDOW = 32 * 1024 * 1024
 COPY_CHUNK = 1024 * 1024
 CACHE_PAGE = os.sysconf('SC_PAGESIZE')
 
@@ -13,8 +14,10 @@ def discard_cache(stream, start, end):
     return last
 
 class CacheWriter:
-    def __init__(self, stream):
+    def __init__(self, stream, window=CACHE_WINDOW, digest=None):
         self.stream = stream
+        self.window = window
+        self.digest = digest
         self.synced = stream.tell()
     def tell(self):
         return self.stream.tell()
@@ -27,11 +30,15 @@ class CacheWriter:
     def write(self, value):
         size, offset = len(value), 0
         while offset < size:
-            remaining = CACHE_WINDOW - (self.stream.tell() - self.synced)
+            remaining = self.window - (self.stream.tell() - self.synced)
             length = min(size - offset, COPY_CHUNK, remaining)
-            self.stream.write(memoryview(value)[offset:offset + length])
+            piece = memoryview(value)[offset:offset + length]
+            if self.stream.write(piece) != length:
+                raise RuntimeError('Short archive write')
+            if self.digest is not None:
+                self.digest.update(piece)
             offset += length
-            if self.stream.tell() - self.synced >= CACHE_WINDOW:
+            if self.stream.tell() - self.synced >= self.window:
                 self.sync()
         return size
 
@@ -62,22 +69,46 @@ class CacheReader:
     def __getattr__(self, name):
         return getattr(self.stream, name)
 
-def cache_copy(source, destination):
-    reader, writer = CacheReader(source), CacheWriter(destination)
+def cache_copy(source, destination, window=CACHE_WINDOW):
+    import hashlib
+    digest = hashlib.sha256()
+    reader, writer = CacheReader(source), CacheWriter(destination, window, digest)
     for chunk in iter(lambda: reader.read(COPY_CHUNK), b''):
         writer.write(chunk)
     reader.release()
     writer.sync()
+    return digest.hexdigest()
+
+def cache_compress(source, target):
+    import gzip, hashlib
+    digest = hashlib.sha256()
+    with source.open('rb') as raw, target.open('xb') as destination:
+        reader, writer = CacheReader(raw), CacheWriter(destination, digest=digest)
+        with gzip.GzipFile(filename='', fileobj=writer, mode='wb', compresslevel=1, mtime=0) as compressed:
+            for chunk in iter(lambda: reader.read(COPY_CHUNK), b''):
+                compressed.write(chunk)
+        reader.release()
+        writer.sync()
+    return digest.hexdigest()
 
 def cache_tar(path):
-    import contextlib
+    import contextlib, gzip
     @contextlib.contextmanager
     def opened():
         with path.open('rb') as stream:
+            compressed = stream.read(2) == b'\x1f\x8b'
+            stream.seek(0)
             reader = CacheReader(stream)
             try:
-                with tarfile.open(fileobj=reader) as archive:
-                    yield archive
+                if compressed:
+                    with gzip.GzipFile(fileobj=reader, mode='rb') as inflated:
+                        with tarfile.open(fileobj=inflated, mode='r|') as archive:
+                            yield archive
+                        for chunk in iter(lambda: inflated.read(COPY_CHUNK), b''):
+                            pass
+                else:
+                    with tarfile.open(fileobj=reader, mode='r:') as archive:
+                        yield archive
             finally:
                 reader.release()
     return opened()

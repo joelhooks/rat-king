@@ -51,23 +51,30 @@ with tempfile.TemporaryDirectory() as tmp:
     foreign = backup/('20000102T030405.123456Z-'+'c'*32)
     foreign.mkdir(); (foreign/'user-work').write_bytes(b'preserve')
     original_sync, original_open, original_rename = os.fsync, pathlib.Path.open, pathlib.Path.rename
-    opened, committed = {}, []
+    opened, committed, remote_reads = {}, [], []
     def tracked_open(path, *args, **kwargs):
+        mode = args[0] if args else kwargs.get('mode', 'r')
+        if path.parent.name.startswith('.mailbox-publish-') and 'r' in mode:
+            remote_reads.append(path)
         stream = original_open(path, *args, **kwargs)
         opened[stream.fileno()] = path
         return stream
     def sync(fd):
         path = opened.get(fd)
-        if phase == 'copy' and path and path.parent.name.startswith('.mailbox-publish-') and path.name == 'objects.tar':
+        if phase == 'copy' and path and path.parent.name.startswith('.mailbox-publish-') and path.name == 'objects.tar.gz':
             raise TimeoutError('simulated blocked CIFS writeback timeout')
         return original_sync(fd)
     def rename(path, target):
         if path.parent.name.startswith('.mailbox-publish-') and path.name == 'manifest.pending' and phase == 'manifest':
             raise TimeoutError('simulated manifest timeout')
         if path.name.startswith('.mailbox-publish-'):
-            manifest = json.loads((path/'manifest.json').read_text())
+            with original_open(path/'manifest.json') as stream:
+                manifest = json.load(stream)
+            assert manifest['format'] == 3
             for name, digest in manifest['sha256'].items():
-                assert hashlib.sha256((path/name).read_bytes()).hexdigest() == digest
+                assert name.endswith('.tar.gz')
+                with original_open(path/name, 'rb') as stream:
+                    assert hashlib.sha256(stream.read()).hexdigest() == digest
             assert not pathlib.Path(target).exists(), 'Publication replaced existing data'
             if phase == 'rename': raise TimeoutError('simulated pre-commit timeout')
             committed.append(pathlib.Path(target))
@@ -81,6 +88,7 @@ with tempfile.TemporaryDirectory() as tmp:
         pathlib.Path.open, pathlib.Path.rename, os.fsync = original_open, original_rename, original_sync
     hidden = [p for p in backup.iterdir() if p.name.startswith('.mailbox-publish-')]
     assert len(hidden) == 1 and not committed
+    assert not remote_reads, 'Publisher read copied bytes back over CIFS'
     assert legacy.exists() and stale_local.exists(), 'Failure cleaned previous partials'
     assert run('restore-preflight') == old, 'Failed publish became latest'
     try:
@@ -88,7 +96,9 @@ with tempfile.TemporaryDirectory() as tmp:
         raise AssertionError('Explicit restore accepted hidden incomplete backup')
     except RuntimeError: pass
     # Also ignore an arbitrary hidden manifest directory, even if its bytes are complete.
-    new = run('publish', str(current), 'invented', 'invented').split()[-1]
+    new_stage = stage()
+    new = run('publish', str(new_stage), 'invented', 'invented').split()[-1]
+    assert not current.exists(), 'Successful retry left prior local staging'
     assert new != old
     assert run('restore-preflight') == new
     assert not legacy.exists() and not stale_local.exists() and not hidden[0].exists()

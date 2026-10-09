@@ -73,12 +73,12 @@ ${objectExportScript}
 
 if operation in {'prepare', 'export-final', 'pack', 'export'}:
     target = pathlib.Path(sys.argv[5])
-    if operation == 'export-final':
+    if operation in {'prepare', 'export-final'}:
         import signal
         def deadline(*_):
-            raise RuntimeError('Final delta exceeded 15 second stop budget')
+            raise RuntimeError('Pre-copy exceeded 18 minute budget' if operation == 'prepare' else 'Final delta exceeded 15 second stop budget')
         signal.signal(signal.SIGALRM, deadline)
-        signal.alarm(15)
+        signal.alarm(18 * 60 if operation == 'prepare' else 15)
     if operation != 'pack':
         collect_export(target, strict=operation == 'export-final')
     if operation in {'pack', 'export'}:

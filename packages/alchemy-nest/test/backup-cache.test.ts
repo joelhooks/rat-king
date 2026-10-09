@@ -14,6 +14,8 @@ exec(script, namespace)
 window, chunk = namespace['CACHE_WINDOW'], namespace['COPY_CHUNK']
 prefix = int(sys.argv[4]) if len(sys.argv) > 4 else 0
 size = windows * window + tail
+publish = len(sys.argv) > 5 and sys.argv[5] == 'true'
+active_window = window
 with tempfile.TemporaryDirectory() as tmp:
     root = pathlib.Path(tmp)
     syncs, advices, synced = [], [], {}
@@ -22,7 +24,7 @@ with tempfile.TemporaryDirectory() as tmp:
     os.POSIX_FADV_DONTNEED = getattr(os, 'POSIX_FADV_DONTNEED', 4)
     def sync(fd):
         end = os.lseek(fd, 0, os.SEEK_CUR)
-        assert end - synced.get(fd, 0) <= window, 'Dirty write exceeded window'
+        assert end - synced.get(fd, 0) <= active_window, 'Dirty write exceeded window'
         original_sync(fd)
         synced[fd] = end
         syncs.append(end)
@@ -52,18 +54,19 @@ with tempfile.TemporaryDirectory() as tmp:
     write_syncs = list(syncs)
     write_advices = len(advices)
     syncs.clear()
+    active_window = namespace['PUBLISH_WINDOW'] if publish else window
     with (root/'spool').open('rb') as source, (root/'published').open('xb') as target:
         synced[source.fileno()] = size + prefix
         synced[target.fileno()] = 0
-        namespace['cache_copy'](source, target)
-    assert len(syncs) == (size + prefix) // window + 1, 'Publisher copy skipped writeback cadence'
+        copied = namespace['cache_copy'](source, target, window=active_window)
+    assert len(syncs) == (size + prefix) // active_window + 1, 'Publisher copy skipped writeback cadence'
     assert (root/'published').stat().st_size == size + prefix
     def digest(path):
         h = hashlib.sha256()
         with path.open('rb') as stream:
             for value in iter(lambda: stream.read(chunk), b''): h.update(value)
         return h.hexdigest()
-    assert digest(root/'spool') == digest(root/'published')
+    assert copied == digest(root/'spool') == digest(root/'published')
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
     rss_bytes = rss if sys.platform == 'darwin' else rss * 1024
     print(json.dumps({'bytes':size + prefix,'syncPositions':write_syncs,'discardCalls':write_advices,'seconds':round(time.monotonic()-began,3),'rssBytes':rss_bytes}))
@@ -75,12 +78,13 @@ it.effect.prop(
     prefix: Arbitrary.schema(
       Schema.Int.check(Schema.isBetween({ maximum: 4095, minimum: 0 }))
     ),
+    publish: Arbitrary.schema(Schema.Boolean),
     tail: Arbitrary.schema(
       Schema.Int.check(Schema.isBetween({ maximum: 4095, minimum: 0 }))
     ),
-    windows: Arbitrary.schema(Schema.Literals([0, 1, 2, 3])),
+    windows: Arbitrary.schema(Schema.Literals([0, 1, 2, 3, 5])),
   },
-  ({ prefix, tail, windows }) =>
+  ({ prefix, publish, tail, windows }) =>
     Effect.gen(function* fileWriteCadence() {
       const shell = yield* localExec;
 
@@ -92,6 +96,7 @@ it.effect.prop(
         String(windows),
         String(tail),
         String(prefix),
+        String(publish),
       ]);
 
       expect(result.code).toBe(0);
