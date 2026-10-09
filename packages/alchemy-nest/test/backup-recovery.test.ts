@@ -15,7 +15,7 @@ it.effect.prop(
   "every command failure after arming attempts guarded restart, with bulk copy before stop",
   {
     failure: Arbitrary.schema(
-      Schema.Int.check(Schema.isBetween({ maximum: 7, minimum: 0 }))
+      Schema.Int.check(Schema.isBetween({ maximum: 7, minimum: -1 }))
     ),
   },
   ({ failure }) =>
@@ -39,6 +39,10 @@ it.effect.prop(
           }
 
           calls.push(action ?? "unknown");
+
+          if (action === "arm" && failure === -1) {
+            return { code: 1, stdout: "late unit age refused" };
+          }
 
           if (armed) {
             const current = afterArm;
@@ -73,8 +77,14 @@ it.effect.prop(
           version: "invented-version",
         })
       );
-      expect(calls.indexOf("prepare")).toBeLessThan(calls.indexOf("stop"));
-      expect(calls.slice(calls.indexOf("arm") + 1)).toContain("start");
+
+      if (failure === -1) {
+        expect(calls).not.toContain("stop");
+        expect(calls).not.toContain("publish");
+      } else {
+        expect(calls.indexOf("prepare")).toBeLessThan(calls.indexOf("stop"));
+        expect(calls.slice(calls.indexOf("arm") + 1)).toContain("start");
+      }
 
       if (calls.includes("pack")) {
         expect(calls.indexOf("start")).toBeLessThan(calls.indexOf("pack"));
@@ -136,7 +146,7 @@ it.effect.prop(
       const lines = unit.sections.flatMap((section) => section.lines);
       expect(lines).toContainEqual(["MemoryHigh", "128M"]);
       expect(lines).toContainEqual(["MemoryMax", "256M"]);
-      expect(lines).toContainEqual(["TimeoutStartSec", "30min"]);
+      expect(lines).toContainEqual(["TimeoutStartSec", "2h"]);
       expect(lines).toContainEqual(["TimeoutStopSec", "90s"]);
       expect(lines).toContainEqual(["OOMPolicy", "stop"]);
       expect(lines.find(([key]) => key === "ExecStopPost")?.[1]).toContain(

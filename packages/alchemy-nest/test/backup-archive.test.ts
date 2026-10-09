@@ -8,7 +8,7 @@ import { localExec } from "../src/local-exec.ts";
 import { s3Script } from "../src/s3-script.ts";
 
 const archiveFixture = String.raw`
-import base64, contextlib, hashlib, http.client, io, json, pathlib, subprocess, sys, tarfile, tempfile, urllib.parse
+import base64, contextlib, gzip, hashlib, http.client, io, json, pathlib, subprocess, sys, tarfile, tempfile, urllib.parse
 script, object_script, encoded = sys.argv[1:4]
 payload = base64.b64decode(encoded)
 with tempfile.TemporaryDirectory() as tmp:
@@ -102,13 +102,14 @@ with tempfile.TemporaryDirectory() as tmp:
     snapshots = list(backup.iterdir())
     assert len(snapshots) == 1
     source = snapshots[0]
-    assert set(path.name for path in source.iterdir()) == {'objects.tar', 'celld.tar', 'manifest.json'}
-    with tarfile.open(source/'objects.tar') as archive:
+    assert set(path.name for path in source.iterdir()) == {'objects.tar.gz', 'celld.tar.gz', 'manifest.json'}
+    assert json.loads((source/'manifest.json').read_text())['format'] == 3
+    with tarfile.open(source/'objects.tar.gz') as archive:
         assert json.load(archive.extractfile('format.json')) == {'format': 2}
         entry = json.load(archive.extractfile('entry.json'))
         assert entry['key'] == 'cells/example/state'
         assert archive.extractfile(entry['member']).read() == b'changed'
-    with tarfile.open(source/'celld.tar') as archive:
+    with tarfile.open(source/'celld.tar.gz') as archive:
         assert set(archive.getnames()) == {'celld', 'celld/state'}
     restored = root/'restored'
     selected = run('restore-preflight', restored)
@@ -134,6 +135,19 @@ with tempfile.TemporaryDirectory() as tmp:
             archive.addfile(info, io.BytesIO(value))
     object_action('import', legacy)
     assert objects['cells/legacy'] == payload
+    # Format-2 manifests and uncompressed tar pairs remain restorable.
+    old = backup / ('20000102T030405.123456Z-' + 'c' * 32)
+    old.mkdir()
+    hashes = {}
+    for name in ['objects.tar', 'celld.tar']:
+        with gzip.open(source/(name+'.gz'), 'rb') as stream:
+            (old/name).write_bytes(stream.read())
+        hashes[name] = hashlib.sha256((old/name).read_bytes()).hexdigest()
+    (old/'manifest.json').write_text(json.dumps({'format':2,'sha256':hashes}))
+    old_target = root/'old-target'
+    (old_target/'celld').mkdir(parents=True, mode=0o700)
+    run('restore', old_target, old.name)
+    assert (old_target/'celld/state').read_bytes() == payload
     assert not (restored/'seaweedfs').exists()
     try:
         run('restore', restored, selected)
@@ -146,7 +160,7 @@ with tempfile.TemporaryDirectory() as tmp:
         raise AssertionError('Known key file was accepted')
     except RuntimeError:
         pass
-    with (source/'celld.tar').open('ab') as stream:
+    with (source/'celld.tar.gz').open('ab') as stream:
         stream.write(b'corrupt')
     refused = root/'refused'
     try:
