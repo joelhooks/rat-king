@@ -8,7 +8,7 @@ import { layerNonInteractive } from "alchemy/Interaction";
 import * as Plan from "alchemy/Plan";
 import { evalStack } from "alchemy/Stack";
 import { localState } from "alchemy/State/LocalState";
-import { Config, Effect, FileSystem, Layer, Schema } from "effect";
+import { Config, Console, Effect, FileSystem, Layer, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 
 import { provision } from "../../apps/mailbox/cli/provision.ts";
@@ -25,7 +25,8 @@ import { listenerProbe } from "../../packages/alchemy-nest/src/probes.ts";
 import { stopUnits } from "../../packages/alchemy-nest/src/startup-contract.ts";
 import { deleteDeclaredUnit } from "../../packages/alchemy-nest/src/systemd.ts";
 import { removeStoreSockets } from "../../packages/alchemy-nest/src/unit-cleanup.ts";
-import { stageName, workerIPv4 } from "./config.ts";
+import { stageName, workerIPv4, workerUrl } from "./config.ts";
+import { assess, collectHealth, DigestJson, summarize } from "./health.ts";
 import { isDeferredAdoption, qualifyRecoveryPlan } from "./recovery-plan.ts";
 import { preflightRestore, restoreSnapshot } from "./restore.ts";
 import { connection, nestStack, nest } from "./stack.ts";
@@ -436,6 +437,50 @@ export const run = (action: Action) =>
           localState(),
           layerNonInteractive()
         ).pipe(Layer.provide(NodeServices.layer))
+      )
+    )
+  );
+
+export const health = (previous: string | undefined) =>
+  Effect.gen(function* healthDigest() {
+    const stage = yield* stageName;
+    const fs = yield* FileSystem.FileSystem;
+
+    const prior =
+      previous === undefined
+        ? undefined
+        : yield* Schema.decodeEffect(DigestJson)(
+            yield* fs.readFileString(previous)
+          ).pipe(Effect.mapError(() => refuse("Previous digest is malformed")));
+
+    const host = yield* (yield* Host).node(
+      yield* Config.String("RAT_KING_LIVE_NODE")
+    );
+
+    const facts = yield* collectHealth(yield* HostShell, {
+      backupRoot: yield* Config.String("RAT_KING_BACKUP_ROOT"),
+      bucket: yield* Config.String("RAT_KING_BUCKET").pipe(
+        Config.withDefault("rat-king-cells")
+      ),
+      dataRoot: host.dataRoot,
+      healthUrl: `${workerUrl(stage, host)}/.well-known/celld/health`,
+      home: host.home,
+      publicIPv4: workerIPv4(stage, host),
+      sidecar: yield* Config.Boolean("RAT_KING_CLAUDE_SIDECAR").pipe(
+        Config.withDefault(false)
+      ),
+    });
+
+    const digest = { ...facts, ...assess(facts, prior) };
+
+    yield* Console.log(yield* Schema.encodeEffect(DigestJson)(digest));
+    yield* Console.error(summarize(digest));
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        NodeServices.layer,
+        FetchHttpClient.layer,
+        connection.pipe(Layer.provide(NodeServices.layer))
       )
     )
   );

@@ -11,24 +11,20 @@ export type ListenerAssessment =
 
 const Assessment = Data.taggedEnum<ListenerAssessment>();
 
-export const assessListeners = (
+const reservedPorts = new Set(
+  declaredListeners("", true, true).map(({ port }) => port)
+);
+
+export const stackListeners = (
   text: string,
-  publicIPv4: string,
-  nodeExpected: boolean,
-  sidecarExpected = false,
   unitCgroups: ReadonlyMap<string, string> = new Map()
-): ListenerAssessment => {
-  const expected = declaredListeners(publicIPv4, nodeExpected, sidecarExpected);
-
-  const reservedPorts = new Set(
-    declaredListeners(publicIPv4, true, true).map(({ port }) => port)
-  );
-
-  const remaining = new Set(
-    expected.map(({ unit, address, port }) => `${unit}|${address}|${port}`)
-  );
-
-  const lines: string[] = [];
+) => {
+  const owned: {
+    readonly line: string;
+    readonly unit: string | undefined;
+    readonly address: string;
+    readonly port: number;
+  }[] = [];
 
   for (const line of text.split("\n")) {
     if (line.trim() === "" || line.trim().startsWith("State")) {
@@ -56,6 +52,31 @@ export const assessListeners = (
       continue;
     }
 
+    owned.push({ address, line, port, unit });
+  }
+
+  return owned;
+};
+
+export const assessListeners = (
+  text: string,
+  publicIPv4: string,
+  nodeExpected: boolean,
+  sidecarExpected = false,
+  unitCgroups: ReadonlyMap<string, string> = new Map()
+): ListenerAssessment => {
+  const expected = declaredListeners(publicIPv4, nodeExpected, sidecarExpected);
+
+  const remaining = new Set(
+    expected.map(({ unit, address, port }) => `${unit}|${address}|${port}`)
+  );
+
+  const lines: string[] = [];
+
+  for (const { address, line, port, unit } of stackListeners(
+    text,
+    unitCgroups
+  )) {
     lines.push(line);
 
     if (unit === undefined || !remaining.delete(`${unit}|${address}|${port}`)) {
