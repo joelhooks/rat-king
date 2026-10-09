@@ -1,12 +1,13 @@
 import { objectArchiveScript } from "./object-archive-script.ts";
+import { objectExportScript } from "./object-export-script.ts";
 
 export const s3Script = String.raw`
-import concurrent.futures, datetime, hashlib, hmac, http.client, io, json, pathlib, sys, tarfile, threading, urllib.parse, uuid, xml.etree.ElementTree as ET
+import concurrent.futures, datetime, hashlib, hmac, http.client, io, json, os, pathlib, sys, tarfile, threading, urllib.parse, uuid, xml.etree.ElementTree as ET
 config, endpoint, bucket, operation = sys.argv[1:5]
 with open(config) as f:
     credential = json.load(f)['identities'][0]['credentials'][0]
 access, secret = credential['accessKey'], credential['secretKey']
-if bucket == '@environment' and operation in {'export', 'import'}:
+if bucket == '@environment' and operation in {'prepare', 'export-final', 'pack', 'export', 'import'}:
     lines = (pathlib.Path(config).parent / 'celld.env').read_text().splitlines()
     values = {line.split('=', 1)[0]: line.split('=', 1)[1] for line in lines if '=' in line}
     location = json.loads(values['CELLD_BUCKET'])
@@ -17,14 +18,19 @@ if bucket == '@environment' and operation in {'export', 'import'}:
         raise RuntimeError('Backup endpoint mismatch')
 base = urllib.parse.urlsplit(endpoint)
 
-def request(method, key='', query='', conditional=False, payload=None):
+def request(method, key='', query='', conditional=False, payload=None, sink=None, payload_hash=None):
     path = '/' + bucket + ('/' + urllib.parse.quote(key, safe='/~') if key else '')
     now = datetime.datetime.now(datetime.timezone.utc)
     stamp, day = now.strftime('%Y%m%dT%H%M%SZ'), now.strftime('%Y%m%d')
     if payload is None:
         payload = b'proof' if method == 'PUT' and key else b''
-    hashed = hashlib.sha256(payload).hexdigest()
+    hashed = payload_hash or hashlib.sha256(payload).hexdigest()
     headers = {'host': base.netloc, 'x-amz-content-sha256': hashed, 'x-amz-date': stamp}
+    if payload_hash:
+        current = payload.tell()
+        payload.seek(0, 2)
+        headers['content-length'] = str(payload.tell() - current)
+        payload.seek(current)
     if conditional:
         headers['if-none-match'] = '*'
     names = sorted(headers)
@@ -41,69 +47,56 @@ def request(method, key='', query='', conditional=False, payload=None):
     try:
         connection.request(method, path + ('?' + query if query else ''), payload, headers)
         response = connection.getresponse()
-        return response.status, response.read()
+        if sink is not None:
+            h, size, tail = hashlib.sha256(), 0, b''
+            overlap = max(len(access.encode()), len(secret.encode())) - 1
+            for chunk in iter(lambda: response.read(1024 * 1024), b''):
+                scanned = tail + chunk
+                if access.encode() in scanned or secret.encode() in scanned:
+                    raise RuntimeError('Backup object contains store credentials')
+                tail = scanned[-overlap:] if overlap else b''
+                sink.write(chunk)
+                h.update(chunk)
+                size += len(chunk)
+            return response.status, (size, h.hexdigest(), response.getheader('ETag', ''))
+        body = response.read(8 * 1024 * 1024 + 1)
+        if len(body) > 8 * 1024 * 1024:
+            raise RuntimeError('Oversized S3 response')
+        return response.status, body
     finally:
         connection.close()
 
 ${objectArchiveScript}
+${objectExportScript}
 
-if operation == 'export':
+if operation in {'prepare', 'export-final', 'pack', 'export'}:
     target = pathlib.Path(sys.argv[5])
-    token, seen, index = '', set(), []
-    with tarfile.open(target, 'x') as archive:
-        while True:
-            parameters = {'list-type': '2', 'max-keys': '1000'}
-            if token:
-                parameters['continuation-token'] = token
-            query = urllib.parse.urlencode(sorted(parameters.items()), quote_via=urllib.parse.quote, safe='~')
-            status, body = request('GET', query=query)
-            if status != 200:
-                raise RuntimeError('Backup bucket listing failed')
-            page = ET.fromstring(body)
-            for item in page.findall('./{*}Contents/{*}Key'):
-                key = item.text or ''
-                if key == 'fleet/peer-auth.json':
-                    continue
-                require_safe_key(key)
-                if key in seen:
-                    raise RuntimeError('Duplicate export object')
-                seen.add(key)
-                code, value = request('GET', key)
-                if code != 200:
-                    raise RuntimeError('Backup object read failed')
-                if access.encode() in value or secret.encode() in value:
-                    raise RuntimeError('Backup object contains store credentials')
-                member = 'objects/' + hashlib.sha256(key.encode()).hexdigest() + '.blob'
-                info = tarfile.TarInfo(member)
-                info.size = len(value)
-                info.mode = 0o600
-                archive.addfile(info, io.BytesIO(value))
-                index.append({'key': key, 'member': member, 'sha256': hashlib.sha256(value).hexdigest()})
-            if page.findtext('./{*}IsTruncated', 'false') != 'true':
-                break
-            next_cursor = page.findtext('./{*}NextContinuationToken', '')
-            if not next_cursor or next_cursor == token:
-                raise RuntimeError('Invalid backup listing cursor')
-            token = next_cursor
-        value = json.dumps({'format': 1, 'objects': index}).encode()
-        info = tarfile.TarInfo('index.json')
-        info.size = len(value)
-        info.mode = 0o600
-        archive.addfile(info, io.BytesIO(value))
-    print('LOGICAL_OBJECT_EXPORT_PASSED ' + str(len(index)))
+    if operation == 'export-final':
+        import signal
+        def deadline(*_):
+            raise RuntimeError('Final delta exceeded 15 second stop budget')
+        signal.signal(signal.SIGALRM, deadline)
+        signal.alarm(15)
+    if operation != 'pack':
+        collect_export(target, strict=operation == 'export-final')
+    if operation in {'pack', 'export'}:
+        pack_export(target)
 elif operation == 'import':
     source = pathlib.Path(sys.argv[5])
+    import tempfile
     with tarfile.open(source) as archive:
-        index = validate_export(archive)
-        for entry in index['objects']:
-            value = archive.extractfile(entry['member']).read()
-            status, _ = request('PUT', entry['key'], payload=value)
-            if status != 200:
-                raise RuntimeError('Object restore write failed')
-            code, copied = request('GET', entry['key'])
-            if code != 200 or hashlib.sha256(copied).hexdigest() != entry['sha256']:
-                raise RuntimeError('Object restore readback mismatch')
-    print('LOGICAL_OBJECT_IMPORT_PASSED ' + str(len(index['objects'])))
+        validate_export(archive)
+    def restore_object(entry, value):
+        status, _ = request('PUT', entry['key'], payload=value, payload_hash=entry['sha256'])
+        if status != 200:
+            raise RuntimeError('Object restore write failed')
+        with tempfile.TemporaryFile() as copied:
+            code, result = request('GET', entry['key'], sink=copied)
+        if code != 200 or result[1] != entry['sha256']:
+            raise RuntimeError('Object restore readback mismatch')
+    with tarfile.open(source) as archive:
+        count = walk_export(archive, restore_object)
+    print('LOGICAL_OBJECT_IMPORT_PASSED ' + str(count))
 elif operation == 'race':
     key = 'rat-king-probe/' + str(uuid.uuid4())
     barrier = threading.Barrier(50)

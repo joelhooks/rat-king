@@ -135,5 +135,8 @@ it.effect.prop(
       expect(renderUnit(node)).toContain(
         'ExecStopPost=-/usr/bin/python3 "/opt/example/maintenance.py" diagnose'
       );
+      expect(renderUnit(node)).toContain(
+        "Environment=CELLD_LTX_RETENTION_SECS=604800"
+      );
     }).pipe(Effect.provide(NodeServices.layer))
 );

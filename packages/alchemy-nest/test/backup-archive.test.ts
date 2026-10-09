@@ -8,7 +8,7 @@ import { localExec } from "../src/local-exec.ts";
 import { s3Script } from "../src/s3-script.ts";
 
 const archiveFixture = String.raw`
-import base64, contextlib, http.client, io, json, pathlib, subprocess, sys, tarfile, tempfile, urllib.parse
+import base64, contextlib, hashlib, http.client, io, json, pathlib, subprocess, sys, tarfile, tempfile, urllib.parse
 script, object_script, encoded = sys.argv[1:4]
 payload = base64.b64decode(encoded)
 with tempfile.TemporaryDirectory() as tmp:
@@ -25,6 +25,7 @@ with tempfile.TemporaryDirectory() as tmp:
     original = subprocess.run
     def command(argv, **kwargs):
         if argv[0] == 'findmnt':
+            assert sys.argv[1] not in {'snapshot', 'arm', 'disarm'}, 'Stopped section accessed SMB mount'
             return subprocess.CompletedProcess(argv, 0, str(backup) + '\n', '')
         if argv[0] == 'systemctl':
             return subprocess.CompletedProcess(argv, 0, 'ActiveState=inactive\nResult=success\n', '')
@@ -46,10 +47,10 @@ with tempfile.TemporaryDirectory() as tmp:
         def __init__(self, *args, **kwargs): pass
         def request(self, method, url, body, headers):
             assert ('Credential=' + expected_access + '/') in headers['authorization']
-            self.method, self.url, self.body = method, url, body
+            self.method, self.url, self.body = method, url, body.read() if hasattr(body, 'read') else body
         def getresponse(self):
             if '?' in self.url:
-                body = ('<ListBucketResult>' + ''.join('<Contents><Key>'+key+'</Key></Contents>' for key in objects) + '<IsTruncated>false</IsTruncated></ListBucketResult>').encode()
+                body = ('<ListBucketResult>' + ''.join('<Contents><Key>'+key+'</Key><ETag>&quot;'+hashlib.md5(objects[key]).hexdigest()+'&quot;</ETag></Contents>' for key in sorted(objects)) + '<IsTruncated>false</IsTruncated></ListBucketResult>').encode()
             else:
                 key = urllib.parse.unquote(self.url.split('/bucket/', 1)[1])
                 assert key != 'fleet/peer-auth.json', 'Peer key was accessed for export/import'
@@ -57,6 +58,7 @@ with tempfile.TemporaryDirectory() as tmp:
                 body = objects[key] if self.method == 'GET' else b''
             response = io.BytesIO(body)
             response.status = 200
+            response.getheader = lambda name, default='': '"'+hashlib.md5(body).hexdigest()+'"' if name == 'ETag' else default
             return response
         def close(self): pass
     http.client.HTTPConnection = Connection
@@ -67,17 +69,45 @@ with tempfile.TemporaryDirectory() as tmp:
         with contextlib.redirect_stdout(io.StringIO()):
             exec(compile(object_script, 'object-adapter', 'exec'), {})
     write_credentials()
+    # Credential matching must span the streaming chunk boundary.
+    objects['cells/leaked'] = b'x' * (1024 * 1024 - 6) + expected_access.encode()
+    try:
+        object_action('prepare', root/'refused-objects.tar')
+        raise AssertionError('Split credential bytes were exported')
+    except RuntimeError:
+        pass
+    del objects['cells/leaked']
+    stale = data / ('.mailbox-backup-' + 'a' * 32)
+    stale.mkdir()
+    (stale/'objects.tar').write_bytes(b'old incomplete export')
+    foreign = data / ('.mailbox-backup-' + 'b' * 32)
+    foreign.mkdir()
+    (foreign/'user-work').write_bytes(b'preserve')
     staging = pathlib.Path(run('stage', data))
-    object_action('export', staging/'objects.tar')
+    objects['cells/removed'] = b'old'
+    object_action('prepare', staging/'objects.tar')
+    del objects['cells/removed']
+    objects['cells/example/state'] = b'changed'
+    object_action('export-final', staging/'objects.tar')
+    object_action('pack', staging/'objects.tar')
+    try:
+        run('publish', data, str(staging), 'invented-version', 'invented-commit')
+        raise AssertionError('Incomplete snapshot was published')
+    except FileNotFoundError:
+        assert stale.exists(), 'Failed publication cleaned stale staging'
     run('snapshot', data, str(staging))
     run('publish', data, str(staging), 'invented-version', 'invented-commit')
+    assert not stale.exists()
+    assert (foreign/'user-work').read_bytes() == b'preserve'
     snapshots = list(backup.iterdir())
     assert len(snapshots) == 1
     source = snapshots[0]
     assert set(path.name for path in source.iterdir()) == {'objects.tar', 'celld.tar', 'manifest.json'}
     with tarfile.open(source/'objects.tar') as archive:
-        index = json.load(archive.extractfile('index.json'))
-        assert [entry['key'] for entry in index['objects']] == ['cells/example/state']
+        assert json.load(archive.extractfile('format.json')) == {'format': 2}
+        entry = json.load(archive.extractfile('entry.json'))
+        assert entry['key'] == 'cells/example/state'
+        assert archive.extractfile(entry['member']).read() == b'changed'
     with tarfile.open(source/'celld.tar') as archive:
         assert set(archive.getnames()) == {'celld', 'celld/state'}
     restored = root/'restored'
@@ -93,7 +123,17 @@ with tempfile.TemporaryDirectory() as tmp:
     expected_access = 'fresh-target-access'
     write_credentials()
     object_action('import', restored/'.mailbox-restore-objects.tar')
-    assert objects == {'cells/example/state': payload}
+    assert objects == {'cells/example/state': b'changed'}
+    # Existing format-1 backups still import with fresh credentials.
+    legacy = root/'legacy.tar'
+    entry = {'key': 'cells/legacy', 'member': 'objects/'+hashlib.sha256(b'cells/legacy').hexdigest()+'.blob', 'sha256': hashlib.sha256(payload).hexdigest()}
+    with tarfile.open(legacy, 'w') as archive:
+        for name, value in [(entry['member'], payload), ('index.json', json.dumps({'format':1,'objects':[entry]}).encode())]:
+            info = tarfile.TarInfo(name)
+            info.size = len(value)
+            archive.addfile(info, io.BytesIO(value))
+    object_action('import', legacy)
+    assert objects['cells/legacy'] == payload
     assert not (restored/'seaweedfs').exists()
     try:
         run('restore', restored, selected)
