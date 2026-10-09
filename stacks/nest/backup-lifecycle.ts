@@ -4,19 +4,42 @@ export const backupLifecycle = createMachine({
   context: {},
   id: "mailbox-backup",
   initial: "preflight",
-  on: { failed: { target: ".recovering" } },
   states: {
     complete: { type: "final" },
-    exporting: { on: { exported: { target: "snapshotting" } } },
+    copying: {
+      on: {
+        copied: { target: "startingMailbox" },
+        failed: { target: "recovering" },
+      },
+    },
     failed: { type: "final" },
-    preflight: { on: { ready: { target: "preparing" } } },
-    preparing: { on: { prepared: { target: "stoppingCelld" } } },
-    publishing: { on: { published: { target: "complete" } } },
+    preflight: { on: { ready: { target: "stoppingMailbox" } } },
+    publishing: {
+      on: {
+        abandoned: { target: "failed" },
+        published: { target: "verifying" },
+      },
+    },
     recovering: {
       on: { recovered: { target: "failed" }, refused: { target: "failed" } },
     },
-    restartingCelld: { on: { started: { target: "publishing" } } },
-    snapshotting: { on: { copied: { target: "restartingCelld" } } },
-    stoppingCelld: { on: { stopped: { target: "exporting" } } },
+    startingMailbox: {
+      on: {
+        failed: { target: "recovering" },
+        started: { target: "publishing" },
+      },
+    },
+    stoppingMailbox: {
+      on: {
+        failed: { target: "recovering" },
+        stopped: { target: "copying" },
+      },
+    },
+    verifying: {
+      on: {
+        abandoned: { target: "failed" },
+        verified: { target: "complete" },
+      },
+    },
   },
 });

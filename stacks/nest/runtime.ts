@@ -27,7 +27,7 @@ import { deleteDeclaredUnit } from "../../packages/alchemy-nest/src/systemd.ts";
 import { removeStoreSockets } from "../../packages/alchemy-nest/src/unit-cleanup.ts";
 import { stageName, workerIPv4 } from "./config.ts";
 import { isDeferredAdoption, qualifyRecoveryPlan } from "./recovery-plan.ts";
-import { preflightRestore } from "./restore.ts";
+import { preflightRestore, restoreSnapshot } from "./restore.ts";
 import { connection, nestStack, nest } from "./stack.ts";
 
 export const claudeMtimeScript = String.raw`
@@ -44,6 +44,7 @@ export type Action =
   | "deploy"
   | "backup"
   | "restore"
+  | "restore-snapshot"
   | "listeners"
   | "destroy-plan"
   | "destroy"
@@ -54,6 +55,31 @@ const requireFleet = (stage: string) =>
   stage === "fleet"
     ? Effect.void
     : refuse("Backup and restore require fleet stage");
+
+const restoreBeforeGate = Effect.fn("Nest.restoreBeforeGate")(
+  function* restoreBeforeGate(
+    action: Action,
+    stage: string,
+    shell: Pick<typeof HostShell.Service, "exec">,
+    dataRoot: string
+  ) {
+    if (action !== "restore-snapshot") {
+      return yield* Effect.void;
+    }
+
+    yield* requireFleet(stage);
+
+    if (!(yield* Config.Boolean("RAT_KING_START_APPROVED"))) {
+      return yield* refuse("Host listener approval required");
+    }
+
+    return yield* restoreSnapshot(
+      shell,
+      dataRoot,
+      yield* Config.String("RAT_KING_BACKUP_ROOT")
+    );
+  }
+);
 
 export const run = (action: Action) =>
   Effect.gen(function* runNestAction() {
@@ -197,13 +223,15 @@ export const run = (action: Action) =>
       return yield* Effect.void;
     }
 
-    if (action === "listeners") {
+    if (["listeners", "restore-snapshot"].includes(action)) {
       const shell = yield* HostShell;
       const hosts = yield* Host;
 
       const host = yield* hosts.node(
         yield* Config.String("RAT_KING_LIVE_NODE")
       );
+
+      yield* restoreBeforeGate(action, stage, shell, host.dataRoot);
 
       const sidecar = yield* Config.Boolean("RAT_KING_CLAUDE_SIDECAR").pipe(
         Config.withDefault(false)

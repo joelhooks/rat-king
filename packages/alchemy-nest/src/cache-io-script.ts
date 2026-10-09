@@ -69,27 +69,15 @@ class CacheReader:
     def __getattr__(self, name):
         return getattr(self.stream, name)
 
-def cache_copy(source, destination, window=CACHE_WINDOW):
+def cache_copy(source, destination, window=CACHE_WINDOW, hashed=True):
     import hashlib
-    digest = hashlib.sha256()
+    digest = hashlib.sha256() if hashed else None
     reader, writer = CacheReader(source), CacheWriter(destination, window, digest)
     for chunk in iter(lambda: reader.read(COPY_CHUNK), b''):
         writer.write(chunk)
     reader.release()
     writer.sync()
-    return digest.hexdigest()
-
-def cache_compress(source, target):
-    import gzip, hashlib
-    digest = hashlib.sha256()
-    with source.open('rb') as raw, target.open('xb') as destination:
-        reader, writer = CacheReader(raw), CacheWriter(destination, digest=digest)
-        with gzip.GzipFile(filename='', fileobj=writer, mode='wb', compresslevel=1, mtime=0) as compressed:
-            for chunk in iter(lambda: reader.read(COPY_CHUNK), b''):
-                compressed.write(chunk)
-        reader.release()
-        writer.sync()
-    return digest.hexdigest()
+    return digest.hexdigest() if hashed else None
 
 def cache_tar(path):
     import contextlib, gzip
