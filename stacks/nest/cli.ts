@@ -19,6 +19,7 @@ const program = Effect.gen(function* launcher() {
       "plan",
       "deploy",
       "backup",
+      "health",
       "restore",
       "restore-snapshot",
       "listeners",
@@ -37,6 +38,17 @@ const program = Effect.gen(function* launcher() {
   ) {
     return yield* refuse("Offline shell supports plan only");
   }
+
+  const flags = process.argv.slice(3);
+
+  if (
+    flags.length > 0 &&
+    (action !== "health" || flags.length !== 2 || flags[0] !== "--previous")
+  ) {
+    return yield* refuse("Only health accepts --previous <file>");
+  }
+
+  const previous = flags[1] === undefined ? undefined : path.resolve(flags[1]);
 
   const directory = path.resolve(yield* Config.String("RAT_KING_STATE_DIR"));
   const root = path.resolve(import.meta.dirname, "../..");
@@ -60,7 +72,9 @@ const program = Effect.gen(function* launcher() {
     try: async () => await import("./runtime.ts"),
   });
 
-  return yield* runtime.run(action);
+  return yield* action === "health"
+    ? runtime.health(previous)
+    : runtime.run(action);
 });
 
 NodeRuntime.runMain(program.pipe(Effect.provide(NodeServices.layer)));
