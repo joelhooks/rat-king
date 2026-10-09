@@ -79,6 +79,11 @@ it.effect.prop(
       if (calls.includes("pack")) {
         expect(calls.indexOf("start")).toBeLessThan(calls.indexOf("pack"));
       }
+
+      if (calls.includes("publish")) {
+        expect(calls.indexOf("start")).toBeLessThan(calls.indexOf("publish"));
+        expect(calls.indexOf("disarm")).toBeLessThan(calls.indexOf("publish"));
+      }
     })
 );
 
@@ -129,7 +134,10 @@ it.effect.prop(
       yield* validateUnit(unit);
 
       const lines = unit.sections.flatMap((section) => section.lines);
+      expect(lines).toContainEqual(["MemoryHigh", "128M"]);
       expect(lines).toContainEqual(["MemoryMax", "256M"]);
+      expect(lines).toContainEqual(["TimeoutStartSec", "30min"]);
+      expect(lines).toContainEqual(["TimeoutStopSec", "90s"]);
       expect(lines).toContainEqual(["OOMPolicy", "stop"]);
       expect(lines.find(([key]) => key === "ExecStopPost")?.[1]).toContain(
         "/usr/bin/python3 -c"
