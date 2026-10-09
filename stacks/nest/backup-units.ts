@@ -35,6 +35,7 @@ export const backupUnit = (input: {
         ],
         ["OOMPolicy", "stop"],
         ["Slice", "rat-king.slice"],
+        ["MemoryHigh", "128M"],
         ["MemoryMax", "256M"],
         ["MemorySwapMax", "0"],
         ["CPUQuota", "25%"],

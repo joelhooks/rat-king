@@ -3,7 +3,8 @@ def collect_export(target, strict=False):
     import sqlite3
     catalog = pathlib.Path(str(target) + '.sqlite')
     spool = pathlib.Path(str(target) + '.data')
-    with sqlite3.connect(catalog) as db, spool.open('ab') as output:
+    with sqlite3.connect(catalog) as db, spool.open('ab') as raw:
+        output = CacheWriter(raw)
         db.execute('PRAGMA cache_size=-2048')
         db.execute('CREATE TABLE IF NOT EXISTS objects (key TEXT PRIMARY KEY, etag TEXT, offset INTEGER, size INTEGER, sha256 TEXT, generation TEXT)')
         generation = uuid.uuid4().hex
@@ -51,31 +52,38 @@ def collect_export(target, strict=False):
             token = next_cursor
         db.execute('DELETE FROM objects WHERE generation != ?', (generation,))
         db.commit()
-        output.flush()
-        os.fsync(output.fileno())
+        output.sync()
     print('LOGICAL_OBJECT_COLLECTION_PASSED')
 
 def pack_export(target):
     import sqlite3
-    with sqlite3.connect(str(target) + '.sqlite') as db, pathlib.Path(str(target) + '.data').open('rb') as spool, target.open('xb') as destination, tarfile.open(fileobj=destination, mode='w|') as archive:
-        db.execute('PRAGMA cache_size=-2048')
-        def metadata(name, value):
-            value = json.dumps(value).encode()
-            info = tarfile.TarInfo(name)
-            info.size, info.mode = len(value), 0o600
-            archive.addfile(info, io.BytesIO(value))
-            archive.members.clear()
-        metadata('format.json', {'format': 2})
-        count = 0
-        for key, offset, size, digest in db.execute('SELECT key, offset, size, sha256 FROM objects ORDER BY key'):
-            require_safe_key(key)
-            member = object_member(key)
-            metadata('entry.json', {'key': key, 'member': member, 'sha256': digest})
-            info = tarfile.TarInfo(member)
-            info.size, info.mode = size, 0o600
-            spool.seek(offset)
-            archive.addfile(info, spool)
-            archive.members.clear()
-            count += 1
+    with sqlite3.connect(str(target) + '.sqlite') as db, pathlib.Path(str(target) + '.data').open('rb') as raw_spool, target.open('xb') as destination:
+        spool, writer = CacheReader(raw_spool), CacheWriter(destination)
+        with tarfile.open(fileobj=writer, mode='w|') as archive:
+            count = pack_members(db, spool, archive)
+        spool.release()
+        writer.sync()
     print('LOGICAL_OBJECT_EXPORT_PASSED ' + str(count))
+
+def pack_members(db, spool, archive):
+    db.execute('PRAGMA cache_size=-2048')
+    def metadata(name, value):
+        value = json.dumps(value).encode()
+        info = tarfile.TarInfo(name)
+        info.size, info.mode = len(value), 0o600
+        archive.addfile(info, io.BytesIO(value))
+        archive.members.clear()
+    metadata('format.json', {'format': 2})
+    count = 0
+    for key, offset, size, digest in db.execute('SELECT key, offset, size, sha256 FROM objects ORDER BY key'):
+        require_safe_key(key)
+        member = object_member(key)
+        metadata('entry.json', {'key': key, 'member': member, 'sha256': digest})
+        info = tarfile.TarInfo(member)
+        info.size, info.mode = size, 0o600
+        spool.seek(offset)
+        archive.addfile(info, spool)
+        archive.members.clear()
+        count += 1
+    return count
 `;

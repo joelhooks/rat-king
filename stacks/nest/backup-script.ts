@@ -1,10 +1,36 @@
+import { cacheIoScript } from "../../packages/alchemy-nest/src/cache-io-script.ts";
 import { objectArchiveScript } from "../../packages/alchemy-nest/src/object-archive-script.ts";
 
 export const backupScript = String.raw`
-import datetime, hashlib, json, os, pathlib, shutil, signal, sqlite3, stat, subprocess, sys, tarfile, tempfile, uuid
+import datetime, hashlib, json, os, pathlib, re, signal, sqlite3, stat, subprocess, sys, tarfile, tempfile, uuid
 operation, data_arg, backup_arg = sys.argv[1:4]
 data, backup = pathlib.Path(data_arg), pathlib.Path(backup_arg)
+${cacheIoScript}
 ${objectArchiveScript}
+BACKUP_NAME = r'[0-9]{8}T[0-9]{6}\.[0-9]{6}Z-[0-9a-f]{32}'
+def complete_backup(path):
+    return bool(re.fullmatch(BACKUP_NAME, path.name)) and not path.is_symlink() and path.is_dir() and all((path / name).is_file() and not (path / name).is_symlink() for name in ['manifest.json', 'objects.tar', 'celld.tar'])
+def sync_directory(path):
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+def cleanup_partials(parent, pattern, allowed, preserve_manifest=False):
+    for candidate in parent.iterdir():
+        if not re.fullmatch(pattern, candidate.name) or candidate.is_symlink() or not candidate.is_dir():
+            continue
+        if preserve_manifest and ((candidate / 'manifest.json').exists() or not (candidate / 'objects.tar').is_file()):
+            continue
+        children = []
+        for child in candidate.iterdir():
+            if child.name not in allowed or not child.is_file() or child.is_symlink():
+                break
+            children.append(child)
+        else:
+            for child in children:
+                child.unlink()
+            candidate.rmdir()
 def fail(reason):
     raise RuntimeError(reason)
 def no_links(path):
@@ -36,13 +62,12 @@ def inactive(restoring=False, store_stopped=False):
             fail('Backup refuses a failed or timed-out shutdown')
 def digest(path):
     h = hashlib.sha256()
-    with path.open('rb') as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+    with path.open('rb') as source:
+        stream = CacheReader(source)
+        for chunk in iter(lambda: stream.read(COPY_CHUNK), b''):
             h.update(chunk)
+        stream.release()
     return h.hexdigest()
-def sync_file(path):
-    with path.open('rb') as stream:
-        os.fsync(stream.fileno())
 def checked_tree(root):
     no_links(root)
     if not root.is_dir():
@@ -96,59 +121,63 @@ elif operation == 'snapshot':
     staging = staging_path()
     checked_tree(data / 'celld')
     target = staging / 'celld.tar'
-    with target.open('xb') as destination, tarfile.open(fileobj=destination, mode='w|') as archive:
-        root = data / 'celld'
-        archive.add(root, arcname='celld', recursive=False)
-        for directory, _, files in os.walk(root):
-            parent = pathlib.Path(directory)
-            if parent != root:
-                archive.add(parent, arcname=parent.relative_to(data).as_posix(), recursive=False)
-            for name in files:
-                path = parent / name
-                archive.add(path, arcname=path.relative_to(data).as_posix(), recursive=False)
-                archive.members.clear()
-    sync_file(target)
+    with target.open('xb') as destination:
+        writer = CacheWriter(destination)
+        with tarfile.open(fileobj=writer, mode='w|') as archive:
+            root = data / 'celld'
+            archive.add(root, arcname='celld', recursive=False)
+            for directory, _, files in os.walk(root):
+                parent = pathlib.Path(directory)
+                if parent != root:
+                    archive.add(parent, arcname=parent.relative_to(data).as_posix(), recursive=False)
+                for name in files:
+                    path = parent / name
+                    info = archive.gettarinfo(str(path), arcname=path.relative_to(data).as_posix())
+                    with path.open('rb') as source:
+                        reader = CacheReader(source)
+                        archive.addfile(info, reader)
+                        reader.release()
+                    archive.members.clear()
+        writer.sync()
     os.chmod(target, 0o600)
     print('SNAPSHOT_KEY_PATTERN_ASSERTION_PASSED')
 elif operation == 'publish':
     staging = staging_path()
-    with tarfile.open(staging / 'objects.tar') as archive:
+    with cache_tar(staging / 'objects.tar') as archive:
         validate_export(archive)
-    with tarfile.open(staging / 'celld.tar') as archive:
+    with cache_tar(staging / 'celld.tar') as archive:
         validate_celld(archive)
     stamp = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
     target = backup / (stamp + '-' + uuid.uuid4().hex)
-    target.mkdir()
+    pending = backup / ('.mailbox-publish-' + target.name)
+    pending.mkdir(mode=0o700)
     hashes = {}
     for name in ['objects.tar', 'celld.tar']:
-        source, destination = staging / name, target / name
+        source, destination = staging / name, pending / name
         if not source.is_file() or source.is_symlink():
             fail('Invalid snapshot archive')
         expected = digest(source)
         with source.open('rb') as src, destination.open('xb') as dst:
-            shutil.copyfileobj(src, dst, length=1024 * 1024)
-            dst.flush()
-            os.fsync(dst.fileno())
+            cache_copy(src, dst)
         if digest(destination) != expected:
             fail('Published archive checksum mismatch')
         hashes[name] = expected
     manifest = {'format': 2, 'createdAt': stamp, 'version': sys.argv[5], 'commit': sys.argv[6], 'sha256': hashes}
-    with (target / 'manifest.pending').open('x') as stream:
+    with (pending / 'manifest.pending').open('x') as stream:
         json.dump(manifest, stream)
         stream.flush()
         os.fsync(stream.fileno())
-    (target / 'manifest.pending').rename(target / 'manifest.json')
-    # Only recognized staging directories, only after manifest publication.
-    allowed = {'objects.tar', 'celld.tar', 'objects.tar.sqlite', 'objects.tar.sqlite-journal', 'objects.tar.data'}
-    for candidate in data.glob('.mailbox-backup-*'):
-        suffix = candidate.name.removeprefix('.mailbox-backup-')
-        if len(suffix) != 32 or any(ch not in '0123456789abcdef' for ch in suffix) or candidate.is_symlink() or not candidate.is_dir():
-            continue
-        children = list(candidate.iterdir())
-        if all(child.name in allowed and child.is_file() and not child.is_symlink() for child in children):
-            for child in children:
-                child.unlink()
-            candidate.rmdir()
+    (pending / 'manifest.pending').rename(pending / 'manifest.json')
+    sync_directory(pending)
+    if target.exists() or target.is_symlink():
+        fail('Refusing occupied publication name')
+    pending.rename(target)
+    sync_directory(backup)
+    # Only recognized staging and partial publication directories, after success.
+    cleanup_partials(data, r'\.mailbox-backup-[0-9a-f]{32}', {'objects.tar', 'celld.tar', 'objects.tar.sqlite', 'objects.tar.sqlite-journal', 'objects.tar.data'})
+    publish_files = {'objects.tar', 'celld.tar', 'manifest.pending', 'manifest.json'}
+    cleanup_partials(backup, r'\.mailbox-publish-' + BACKUP_NAME, publish_files)
+    cleanup_partials(backup, BACKUP_NAME, publish_files, preserve_manifest=True)
     print('BACKUP_PUBLISHED ' + target.name)
 elif operation in ['restore-preflight', 'restore']:
     if operation == 'restore-preflight':
@@ -163,7 +192,7 @@ elif operation in ['restore-preflight', 'restore']:
             fail('Restore refuses an occupied celld directory')
         if any(path.name not in {'celld', 'seaweedfs'} for path in data.iterdir()):
             fail('Restore refuses undeclared data-root children')
-    candidates = sorted([path for path in backup.iterdir() if path.is_dir() and not path.is_symlink() and (path / 'manifest.json').is_file()], reverse=True)
+    candidates = sorted([path for path in backup.iterdir() if complete_backup(path)], reverse=True)
     if not candidates:
         fail('No complete backup')
     if operation == 'restore':
@@ -186,9 +215,9 @@ elif operation in ['restore-preflight', 'restore']:
         archive_path = source / name
         if archive_path.is_symlink() or digest(archive_path) != manifest['sha256'][name]:
             fail('Restore checksum mismatch')
-    with tarfile.open(source / 'objects.tar') as archive:
+    with cache_tar(source / 'objects.tar') as archive:
         validate_export(archive)
-    with tarfile.open(source / 'celld.tar') as archive:
+    with cache_tar(source / 'celld.tar') as archive:
         validate_celld(archive)
     if operation == 'restore-preflight':
         print(source.name)
@@ -197,7 +226,7 @@ elif operation in ['restore-preflight', 'restore']:
     def secured_member(member, destination):
         safe = tarfile.data_filter(member, destination)
         return safe.replace(mode=0o700 if safe.isdir() else 0o600)
-    with tarfile.open(source / 'celld.tar') as archive:
+    with cache_tar(source / 'celld.tar') as archive:
         for member in archive:
             archive.extract(member, data, filter=secured_member)
             archive.members.clear()
@@ -207,9 +236,7 @@ elif operation in ['restore-preflight', 'restore']:
         fail('Restored celld directory mode assertion failed')
     target = data / '.mailbox-restore-objects.tar'
     with (source / 'objects.tar').open('rb') as src, target.open('xb') as dst:
-        shutil.copyfileobj(src, dst, length=1024 * 1024)
-        dst.flush()
-        os.fsync(dst.fileno())
+        cache_copy(src, dst)
     os.chmod(target, 0o600)
     print('BACKUP_RESTORED ' + source.name)
 else:

@@ -49,16 +49,20 @@ def walk_export(archive, consume=None):
             h = hashlib.sha256()
             # The callback only sees verified data; bounded RAM even for a large object.
             with tempfile.TemporaryFile() as payload:
+                writer = CacheWriter(payload)
                 stream = archive.extractfile(info)
                 for chunk in iter(lambda: stream.read(1024 * 1024), b''):
                     h.update(chunk)
                     if consume:
-                        payload.write(chunk)
+                        writer.write(chunk)
                 if h.hexdigest() != entry['sha256']:
                     raise RuntimeError('Object export checksum mismatch')
                 if consume:
+                    writer.sync()
                     payload.seek(0)
-                    consume(entry, payload)
+                    reader = CacheReader(payload)
+                    consume(entry, reader)
+                    reader.release()
             count += 1
             if count % 1000 == 0:
                 seen.commit()

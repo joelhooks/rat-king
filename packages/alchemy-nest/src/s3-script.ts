@@ -1,3 +1,4 @@
+import { cacheIoScript } from "./cache-io-script.ts";
 import { objectArchiveScript } from "./object-archive-script.ts";
 import { objectExportScript } from "./object-export-script.ts";
 
@@ -66,6 +67,7 @@ def request(method, key='', query='', conditional=False, payload=None, sink=None
     finally:
         connection.close()
 
+${cacheIoScript}
 ${objectArchiveScript}
 ${objectExportScript}
 
@@ -84,7 +86,7 @@ if operation in {'prepare', 'export-final', 'pack', 'export'}:
 elif operation == 'import':
     source = pathlib.Path(sys.argv[5])
     import tempfile
-    with tarfile.open(source) as archive:
+    with cache_tar(source) as archive:
         validate_export(archive)
     def restore_object(entry, value):
         status, _ = request('PUT', entry['key'], payload=value, payload_hash=entry['sha256'])
@@ -94,7 +96,7 @@ elif operation == 'import':
             code, result = request('GET', entry['key'], sink=copied)
         if code != 200 or result[1] != entry['sha256']:
             raise RuntimeError('Object restore readback mismatch')
-    with tarfile.open(source) as archive:
+    with cache_tar(source) as archive:
         count = walk_export(archive, restore_object)
     print('LOGICAL_OBJECT_IMPORT_PASSED ' + str(count))
 elif operation == 'race':
