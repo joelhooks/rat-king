@@ -33,6 +33,7 @@ import { preflightRestore, restoreSnapshot } from "./restore.ts";
 import { announceRestart } from "./ship-notice.ts";
 import { sendShipNotification } from "./ship-notify.ts";
 import { appendRestartEvent, guardRestartPlan } from "./ship-restart.ts";
+import { stageShipUnits } from "./ship-unit-stage.ts";
 import { connection, nestStack, nest } from "./stack.ts";
 import { StageConfig } from "./stage-config.ts";
 
@@ -152,7 +153,9 @@ const beforeShipDeploy = Effect.fn("Ship.beforeDeploy")(
       )
     );
 
-    return yield* guardRestartPlan(shell, true);
+    yield* guardRestartPlan(shell, true);
+
+    return yield* stageShipUnits(planned, shell);
   }
 );
 
