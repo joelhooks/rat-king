@@ -7,10 +7,27 @@ const Text = Schema.NonEmptyString;
 export const Sha = Schema.String.check(Schema.isPattern(/^[a-f0-9]{40}$/u));
 
 export const RestartSettings = Schema.Struct({
+  dependencies: Schema.optionalKey(Schema.Array(Text)),
   lock: Text,
   marker: Text,
+  minIntervalHours: Schema.optionalKey(
+    Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
+  ),
+  noticeSeconds: Schema.optionalKey(
+    Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0))
+  ),
   unit: Text,
   units: Schema.NonEmptyArray(Text),
+  window: Schema.optionalKey(
+    Schema.Struct({
+      endHourUTC: Schema.Int.check(
+        Schema.isBetween({ maximum: 23, minimum: 0 })
+      ),
+      startHourUTC: Schema.Int.check(
+        Schema.isBetween({ maximum: 23, minimum: 0 })
+      ),
+    })
+  ),
 });
 
 export const ShipSettings = Schema.Struct({
@@ -51,6 +68,7 @@ export const RestartEvent = Schema.Struct({
   durationSeconds: Schema.Number,
   phase: Schema.Literals(["requested", "completed", "deferred"]),
   restarted: Schema.NullOr(Schema.Boolean),
+  retryAt: Schema.optionalKey(Schema.Number),
 });
 
 export const ShipReceipt = Schema.Struct({
@@ -58,11 +76,14 @@ export const ShipReceipt = Schema.Struct({
   end: Schema.Number,
   restartSeconds: Schema.NullOr(Schema.Number),
   result: Schema.Literals(["success", "failed", "deferred"]),
+  retryAt: Schema.optionalKey(Schema.Number),
   sha: Sha,
   start: Schema.Number,
 });
 
 export const ShipCheckpoint = Schema.Struct({
+  deferred: Schema.optionalKey(Schema.Union([Schema.Literal(""), Sha])),
   failed: Schema.Union([Schema.Literal(""), Sha]),
+  retryAt: Schema.optionalKey(Schema.Number),
   successful: Schema.Union([Schema.Literal(""), Sha]),
 });

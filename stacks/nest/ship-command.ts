@@ -158,7 +158,12 @@ export const shipCommand = Effect.fn("Ship.command")(
       checkpoint: (state) =>
         writePrivateJson(
           ship.checkpoint,
-          JSON.stringify({ failed: state.failed, successful: state.successful })
+          JSON.stringify({
+            deferred: state.deferred ?? "",
+            failed: state.failed,
+            retryAt: state.retryAt ?? 0,
+            successful: state.successful,
+          })
         ).pipe(
           Effect.mapError(
             () => new FleetError({ reason: "Ship checkpoint write failed" })
@@ -331,7 +336,7 @@ export const shipCommand = Effect.fn("Ship.command")(
             outcome = "deferred";
           }
 
-          return {
+          const verdict = {
             celldRestarted:
               restarted || (last?.restarted === null ? null : false),
             restartSeconds:
@@ -343,6 +348,10 @@ export const shipCommand = Effect.fn("Ship.command")(
                   ),
             result: outcome,
           };
+
+          return last?.retryAt === undefined
+            ? verdict
+            : { ...verdict, retryAt: last.retryAt };
         },
         (effect) =>
           effect.pipe(

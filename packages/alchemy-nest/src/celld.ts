@@ -20,6 +20,7 @@ export const Node = (
   props: {
     readonly host: HostNode;
     readonly workerIPv4?: string;
+    readonly prepared?: readonly Output.Output<string>[];
     readonly bucket: BucketOutput;
     readonly purgeOnDelete?: boolean;
   }
@@ -87,30 +88,22 @@ export const Node = (
       },
     });
 
-    const unit = yield* NodeResource(
-      "node",
-      Output.all(
+    const unit = yield* NodeResource("node", {
+      ...declaration,
+      internalUrl: "http://127.0.0.1:18788",
+      prepared: [
         binary.path,
         data.path,
         environment.path,
-        environment.sha256,
-        binary.sha256,
         bucket.resource.name,
         bucket.restartGate?.sha256 ?? bucket.resource.name,
-        bucket.storageMaintenance.sha256
-      ).pipe(
-        Output.map((values) => ({
-          ...declaration,
-          internalUrl: "http://127.0.0.1:18788",
-          publicUrl: `http://${workerIPv4}:18787`,
-          restartOn:
-            bucket.restartGate === undefined
-              ? [values[3], values[4], values[7]]
-              : [values[3], values[4], values[6], values[7]],
-          version: "v0.6.1" as const,
-        }))
-      )
-    );
+        bucket.storageMaintenance.sha256,
+        ...(props.prepared ?? []),
+      ],
+      publicUrl: `http://${workerIPv4}:18787`,
+      restartOn: Output.all(environment.sha256, binary.sha256),
+      version: "v0.6.1",
+    });
 
     return {
       internalUrl: unit.internalUrl,

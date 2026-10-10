@@ -17,13 +17,14 @@ export interface ShipPorts<R = never> {
   ) => Effect.Effect<
     Pick<
       typeof ShipReceipt.Type,
-      "result" | "celldRestarted" | "restartSeconds"
+      "result" | "celldRestarted" | "restartSeconds" | "retryAt"
     >,
     FleetError,
     R
   >;
   readonly checkpoint: (
-    snapshot: Pick<ShipSnapshot["context"], "failed" | "successful">
+    snapshot: Pick<ShipSnapshot["context"], "failed" | "successful"> &
+      Partial<Pick<ShipSnapshot["context"], "deferred" | "retryAt">>
   ) => Effect.Effect<void, FleetError, R>;
   readonly record: (
     receipt: typeof ShipReceipt.Type
@@ -49,7 +50,11 @@ export const shipCycle = Effect.fn("Ship.cycle")(function* shipCycle<R>(
     return advance(current, { type: "fetchFailed" });
   }
 
-  current = advance(current, { sha: fetched.value, type: "observed" });
+  current = advance(current, {
+    now: (yield* Clock.currentTimeMillis) / 1000,
+    sha: fetched.value,
+    type: "observed",
+  });
 
   if (!current.matches("waiting-ci")) {
     return current;
@@ -87,9 +92,12 @@ export const shipCycle = Effect.fn("Ship.cycle")(function* shipCycle<R>(
   };
 
   yield* ports.record(receipt);
-  current = advance(current, {
-    type: deployed.result === "failed" ? "failure" : deployed.result,
-  });
+  current =
+    deployed.result === "deferred"
+      ? advance(current, { retryAt: deployed.retryAt ?? 0, type: "deferred" })
+      : advance(current, {
+          type: deployed.result === "failed" ? "failure" : "success",
+        });
   yield* ports.checkpoint(current.context);
   yield* ports
     .notify(receipt)
@@ -106,7 +114,8 @@ export const shipCycle = Effect.fn("Ship.cycle")(function* shipCycle<R>(
 
 export const shipLoop = <R>(
   ports: ShipPorts<R>,
-  saved: Pick<ShipSnapshot["context"], "failed" | "successful">,
+  saved: Pick<ShipSnapshot["context"], "failed" | "successful"> &
+    Partial<Pick<ShipSnapshot["context"], "deferred" | "retryAt">>,
   intervalSeconds: number
 ) =>
   Effect.gen(function* runShipLoop() {

@@ -26,6 +26,7 @@ import {
 import type { RuntimeFilesProps } from "../../packages/alchemy-nest/src/agent-runtime-files.ts";
 import { Celld } from "../../packages/alchemy-nest/src/celld.ts";
 import { prepareDeployment } from "../../packages/alchemy-nest/src/deployment-build.ts";
+import { stageDeploymentFiles } from "../../packages/alchemy-nest/src/deployment-stage.ts";
 import {
   Deployment,
   DeploymentProvider,
@@ -201,63 +202,6 @@ export const nestStack = (restore?: RestoreRequest) =>
 
       const recoverState = yield* stateRecovery(mailboxOnly);
 
-      const restartGateBundle = Option.getOrUndefined(
-        yield* optionalOperatorBundle(
-          fleet,
-          path.resolve(import.meta.dirname, "restart-gate.ts")
-        )
-      );
-
-      const slice = yield* ObjectStore.Slice(node.home, memoryMax, cpuQuota);
-
-      const bucket = yield* ObjectStore.Bucket("store", {
-        host: node,
-        name: yield* Config.String("RAT_KING_BUCKET").pipe(
-          Config.withDefault("rat-king-cells")
-        ),
-        purgeOnDelete: !recoverState,
-        restartGateBundle,
-        slice: slice.sha256,
-      });
-
-      const cells = yield* Celld.Node("celld", {
-        bucket,
-        host: node,
-        purgeOnDelete: !recoverState,
-        workerIPv4,
-      });
-
-      const runtime = mailboxOnly
-        ? undefined
-        : yield* RuntimeFiles(
-            "agent-runtime-files",
-            Output.all(cells.unit.sha256).pipe(
-              Output.map(
-                ([ready]) =>
-                  ({
-                    agent: remoteAgent,
-                    did: hostedDid,
-                    gatewayUrl,
-                    home: node.home,
-                    mode,
-                    ready,
-                    secretName,
-                    sidecar,
-                    sidecarBundle,
-                  }) satisfies RuntimeFilesProps
-              )
-            )
-          );
-
-      const sidecarReady = sidecar
-        ? (yield* SystemdUnit(
-            "claude-sidecar",
-            (runtime?.sha256 ?? cells.unit.sha256).pipe(
-              Output.map((ready) => sidecarUnit(node.home, ready))
-            )
-          )).sha256
-        : (runtime?.sha256 ?? cells.unit.sha256);
-
       const documents = yield* fs.readFileString(
         yield* Config.String("RAT_KING_DOCUMENTS")
       );
@@ -340,6 +284,71 @@ export const nestStack = (restore?: RestoreRequest) =>
         }
       );
 
+      const staged = yield* stageDeploymentFiles(
+        node.home,
+        prepared,
+        mailboxOnly
+      );
+
+      const restartGateBundle = Option.getOrUndefined(
+        yield* optionalOperatorBundle(
+          fleet,
+          path.resolve(import.meta.dirname, "restart-gate.ts")
+        )
+      );
+
+      const slice = yield* ObjectStore.Slice(node.home, memoryMax, cpuQuota);
+
+      const bucket = yield* ObjectStore.Bucket("store", {
+        host: node,
+        name: yield* Config.String("RAT_KING_BUCKET").pipe(
+          Config.withDefault("rat-king-cells")
+        ),
+        prepared: staged,
+        purgeOnDelete: !recoverState,
+        restartGateBundle,
+        slice: slice.sha256,
+      });
+
+      const cells = yield* Celld.Node("celld", {
+        bucket,
+        host: node,
+        prepared: staged,
+        purgeOnDelete: !recoverState,
+        workerIPv4,
+      });
+
+      const runtime = mailboxOnly
+        ? undefined
+        : yield* RuntimeFiles(
+            "agent-runtime-files",
+            Output.all(cells.unit.sha256).pipe(
+              Output.map(
+                ([ready]) =>
+                  ({
+                    agent: remoteAgent,
+                    did: hostedDid,
+                    gatewayUrl,
+                    home: node.home,
+                    mode,
+                    ready,
+                    secretName,
+                    sidecar,
+                    sidecarBundle,
+                  }) satisfies RuntimeFilesProps
+              )
+            )
+          );
+
+      const sidecarReady = sidecar
+        ? (yield* SystemdUnit(
+            "claude-sidecar",
+            (runtime?.sha256 ?? cells.unit.sha256).pipe(
+              Output.map((ready) => sidecarUnit(node.home, ready))
+            )
+          )).sha256
+        : (runtime?.sha256 ?? cells.unit.sha256);
+
       const cli = yield* RemoteFile("mailbox-cli", {
         content: yield* fs.readFileString(
           yield* Config.String("RAT_KING_CLI_OUTPUT")
@@ -369,7 +378,8 @@ export const nestStack = (restore?: RestoreRequest) =>
           cli.sha256,
           cells.unit.sha256,
           runtime?.bindings ?? cells.unit.sha256.pipe(Output.map(() => "")),
-          sidecarReady
+          sidecarReady,
+          ...staged
         ).pipe(
           Output.map((values) => {
             const props: DeploymentProps = {

@@ -33,6 +33,7 @@ export const UnitSchema = Schema.Struct({
       /^[A-Za-z0-9][A-Za-z0-9_@:-]*(?:\.[A-Za-z0-9_@:-]+)*\.(?:service|slice|timer)$/u
     )
   ),
+  prepared: Schema.optionalKey(Schema.Array(directive)),
   restartOn: Schema.optionalKey(Schema.Array(directive)),
   scope: Schema.Literal("user"),
   sections: Schema.NonEmptyArray(section),
@@ -49,6 +50,7 @@ export interface UnitAttributes {
   readonly sha256: string;
   readonly configSha256: string;
   readonly active: boolean;
+  readonly invocationId?: string;
   readonly enabled: boolean;
   readonly needDaemonReload: boolean;
 }
@@ -64,6 +66,35 @@ const enabled = (props: UnitProps): boolean =>
 
 const configDigest = (props: UnitProps): string =>
   textDigest((props.restartOn ?? []).join("\n"));
+
+export const withoutLegacyHelperInputs = <A extends UnitAttributes>(
+  olds: UnitProps | undefined,
+  news: UnitProps,
+  output: A | undefined,
+  prepared: boolean
+): A | undefined => {
+  const previous = olds?.restartOn ?? [];
+  const next = news.restartOn ?? [];
+
+  if (
+    !prepared ||
+    olds === undefined ||
+    output === undefined ||
+    olds.prepared !== undefined ||
+    previous.length <= 2 ||
+    next.length !== 2 ||
+    previous[0] !== next[0] ||
+    previous[1] !== next[1] ||
+    output.configSha256 !== configDigest(olds)
+  ) {
+    return output;
+  }
+
+  return {
+    ...output,
+    configSha256: configDigest({ ...olds, restartOn: next }),
+  };
+};
 
 export const validateUnit = Effect.fn("SystemdUnit.validate")(
   function* validateUnit(props: UnitProps) {
@@ -104,7 +135,7 @@ const status = Effect.fn("SystemdUnit.status")(function* status(
     "show",
     props.name,
     "--no-pager",
-    "--property=LoadState,ActiveState,SubState,UnitFileState,NeedDaemonReload,FragmentPath",
+    "--property=LoadState,ActiveState,SubState,UnitFileState,NeedDaemonReload,FragmentPath,InvocationID",
   ]);
 
   const fields = new Map(
@@ -147,6 +178,7 @@ const status = Effect.fn("SystemdUnit.status")(function* status(
     enabled:
       fields.get("UnitFileState") === "enabled" ||
       fields.get("UnitFileState") === "enabled-runtime",
+    invocationId: fields.get("InvocationID") ?? "",
     needDaemonReload: fields.get("NeedDaemonReload") === "yes",
   };
 });

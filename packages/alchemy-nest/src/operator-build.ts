@@ -1,15 +1,18 @@
 /* oxlint-disable typescript/promise-function-async, promise/prefer-await-to-callbacks -- esbuild Promise adapter. */
-import { Effect, Option } from "effect";
+import { Effect, Option, Path } from "effect";
 import { build } from "esbuild";
 
 import { refuse } from "./files.ts";
 
 export const operatorBundle = Effect.fn("Nest.operatorBundle")(
   function* operatorBundle(entrypoint: string) {
+    const path = yield* Path.Path;
+
     const output = yield* Effect.tryPromise({
       catch: () => refuse("Operator bundle build failed"),
       try: () =>
         build({
+          absWorkingDir: path.dirname(entrypoint),
           banner: {
             js: 'import { createRequire as __createRequire } from "node:module"; const require = __createRequire(import.meta.url);',
           },

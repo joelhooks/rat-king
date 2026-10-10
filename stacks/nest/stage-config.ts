@@ -111,5 +111,7 @@ export const stageProvider = (config: StageConfigValue) =>
       config.shipAttempt === undefined
         ? undefined
         : JSON.stringify(config.shipAttempt),
+    RAT_KING_SHIP_CONFIG:
+      config.shipAttempt === undefined ? undefined : JSON.stringify(config),
     RAT_KING_SHIP_MODE: config.shipAttempt !== undefined,
   });

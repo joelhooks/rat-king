@@ -1,8 +1,9 @@
 import { Resource } from "alchemy";
 import { AdoptPolicy, Unowned } from "alchemy/AdoptPolicy";
 import { isResolved } from "alchemy/Diff";
+import * as Output from "alchemy/Output";
 import * as Provider from "alchemy/Provider";
-import { Effect, Layer, Option, Schema } from "effect";
+import { Config, Effect, Layer, Option, Schema } from "effect";
 
 import { absent } from "./absent.ts";
 import { ownedPath, recovering, rotatingFile } from "./adoption.ts";
@@ -41,6 +42,7 @@ import {
   deleteUnit,
   unitPath,
   validateUnit,
+  withoutLegacyHelperInputs,
   ownedUnit,
   UnitSchema,
 } from "./systemd.ts";
@@ -264,21 +266,44 @@ export const SystemdUnitProvider = () =>
       return SystemdUnit.Provider.of({
         delete: ({ output }) => deleteUnit(shell, output),
         diff: Effect.fn("SystemdUnit.provider.diff")(function* operation({
+          olds,
           news,
           output,
         }) {
-          if (!isResolved(news)) {
+          if (
+            Output.isExpr(news) ||
+            Effect.isEffect(news) ||
+            Config.isConfig(news)
+          ) {
             return absent;
           }
 
-          yield* validateUnit(news);
+          if (Symbol.iterator in news) {
+            return absent;
+          }
+
+          const operational = { ...news, prepared: [] };
+
+          if (!isResolved<UnitProps>(operational)) {
+            return absent;
+          }
+
+          yield* validateUnit(operational);
+
+          const previous = withoutLegacyHelperInputs(
+            olds,
+            operational,
+            output,
+            "prepared" in news &&
+              operational.name === "rat-king-seaweedfs.service"
+          );
 
           if (output === undefined) {
             return { action: "update" };
           }
 
-          if (unitPath(news) !== output.path) {
-            if ((yield* readUnit(shell, news)) !== undefined) {
+          if (unitPath(operational) !== output.path) {
+            if ((yield* readUnit(shell, operational)) !== undefined) {
               return yield* new HostError({
                 operation: "replace",
                 reason: "Replacement unit target already exists.",
@@ -289,7 +314,11 @@ export const SystemdUnitProvider = () =>
           }
 
           return {
-            action: needsUpdate(news, output, yield* readUnit(shell, news))
+            action: needsUpdate(
+              operational,
+              previous ?? output,
+              yield* readUnit(shell, operational)
+            )
               ? "update"
               : "noop",
           };
@@ -327,7 +356,7 @@ export const SystemdUnitProvider = () =>
           };
         }),
         reconcile: Effect.fn("SystemdUnit.provider.reconcile")(
-          function* operation({ news, output }) {
+          function* operation({ olds, news, output }) {
             yield* validateUnit(news);
 
             const existed = yield* shell.stat(unitPath(news));
@@ -339,7 +368,13 @@ export const SystemdUnitProvider = () =>
             const attributes = yield* reconcileUnit(
               shell,
               news,
-              output,
+              withoutLegacyHelperInputs(
+                olds,
+                news,
+                output,
+                news.prepared !== undefined &&
+                  news.name === "rat-king-seaweedfs.service"
+              ),
               yield* adoption
             );
 

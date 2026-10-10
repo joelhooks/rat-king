@@ -8,10 +8,11 @@ import { layerNonInteractive } from "alchemy/Interaction";
 import * as Plan from "alchemy/Plan";
 import { evalStack } from "alchemy/Stack";
 import { localState } from "alchemy/State/LocalState";
-import { Config, Effect, FileSystem, Layer, Schema } from "effect";
+import { Clock, Config, Effect, FileSystem, Layer, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 
 import { provision } from "../../apps/mailbox/cli/provision.ts";
+import { secretStoreLayer } from "../../apps/mailbox/cli/secrets.ts";
 import { Documents } from "../../apps/mailbox/src/auth.ts";
 import { sidecarUnit } from "../../packages/alchemy-nest/src/agent-runtime-files.ts";
 import {
@@ -29,8 +30,12 @@ import { stageName, workerIPv4, workerUrl } from "./config.ts";
 import { assess, collectHealth, DigestJson } from "./health.ts";
 import { isDeferredAdoption, qualifyRecoveryPlan } from "./recovery-plan.ts";
 import { preflightRestore, restoreSnapshot } from "./restore.ts";
-import { guardRestartPlan } from "./ship-restart.ts";
+import { announceRestart } from "./ship-notice.ts";
+import { sendShipNotification } from "./ship-notify.ts";
+import { appendRestartEvent, guardRestartPlan } from "./ship-restart.ts";
+import { stageShipUnits } from "./ship-unit-stage.ts";
 import { connection, nestStack, nest } from "./stack.ts";
+import { StageConfig } from "./stage-config.ts";
 
 export const claudeMtimeScript = String.raw`
 import glob, json, os, sys
@@ -102,13 +107,55 @@ const beforeShipDeploy = Effect.fn("Ship.beforeDeploy")(
       stage,
     }).pipe(adopt(true));
 
-    return yield* guardRestartPlan(
-      yield* HostShell,
-      Plan.describePlan(planned).resources.some(
-        (resource) =>
-          resource.resourceType === "Celld.Node" && resource.action !== "noop"
+    const restarting = Plan.describePlan(planned).resources.some(
+      (resource) =>
+        resource.action !== "noop" &&
+        (resource.resourceType === "Celld.Node" ||
+          (resource.resourceType === "RatsNest.SystemdUnit" &&
+            resource.fqn.endsWith("/store/server")))
+    );
+
+    if (!restarting) {
+      return yield* Effect.void;
+    }
+
+    const shell = yield* HostShell;
+    yield* guardRestartPlan(shell, true);
+
+    const config = yield* Config.schema(
+      Schema.fromJsonString(StageConfig),
+      "RAT_KING_SHIP_CONFIG"
+    );
+
+    const attempt = config.shipAttempt;
+
+    if (attempt === undefined) {
+      return yield* refuse("Restart plan has no ship attempt");
+    }
+
+    yield* announceRestart(attempt, (text) =>
+      sendShipNotification(config, text).pipe(
+        Effect.provide(secretStoreLayer({}))
+      )
+    ).pipe(
+      Effect.catch((error) =>
+        Effect.gen(function* noticeRefused() {
+          yield* Effect.logError("SHIP_PRENOTICE_FAILED", error.reason);
+          yield* appendRestartEvent(attempt, {
+            durationSeconds: 0,
+            phase: "deferred",
+            restarted: false,
+            retryAt: (yield* Clock.currentTimeMillis) / 1000 + 60,
+          });
+
+          return yield* refuse("Restart deferred because pre-notice failed");
+        })
       )
     );
+
+    yield* guardRestartPlan(shell, true);
+
+    return yield* stageShipUnits(planned, shell);
   }
 );
 
