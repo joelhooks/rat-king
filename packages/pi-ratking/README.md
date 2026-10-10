@@ -35,7 +35,11 @@ The extension reads `RATKING_CONFIG`, or `~/.config/rat-king/pi.json`. Without a
 
 Keys are P-256 pairs generated on the Pi's host. They are stored in the host secret store (agent-secrets) as `rat_king_fleet_agent_<label>_identity`, passed to `secrets add` on stdin, never in argv or logs. `<label>` is the name with `/` replaced by `.`. Existing secrets are reused and never rotated; their DID wins over the template. Reserved names are never minted; their secret must already exist on the host.
 
-Registration goes through one service, `Issuer.ensure(name, publicDocument) → did`. The command issuer writes the public document to a private temporary file, runs `<command> register --did <did> --document <file>` and records the name in the directory. Point it at a mailbox CLI built from this repository; bundles without `register` refuse. The operator key stays with that CLI. A later issuer can replace the layer without changing callers.
+Registration goes through one service, `Issuer.ensure(name, publicDocument) → did`. `issuer` takes one of two shapes.
+
+`{ "endpoint": "https://mailbox.example.invalid", "host": "<host identity secret>" }` is the service issuer. It leases the host's identity JSON from the host secret store and calls the mailbox's `identity.register` with a service-auth JWT signed by the host key. The operator must first enroll that host (`mailbox enroll-host`). The issuer derives the DID from the name with its own template, so `didTemplate` must match the server's. A refusal (`NameTaken`, `NameReserved`, `Forbidden`) fails provisioning with that code. With this issuer, `list` also pages the issuer's directory and records names that are not yet local, so their documents resolve for sending. Local entries are never replaced.
+
+`{ "command": [...] }` is the command issuer. It writes the public document to a private temporary file, runs `<command> register --did <did> --document <file>` and records the name in the directory. Point it at a mailbox CLI built from this repository; bundles without `register` refuse. The operator key stays with that CLI. A later issuer can replace the layer without changing callers.
 
 ## Reader
 
@@ -66,7 +70,8 @@ Pi keeps the first tool registered under a name and silently drops later ones. W
 
 ## Limits
 
-- Remote hosts need their own issuer. Without one, only names with existing secrets and directory entries work.
+- A host without an issuer can use only names with existing secrets and directory entries.
+- The issuer directory lists only names registered through it. Names registered with the command issuer are invisible to it.
 - A reader that loses its cursor resumes at the head; mail that arrived while it had none is skipped, not read.
 - A quarantined message stays unacked on the server; its sender sees no delivery.
 - Registered DID documents have no revoke route.

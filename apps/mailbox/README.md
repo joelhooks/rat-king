@@ -24,6 +24,16 @@ Hibernatable sockets use `acceptWebSocket`, lifecycle attachments and DO alarms 
 
 `admin.putDidDocument` allows only issuers in `OPERATOR_DIDS`, an optional JSON array that defaults to `[]`. It stores the public document in the DO named by its ID. Identical repeats return the DID; different documents fail with `DocumentConflict`. Static `DID_DOCUMENTS` cannot be overridden. Key rotation is not available in this version.
 
+## Name issuer
+
+One global Issuer DO (`ISSUER`, instance `issuer`, added by migration `v2`) lets enrolled hosts register Pi names without the operator key. It serves three generated methods under `sh.mschf.ratking.identity`:
+
+- `enrollHost`: operator-only (`OPERATOR_DIDS`). Stores the host DID and registers its public document create-only, exactly as `admin.putDidDocument` does, so the host's service-auth JWTs resolve.
+- `register`: `{ name, document } → { did }`. The caller must be an enrolled host. The name must match pi-ratking's grammar and must not be in `ISSUER_RESERVED`. The document id must equal the DID derived from `ISSUER_DID_TEMPLATE` (`{agent}` replaced by the name, `/` by `.`). The document must be a bare public-key document: any extra field, private JWK field included, is refused. The first enrolled host to register a name owns it. An identical repeat by that host returns the same DID; any other registration of the name returns `NameTaken`. The issuer writes the document into the DID's Mailbox DO before binding the name, then rechecks the binding in the same transaction that writes it. A Mailbox DO that already holds a different document returns `DocumentConflict` and the name stays free.
+- `listNames`: any authenticated caller pages `{ name, did, document }` by name, 100 per page.
+
+Policy is pure (`src/issuer-policy.ts`); storage is DO SQLite (`src/issuer-store.ts`). `ISSUER_DID_TEMPLATE` is required; without it, or with a malformed `ISSUER_RESERVED` JSON array, `register` answers `MailboxUnavailable`. Names registered through `admin.putDidDocument` are not in the issuer's directory. There is no revoke or transfer route.
+
 ## Hosted mailbox loop
 
 Use `src/hosted-worker.ts` to compose Mailbox, AuthTokens and Agent in one Worker. Bind `AGENT` to its Agent class, add Agent to the SQLite migration, and set `HOSTED_AGENTS` to a JSON array of hosted DIDs. The mailbox-only entry remains available without agent bindings. The mailbox app imports the agent-runtime port and composition adapter, never pi-durable.

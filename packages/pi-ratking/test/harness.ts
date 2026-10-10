@@ -33,6 +33,7 @@ const issuer = Layer.effect(
           Effect.as(peer.id),
           Effect.mapError((error) => new IssuerError({ reason: error.reason }))
         ),
+      names: Effect.succeed([]),
     });
   })
 );

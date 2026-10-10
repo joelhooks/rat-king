@@ -1,5 +1,6 @@
 import * as PutDocument from "@rat-king/lexicon/admin.putDidDocument";
 import * as Defs from "@rat-king/lexicon/defs";
+import * as ListNames from "@rat-king/lexicon/identity.listNames";
 /* oxlint-disable promise/prefer-await-to-callbacks, typescript/promise-function-async -- Effect adapters require lazy Promise thunks, not callback-style control flow. */
 import { MailboxServer, serverLayer } from "@rat-king/lexicon/mailbox-server";
 import * as Ack from "@rat-king/lexicon/mailbox.ack";
@@ -26,11 +27,14 @@ import { documentsLayer, didAllowlist, peerDocument } from "./documents.ts";
 import { logFailure } from "./failure-log.ts";
 import type { FailureScope } from "./failure-log.ts";
 import { failure } from "./failure.ts";
+import { issuerInstance } from "./issuer-object.ts";
+import { issuerMethods } from "./issuer.ts";
 import { validLease } from "./lease.ts";
 import {
   Caller,
   mailboxHandlers,
   deliverMessage,
+  storeDocument,
   LeaseAuthority,
   leaseLayer,
 } from "./mailbox.ts";
@@ -405,6 +409,28 @@ export class Mailbox extends DurableObject<Bindings> {
             : Effect.fail(error)
         ),
         Effect.provide(leaseLayer.pipe(Layer.provide(this.store)))
+      )
+    );
+  }
+  storeDocument(json: string) {
+    const document = Schema.decodeSync(Schema.fromJsonString(Defs.DidDocument))(
+      json
+    );
+
+    const staticDocuments = Schema.decodeSync(
+      Schema.fromJsonString(Schema.Array(Defs.DidDocument))
+    )(this.env.DID_DOCUMENTS);
+
+    return Effect.runPromise(
+      MailboxStore.use((store) =>
+        store.transaction((tx) => {
+          storeDocument(tx, staticDocuments, document);
+
+          return "stored";
+        })
+      ).pipe(
+        Effect.catchTag("XrpcFailure", (error) => Effect.succeed(error.error)),
+        Effect.provide(this.store)
       )
     );
   }
@@ -850,8 +876,99 @@ const methods = new Set<string>(
     Peer.Method,
     Subscribe.Method,
     SubscribeTraffic.Method,
+    ...issuerMethods,
   ].map((method) => method.nsid)
 );
+
+const issuerRequest = Effect.fn("Issuer.request")(function* issuerRequest(
+  request: Request,
+  env: Bindings,
+  nsid: string,
+  caller: string
+) {
+  const issuers = env.ISSUER;
+
+  if (issuers === undefined) {
+    return yield* Effect.fail(failure("MailboxUnavailable", 503));
+  }
+
+  let transport: XrpcRequest;
+
+  if (nsid === ListNames.Method.nsid) {
+    if (request.method !== "GET") {
+      return yield* Effect.fail(failure("InvalidRequest"));
+    }
+
+    const params = yield* ListNames.decodeParams([
+      ...new URL(request.url).searchParams.entries(),
+    ]).pipe(Effect.mapError(() => failure("InvalidRequest")));
+
+    transport = {
+      input: undefined,
+      method: "GET",
+      nsid,
+      params: yield* Schema.encodeEffect(ListNames.Params)(params).pipe(
+        Effect.mapError(() => failure("InvalidRequest"))
+      ),
+    };
+  } else {
+    if (
+      request.method !== "POST" ||
+      request.headers.get("content-type")?.split(";")[0] !== "application/json"
+    ) {
+      return yield* Effect.fail(failure("InvalidRequest"));
+    }
+
+    const input = yield* Effect.tryPromise({
+      catch: () => failure("InvalidRequest"),
+      try: () => request.json(),
+    });
+
+    transport = {
+      input: yield* Schema.decodeUnknownEffect(Schema.toEncoded(Runtime.Data))(
+        input
+      ).pipe(Effect.mapError(() => failure("InvalidRequest"))),
+      method: "POST",
+      nsid,
+      params: undefined,
+    };
+  }
+
+  const response = yield* Effect.tryPromise({
+    catch: () => failure("MailboxUnavailable", 503),
+    try: () => issuers.getByName(issuerInstance).route(transport, caller),
+  });
+
+  return new Response(response.body, {
+    headers: { "content-type": "application/json" },
+    status: response.status,
+  });
+});
+
+const serviceRequest = (
+  request: Request,
+  env: Bindings,
+  nsid: string,
+  issuer: string
+) =>
+  issuerMethods.some((method) => method.nsid === nsid)
+    ? issuerRequest(request, env, nsid, issuer)
+    : trafficRequest({
+        issuer,
+        nsid,
+        observers: didAllowlist(env.OBSERVER_DIDS),
+        operators: didAllowlist(env.OPERATOR_DIDS),
+        read: (params, caller) =>
+          Effect.tryPromise({
+            catch: () => failure("MailboxUnavailable", 503),
+            try: () =>
+              env.MAILBOX.getByName(trafficDid).readTraffic(
+                JSON.stringify(params),
+                caller
+              ),
+          }),
+        request,
+      });
 
 const handleRequest = (
   request: Request,
@@ -906,6 +1023,7 @@ const handleRequest = (
         Traffic.Method,
         Resolve.Method,
         Peer.Method,
+        ...issuerMethods,
       ].some((method) => method.nsid === nsid)
     ) {
       return Response.json({ error: "InvalidRequest" }, { status: 404 });
@@ -936,22 +1054,7 @@ const handleRequest = (
       return Response.json(yield* Schema.encodeEffect(Peer.Output)(output));
     }
 
-    const trafficResponse = yield* trafficRequest({
-      issuer,
-      nsid,
-      observers: didAllowlist(env.OBSERVER_DIDS),
-      operators: didAllowlist(env.OPERATOR_DIDS),
-      read: (params, caller) =>
-        Effect.tryPromise({
-          catch: () => failure("MailboxUnavailable", 503),
-          try: () =>
-            env.MAILBOX.getByName(trafficDid).readTraffic(
-              JSON.stringify(params),
-              caller
-            ),
-        }),
-      request,
-    });
+    const trafficResponse = yield* serviceRequest(request, env, nsid, issuer);
 
     if (trafficResponse !== undefined) {
       return trafficResponse;
@@ -1111,3 +1214,5 @@ export default {
 };
 
 export { AuthTokens } from "./auth-tokens.ts";
+
+export { Issuer } from "./issuer-object.ts";

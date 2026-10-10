@@ -17,6 +17,21 @@ export const ToolName = Schema.String.check(
   Schema.isPattern(/^[a-z][a-z0-9_]{0,63}$/u)
 );
 
+export const CommandIssuer = Schema.Struct({
+  command: Schema.NonEmptyArray(Schema.String),
+});
+
+export const ServiceIssuer = Schema.Struct({
+  endpoint: Schema.String.check(Schema.isPattern(/^https?:\/\/\S+$/u)),
+  host: Schema.String.check(
+    Schema.isPattern(/^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/u)
+  ),
+});
+
+export const IssuerSetting = Schema.Union([CommandIssuer, ServiceIssuer]);
+
+export type IssuerSettingValue = typeof IssuerSetting.Type;
+
 export const PiConfig = Schema.Struct({
   askTimeoutMs: Schema.optionalKey(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
@@ -27,9 +42,7 @@ export const PiConfig = Schema.Struct({
   directory: Schema.optionalKey(Schema.String),
   documents: Schema.optionalKey(Schema.Array(Schema.String)),
   endpoint: Schema.String.check(Schema.isPattern(/^https?:\/\/\S+$/u)),
-  issuer: Schema.optionalKey(
-    Schema.Struct({ command: Schema.NonEmptyArray(Schema.String) })
-  ),
+  issuer: Schema.optionalKey(IssuerSetting),
   refuse: Schema.optionalKey(Schema.Array(AgentName)),
   reserved: Schema.optionalKey(Reserved),
   secretsCommand: Schema.optionalKey(Schema.String),
@@ -46,7 +59,7 @@ export interface SettingsValue {
   readonly directory: string;
   readonly documents: readonly string[];
   readonly endpoint: string;
-  readonly issuer: Option.Option<readonly string[]>;
+  readonly issuer: Option.Option<IssuerSettingValue>;
   readonly refuse: readonly string[];
   readonly reserved: ReservedValue;
   readonly secretsCommand: string;
@@ -120,7 +133,7 @@ export const loadSettings = Effect.fn("RatKing.loadSettings")(
       directory: config.directory ?? path.join(state, "directory.json"),
       documents: config.documents ?? [],
       endpoint: config.endpoint,
-      issuer: Option.fromNullishOr(config.issuer?.command),
+      issuer: Option.fromNullishOr(config.issuer),
       refuse: config.refuse ?? [],
       reserved: config.reserved ?? {},
       secretsCommand: config.secretsCommand ?? "secrets",

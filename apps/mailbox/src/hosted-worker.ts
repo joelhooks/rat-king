@@ -11,6 +11,6 @@ export const Agent = makeHostedAgent<Bindings & HostedBindings>({
   resolve: resolveAgentKey,
 });
 
-export { Mailbox, AuthTokens } from "./worker.ts";
+export { Mailbox, AuthTokens, Issuer } from "./worker.ts";
 
 export { default } from "./worker.ts";

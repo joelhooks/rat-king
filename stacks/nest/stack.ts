@@ -61,6 +61,25 @@ import {
 import { restoreOwnedData } from "./restore.ts";
 import type { RestoreRequest } from "./restore.ts";
 
+const issuerVars = Effect.gen(function* readIssuerVars() {
+  const template = yield* Config.option(
+    Config.schema(Schema.NonEmptyString, "RAT_KING_ISSUER_DID_TEMPLATE")
+  );
+
+  const reserved = yield* Config.schema(
+    Schema.fromJsonString(Schema.Array(Schema.NonEmptyString)),
+    "RAT_KING_ISSUER_RESERVED"
+  ).pipe(Config.withDefault([]));
+
+  return Option.match(template, {
+    onNone: () => ({}),
+    onSome: (value) => ({
+      ISSUER_DID_TEMPLATE: value,
+      ISSUER_RESERVED: JSON.stringify(reserved),
+    }),
+  });
+});
+
 export const connection = Layer.unwrap(
   Effect.gen(function* connection() {
     const hosts = yield* Host;
@@ -265,6 +284,8 @@ export const nestStack = (restore?: RestoreRequest) =>
         Schema.fromJsonString(Schema.Array(Schema.NonEmptyString)),
         "RAT_KING_LEASE_RESOLVERS"
       ).pipe(Config.withDefault([]));
+
+      Object.assign(vars, yield* issuerVars);
 
       if (mailboxOnly) {
         const publicDocuments = yield* Schema.decodeUnknownEffect(

@@ -22,7 +22,7 @@ import { NotConfigured, settingsLayer, Settings, toolName } from "./config.ts";
 import { directoryLayer } from "./directory.ts";
 import { paneLabel } from "./herdr.ts";
 import type { SessionFacts } from "./identity.ts";
-import { commandIssuerLayer } from "./issuer.ts";
+import { issuerLayer } from "./issuer.ts";
 import { renderInbound } from "./payload.ts";
 import type { Inbound } from "./payload.ts";
 import { RatKing, ratKingLayer } from "./ratking.ts";
@@ -55,7 +55,7 @@ const SendRequest = Schema.Struct({
 const platform = Layer.merge(NodeServices.layer, FetchHttpClient.layer);
 
 export const appLayer = ratKingLayer.pipe(
-  Layer.provideMerge(commandIssuerLayer),
+  Layer.provideMerge(issuerLayer),
   Layer.provideMerge(secretStoreLayer),
   Layer.provideMerge(directoryLayer),
   Layer.provideMerge(settingsLayer),

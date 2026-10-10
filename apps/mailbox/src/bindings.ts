@@ -1,10 +1,14 @@
 import type { HostedBindings } from "@rat-king/agent-runtime/hosted";
 
+import type { Issuer } from "./issuer-object.ts";
 import type { Mailbox, AuthTokens } from "./worker.ts";
 
 export interface Bindings {
   readonly MAILBOX: DurableObjectNamespace<Mailbox>;
   readonly AUTH_TOKENS: DurableObjectNamespace<AuthTokens>;
+  readonly ISSUER?: DurableObjectNamespace<Issuer>;
+  readonly ISSUER_DID_TEMPLATE?: string;
+  readonly ISSUER_RESERVED?: string;
   readonly SERVICE_DID: string;
   readonly DID_DOCUMENTS: string;
   readonly LEASE_RESOLVERS?: string;
@@ -28,6 +32,8 @@ export interface Build {
   readonly documents: string;
 }
 
+const issuerMigration = { new_sqlite_classes: ["Issuer"], tag: "v2" };
+
 export const bindings = {
   compatibility_date: "2026-10-04",
   compatibility_flags: ["nodejs_compat"],
@@ -35,9 +41,13 @@ export const bindings = {
     bindings: [
       { class_name: "Mailbox", name: "MAILBOX" },
       { class_name: "AuthTokens", name: "AUTH_TOKENS" },
+      { class_name: "Issuer", name: "ISSUER" },
     ],
   },
-  migrations: [{ new_sqlite_classes: ["Mailbox", "AuthTokens"], tag: "v1" }],
+  migrations: [
+    { new_sqlite_classes: ["Mailbox", "AuthTokens"], tag: "v1" },
+    issuerMigration,
+  ],
   name: "rat-king-mailbox",
 };
 
@@ -50,10 +60,8 @@ export const hostedBindings = {
   ...bindings,
   durable_objects: { bindings: hostedObjects },
   migrations: [
-    {
-      new_sqlite_classes: hostedObjects.map((binding) => binding.class_name),
-      tag: "v1",
-    },
+    { new_sqlite_classes: ["Mailbox", "AuthTokens", "Agent"], tag: "v1" },
+    issuerMigration,
   ],
 };
 
