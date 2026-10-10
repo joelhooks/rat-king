@@ -272,8 +272,18 @@ const provisionCommand = Command.make(
       operatorSecret: yield* Config.String("RAT_KING_OPERATOR_IDENTITY"),
     };
 
-    const withSecret = Option.isSome(args.secret)
-      ? { ...input, secret: args.secret.value }
+    const template = yield* Config.option(
+      Config.String("RAT_KING_AGENT_SECRET_TEMPLATE")
+    );
+
+    const secret = Option.orElse(args.secret, () =>
+      template.pipe(
+        Option.map((value) => value.replaceAll("{agent}", args.agent))
+      )
+    );
+
+    const withSecret = Option.isSome(secret)
+      ? { ...input, secret: secret.value }
       : input;
 
     yield* print(
@@ -501,8 +511,11 @@ const command = Command.make("mailbox").pipe(
   ])
 );
 
-NodeRuntime.runMain(
-  Command.runWith(command, { version: "0.1.0" })(process.argv.slice(2)).pipe(
+export const runMailbox = (args: readonly string[]) =>
+  Command.runWith(command, { version: "0.1.0" })(args).pipe(
     Effect.provide(NodeServices.layer)
-  )
-);
+  );
+
+if (import.meta.main) {
+  NodeRuntime.runMain(runMailbox(process.argv.slice(2)));
+}
