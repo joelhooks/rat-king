@@ -26,6 +26,7 @@ export const ShipSettings = Schema.Struct({
     pnpm: Text,
   }),
   notify: Schema.Struct({
+    config: Schema.optionalKey(Text),
     directory: Text,
     from: AgentName,
     secret: Text,

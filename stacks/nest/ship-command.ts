@@ -7,23 +7,14 @@ import {
   SecretStore,
   secretStoreLayer,
 } from "../../apps/mailbox/cli/secrets.ts";
-import {
-  ownIdentity,
-  prepare,
-  SendOutcomes,
-  Identity,
-} from "../../packages/mailbox-client/src/index.ts";
-import {
-  Entries,
-  writePrivateJson,
-} from "../../packages/pi-ratking/src/directory.ts";
-import { encodePayload } from "../../packages/pi-ratking/src/payload.ts";
+import { writePrivateJson } from "../../packages/pi-ratking/src/directory.ts";
 import {
   RestartEvent,
   Sha,
   ShipCheckpoint,
   ShipReceipt,
 } from "./ship-config.ts";
+import { sendShipNotification } from "./ship-notify.ts";
 import { shipLoop } from "./ship.ts";
 import type { ShipPorts } from "./ship.ts";
 import { FleetError } from "./stage-config.ts";
@@ -379,64 +370,11 @@ export const shipCommand = Effect.fn("Ship.command")(
         Effect.timeout("60 seconds"),
         Effect.mapError(() => new FleetError({ reason: "Main fetch failed" }))
       ),
-      notify: Effect.fn("Ship.notify")(
-        function* notify(receipt) {
-          const entries = yield* Schema.decodeEffect(
-            Schema.fromJsonString(Entries)
-          )(yield* fs.readFileString(ship.notify.directory));
-
-          const identity = yield* Schema.decodeEffect(
-            Schema.fromJsonString(Identity)
-          )(yield* store.lease(ship.notify.secret));
-
-          const own = yield* ownIdentity(identity);
-
-          const body = yield* encodePayload({
-            body: `ship ${receipt.sha.slice(0, 12)} ${receipt.result}; celld restart=${receipt.celldRestarted ?? "unknown"}; restart ${receipt.restartSeconds === null ? "unknown" : receipt.restartSeconds.toFixed(3)}s SR 🐀`,
-            from: ship.notify.from,
-            kind: "message",
-          });
-
-          for (const name of ship.notify.to) {
-            const target = entries[name];
-
-            if (target === undefined) {
-              return yield* new FleetError({
-                reason: "Configured notification name is not in the directory",
-              });
-            }
-
-            const client = yield* prepare({
-              endpoint: config.runtime.RAT_KING_ENDPOINT,
-              own,
-              peers: [target.document],
-              serviceDid: config.runtime.RAT_KING_SERVICE_DID,
-            });
-
-            const envelope = yield* client.seal(target.did, body, {
-              encrypt: true,
-            });
-
-            const outcome = yield* client.send(envelope);
-
-            if (!SendOutcomes.$is("Accepted")(outcome)) {
-              return yield* new FleetError({
-                reason: "Ship note was not accepted by Rat King",
-              });
-            }
-          }
-
-          return yield* Effect.void;
-        },
-        Effect.scoped,
-        (effect) =>
-          effect.pipe(
-            Effect.timeout("30 seconds"),
-            Effect.mapError(
-              () => new FleetError({ reason: "Ship notification failed" })
-            )
-          )
-      ),
+      notify: (receipt) =>
+        sendShipNotification(
+          config,
+          `ship ${receipt.sha.slice(0, 12)} ${receipt.result}; celld restart=${receipt.celldRestarted ?? "unknown"}; restart ${receipt.restartSeconds === null ? "unknown" : receipt.restartSeconds.toFixed(3)}s SR 🐀`
+        ).pipe(Effect.provideService(SecretStore, store)),
       record: (receipt) =>
         Schema.encodeEffect(Schema.fromJsonString(ShipReceipt))(receipt).pipe(
           Effect.flatMap((line) =>
