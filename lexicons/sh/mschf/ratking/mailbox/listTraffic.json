@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "query",
-      "description": "Observer or operator metadata-only journal. Global seq orders journal ingestion, recipientSeq orders each mailbox. Captures events after feed activation; time is mailbox observation time. Cursor is an exclusive global sequence; repeat it to follow. No recipient fan-out.",
+      "description": "Observer or operator journal: metadata, plus the body of signed plaintext messages. Global seq orders journal ingestion, recipientSeq orders each mailbox. Captures events after feed activation; time is mailbox observation time. Cursor is an exclusive global sequence; repeat it to follow. No recipient fan-out.",
       "parameters": {
         "type": "params",
         "properties": {
@@ -100,6 +100,10 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991
+        },
+        "body": {
+          "type": "string",
+          "description": "UTF-8 body of a signed plaintext message, verified at admission. Absent for encrypted messages."
         },
         "state": {
           "type": "string",

@@ -7,6 +7,14 @@ import { EnvelopeFailure } from "./failure.ts";
 
 export const suite = Object.freeze({ aeadId: 1, kdfId: 1, kemId: 16 });
 
+export const plaintextSuite = Object.freeze({
+  aeadId: 0,
+  kdfId: 0,
+  kemId: 0,
+});
+
+export const plaintextEnc = () => Uint8Array.of(0);
+
 export const signatureDomain = new TextEncoder().encode(
   "sh.mschf.ratking.signature.v1\0"
 );
@@ -78,8 +86,15 @@ export const aadBytes = (
     })
   );
 
-export const supported = (
+export const plaintext = (
   envelope: Pick<Defs.EncryptedEnvelopeValue, "version" | "suite">
 ) =>
   envelope.version === 1 &&
-  equalBytes(canonical(envelope.suite), canonical(suite));
+  equalBytes(canonical(envelope.suite), canonical(plaintextSuite));
+
+export const supported = (
+  envelope: Pick<Defs.EncryptedEnvelopeValue, "version" | "suite">
+) =>
+  plaintext(envelope) ||
+  (envelope.version === 1 &&
+    equalBytes(canonical(envelope.suite), canonical(suite)));

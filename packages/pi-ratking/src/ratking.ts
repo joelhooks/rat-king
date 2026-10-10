@@ -94,6 +94,7 @@ export interface Self {
   readonly name: string;
   readonly did: string;
   readonly identity: IdentityValue;
+  readonly label?: () => Option.Option<string>;
 }
 
 export interface Delivered {
@@ -104,6 +105,7 @@ export interface Delivered {
 }
 
 export interface SendOptions {
+  readonly encrypt?: boolean;
   readonly kind?: KindValue;
   readonly replyTo?: { readonly messageId: string; readonly senderDid: string };
 }
@@ -135,14 +137,16 @@ export class RatKing extends Context.Service<
     readonly ask: (
       to: string,
       body: string,
-      timeout: Duration.Input
+      timeout: Duration.Input,
+      options?: Pick<SendOptions, "encrypt">
     ) => Effect.Effect<
       { readonly delivered: Delivered; readonly reply: Reply },
       NotDelivered | AskFailed
     >;
     readonly reply: (
       id: string,
-      body: string
+      body: string,
+      options?: Pick<SendOptions, "encrypt">
     ) => Effect.Effect<Delivered, NotDelivered | AskFailed>;
     readonly pending: Effect.Effect<readonly Received[]>;
     readonly list: Effect.Effect<readonly Listed[]>;
@@ -269,6 +273,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               Option.flatMapNullishOr(payload, (value) => value.kind),
               (): KindValue => "message"
             ),
+            label: Option.flatMapNullishOr(payload, (value) => value.label),
             replyTo: Option.orElse(
               Option.flatMapNullishOr(payload, (value) => value.replyTo),
               () => Option.fromNullishOr(message.replyTo?.messageId)
@@ -382,7 +387,12 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
         const identity = yield* ensureIdentity(claimed.name);
 
-        return { did: identity.did, identity, name: claimed.name };
+        return {
+          did: identity.did,
+          identity,
+          label: facts.label ?? (() => facts.pane),
+          name: claimed.name,
+        };
       }).pipe(services)
     );
 
@@ -486,6 +496,15 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
     const payload: PayloadValue = { body, from: own.name };
 
+    const label = (own.label?.() ?? Option.none<string>()).pipe(
+      Option.map((text) => text.trim().slice(0, 256)),
+      Option.filter((text) => text !== "")
+    );
+
+    if (Option.isSome(label)) {
+      Object.assign(payload, { label: label.value });
+    }
+
     if (options.kind !== undefined) {
       Object.assign(payload, { kind: options.kind });
     }
@@ -515,10 +534,12 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               options.replyTo
             );
 
+      const encrypt = options.encrypt ?? settings.encrypt;
+
       const envelope = yield* client.seal(
         target.did,
         json,
-        replyTo === undefined ? undefined : { replyTo }
+        replyTo === undefined ? { encrypt } : { encrypt, replyTo }
       );
 
       const extra = yield* before(envelope.aad.messageId, target.did);
@@ -598,7 +619,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
   );
 
   return RatKing.of({
-    ask: Effect.fn("RatKing.ask")(function* ask(to, body, timeout) {
+    ask: Effect.fn("RatKing.ask")(function* ask(to, body, timeout, options) {
       yield* awaitLive;
 
       const pending = yield* Ref.make(Option.none<string>());
@@ -607,7 +628,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         const { delivered, extra } = yield* transmit(
           to,
           body,
-          { kind: "ask" },
+          { ...options, kind: "ask" },
           (id, did) =>
             Ref.set(pending, Option.some(id)).pipe(
               Effect.andThen(threads.wait(id, did))
@@ -669,7 +690,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       return yield* directory.list;
     }),
     pending: threads.pending,
-    reply: Effect.fn("RatKing.reply")(function* reply(id, body) {
+    reply: Effect.fn("RatKing.reply")(function* reply(id, body, options) {
       const record = yield* threads.lookup(id);
 
       if (Option.isNone(record)) {
@@ -702,6 +723,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         sender.value,
         body,
         {
+          ...options,
           kind: "reply",
           replyTo: { messageId: id, senderDid: record.value.did },
         },

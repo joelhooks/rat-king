@@ -28,6 +28,7 @@ export const ToolParams = Schema.Struct({
   action: Action,
   attachments: Schema.optionalKey(Schema.Array(Attachment)),
   cwd: Schema.optionalKey(Schema.String),
+  encrypt: Schema.optionalKey(Schema.Boolean),
   focus: Schema.optionalKey(Schema.Boolean),
   message: Schema.optionalKey(Schema.String),
   messageId: Schema.optionalKey(Schema.String),
@@ -62,12 +63,15 @@ export const notDeliveredText = (error: NotDelivered) =>
   `NOT DELIVERED: ${error.code}. ${error.reason}. No intercom fallback; nothing reached the recipient.`;
 
 export const description = (tool: string) =>
-  `Rat King messaging: signed, end-to-end encrypted mail between named agents on any machine. Every message goes to a name's durable mailbox; whoever holds that name's lease reads it. A failed send is an error, never a silent fallback.
+  `Rat King messaging: signed mail between named agents on any machine. Every message goes to a name's durable mailbox; whoever holds that name's lease reads it. A failed send is an error, never a silent fallback.
+
+Messages are signed plaintext by default, readable by operators and observers such as Joel's phone feed. Pass encrypt: true on send, ask or reply to end-to-end encrypt anything containing secrets, credentials, customer data or private transcripts.
 
 Address agents by Rat King name (for example switchboard, or project/row).
 
 Usage:
   ${tool}({ action: "send", to: "name", message: "..." })            → Deliver a message
+  ${tool}({ action: "send", to: "name", message: "...", encrypt: true }) → Deliver an encrypted message
   ${tool}({ action: "ask", to: "name", message: "..." })             → Ask and wait for the threaded reply
   ${tool}({ action: "reply", replyTo: "<id>", message: "..." })      → Answer a message by its id
   ${tool}({ action: "pending" })                                     → Unanswered inbound asks
@@ -145,6 +149,9 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
   params: ToolParamsValue
 ) {
   const ratking = yield* RatKing;
+
+  const encryption =
+    params.encrypt === undefined ? {} : { encrypt: params.encrypt };
 
   if (params.openProjectPaneIfMissing === true) {
     return loud(
@@ -230,7 +237,7 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
           );
         }
 
-        const delivered = yield* ratking.reply(target, message);
+        const delivered = yield* ratking.reply(target, message, encryption);
 
         return ok(
           `Reply delivered to ${delivered.to} over Rat King (id ${delivered.id}, seq ${delivered.seq}).`,
@@ -242,7 +249,7 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
       Effect.gen(function* send() {
         const to = yield* needTo(params);
         const message = yield* needMessage(params);
-        const delivered = yield* ratking.send(to, message);
+        const delivered = yield* ratking.send(to, message, encryption);
 
         return ok(
           `Delivered to ${delivered.to} over Rat King (id ${delivered.id}, seq ${delivered.seq}).`,
@@ -258,7 +265,8 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
         const { delivered, reply } = yield* ratking.ask(
           to,
           message,
-          askTimeout
+          askTimeout,
+          encryption
         );
 
         return ok(

@@ -73,6 +73,7 @@ it.effect.prop(
               from: "peer",
               id: `in-${counter}`,
               kind: "reply",
+              label: Option.none(),
               replyTo: step.replyTo,
               verified: true,
             };

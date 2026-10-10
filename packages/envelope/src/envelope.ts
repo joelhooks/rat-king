@@ -6,15 +6,16 @@ import { Effect, Schema } from "effect";
 import {
   aadBytes,
   canonical,
-  canonicalDecode,
-  equalBytes,
-  signatureDomain,
+  plaintext,
+  plaintextEnc,
   signingBytes,
   supported,
 } from "./canonical.ts";
-import { sign, verify } from "./es256.ts";
+import { sign } from "./es256.ts";
 import { EnvelopeFailure } from "./failure.ts";
 import { CompatibleP256Kem } from "./hpke-p256.ts";
+import { openPlaintext, verifySigned } from "./signed.ts";
+import type { ResolveSigningKey } from "./signed.ts";
 import { cryptoOperation } from "./webcrypto.ts";
 
 export const reviewStatus = "unreviewed";
@@ -71,6 +72,18 @@ export const seal = Effect.fn("Envelope.seal")(function* seal(
     canonicalSigningBytes: bytes,
   });
 
+  if (plaintext(payload)) {
+    return yield* Schema.decodeUnknownEffect(
+      Schema.toType(Defs.EncryptedEnvelope)
+    )({
+      aad: payload.aad,
+      ciphertext: canonical(signed),
+      enc: plaintextEnc(),
+      suite: payload.suite,
+      version: payload.version,
+    });
+  }
+
   const context = yield* cryptoOperation(() =>
     hpke.createSenderContext({ info, recipientPublicKey: request.recipientKey })
   );
@@ -96,10 +109,7 @@ export interface OpenRequest {
   readonly recipientDid: string;
   readonly recipientKeyId: string;
   readonly recipientKey: CryptoKey;
-  readonly resolveSigningKey: (
-    senderDid: string,
-    keyId: string
-  ) => Effect.Effect<CryptoKey, EnvelopeFailure>;
+  readonly resolveSigningKey: ResolveSigningKey;
 }
 
 export const open = Effect.fn("Envelope.open")(function* open(
@@ -120,6 +130,10 @@ export const open = Effect.fn("Envelope.open")(function* open(
     );
   }
 
+  if (plaintext(envelope)) {
+    return yield* openPlaintext(envelope, request.resolveSigningKey);
+  }
+
   const context = yield* cryptoOperation(() =>
     hpke.createRecipientContext({
       enc: envelope.enc,
@@ -128,68 +142,15 @@ export const open = Effect.fn("Envelope.open")(function* open(
     })
   );
 
-  const plaintext = yield* cryptoOperation(() =>
+  const opened = yield* cryptoOperation(() =>
     context.open(envelope.ciphertext, aadBytes(envelope))
   );
 
-  const signed = yield* Schema.decodeUnknownEffect(
-    Schema.toType(Defs.SignedMessage)
-  )(yield* canonicalDecode(new Uint8Array(plaintext)));
-
-  const bytes = signed.canonicalSigningBytes;
-
-  if (!equalBytes(bytes.subarray(0, signatureDomain.length), signatureDomain)) {
-    return yield* Effect.fail(
-      new EnvelopeFailure({ reason: "Wrong signature domain" })
-    );
-  }
-
-  const payload = yield* Schema.decodeUnknownEffect(
-    Schema.toType(Defs.SigningPayload)
-  )(yield* canonicalDecode(bytes.subarray(signatureDomain.length)));
-
-  if (
-    !equalBytes(
-      canonical({
-        aad: payload.aad,
-        suite: payload.suite,
-        version: payload.version,
-      }),
-      canonical({
-        aad: envelope.aad,
-        suite: envelope.suite,
-        version: envelope.version,
-      })
-    )
-  ) {
-    return yield* Effect.fail(
-      new EnvelopeFailure({ reason: "Inner metadata mismatch" })
-    );
-  }
-
-  const app = signed.appSignature;
-
-  if (
-    app.algorithm !== "ES256" ||
-    !app.keyId.startsWith(`${envelope.aad.senderDid}#`)
-  ) {
-    return yield* Effect.fail(
-      new EnvelopeFailure({ reason: "Unauthorized signing key" })
-    );
-  }
-
-  const key = yield* request.resolveSigningKey(
-    envelope.aad.senderDid,
-    app.keyId
+  return yield* verifySigned(
+    envelope,
+    new Uint8Array(opened),
+    request.resolveSigningKey
   );
-
-  if (!(yield* verify(key, bytes, app.signature))) {
-    return yield* Effect.fail(
-      new EnvelopeFailure({ reason: "Invalid application signature" })
-    );
-  }
-
-  return payload;
 });
 
 export {
@@ -198,11 +159,18 @@ export {
   canonicalDecode,
   concatenate,
   equalBytes,
+  plaintext,
+  plaintextEnc,
+  plaintextSuite,
   signatureDomain,
   signingBytes,
   supported,
   suite,
 } from "./canonical.ts";
+
+export { openPlaintext, verifySigned } from "./signed.ts";
+
+export type { ResolveSigningKey } from "./signed.ts";
 
 export { lowS, normalizeSignature, p256Order, sign, verify } from "./es256.ts";
 

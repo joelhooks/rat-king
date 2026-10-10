@@ -41,6 +41,7 @@ export const PiConfig = Schema.Struct({
   ),
   directory: Schema.optionalKey(Schema.String),
   documents: Schema.optionalKey(Schema.Array(Schema.String)),
+  encrypt: Schema.optionalKey(Schema.Boolean),
   endpoint: Schema.String.check(Schema.isPattern(/^https?:\/\/\S+$/u)),
   issuer: Schema.optionalKey(IssuerSetting),
   refuse: Schema.optionalKey(Schema.Array(AgentName)),
@@ -58,6 +59,7 @@ export interface SettingsValue {
   readonly didTemplate: string;
   readonly directory: string;
   readonly documents: readonly string[];
+  readonly encrypt: boolean;
   readonly endpoint: string;
   readonly issuer: Option.Option<IssuerSettingValue>;
   readonly refuse: readonly string[];
@@ -132,6 +134,7 @@ export const loadSettings = Effect.fn("RatKing.loadSettings")(
       didTemplate: config.didTemplate,
       directory: config.directory ?? path.join(state, "directory.json"),
       documents: config.documents ?? [],
+      encrypt: config.encrypt ?? false,
       endpoint: config.endpoint,
       issuer: Option.fromNullishOr(config.issuer),
       refuse: config.refuse ?? [],

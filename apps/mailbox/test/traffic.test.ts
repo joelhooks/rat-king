@@ -1,14 +1,31 @@
 // @effect-diagnostics asyncFunction:off -- fast-check AsyncCommand drives the synchronous SQL adapter.
 /* oxlint-disable promise/prefer-await-to-callbacks, typescript/promise-function-async -- Lazy Effect HTTP body reads return platform Promises. */
 import { it } from "@effect/vitest";
+import {
+  canonical,
+  canonicalDecode,
+  plaintextSuite,
+  seal,
+  signingBytes,
+} from "@rat-king/envelope";
+import * as Defs from "@rat-king/lexicon/defs";
 import { MailboxHandlers } from "@rat-king/lexicon/mailbox-handlers";
 import * as Traffic from "@rat-king/lexicon/mailbox.listTraffic";
 import * as Acquire from "@rat-king/lexicon/runtime.acquireLease";
-import { Arbitrary, Clock, DateTime, Effect, Layer, Schema } from "effect";
+import {
+  Arbitrary,
+  Clock,
+  DateTime,
+  Effect,
+  Exit,
+  Layer,
+  Schema,
+} from "effect";
 import * as fc from "fast-check";
 import { expect } from "vitest";
 
 import {
+  payload,
   recipientDid,
   senderDid,
   sealed,
@@ -171,7 +188,9 @@ it.effect.prop(
 
               for (const event of page.events) {
                 expect(Object.keys(event).toSorted()).toEqual(
-                  Object.keys(TrafficEntry.fields).toSorted()
+                  Object.keys(TrafficEntry.fields)
+                    .filter((key) => key !== "body")
+                    .toSorted()
                 );
                 received.push(event.recipientSeq);
               }
@@ -272,8 +291,80 @@ it.effect.prop(
         expect(entry.recipientDid).toBe(recipientDid);
         expect(entry.messageId).toBe(envelope.aad.messageId);
         expect(Object.keys(entry).toSorted()).toEqual(
-          Object.keys(TrafficEntry.fields).toSorted()
+          Object.keys(TrafficEntry.fields)
+            .filter((key) => key !== "body")
+            .toSorted()
         );
       }
+    })
+);
+
+it.effect.prop(
+  "signed plaintext reaches Traffic with its body and forged plaintext is refused at admission",
+  [Arbitrary.schema(Schema.String)],
+  ([text]) =>
+    Effect.gen(function* plaintextTraffic() {
+      const sample = yield* sealed();
+
+      const docs = yield* documents(
+        sample.keys.sender.publicKey,
+        sample.keys.recipient.publicKey
+      );
+
+      const { sql, layer } = yield* testStore;
+
+      const sender = yield* MailboxHandlers.pipe(
+        Effect.provide(
+          handlersLayer.pipe(
+            Layer.provide(unleasedSender),
+            Layer.provide(layer),
+            Layer.provide(staticResolver(docs)),
+            Layer.provide(Layer.succeed(Caller, { did: senderDid }))
+          )
+        )
+      );
+
+      const clear = {
+        ...payload(),
+        body: new TextEncoder().encode(text),
+        suite: plaintextSuite,
+      };
+
+      const envelope = yield* seal({
+        payload: clear,
+        recipientKey: sample.keys.recipient.publicKey,
+        recipientKeyId: `${recipientDid}#encryption`,
+        signingKey: sample.keys.sender.privateKey,
+        signingKeyId: `${senderDid}#atproto`,
+      });
+
+      const signed = yield* Schema.decodeUnknownEffect(
+        Schema.toType(Defs.SignedMessage)
+      )(yield* canonicalDecode(envelope.ciphertext));
+
+      const forged = {
+        ...envelope,
+        aad: payload("3m7x2ka4xv22b").aad,
+        ciphertext: canonical({
+          ...signed,
+          canonicalSigningBytes: signingBytes({
+            ...clear,
+            aad: payload("3m7x2ka4xv22b").aad,
+            body: new TextEncoder().encode(`${text}!`),
+          }),
+        }),
+      };
+
+      expect(
+        Exit.isFailure(
+          yield* sender.send({ envelope: forged }).pipe(Effect.exit)
+        )
+      ).toBe(true);
+
+      yield* sender.send({ envelope });
+      const entries = pendingTraffic(sql);
+      expect(entries.map((entry) => entry.body)).toEqual([
+        new TextDecoder().decode(clear.body),
+      ]);
     })
 );

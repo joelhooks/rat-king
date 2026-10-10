@@ -55,6 +55,7 @@ export const harness = (
           didTemplate: "did:web:{agent}.agents.example.invalid",
           directory: `${state}/directory.json`,
           documents: [],
+          encrypt: false,
           endpoint: "https://mailbox.example.invalid",
           issuer: Option.none(),
           refuse,

@@ -1,6 +1,7 @@
+import { plaintextBody } from "@rat-king/envelope/signed";
 import * as Defs from "@rat-king/lexicon/defs";
 import * as Traffic from "@rat-king/lexicon/mailbox.listTraffic";
-import { DateTime, Effect, Schema } from "effect";
+import { DateTime, Effect, Option, Schema } from "effect";
 
 import { failure } from "./failure.ts";
 import type { Sql } from "./sqlite.ts";
@@ -40,7 +41,13 @@ export const projectTraffic = (tx: Transaction, event: Event) => {
     throw failure("MailboxUnavailable", 503, "Missing traffic message");
   }
 
+  const body = Effect.runSync(Effect.option(plaintextBody(message.envelope)));
+
   return Schema.decodeUnknownSync(TrafficEntry)({
+    ...Option.match(body, {
+      onNone: () => ({}),
+      onSome: (text) => ({ body: text }),
+    }),
     ciphertextSize: message.envelope.ciphertext.length,
     messageId: receipt.message.messageId,
     recipientDid: receipt.recipientDid,

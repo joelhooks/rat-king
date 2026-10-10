@@ -1,4 +1,9 @@
-import { seal as sealEnvelope, suite } from "@rat-king/envelope";
+import {
+  plaintext,
+  plaintextSuite,
+  seal as sealEnvelope,
+  suite,
+} from "@rat-king/envelope";
 import { canonical } from "@rat-king/envelope/canonical";
 import * as Defs from "@rat-king/lexicon/defs";
 import { MailboxClient, clientLayer } from "@rat-king/lexicon/mailbox-client";
@@ -166,7 +171,7 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
         senderDid: identity.did,
       },
       body: new TextEncoder().encode(body),
-      suite,
+      suite: opts?.encrypt === false ? plaintextSuite : suite,
       version: 1,
     };
 
@@ -262,6 +267,15 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
 
     if (opts?.cc === undefined) {
       return primary;
+    }
+
+    if (plaintext(envelope)) {
+      return {
+        ...primary,
+        cc: SendOutcomes.NotAttempted({
+          reason: "Plaintext primary is readable by observers without a CC",
+        }),
+      };
     }
 
     const payload = payloads.get(envelope);

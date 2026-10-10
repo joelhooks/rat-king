@@ -28,7 +28,7 @@ export const testKeys = Effect.fn("Test.keys")(function* testKeys() {
   return { recipient, sender: signing };
 });
 
-export const payload = (messageId = "3m7x2ka4xv22a") =>
+export const payload = (messageId = "3m7x2ka4xv22a", sender = senderDid) =>
   Schema.decodeUnknownSync(Schema.toType(Defs.SigningPayload))({
     aad: {
       expiresAt: "2099-01-01T00:00:00Z",
@@ -36,7 +36,7 @@ export const payload = (messageId = "3m7x2ka4xv22a") =>
       messageId,
       recipientDid,
       recipientKeyId: `${recipientDid}#encryption`,
-      senderDid,
+      senderDid: sender,
     },
     body: new TextEncoder().encode("hello"),
     suite,

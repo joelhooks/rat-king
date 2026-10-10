@@ -1,4 +1,6 @@
-import { canonical, supported } from "@rat-king/envelope/canonical";
+import { canonical, plaintext, supported } from "@rat-king/envelope/canonical";
+import { EnvelopeFailure } from "@rat-king/envelope/failure";
+import { openPlaintext } from "@rat-king/envelope/signed";
 import * as Defs from "@rat-king/lexicon/defs";
 import { MailboxHandlers } from "@rat-king/lexicon/mailbox-handlers";
 import { Clock, Effect, Layer, Schema } from "effect";
@@ -364,6 +366,24 @@ export const mailboxHandlers = (policy: MailboxPolicy) =>
             envelope.aad.recipientKeyId,
             "keyAgreement"
           );
+
+          if (plaintext(envelope)) {
+            yield* openPlaintext(envelope, (did, keyId) =>
+              resolver.resolve(did, keyId, "authentication").pipe(
+                Effect.mapError(
+                  () =>
+                    new EnvelopeFailure({
+                      reason: "Unauthorized sender signing key",
+                    })
+                )
+              )
+            ).pipe(
+              Effect.mapError(() =>
+                failure("InvalidRequest", 400, "Invalid plaintext signature")
+              )
+            );
+          }
+
           const now = yield* Clock.currentTimeMillis;
           const bytes = base64url(canonical(envelope));
 

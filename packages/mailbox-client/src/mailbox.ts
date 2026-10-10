@@ -1,5 +1,6 @@
 import {
   open as openEnvelope,
+  plaintextSuite,
   seal,
   suite,
   EnvelopeFailure,
@@ -74,7 +75,7 @@ interface RawAad {
 interface RawSigningPayload {
   aad: RawAad;
   body: Uint8Array;
-  suite: typeof suite;
+  suite: typeof suite | typeof plaintextSuite;
   version: 1;
   replyTo?: Defs.MessageRefValue;
   urgent?: true;
@@ -123,6 +124,7 @@ export interface SendOptions {
   readonly expiresAt?: string;
   readonly fence?: LeaseFence;
   readonly urgent?: true;
+  readonly encrypt?: boolean;
 }
 
 export interface FencedMessage {
@@ -395,7 +397,7 @@ export const layer = (
           const raw: RawSigningPayload = {
             aad,
             body: new TextEncoder().encode(body),
-            suite,
+            suite: opts?.encrypt === false ? plaintextSuite : suite,
             version: 1,
           };
 

@@ -37,6 +37,7 @@ export interface SessionFacts {
   readonly pid: number;
   readonly env: Option.Option<string>;
   readonly pane: Option.Option<string>;
+  readonly label?: () => Option.Option<string>;
   readonly alive: (pid: number) => boolean;
 }
 

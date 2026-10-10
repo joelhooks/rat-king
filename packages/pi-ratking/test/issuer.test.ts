@@ -78,6 +78,7 @@ const services = (
           didTemplate,
           directory: `${state}/directory.json`,
           documents: [],
+          encrypt: false,
           endpoint: "https://mailbox.example.invalid",
           issuer: Option.some({
             endpoint: "https://issuer.example.invalid",

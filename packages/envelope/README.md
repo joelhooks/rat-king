@@ -8,6 +8,8 @@ V0 uses wire version 1, sign-then-encrypt, HPKE base mode (16,1,1), info `sh.msc
 - `@ipld/dag-cbor@10.0.2`: normalized DAG-CBOR/DRISL bytes. Generated Lexicon data schemas restrict values; decoding re-encodes and compares canonical bytes.
 - `@rat-king/lexicon`: generated schemas preserve unknown fields. All transmitted AAD fields are authenticated.
 
+Suite `{ kemId: 0, kdfId: 0, aeadId: 0 }` (reserved HPKE ids) is signed plaintext. It uses the same envelope shape: `ciphertext` carries the canonical signed message in the clear and `enc` is the single byte `00`. The ES256 signature covers the AAD, suite, version and body exactly as it does under HPKE. `open` verifies both suites the same way. `openPlaintext` and `plaintextBody` let the mailbox verify and project plaintext without importing HPKE. Readers that predate this suite refuse it as unsupported.
+
 `seal` requires a recipient key and its authorized DID URL. `open` requires the expected recipient/key ID and an authorization-aware signing-key resolver. Supplying a public key hint never authorizes it. The static proof resolver does not prove historical key rotation.
 
 Unit tests cover RFC derivation, KEM shared secrets, key schedule, 257 encryptions/decryptions and three exports, envelope round-trip, every AAD field (including a future field), suite/version/enc/ciphertext tampering, wrong recipients, wrong signing bytes, high-S, and inner/outer metadata disagreement. The mailbox test Worker also imports the HPKE seal/open graph for the local isolate proof.
