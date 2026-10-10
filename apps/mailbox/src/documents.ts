@@ -19,7 +19,6 @@ export const lookupPeerDocument = Effect.fn("Directory.lookup")(
   function* lookupPeerDocument(
     input: {
       readonly configured: typeof Documents.Type;
-      readonly allowlist: readonly string[];
       readonly registered: (
         did: string
       ) => Effect.Effect<string | undefined, XrpcFailure>;
@@ -29,12 +28,7 @@ export const lookupPeerDocument = Effect.fn("Directory.lookup")(
   ) {
     const { configured } = input;
 
-    const allowed = new Set([
-      ...configured.map((document) => document.id),
-      ...input.allowlist,
-    ]);
-
-    if (!allowed.has(issuer) || !allowed.has(did)) {
+    if (!issuer.startsWith("did:web:") || !did.startsWith("did:web:")) {
       return yield* Effect.fail(failure("Forbidden", 403));
     }
 
@@ -81,10 +75,6 @@ export const lookupPeerDocument = Effect.fn("Directory.lookup")(
 export const peerDocument = (env: Bindings, issuer: string, did: string) =>
   lookupPeerDocument(
     {
-      allowlist: [
-        ...didAllowlist(env.OPERATOR_DIDS),
-        ...didAllowlist(env.OBSERVER_DIDS),
-      ],
       configured: configuredDocuments(env),
       registered: (peer) =>
         Effect.tryPromise({

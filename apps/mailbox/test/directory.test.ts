@@ -9,26 +9,27 @@ import {
 import { lookupPeerDocument } from "../src/documents.ts";
 
 it.effect.prop(
-  "public directory gates caller and peer and never returns document extensions",
+  "any authenticated caller reads a registered peer document, never its extensions",
   [Arbitrary.schema(Schema.Boolean)],
-  ([allowed]) =>
+  ([registered]) =>
     Effect.gen(function* directoryProof() {
       const own = yield* identity("did:web:desk.invalid");
       const peer = yield* document(yield* identity("did:web:phone.invalid"));
       let lookups = 0;
 
       const input = {
-        allowlist: allowed ? [own.did, peer.id] : [peer.id],
         configured: [],
         registered: () =>
           Effect.sync(() => {
             lookups += 1;
 
-            return JSON.stringify({
-              ...peer,
-              privateHost: "private.invalid",
-              service: [{ endpoint: "https://private.invalid" }],
-            });
+            return registered
+              ? JSON.stringify({
+                  ...peer,
+                  privateHost: "private.invalid",
+                  service: [{ endpoint: "https://private.invalid" }],
+                })
+              : undefined;
           }),
       };
 
@@ -36,8 +37,8 @@ it.effect.prop(
         Effect.result
       );
 
-      expect(Result.isSuccess(result)).toBe(allowed);
-      expect(lookups).toBe(allowed ? 1 : 0);
+      expect(Result.isSuccess(result)).toBe(registered);
+      expect(lookups).toBe(1);
 
       if (Result.isSuccess(result)) {
         expect(result.success).toEqual(peer);
@@ -45,11 +46,11 @@ it.effect.prop(
 
       const refused = yield* lookupPeerDocument(
         input,
-        peer.id,
-        "did:web:unknown.invalid"
+        own.did,
+        "did:plc:unknown"
       ).pipe(Effect.result);
 
       expect(Result.isFailure(refused)).toBe(true);
-      expect(lookups).toBe(allowed ? 1 : 0);
+      expect(lookups).toBe(1);
     })
 );
