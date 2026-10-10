@@ -1,5 +1,7 @@
 import { Config, ConfigProvider, Effect, FileSystem, Schema } from "effect";
 
+import { ShipAttempt, ShipSettings } from "./ship-config.ts";
+
 const Text = Schema.NonEmptyString;
 
 const OptionalText = Schema.optionalKey(Text);
@@ -65,6 +67,8 @@ export const StageConfig = Schema.Struct({
     })
   ),
   runtime: RuntimeConfig,
+  ship: Schema.optionalKey(ShipSettings),
+  shipAttempt: Schema.optionalKey(ShipAttempt),
 });
 
 export type StageConfigValue = typeof StageConfig.Type;
@@ -103,4 +107,9 @@ export const stageProvider = (config: StageConfigValue) =>
     RAT_KING_OPERATOR_DIDS: JSON.stringify(
       config.runtime.RAT_KING_OPERATOR_DIDS
     ),
+    RAT_KING_SHIP_ATTEMPT:
+      config.shipAttempt === undefined
+        ? undefined
+        : JSON.stringify(config.shipAttempt),
+    RAT_KING_SHIP_MODE: config.shipAttempt !== undefined,
   });
