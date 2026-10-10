@@ -8,6 +8,7 @@ import { NodeServices } from "@effect/platform-node";
 import {
   Cause,
   Config,
+  Duration,
   Effect,
   Exit,
   Layer,
@@ -43,6 +44,12 @@ export const SEND_EVENT = "ratking/send";
 export const SEND_RESULT_EVENT = "ratking/send:result";
 
 export const MESSAGE_EVENT = "ratking/message";
+
+export const RETIRE_EVENT = "ratking/retire";
+
+export const RETIRE_RESULT_EVENT = "ratking/retire:result";
+
+const RELEASE_WAIT_MS = 2000;
 
 export const injects = (inbound: { readonly kind: string }, settled: boolean) =>
   !settled && inbound.kind !== "data";
@@ -313,13 +320,19 @@ export const ratkingExtension = (options: ExtensionOptions) =>
         }
       });
 
+    let retired = false;
+
     const run = async <A>(
       effect: Effect.Effect<A, never, Services>,
       fallback: (reason: string) => A,
       signal?: AbortSignal
     ) => {
       if (Option.isNone(runtime)) {
-        return fallback("Rat King has not started");
+        return fallback(
+          retired
+            ? "Rat King reader retired; a successor session holds this name"
+            : "Rat King has not started"
+        );
       }
 
       const exit = await runtime.value.runPromiseExit(
@@ -342,7 +355,14 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       runtime = Option.none();
 
       if (Option.isSome(previous)) {
-        await previous.value.dispose();
+        await Effect.runPromise(
+          Effect.promise(async () => {
+            await previous.value.dispose();
+          }).pipe(
+            Effect.timeoutOption(Duration.millis(RELEASE_WAIT_MS)),
+            Effect.asVoid
+          )
+        );
       }
     };
 
@@ -408,7 +428,28 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       }
     });
 
+    pi.events.on(RETIRE_EVENT, (data) => {
+      const request = Schema.decodeUnknownOption(
+        Schema.Struct({ requestId: Schema.optionalKey(Schema.String) })
+      )(data ?? {});
+
+      retired = true;
+
+      const retire = async () => {
+        await stop();
+
+        pi.events.emit(RETIRE_RESULT_EVENT, {
+          ...Option.getOrElse(request, () => ({})),
+          status: "retired" as const,
+        });
+      };
+
+      void retire();
+    });
+
     pi.onSessionStart(async (start) => {
+      retired = false;
+
       await stop();
 
       const facts = await Effect.runPromise(

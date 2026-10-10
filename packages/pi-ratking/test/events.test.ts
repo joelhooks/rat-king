@@ -22,6 +22,8 @@ import type { PiHost, SessionStart } from "../src/extension.ts";
 import {
   injects,
   ratkingExtension,
+  RETIRE_EVENT,
+  RETIRE_RESULT_EVENT,
   SEND_EVENT,
   SEND_RESULT_EVENT,
 } from "../src/extension.ts";
@@ -295,4 +297,89 @@ it.effect.prop(
     Effect.sync(() => {
       expect(injects({ kind }, settled)).toBe(!settled && kind !== "data");
     })
+);
+
+it.live.prop(
+  "ratking/retire stops the reader and answers with its requestId; later sends are refused as retired and reach no mailbox",
+  [Arbitrary.schema(Schema.String)],
+  ([requestId]) =>
+    Effect.gen(function* retire() {
+      const fs = yield* FileSystem.FileSystem;
+      const state = yield* fs.makeTempDirectoryScoped();
+      let sends = 0;
+
+      const http = HttpClient.make((request) =>
+        Effect.sync(() => {
+          sends += request.url.endsWith("sh.mschf.ratking.mailbox.send")
+            ? 1
+            : 0;
+
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({ error: "MailboxUnavailable" }, { status: 503 })
+          );
+        })
+      );
+
+      const { end, pi, start } = fakePi();
+
+      yield* Effect.promise(async () => {
+        await ratkingExtension({
+          facts: (session) =>
+            Effect.succeed({
+              alive: () => false,
+              env: Option.some("tester"),
+              pane: Option.none(),
+              pid: 1,
+              session,
+            }),
+          layer: harness(state, http),
+          tool: Effect.succeed("ratking"),
+        })(pi);
+      });
+
+      yield* start;
+
+      const retired = yield* Deferred.make<unknown>();
+
+      const answered = yield* Deferred.make<
+        typeof Result.Type,
+        Schema.SchemaError
+      >();
+
+      pi.events.on(RETIRE_RESULT_EVENT, (data) => {
+        Deferred.doneUnsafe(retired, Effect.succeed(data));
+      });
+      pi.events.on(SEND_RESULT_EVENT, (data) => {
+        Deferred.doneUnsafe(answered, Schema.decodeUnknownEffect(Result)(data));
+      });
+
+      pi.events.emit(RETIRE_EVENT, { requestId });
+
+      expect(
+        yield* Deferred.await(retired).pipe(Effect.timeout("5 seconds"))
+      ).toEqual({ requestId, status: "retired" });
+
+      pi.events.emit(SEND_EVENT, {
+        body: "hello",
+        requestId: "after",
+        to: "peer",
+      });
+
+      const result = yield* Deferred.await(answered).pipe(
+        Effect.timeout("5 seconds")
+      );
+
+      yield* end;
+
+      expect(result).toMatchObject({
+        requestId: "after",
+        status: "not-delivered",
+      });
+      expect(result.status === "not-delivered" && result.reason).toContain(
+        "retired"
+      );
+      expect(sends).toBe(0);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  { arbitrary: { runs: 3 }, timeout: 60_000 }
 );
