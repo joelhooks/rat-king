@@ -25,6 +25,7 @@ import { directoryLayer } from "./directory.ts";
 import { paneLabel } from "./herdr.ts";
 import type { SessionFacts } from "./identity.ts";
 import { issuerLayer } from "./issuer.ts";
+import { messageView } from "./message-view.ts";
 import { LexiconRecord, renderInbound } from "./payload.ts";
 import type { Inbound } from "./payload.ts";
 import { RatKing, ratKingLayer } from "./ratking.ts";
@@ -180,6 +181,7 @@ export interface SessionStart {
 
 export interface PiHost {
   readonly events: EventBus;
+  readonly registerMessageRenderer: ExtensionAPI["registerMessageRenderer"];
   readonly registerTool: ExtensionAPI["registerTool"];
   readonly sendMessage: ExtensionAPI["sendMessage"];
   readonly onSessionStart: (
@@ -204,6 +206,9 @@ const piHost = (pi: ExtensionAPI): PiHost => ({
         },
       });
     });
+  },
+  registerMessageRenderer: (customType, renderer) => {
+    pi.registerMessageRenderer(customType, renderer);
   },
   registerTool: (tool) => {
     pi.registerTool(tool);
@@ -342,6 +347,17 @@ const parameters = Type.Object({
 export const ratkingExtension = (options: ExtensionOptions) =>
   async function piRatking(pi: PiHost) {
     const tool = await Effect.runPromise(options.tool);
+
+    pi.registerMessageRenderer(
+      "ratking_message",
+      (message, renderOptions, theme) =>
+        messageView({
+          details: message.details,
+          expanded: renderOptions.expanded,
+          theme,
+          tool,
+        })
+    );
 
     let runtime = Option.none<Runtime>();
 

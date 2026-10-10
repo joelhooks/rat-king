@@ -45,7 +45,7 @@ Registration goes through one service, `Issuer.ensure(name, publicDocument) → 
 
 On `session_start` the extension claims its name, ensures its identity and runs `@rat-king/mailbox-client`'s leased consumer for its DID. Failures retry with exponential backoff capped at 30 seconds and show in `status`; they are never fatal. On `session_shutdown` the runtime is disposed, which releases the lease, so a successor Pi acquires it at once.
 
-Each inbound message is injected as a visible `ratking_message` with sender, body, id and a reply hint naming this tool, except program-to-program data and lexicon records. The handler checkpoints the event's `seq` before ack, so a restarted reader does not replay acked mail. While the reader holds its lease, sends carry the lease fence, as the mailbox requires.
+Each inbound message is injected as a visible `ratking_message` with sender, body, id and a reply hint naming this tool, except program-to-program data and lexicon records. The transcript renderer defaults to one line with the sender label or name, first body line and message id. CC, reply and unverified markers remain visible. Pi's expand toggle (`ctrl+o`) shows the full message and reply hint. Rendering uses message details; model-facing content is unchanged. The handler checkpoints the event's `seq` before ack, so a restarted reader does not replay acked mail. While the reader holds its lease, sends carry the lease fence, as the mailbox requires.
 
 The payload is `{ from, body, kind?, replyTo? }`. It carries no session id: whoever holds the name's lease reads its mail. A sender name is verified when the directory maps the signed sender DID to it, or when the claimed name derives that DID through the template or reserved table.
 

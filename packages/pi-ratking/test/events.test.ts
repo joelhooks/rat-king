@@ -91,6 +91,7 @@ const fakePi = () => {
     onSessionStart: (handler) => {
       started = handler;
     },
+    registerMessageRenderer: () => {},
     registerTool: () => {},
     sendMessage: () => {},
   };
@@ -494,6 +495,7 @@ const host = () => {
     onSessionStart: (handler) => {
       lifecycle.start = handler;
     },
+    registerMessageRenderer: () => {},
     registerTool: () => {},
     sendMessage: (message) => {
       messages.push(message);
