@@ -6,7 +6,7 @@ import { SocketAttachment } from "../src/socket.ts";
 import production, { Mailbox as ProductionMailbox } from "../src/worker.ts";
 import { hpkeProof } from "./hpke-proof.ts";
 
-export { AuthTokens } from "../src/worker.ts";
+export { AuthTokens, Issuer } from "../src/worker.ts";
 
 export class Mailbox extends ProductionMailbox {
   override fetch(request: Request) {

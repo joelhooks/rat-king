@@ -1,0 +1,35 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.identity.enrollHost",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Operator-only. Enroll a host DID as a name issuer and register its public document create-only, as admin.putDidDocument does. An identical repeat returns the same DID.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["document"],
+          "properties": {
+            "document": { "type": "ref", "ref": "sh.mschf.ratking.defs#didDocument" }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["did"],
+          "properties": { "did": { "type": "string", "format": "did" } }
+        }
+      },
+      "errors": [
+        { "name": "InvalidRequest" },
+        { "name": "AuthRequired" },
+        { "name": "Forbidden" },
+        { "name": "DocumentConflict" },
+        { "name": "MailboxUnavailable" }
+      ]
+    }
+  }
+}

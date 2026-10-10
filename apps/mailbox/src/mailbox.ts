@@ -112,6 +112,28 @@ export const deliverMessage = (
   return transitionMessage(tx, message, "inject");
 };
 
+export const storeDocument = (
+  tx: Transaction,
+  staticDocuments: readonly Defs.DidDocumentValue[],
+  document: Defs.DidDocumentValue
+) => {
+  if (document.id !== tx.recipient()) {
+    throw failure("Forbidden", 403);
+  }
+
+  const existing =
+    staticDocuments.find((candidate) => candidate.id === document.id) ??
+    tx.document();
+
+  if (existing === undefined) {
+    tx.setDocument(document);
+  } else if (
+    base64url(canonical(existing)) !== base64url(canonical(document))
+  ) {
+    throw failure("DocumentConflict", 409);
+  }
+};
+
 export const mailboxHandlers = (policy: MailboxPolicy) =>
   Layer.effect(
     MailboxHandlers,
@@ -285,23 +307,7 @@ export const mailboxHandlers = (policy: MailboxPolicy) =>
             );
 
             return yield* store.transaction((tx) => {
-              if (input.document.id !== tx.recipient()) {
-                throw failure("Forbidden", 403);
-              }
-
-              const existing =
-                policy.staticDocuments.find(
-                  (document) => document.id === input.document.id
-                ) ?? tx.document();
-
-              if (existing === undefined) {
-                tx.setDocument(input.document);
-              } else if (
-                base64url(canonical(existing)) !==
-                base64url(canonical(input.document))
-              ) {
-                throw failure("DocumentConflict", 409);
-              }
+              storeDocument(tx, policy.staticDocuments, input.document);
 
               return { did: input.document.id };
             });

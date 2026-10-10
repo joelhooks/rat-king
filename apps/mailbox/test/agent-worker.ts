@@ -7,7 +7,7 @@ import type { Bindings } from "../src/bindings.ts";
 import type { Agent } from "../src/hosted-worker.ts";
 import hosted from "../src/hosted-worker.ts";
 
-export { Agent, Mailbox, AuthTokens } from "../src/hosted-worker.ts";
+export { Agent, Mailbox, AuthTokens, Issuer } from "../src/hosted-worker.ts";
 
 type TestBindings = Omit<Bindings, "AGENT"> &
   HostedBindings & {

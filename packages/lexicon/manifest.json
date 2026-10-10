@@ -1,7 +1,7 @@
 {
   "effect": "4.0.1",
   "generatorVersion": "0.1.0",
-  "sourceDigest": "8bdcd3a7930ec7c759f1bd62e32d516a897307c6ace6e33bdf44c6fefdccc47a",
+  "sourceDigest": "751ebaf2e61383ddbadbf5b849dadf171a0801838c5828941f5481fc9d9720fb",
   "sources": [
     "lexicons/sh/mschf/ratking/admin/putDidDocument.json",
     "lexicons/sh/mschf/ratking/agent/profile.json",
@@ -10,6 +10,9 @@
     "lexicons/sh/mschf/ratking/desk/item.json",
     "lexicons/sh/mschf/ratking/desk/theme.json",
     "lexicons/sh/mschf/ratking/desk/update.json",
+    "lexicons/sh/mschf/ratking/identity/enrollHost.json",
+    "lexicons/sh/mschf/ratking/identity/listNames.json",
+    "lexicons/sh/mschf/ratking/identity/register.json",
     "lexicons/sh/mschf/ratking/mailbox/ack.json",
     "lexicons/sh/mschf/ratking/mailbox/deliver.json",
     "lexicons/sh/mschf/ratking/mailbox/getPeerDocument.json",

@@ -54,7 +54,7 @@ export const celldNode = (
     yield* io(() =>
       writeFile(
         path.join(directory, "worker.ts"),
-        `export { default, Mailbox, AuthTokens } from ${JSON.stringify(path.resolve("apps/mailbox/test/worker.ts"))};`
+        `export { default, Mailbox, AuthTokens, Issuer } from ${JSON.stringify(path.resolve("apps/mailbox/test/worker.ts"))};`
       )
     );
 

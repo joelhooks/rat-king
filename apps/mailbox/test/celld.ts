@@ -60,7 +60,7 @@ export const celldNode = (binary: string, documentsJson: string) =>
     yield* io(() =>
       writeFile(
         path.join(directory, "worker.ts"),
-        `export { default, Mailbox, AuthTokens } from ${source};`
+        `export { default, Mailbox, AuthTokens, Issuer } from ${source};`
       )
     );
     yield* io(() =>

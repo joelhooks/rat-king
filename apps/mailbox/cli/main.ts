@@ -23,6 +23,7 @@ import {
 import { Command, Flag } from "effect/cli";
 import { FetchHttpClient } from "effect/http";
 
+import { enrollHost } from "./enroll-host.ts";
 import { CliError, readIdentity } from "./identity.ts";
 import { provision } from "./provision.ts";
 import { registerDocument } from "./register-document.ts";
@@ -89,6 +90,7 @@ type CliOutput =
   | Effect.Success<ReturnType<typeof provision>>
   | Effect.Success<ReturnType<typeof provisionAgent>>
   | Effect.Success<ReturnType<typeof registerDocument>>
+  | Effect.Success<ReturnType<typeof enrollHost>>
   | OpenedMessage
   | { released: true };
 
@@ -302,6 +304,27 @@ const registerCommand = Command.make(
   })
 );
 
+const enrollHostCommand = Command.make(
+  "enroll-host",
+  {
+    did: Flag.String("did"),
+    document: Flag.String("document"),
+  },
+  Effect.fn("MailboxCli.enrollHost")(function* enrollHostCommand(args) {
+    const env = yield* environment;
+    const fs = yield* FileSystem.FileSystem;
+    yield* print(
+      yield* enrollHost({
+        did: args.did,
+        endpoint: env.endpoint,
+        json: yield* fs.readFileString(args.document),
+        operatorSecret: yield* Config.String("RAT_KING_OPERATOR_IDENTITY"),
+        serviceDid: env.serviceDid,
+      }).pipe(Effect.provide([FetchHttpClient.layer, secretStoreLayer({})]))
+    );
+  })
+);
+
 const acquireCommand = Command.make(
   "acquire",
   {
@@ -471,6 +494,7 @@ const command = Command.make("mailbox").pipe(
     identityCommand,
     provisionCommand,
     registerCommand,
+    enrollHostCommand,
     leaseCommand,
     deliverCommand,
     ackCommand,

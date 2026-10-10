@@ -13,6 +13,8 @@ Supply the public documents file, endpoint and service DID through `RAT_KING_DOC
 
 `register --did <did> --document <public-json>` registers an externally held identity without minting or exporting its keys. It refuses private material anywhere in the document and requires its id to match `--did`. It uses the existing operator configuration and the idempotent `putDidDocument` route.
 
+`enroll-host --did <host did> --document <public-json>` enrolls a host as a Pi name issuer through `identity.enrollHost`, signed by `RAT_KING_OPERATOR_IDENTITY`. It applies the same public-document checks as `register`. Mint the host identity on the host itself, for example with `identity`, and copy only its public document to the operator.
+
 `provision` keeps both P-256 private keys in `agent-secrets`. `RAT_KING_OPERATOR_IDENTITY` names an identity JSON secret authorized by the server's `OPERATOR_DIDS` binding. The command leases it to register the agent's public DID document.
 
 ```sh

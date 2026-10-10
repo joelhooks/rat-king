@@ -29,12 +29,12 @@ import { HttpClient } from "effect/http";
 
 import { Settings } from "./config.ts";
 import { Directory, writePrivateJson } from "./directory.ts";
-import type { Listed } from "./directory.ts";
+import type { Listed, Resolved } from "./directory.ts";
 import { reasonOf } from "./errors.ts";
 import { claimName, ensureIdentity } from "./identity.ts";
 import type { SessionFacts } from "./identity.ts";
 import { Issuer } from "./issuer.ts";
-import { canonicalName, provisionLabel } from "./name.ts";
+import { canonicalName, isReserved, provisionLabel } from "./name.ts";
 import { decodePayload, encodePayload } from "./payload.ts";
 import type { Inbound, KindValue, PayloadValue } from "./payload.ts";
 import { SecretStore } from "./secrets.ts";
@@ -565,7 +565,33 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         )
       );
     }),
-    list: directory.list,
+    list: Effect.gen(function* list() {
+      const remote = yield* issuer.names.pipe(
+        Effect.tapError(() =>
+          Effect.logWarning("Rat King issuer directory unavailable")
+        ),
+        Effect.orElseSucceed((): readonly Resolved[] => [])
+      );
+
+      const known = new Set((yield* directory.list).map((entry) => entry.name));
+
+      for (const entry of remote) {
+        if (
+          !known.has(entry.name) &&
+          !isReserved(settings.reserved, entry.name) &&
+          entry.document.id === entry.did
+        ) {
+          yield* directory.record(entry.name, entry.document).pipe(
+            Effect.tapError(() =>
+              Effect.logWarning("Rat King directory entry not recorded")
+            ),
+            Effect.ignore
+          );
+        }
+      }
+
+      return yield* directory.list;
+    }),
     pending: threads.pending,
     reply: Effect.fn("RatKing.reply")(function* reply(id, body) {
       const record = yield* threads.lookup(id);

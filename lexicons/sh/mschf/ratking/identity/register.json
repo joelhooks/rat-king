@@ -1,0 +1,39 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.identity.register",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Bind an agent name to its public DID document. The caller must be an enrolled host. The DID is derived from the name by the service's template, so the document id must equal it. The first enrolled host to register a name owns it. An identical repeat by the owner returns the same DID; any other registration of the name is refused with NameTaken. Reserved names are refused. The document becomes resolvable exactly as admin.putDidDocument would store it.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["name", "document"],
+          "properties": {
+            "name": { "type": "string", "maxLength": 128 },
+            "document": { "type": "ref", "ref": "sh.mschf.ratking.defs#didDocument" }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["did"],
+          "properties": { "did": { "type": "string", "format": "did" } }
+        }
+      },
+      "errors": [
+        { "name": "InvalidRequest" },
+        { "name": "AuthRequired" },
+        { "name": "Forbidden" },
+        { "name": "InvalidName" },
+        { "name": "NameReserved" },
+        { "name": "NameTaken" },
+        { "name": "DocumentConflict" },
+        { "name": "MailboxUnavailable" }
+      ]
+    }
+  }
+}

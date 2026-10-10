@@ -2,7 +2,7 @@ export { Settings, NotConfigured, PiConfig, settingsLayer } from "./config.ts";
 
 export { Directory, UnknownName, directoryLayer } from "./directory.ts";
 
-export { Issuer, IssuerError, commandIssuerLayer } from "./issuer.ts";
+export { Issuer, IssuerError, issuerLayer } from "./issuer.ts";
 
 export {
   AgentName,

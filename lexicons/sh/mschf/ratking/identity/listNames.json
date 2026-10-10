@@ -1,0 +1,46 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.identity.listNames",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Authenticated directory of issued names, ordered by name. Each entry carries the name, its DID and its public document. The cursor is the last name of the previous page, exclusive.",
+      "parameters": {
+        "type": "params",
+        "properties": {
+          "cursor": { "type": "string", "maxLength": 128 },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 100 }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["names"],
+          "properties": {
+            "names": {
+              "type": "array",
+              "maxLength": 100,
+              "items": { "type": "ref", "ref": "#entry" }
+            },
+            "cursor": { "type": "string", "maxLength": 128 }
+          }
+        }
+      },
+      "errors": [
+        { "name": "InvalidRequest" },
+        { "name": "AuthRequired" },
+        { "name": "MailboxUnavailable" }
+      ]
+    },
+    "entry": {
+      "type": "object",
+      "required": ["name", "did", "document"],
+      "properties": {
+        "name": { "type": "string", "maxLength": 128 },
+        "did": { "type": "string", "format": "did" },
+        "document": { "type": "ref", "ref": "sh.mschf.ratking.defs#didDocument" }
+      }
+    }
+  }
+}
