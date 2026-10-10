@@ -8,7 +8,11 @@ import { CliError } from "../identity.ts";
 import { provisionAgent } from "../register.ts";
 import { SecretStore } from "../secrets.ts";
 import { identity, document } from "./helpers.ts";
-import { memorySecretStoreLayer } from "./secret-store.ts";
+import {
+  isolatedSecretStoreLayer,
+  memorySecretStoreLayer,
+  secretsBinaryAbsentFromPath,
+} from "./secret-store.ts";
 
 const Agent = Schema.String.check(Schema.isPattern(/^[a-z][a-z0-9_-]{0,15}$/u));
 
@@ -138,4 +142,15 @@ it.effect.prop(
   ({ agent, did }) =>
     provisioningClaims(agent, did).pipe(Effect.provide(memorySecretStoreLayer)),
   { arbitrary: { runs: 5 } }
+);
+
+it.live.skipIf(secretsBinaryAbsentFromPath)(
+  "live secrets CLI: isolated store preserves provisioning and create-only semantics (requires secrets on PATH)",
+  () =>
+    Effect.gen(function* liveProvisioning() {
+      const storeLayer = yield* isolatedSecretStoreLayer;
+      yield* provisioningClaims("a", "did:web:a.example.invalid").pipe(
+        Effect.provide(storeLayer)
+      );
+    }).pipe(Effect.scoped)
 );
