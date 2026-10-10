@@ -7,7 +7,7 @@
   "type": "module",
   "scripts": {
     "check": "pnpm lexgen:check && pnpm typecheck && pnpm check:ship-confidence && ultracite check && oxfmt --check .",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tools/lexgen/tsconfig.json && tsc --noEmit -p packages/alchemy-nest/tsconfig.json && tsc --noEmit -p stacks/cf/tsconfig.json && tsc --noEmit -p packages/mailbox-client/tsconfig.json && tsc --noEmit -p packages/envelope/tsconfig.json && tsc --noEmit -p apps/mailbox/tsconfig.json && tsc --noEmit -p packages/agent-runtime/tsconfig.json && tsc --noEmit -p apps/claude-sidecar/tsconfig.json && tsc --noEmit -p apps/claude-sidecar/test/worker/tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p tools/lexgen/tsconfig.json && tsc --noEmit -p packages/alchemy-nest/tsconfig.json && tsc --noEmit -p stacks/cf/tsconfig.json && tsc --noEmit -p packages/mailbox-client/tsconfig.json && tsc --noEmit -p packages/pi-ratking/tsconfig.json && tsc --noEmit -p packages/envelope/tsconfig.json && tsc --noEmit -p apps/mailbox/tsconfig.json && tsc --noEmit -p packages/agent-runtime/tsconfig.json && tsc --noEmit -p apps/claude-sidecar/tsconfig.json && tsc --noEmit -p apps/claude-sidecar/test/worker/tsconfig.json",
     "ios:check": "tsc --noEmit -p apps/ios/tsconfig.json && bash apps/ios/scripts/test.sh",
     "fix": "ultracite fix && oxfmt .",
     "prepare": "effect-tsgo patch && lefthook install",

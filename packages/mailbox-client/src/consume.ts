@@ -29,6 +29,10 @@ export const consumerMachine = createMachine({
   },
 });
 
+export interface MessageMeta {
+  readonly seq: number;
+}
+
 const expiredRefusal = (error: MailboxClientError) =>
   error.error === "InvalidTransition" && error.reason === "Expired message";
 
@@ -42,7 +46,10 @@ export interface ConsumeOptions {
 export const consume = <E, R>(
   mailbox: typeof RatKingMailbox.Service,
   did: string,
-  handler: (message: OpenedMessage) => Effect.Effect<void, E, R>,
+  handler: (
+    message: OpenedMessage,
+    meta: MessageMeta
+  ) => Effect.Effect<void, E, R>,
   options: ConsumeOptions
 ): Effect.Effect<void, E | MailboxClientError, R> =>
   Effect.scoped(
@@ -230,7 +237,7 @@ export const consume = <E, R>(
                   return;
                 }
 
-                yield* handler(message);
+                yield* handler(message, { seq: event.seq });
                 yield* mailbox.ack(input);
               }),
             { discard: true }

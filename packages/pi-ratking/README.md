@@ -1,0 +1,65 @@
+# @rat-king/pi-ratking
+
+A Pi extension that gives any Pi a Rat King name and messaging. It has no Muster dependency. Load it with `pi -e packages/pi-ratking/src/extension.ts`, or install the package; its `pi` manifest names the extension.
+
+## Configuration
+
+The extension reads `RATKING_CONFIG`, or `~/.config/rat-king/pi.json`. Without a valid file, every action fails with `NOT DELIVERED: NotConfigured` and the reader stays off. Example with invented values:
+
+```json
+{
+  "endpoint": "https://mailbox.example.invalid",
+  "serviceDid": "did:web:mailbox.example.invalid",
+  "didTemplate": "did:web:{agent}.pi.example.invalid",
+  "documents": ["/path/to/public-documents.json"],
+  "issuer": { "command": ["sh", "/path/to/mailbox-cli-wrapper.sh"] },
+  "reserved": {
+    "switchboard": { "did": "did:web:switchboard.example.invalid" },
+    "fleet-owner": {
+      "did": "did:web:fleet-owner.example.invalid",
+      "aliases": ["servo"]
+    }
+  },
+  "toolName": "ratking"
+}
+```
+
+`state` defaults to `~/.local/state/rat-king/pi`. It holds the name claims, read cursors, locks and `directory.json`, the name → DID and public document directory. `documents` lists files of public DID documents, such as the operator-configured fleet documents. `askTimeoutMs` defaults to ten minutes.
+
+## Names
+
+`RATKING_NAME`, set by the launcher, wins. Muster sets `<project>/<row>`. Aliases in `reserved` map to their reserved name. Without it, the Pi names itself from its Herdr pane label slug, else `pi-<session id>`. A derived name is never reserved, never another live session's claim and never an existing directory name. Claims are written under a lock.
+
+## Identity and issuer
+
+Keys are P-256 pairs generated on the Pi's host. They are stored in the host secret store (agent-secrets) as `rat_king_fleet_agent_<label>_identity`, passed to `secrets add` on stdin, never in argv or logs. `<label>` is the name with `/` replaced by `.`. Existing secrets are reused and never rotated; their DID wins over the template. Reserved names are never minted; their secret must already exist on the host.
+
+Registration goes through one service, `Issuer.ensure(name, publicDocument) → did`. The command issuer writes the public document to a private temporary file, runs `<command> register --did <did> --document <file>` and records the name in the directory. Point it at a mailbox CLI built from this repository; bundles without `register` refuse. The operator key stays with that CLI. A later issuer can replace the layer without changing callers.
+
+## Reader
+
+On `session_start` the extension claims its name, ensures its identity and runs `@rat-king/mailbox-client`'s leased consumer for its DID. Failures retry with exponential backoff capped at 30 seconds and show in `status`; they are never fatal. On `session_shutdown` the runtime is disposed, which releases the lease, so a successor Pi acquires it at once.
+
+Each inbound message is injected as a visible `ratking_message` with sender, body, id and a reply hint naming this tool. The handler checkpoints the event's `seq` before ack, so a restarted reader does not replay acked mail. While the reader holds its lease, sends carry the lease fence, as the mailbox requires.
+
+The payload is `{ from, body, kind?, replyTo? }`. It carries no session id: whoever holds the name's lease reads its mail. A sender name is marked unverified unless the directory maps the signed sender DID to it.
+
+## Tool
+
+The tool takes pi-intercom's parameters. `send`, `ask`, `reply`, `pending`, `list` and `status` work. `ask` waits for the reply whose `replyTo` names the ask and whose signed sender is the asked DID; other messages are injected normally. `handover`, `cancel`, `cwd` targeting and `openProjectPaneIfMissing` are refused with a clear error. A send the mailbox did not take returns `NOT DELIVERED: <code>`, with no fallback.
+
+Pi keeps the first tool registered under a name and silently drops later ones. While pi-intercom is loaded, keep the default name `ratking`. After pi-intercom is removed, set `"toolName": "intercom"` or `RATKING_TOOL=intercom`.
+
+## Events for other extensions
+
+- Emit `ratking/send` with `{ requestId, to, body, kind? }`, or `{ requestId, replyTo, body }` to answer a received message. The extension emits `ratking/send:result` with `{ requestId, status: "delivered", id, seq, to }` or `{ requestId, status: "not-delivered", code, reason }`.
+- `ratking/message` carries every inbound message: `{ id, from, did, verified, body, kind, replyTo, cc, settled }`. `settled` is true when the message answered a waiting ask.
+
+`ratkingExtension({ layer, facts, tool })` builds the extension against a `PiHost` port (events, tool and message registration, session start and end). The default export adapts Pi's `ExtensionAPI` to that port with the production layer; tests drive the same factory with Pi's `createEventBus` and a fake mailbox.
+
+## Limits
+
+- A message from a DID missing from the local directory and configured documents cannot be opened. The reader restarts with backoff; until that sender's document is known, its message blocks later mail.
+- Remote hosts need their own issuer. Without one, only names with existing secrets and directory entries work.
+- An identity with mailbox history needs a seeded cursor in `state/cursors/<label>.json`; otherwise the reader replays history and stops on an already acked message.
+- Registered DID documents have no revoke route.

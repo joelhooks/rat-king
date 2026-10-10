@@ -18,7 +18,7 @@ import {
 
 import { base64url, Document, DidResolver, documentResolver } from "./auth.ts";
 import { consume } from "./consume.ts";
-import type { ConsumeOptions } from "./consume.ts";
+import type { ConsumeOptions, MessageMeta } from "./consume.ts";
 import { clientError, MailboxClientError } from "./error.ts";
 import { importSigning, Identity } from "./identity.ts";
 import type { IdentityValue } from "./identity.ts";
@@ -370,7 +370,10 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
 
   return {
     consume: <E, R>(
-      handler: (message: OpenedMessage) => Effect.Effect<void, E, R>,
+      handler: (
+        message: OpenedMessage,
+        meta: MessageMeta
+      ) => Effect.Effect<void, E, R>,
       opts: ConsumeOptions
     ) =>
       Effect.suspend(() => {
