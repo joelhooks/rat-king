@@ -1,6 +1,6 @@
 # Durable agent proof
 
-A pi-durable Harness answers inside a celld v0.6.1 Durable Object using the object's own SQLite. Killing the isolate node during a committed tool run and restarting on the same data directory settles the original submission. This is test-only, not a deployed agent service.
+A pi-durable Harness answers inside a celld v0.6.1 Durable Object using the object's own SQLite. Killing the isolate node during a committed tool run and restarting on the same data directory settles the original submission. The local crash-recovery proof was retired; this is not a deployed agent service.
 
 ## Port and adapter
 
@@ -12,19 +12,11 @@ A pi-durable Harness answers inside a celld v0.6.1 Durable Object using the obje
 
 Sources: [pi-durable's facade contract](https://github.com/earendil-works/pi/blob/b2b5c42f6138b73ec4b2f49ec0ca468800f88586/packages/durable/src/storage/sqlite/database.ts), [celld v0.6.1 async transactions](https://github.com/denoland/celld/blob/v0.6.1/crates/celld/js/harness.js#L1898-L2011), and the existing `apps/mailbox/src/worker.ts` SQL binding. celld's async transaction holds the input gate, wraps a SQLite savepoint and permits the callback's root SQL handle to use that transaction. The facade adds its own queue because the upstream contract also excludes concurrent work from the same event.
 
-## Real-node proof
+## Checks
 
-```sh
-RAT_KING_CELLD=/path/to/verified/celld pnpm test
-```
+`pnpm test` runs the retained local suites. The SQLite facade tests check rollback, queue ordering, expired handles and close.
 
-Without that variable, the real-node test skips. The separate SQLite facade test checks rollback, queue ordering, expired handles and close.
-
-`test/worker.ts` exposes submit, wait-by-id and test-only evidence/release routes. Every DO request reuses or reopens its Harness and calls `resume()`. The proof first settles an ordinary faux answer. A second faux turn commits a tool-call response. The tool persists an entered marker and blocks. Its `replay: "safe"` policy permits re-execution after restart; the restart request sets a persistent release flag before resuming.
-
-The test kills both the actual isolate node and its `celld dev` supervisor with SIGKILL. Killing just the supervisor would leave the node alive on macOS and would not prove recovery. It restarts on the same directory, releases the tool and waits for the original ID. Stored entries contain exactly one unchanged tool-call response, one tool result and one final answer. The request ID and submission ID remain unchanged. Faux call counts are two before the crash (ordinary answer and tool call), then one after restart (final answer). The pre-crash model turn is not regenerated. Safe tool execution is replayed; arbitrary side effects are not exactly-once.
-
-The test bundles with esbuild for a browser isolate. Imports use pi-ai's models/faux subpaths and pi-durable's portable SQLite subpath. The bundle's contributing modules exclude the root pi-ai entry and unrelated AWS/Google SDKs. The real-model adapter includes the OpenAI and Anthropic SDKs. No Node shim, upstream patch or fork is needed. The proof listens only on loopback and stops its owned processes.
+The celld crash-recovery suite and its test Worker were retired. No current runner reproduces that proof.
 
 ## Model access
 
@@ -42,20 +34,13 @@ Sol and Luna receive the model-gateway base URL as a plain binding and the key a
 }
 ```
 
-The S4 test-only Worker selects a separate named agent per `?model=` value; the Layer validates it. Its direct-gateway Opus probe below is historical; the current Opus proof lives in `apps/claude-sidecar/test/real.test.ts`. Missing model bindings retain the S3 faux fixture. There is no deployed service or deployment authority in this proof.
+### Historical model qualification
 
-```sh
-RAT_KING_CELLD=/path/to/verified/celld \
-RAT_KING_MODEL_GATEWAY_KEY_FILE=/path/to/private/key \
-RAT_KING_MODEL_GATEWAY_ENDPOINT_FILE=/path/to/private/endpoint \
-pnpm exec vitest run --config packages/agent-runtime/vitest.config.ts packages/agent-runtime/test/model-access-celld.test.ts
-```
-
-Without a named binary and both readable private files, the sol proof skips. It generates config and `.dev.vars` (the local secret binding) in an OS temp directory, both mode 600. It starts celld on loopback, submits one question with low thinking and no retries, and asserts `Done`, non-empty assistant text, and a persisted `pi.usage` entry. Scoped cleanup stops its processes and trashes the directory. Error output redacts the endpoint, its hostname and the key.
+The celld model-access suite was retired. Results below record past local runs, not current qualification. The sidecar's earlier local proof is recorded in its [README](../../apps/claude-sidecar/README.md#local-proof-receipt).
 
 Observed sol result: **316 input + 12 output = 328 tokens**, settled `Done`. The initial run reached `Done` but its evidence assertion failed because pi-durable stores indexed document kinds as JSON strings. The corrected query reads `record.kind`; a second sol turn passed. No successful sol proof was repeated after that.
 
-Opus is opt-in through `RAT_KING_MODEL_GATEWAY_OPUS_PROOF=1`. Its separate test makes one native messages request with thinking off, no tools, no beta headers, no identity cloaking and no retries. It records the observed outcome, not a success assertion. Unexpected success prints a stop marker requiring an owner decision about paid extra usage. Run only that case with `-t 'celld Opus'` when separately authorized.
+The retired Opus probe made one native messages request with thinking off, no tools, no beta headers, no identity cloaking and no retries. It recorded the observed outcome, not a success assertion.
 
 **Opus not proven.** The first request returned `404 status code (no body)` because the SDK received an OpenAI `/v1` base and requested `/v1/v1/messages`. After fixing the route and obtaining approval for one corrected attempt, the gateway returned HTTP 400 at **2026-10-05T05:27:49Z**:
 
@@ -71,7 +56,7 @@ Opus is opt-in through `RAT_KING_MODEL_GATEWAY_OPUS_PROOF=1`. Its separate test 
 
 No further calls were made. This is not evidence of the anticipated extra-usage refusal or of successful Opus generation. A future adaptive-thinking probe needs separate approval. Luna, model-key revocation, rate limits, provider failure recovery, real-model crash recovery and paid usage remain untested.
 
-The current minified browser Worker bundle is **1,221,199 bytes**: **+221,713 bytes** over the sol-only adapter (999,486 bytes), and **+569,220 bytes** over the S3 faux-only bundle. The shared fixture includes both provider SDKs; no additional dependency or lockfile change was needed.
+The historical minified browser Worker bundle was **1,221,199 bytes**: **+221,713 bytes** over the sol-only adapter (999,486 bytes), and **+569,220 bytes** over the S3 faux-only bundle. The shared fixture includes both provider SDKs; no additional dependency or lockfile change was needed.
 
 ## Hosted mailbox loop
 
@@ -90,16 +75,9 @@ Worker configuration selects the same code path:
 
 The hosted adapter wraps ModelAccess without changing `src/model-access.ts`. The workspace lockfile adds only the mailbox → runtime and runtime → envelope/lexicon/XState links; no external dependency version changed.
 
-### One real-loop proof
+### Historical real-loop proof
 
-`apps/mailbox/test/agent-loop-celld.test.ts` skips unless the named binary and both readable gateway files exist. It bundles the composition Worker and the actual CLI, provisions temporary sender and agent identities under invented `.example.invalid` DIDs, and starts celld on loopback. It runs CLI send, waits for the reply, and runs CLI open as the sender. `RAT_KING_MAILBOX_CLIENT_LABEL` selects the local CLI alias; the public fixture defaults to `sender`. Assertions require verified=true, the agent sender, matching replyTo, non-empty answer and an acked original. It resends the exact original ciphertext with fresh service auth, waits for two completed drains, and requires one reply and one persisted submission after a one-second observation window. It redacts gateway URL, hostname and key in errors and trashes temporary secrets after stopping its processes.
-
-```sh
-RAT_KING_CELLD=/path/to/verified/celld \
-RAT_KING_MODEL_GATEWAY_KEY_FILE=/path/to/private/key \
-RAT_KING_MODEL_GATEWAY_ENDPOINT_FILE=/path/to/private/endpoint \
-pnpm exec vitest run --config apps/mailbox/vitest.config.ts apps/mailbox/test/agent-loop-celld.test.ts
-```
+The celld mailbox-loop suite was retired. The receipt below records an earlier local run, not a current qualification command.
 
 Observed local result: the final real sol run, after merging the sidecar landing, passed in **9.65 seconds**. Two real sol turns ran in total: the initial proof and the owner-requested post-merge proof. No third attempt ran. The CLI alias in this pasted output is anonymized.
 
@@ -110,7 +88,7 @@ open --as [client]: {"body":"2 + 2 = 4.","replyTo":{"messageId":"3mx4bqoug5ktr",
 original=acked; duplicate receipt=original; reply count=1; submission count=1; wake receipts=2 accepted; tools/extensions=0
 ```
 
-The same proof can qualify local wiring without gateway calls using `RAT_KING_MAILBOX_FAUX_PROOF=1` and the named celld binary, with no gateway files. Faux passed locally. A small unit test checks same-origin dispatch, foreign-origin/port and userinfo refusals, and redirect suppression.
+The retired faux variant also passed locally without gateway calls. Retained local tests check same-origin dispatch, foreign-origin/port and userinfo refusals, and redirect suppression.
 
 Not tested for this loop: deployment or Cloudflare; multiple hosted agents or questions; the door-3 secret-file shortcut as a production key-delivery mechanism; real-key custody, rotation or DID resolution; crash at reply/ack boundaries; failed/unanswered receipt behavior end to end; gateway failures, revocation or rate limits; lease contention or takeover; pagination under concurrent admissions; expiry, pruning, sustained load, alarms or missed-wake recovery. Wakes are best-effort, not a durable scheduler. Failed drains do not automatically retry or claim success. Crypto remains unreviewed. No deployment, release or publication capability changed.
 

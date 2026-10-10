@@ -26,7 +26,7 @@ The child environment is built from scratch. `HOME` and `CLAUDE_CONFIG_DIR` poin
 
 The gateway endpoint file contains the OpenAI `/v1` URL. The launcher strips that suffix for Claude Code's gateway origin. It requires HTTPS except for numeric loopback proof endpoints: IPv4 `127.0.0.0/8` and IPv6 `::1`. Every DNS hostname requires HTTPS. It rejects URL credentials, queries and fragments. Inline `settings.apiKeyHelper` reads the mode-600 gateway credential file. The SDK uses Claude Code's genuine `claude_code` system-prompt preset and only appends caller instructions. No extra client headers or fabricated identity are added. A deployment needs its own authorized gateway credential; it does not use a host user's Claude login.
 
-The SDK source confirms this wiring: `sdk.mjs` line 121 forwards inline settings independently of `--setting-sources`, and line 221 copies an explicitly supplied environment instead of inheriting the parent. `sdk.d.ts` exposes `Settings.apiKeyHelper`. The opt-in dummy capture test qualifies the installed client's actual helper behavior without contacting a model provider.
+The SDK source confirms this wiring: `sdk.mjs` line 121 forwards inline settings independently of `--setting-sources`, and line 221 copies an explicitly supplied environment instead of inheriting the parent. `sdk.d.ts` exposes `Settings.apiKeyHelper`. The retired dummy capture proof checked the installed client's helper behavior without contacting a model provider.
 
 ## Dependencies
 
@@ -49,37 +49,11 @@ The bridge's `convert.ts` imports `skills.ts`, which imports pi-coding-agent at 
 
 The agent-runtime Layer selects Opus with `MODEL_GATEWAY_MODEL=claude-opus-5-5`, `CLAUDE_SIDECAR_BASE_URL=http://127.0.0.1:<configured-port>/v1` and secret binding `CLAUDE_SIDECAR_CREDENTIAL`. It rejects non-loopback sidecar URLs. Sol and Luna continue using `MODEL_GATEWAY_BASE_URL` and `MODEL_GATEWAY_CREDENTIAL`. Missing sidecar bindings never fall back to direct Anthropic requests.
 
-## Proofs
+## Checks
 
-Default `pnpm test` runs model refusal and the shared add-tool faux test; neither spends model usage. The real proof requires both `RAT_KING_CELLD` and `RAT_KING_CLAUDE_SIDECAR=1`, plus the executable and private file configuration above:
+Default `pnpm test` runs the retained local suites without model usage. They cover model refusal, private-file boundaries, gateway URL admission and HTTP error redaction.
 
-```sh
-RAT_KING_CELLD=/path/to/verified/celld \
-RAT_KING_CLAUDE_SIDECAR=1 \
-pnpm exec vitest run --config apps/claude-sidecar/vitest.config.ts
-```
-
-The harness hashes celld before startup, creates a fresh bearer in an OS temp directory at mode 600, supplies it through `.dev.vars`, starts its owned sidecar and celld processes on loopback, and installs exactly one harmless `add(a,b)` tool. It asserts one assistant call, one non-error durable result `5`, final answer `5` and submission `done`. Metrics record the sidecar RSS and SDK token counts. The terminal result's usage is cumulative for the SDK query; do not add earlier assistant-block counts to it. Cached tokens are not included in the current OpenAI projection, and zero cost rates are not a billing receipt.
-
-The zero-spend helper probe is separate:
-
-```sh
-RAT_KING_CLAUDE_HELPER_PROBE=1 \
-pnpm exec vitest run --config apps/claude-sidecar/vitest.config.ts apps/claude-sidecar/test/helper.test.ts
-```
-
-It points the same SDK driver at a loopback capture server, supplies only a dummy credential and checks the actual auth header and child environment. It never uses a real gateway credential.
-
-The model-policy property uses the dedicated executable and the same dummy-only loopback capture:
-
-```sh
-RAT_KING_CLAUDE_EXECUTABLE=/path/to/dedicated/claude \
-pnpm exec vitest run --config apps/claude-sidecar/vitest.config.ts apps/claude-sidecar/test/policy.test.ts
-```
-
-It generates message lists, checks joined text, Unicode whitespace and format-character prefixes with model aliases, and varies response models independently. The HTTP boundary strips leading whitespace and all Unicode category Cf characters before checking for a slash, both for each user message and the joined text. A dummy-gateway probe of checksum-verified Claude Code 2.1.285 sent both `\u200B/model x` and `\u2060/model x` as model text, rather than consuming them as local commands. Neither prefix is accepted by the sidecar.
-
-The default credential property generates modes, regular/symlink/directory/FIFO states, symlinked parents, writable parents and bearer lengths. Ownership is generated on descriptor metadata without requiring privileged chown. Each run also reads an owned 400 or 600 file successfully. Command-form HTTP requests must return 400 without launching the client. Allowed requests must name exactly Opus; forbidden replies must fail. A direct driver probe also qualifies the inline CLI model restriction. This property skips when no executable is configured; the URL property runs by default. Neither probe contacts a model provider.
+The celld real-model suite, dedicated-client policy probe and dummy SDK helper capture probe were retired. No current runner reproduces those qualifications. The earlier results remain recorded in [Local proof receipt](#local-proof-receipt); they are not current live qualification.
 
 ## Linux deployment code, not live-qualified
 
