@@ -10,6 +10,15 @@ cut = config["cut"]
 def emit(value):
     print(json.dumps(value), flush=True)
 
+if config.get("onlyQuarantine", False):
+    if not os.path.isdir(config["quarantine"]):
+        raise RuntimeError("Missing quarantine directory")
+    for root, directories, files in os.walk(config["quarantine"]):
+        for name in files:
+            if os.stat(os.path.join(root, name)).st_mtime > cut:
+                emit({"kind": "quarantine"})
+    sys.exit(0)
+
 for path in sorted(glob.glob(config["sessions"] + "/*/*.jsonl")):
     if os.stat(path).st_mtime < cut:
         continue

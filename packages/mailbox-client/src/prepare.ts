@@ -407,6 +407,7 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
       .pipe(Effect.map(({ throughSeq }) => throughSeq)),
     open: mailbox.open,
     refresh,
+    resolveLease: mailbox.lease.resolve,
     seal,
     send,
   };

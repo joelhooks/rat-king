@@ -131,7 +131,7 @@ export const prepareShipNotification = Effect.fn("Ship.prepareNotification")(
       encodePayload({ body: text, from: ship.notify.from, kind: "message" })
     );
 
-    return { body, client, targets };
+    return { body, client, senderDid: identity.did, targets };
   }
 );
 

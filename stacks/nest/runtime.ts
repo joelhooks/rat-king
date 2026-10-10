@@ -26,6 +26,7 @@ import { listenerProbe } from "../../packages/alchemy-nest/src/probes.ts";
 import { stopUnits } from "../../packages/alchemy-nest/src/startup-contract.ts";
 import { deleteDeclaredUnit } from "../../packages/alchemy-nest/src/systemd.ts";
 import { removeStoreSockets } from "../../packages/alchemy-nest/src/unit-cleanup.ts";
+import { DeployMarker } from "./alarm-sources.ts";
 import { stageName, workerIPv4, workerUrl } from "./config.ts";
 import { assess, collectHealth, DigestJson } from "./health.ts";
 import { isDeferredAdoption, qualifyRecoveryPlan } from "./recovery-plan.ts";
@@ -35,7 +36,7 @@ import { sendShipNotification } from "./ship-notify.ts";
 import { appendRestartEvent, guardRestartPlan } from "./ship-restart.ts";
 import { stageShipUnits } from "./ship-unit-stage.ts";
 import { connection, nestStack, nest } from "./stack.ts";
-import { StageConfig } from "./stage-config.ts";
+import { StageConfig, FleetError } from "./stage-config.ts";
 
 export const claudeMtimeScript = String.raw`
 import glob, json, os, sys
@@ -520,7 +521,29 @@ export const run = (action: Action) =>
     )
   );
 
-export const healthDigest = (previous: string | undefined) =>
+export const readAlarmDeployMarker = Effect.fn("Alarm.readDeployMarker")(
+  function* readAlarmDeployMarker(path: string) {
+    const bytes = yield* (yield* HostShell).read(path);
+
+    if (bytes === undefined) {
+      return null;
+    }
+
+    return yield* Schema.decodeEffect(Schema.fromJsonString(DeployMarker))(
+      new TextDecoder().decode(bytes)
+    );
+  },
+  (effect) =>
+    effect.pipe(
+      Effect.provide(connection.pipe(Layer.provide(NodeServices.layer))),
+      Effect.timeout("10 seconds"),
+      Effect.mapError(
+        () => new FleetError({ reason: "Live deployment marker unavailable" })
+      )
+    )
+);
+
+export const healthDigest = (previous?: string) =>
   Effect.gen(function* collectNestHealth() {
     const stage = yield* stageName;
 
