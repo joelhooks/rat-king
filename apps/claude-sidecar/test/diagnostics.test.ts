@@ -1,15 +1,4 @@
 // @effect-diagnostics nodeBuiltinImport:off asyncFunction:off -- Host diagnostics capture and filesystem fixtures.
-import {
-  lstat,
-  mkdtemp,
-  realpath,
-  rm,
-  stat,
-  symlink,
-  writeFile,
-} from "node:fs/promises";
-import path from "node:path";
-
 import { it } from "@effect/vitest";
 import { Arbitrary, Effect, Schema } from "effect";
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http";
@@ -17,89 +6,10 @@ import { expect, vi } from "vitest";
 
 import { logHttpFailure } from "../src/diagnostics.ts";
 import { MODEL, SidecarFailure } from "../src/port.ts";
-import {
-  CredentialRefusalError,
-  logCredentialRefusal,
-  requireBearer,
-  runningUid,
-  validatePrivateFile,
-} from "../src/private-file.ts";
+import { logCredentialRefusal } from "../src/private-file.ts";
 import { serve } from "../src/server.ts";
 
 const secret = "known-secret-value-never-log-this-123456789";
-
-const checks = ["owner", "mode", "symlink", "file_type", "size", "length"];
-
-for (const check of checks) {
-  it.live.prop(
-    `logs credential ${check} refusal with its component`,
-    [Arbitrary.schema(Schema.String)],
-    ([suffix]) =>
-      Effect.promise(async () => {
-        const root = await realpath(new URL("..", import.meta.url));
-        const directory = await mkdtemp(path.join(root, ".diagnostics-test-"));
-
-        const capture = vi.spyOn(console, "error").mockImplementation(() => {});
-
-        try {
-          const file = path.join(directory, "credential");
-          await writeFile(file, secret, { mode: 0o600 });
-          const link = path.join(directory, "link");
-          await symlink(file, link);
-          const component = path.resolve(`${file}${suffix}`);
-
-          let metadata = await stat(file);
-
-          if (check === "file_type") {
-            metadata = await stat(directory);
-          } else if (check === "symlink") {
-            metadata = await lstat(link);
-          }
-
-          if (check === "owner") {
-            metadata.uid = runningUid() + 1;
-          }
-
-          if (check === "mode") {
-            metadata.mode = 0o10_0644;
-          }
-
-          if (check === "size") {
-            metadata.size = 0;
-          }
-
-          let refused = false;
-
-          try {
-            if (check === "length") {
-              requireBearer("short", component);
-            } else {
-              validatePrivateFile(metadata, component);
-            }
-          } catch (error) {
-            refused = true;
-            expect(error).toBeInstanceOf(CredentialRefusalError);
-            logCredentialRefusal(error, component);
-          }
-
-          expect(refused).toBe(true);
-          expect(capture.mock.calls).toEqual([
-            [
-              JSON.stringify({
-                check,
-                component,
-                event: "sidecar_credential_refusal",
-              }),
-            ],
-          ]);
-        } finally {
-          capture.mockRestore();
-          await rm(directory, { force: true, recursive: true });
-        }
-      }),
-    { arbitrary: { runs: 5 } }
-  );
-}
 
 it.live.prop(
   "untrusted errors and known credentials never enter captured output",

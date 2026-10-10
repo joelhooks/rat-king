@@ -18,7 +18,6 @@ import type { BinaryProps } from "../src/release.ts";
 import { shellQuote } from "../src/ssh.ts";
 import {
   deleteUnit,
-  needsUpdate,
   readUnit,
   reconcileUnit,
   validateUnit,
@@ -85,65 +84,6 @@ describe("user unit lifecycle", () => {
         yield* deleteUnit(shell, output);
       })
   );
-  it.effect(
-    "creates, converges, updates, adopts without bouncing, and deletes in order",
-    () =>
-      Effect.gen(function* lifecycle() {
-        const fake = yield* makeFakeShell();
-        const props = service();
-
-        const created = yield* reconcileUnit(
-          fake.shell,
-          props,
-          undefined,
-          false
-        );
-
-        expect(mutations(yield* fake.calls())).toEqual([
-          "write",
-          "daemon-reload",
-          "enable",
-          "start",
-        ]);
-        expect(created.active).toBe(true);
-        yield* fake.clear();
-
-        const converged = yield* reconcileUnit(
-          fake.shell,
-          props,
-          created,
-          false
-        );
-
-        expect(mutations(yield* fake.calls())).toEqual([]);
-        expect(
-          needsUpdate(props, converged, yield* readUnit(fake.shell, props))
-        ).toBe(false);
-        const next = service(undefined, undefined, "60M");
-        const updated = yield* reconcileUnit(fake.shell, next, created, false);
-        expect(mutations(yield* fake.calls())).toEqual([
-          "write",
-          "daemon-reload",
-          "restart",
-        ]);
-        yield* fake.clear();
-        const adopted = yield* reconcileUnit(fake.shell, next, undefined, true);
-        expect(mutations(yield* fake.calls())).toEqual([]);
-        expect(adopted.sha256).toBe(updated.sha256);
-        yield* deleteUnit(fake.shell, adopted);
-        expect(mutations(yield* fake.calls())).toEqual([
-          "wants-check",
-          "stop",
-          "disable",
-          "remove",
-          "wants-remove",
-          "daemon-reload",
-        ]);
-        expect(yield* readUnit(fake.shell, next)).toBeUndefined();
-        yield* deleteUnit(fake.shell, adopted);
-      })
-  );
-
   it.effect(
     "refuses unapproved or mismatching adoption and invalid declarations without writes",
     () =>

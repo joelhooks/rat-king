@@ -1,6 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Test-owned daemon, PATH discovery and temporary encrypted store.
 /* oxlint-disable typescript/promise-function-async, promise/prefer-await-to-callbacks -- Lazy Node process/filesystem adapters. */
 import { spawn } from "node:child_process";
+import type { ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -8,10 +9,28 @@ import path from "node:path";
 
 import { Effect, Layer } from "effect";
 
-import { stop } from "../../../../packages/agent-runtime/test/celld-process.ts";
 import { CliError } from "../identity.ts";
 import { SecretStore, secretCommand, secretStoreLayer } from "../secrets.ts";
-import { io } from "./helpers.ts";
+
+const io = <A>(run: () => Promise<A>) =>
+  Effect.tryPromise({
+    catch: () => new CliError({ reason: "Secret-store test I/O failed" }),
+    try: run,
+  });
+
+const stop = (child: ChildProcess, signal: NodeJS.Signals) =>
+  Effect.callback<boolean>((resume) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resume(Effect.succeed(true));
+
+      return;
+    }
+
+    child.once("exit", () => {
+      resume(Effect.succeed(true));
+    });
+    child.kill(signal);
+  });
 
 export const secretsBinaryAbsentFromPath = !(process.env.PATH ?? "")
   .split(path.delimiter)
