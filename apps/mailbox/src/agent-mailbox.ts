@@ -207,14 +207,35 @@ export const agentMailbox = (env: Bindings, did: string, signing: CryptoKey) =>
       }),
       inject: Effect.fn("AgentMailbox.inject")(function* inject(message) {
         yield* renew();
-        yield* rpc("inject", () =>
+
+        const receipt = yield* rpc("inject", () =>
           stub.inject(
             message.senderDid,
             message.messageId,
             lease.leaseId,
             lease.generation
           )
+        ).pipe(
+          Effect.flatMap(
+            Schema.decodeEffect(Schema.fromJsonString(Defs.Receipt))
+          ),
+          Effect.mapError(
+            () =>
+              new HarnessFailure({
+                operation: "inject",
+                reason: "Local mailbox RPC failed",
+              })
+          )
         );
+
+        if (receipt.state === "expired") {
+          return yield* new HarnessFailure({
+            operation: "inject",
+            reason: "Expired message",
+          });
+        }
+
+        return yield* Effect.void;
       }),
       pending: Effect.fn("AgentMailbox.pending")(
         function* pending() {
