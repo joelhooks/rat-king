@@ -180,7 +180,7 @@ export const guardedShell = Effect.fn("Ship.guardedShell")(
           yield* appendEvent(target, {
             durationSeconds: observed.durationSeconds,
             phase: "completed",
-            restarted: true,
+            restarted: observed.code === 0 ? true : null,
           });
 
           return { code: observed.code, stdout: "" };
