@@ -10,7 +10,7 @@ import {
   Schema,
 } from "effect";
 
-import { Did, Reserved } from "./name.ts";
+import { AgentName, Did, Reserved } from "./name.ts";
 import type { ReservedValue } from "./name.ts";
 
 export const ToolName = Schema.String.check(
@@ -30,6 +30,7 @@ export const PiConfig = Schema.Struct({
   issuer: Schema.optionalKey(
     Schema.Struct({ command: Schema.NonEmptyArray(Schema.String) })
   ),
+  refuse: Schema.optionalKey(Schema.Array(AgentName)),
   reserved: Schema.optionalKey(Reserved),
   secretsCommand: Schema.optionalKey(Schema.String),
   serviceDid: Did,
@@ -46,6 +47,7 @@ export interface SettingsValue {
   readonly documents: readonly string[];
   readonly endpoint: string;
   readonly issuer: Option.Option<readonly string[]>;
+  readonly refuse: readonly string[];
   readonly reserved: ReservedValue;
   readonly secretsCommand: string;
   readonly serviceDid: string;
@@ -119,6 +121,7 @@ export const loadSettings = Effect.fn("RatKing.loadSettings")(
       documents: config.documents ?? [],
       endpoint: config.endpoint,
       issuer: Option.fromNullishOr(config.issuer?.command),
+      refuse: config.refuse ?? [],
       reserved: config.reserved ?? {},
       secretsCommand: config.secretsCommand ?? "secrets",
       serviceDid: config.serviceDid,

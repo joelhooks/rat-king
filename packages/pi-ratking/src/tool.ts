@@ -88,12 +88,25 @@ export const statusText = (tool: string, status: Status) => {
     Live: ({ expiresAt, generation }) =>
       `live, lease generation ${generation} until ${expiresAt}`,
     Minting: ({ name }) => `minting ${name}`,
+    Refused: ({ reason }) => `REFUSED: ${reason}`,
     Retrying: ({ attempt, reason }) =>
       `retrying (attempt ${attempt}): ${reason}`,
     Starting: () => "starting",
   });
 
-  return `Rat King (${tool}): ${self} · reader ${reader} · mailbox ${status.endpoint}`;
+  const quarantine =
+    status.quarantine.count === 0
+      ? ""
+      : ` · quarantined ${status.quarantine.count}${Option.match(
+          status.quarantine.latest,
+          {
+            onNone: () => "",
+            onSome: (latest) =>
+              ` (latest seq ${latest.seq} from ${latest.senderDid}: ${latest.reason})`,
+          }
+        )}`;
+
+  return `Rat King (${tool}): ${self} · reader ${reader}${quarantine} · mailbox ${status.endpoint}`;
 };
 
 const withAttachments = (params: ToolParamsValue) =>
@@ -141,7 +154,13 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
 
   return yield* Match.value(params.action).pipe(
     Match.when("status", () =>
-      ratking.status.pipe(Effect.map((status) => ok(statusText(tool, status))))
+      ratking.status.pipe(
+        Effect.map((status) =>
+          ReaderState.$is("Refused")(status.reader)
+            ? loud(statusText(tool, status))
+            : ok(statusText(tool, status))
+        )
+      )
     ),
     Match.whenOr("list", "list-cwd", () =>
       Effect.gen(function* list() {

@@ -1,7 +1,16 @@
 /* oxlint-disable promise/prefer-await-to-then, promise/prefer-await-to-callbacks -- Effect.catch is typed failure handling, not a Promise callback. */
 import * as Defs from "@rat-king/lexicon/defs";
 import type * as Lease from "@rat-king/lexicon/runtime.lease";
-import { Clock, DateTime, Effect, Schedule, Schema, Stream } from "effect";
+import {
+  Clock,
+  DateTime,
+  Effect,
+  Match,
+  Option,
+  Schedule,
+  Schema,
+  Stream,
+} from "effect";
 import { createMachine, initialTransition, transition } from "xstate";
 
 import { MailboxClientError } from "./error.ts";
@@ -36,11 +45,24 @@ export interface MessageMeta {
 const expiredRefusal = (error: MailboxClientError) =>
   error.error === "InvalidTransition" && error.reason === "Expired message";
 
+const settledRefusal = (error: MailboxClientError) =>
+  error.error === "InvalidTransition";
+
+export interface Skipped {
+  readonly seq: number;
+  readonly reason: "expired" | "settled" | "unopenable";
+}
+
 export interface ConsumeOptions {
   readonly harness: Lease.MainValue["harness"];
   readonly resume?: LeaseFence;
   readonly afterSeq?: number;
   readonly onLease?: (lease: Lease.MainValue) => Effect.Effect<void>;
+  readonly unopenable?: (
+    event: Defs.MessageEventValue,
+    error: MailboxClientError
+  ) => Effect.Effect<Option.Option<OpenedMessage>>;
+  readonly onSkip?: (skipped: Skipped) => Effect.Effect<void>;
 }
 
 export const consume = <E, R>(
@@ -225,23 +247,61 @@ export const consume = <E, R>(
                   return;
                 }
 
-                const message = yield* mailbox.open(event.envelope);
-                const input = { ...fence(), message: event.receipt.message };
+                const { onSkip, unopenable } = options;
 
-                const live = yield* mailbox.deliver(input).pipe(
-                  Effect.map(
-                    ({ receipt }) =>
-                      receipt.state !== "expired" && receipt.state !== "acked"
-                  ),
-                  Effect.catchIf(expiredRefusal, () => Effect.succeed(false))
+                const skip = (reason: Skipped["reason"]) =>
+                  onSkip === undefined
+                    ? Effect.void
+                    : onSkip({ reason, seq: event.seq });
+
+                const opened = yield* mailbox.open(event.envelope).pipe(
+                  Effect.map(Option.some),
+                  Effect.catch((error) =>
+                    unopenable === undefined
+                      ? Effect.fail(error)
+                      : unopenable(event, error)
+                  )
                 );
 
-                if (!live) {
+                if (Option.isNone(opened)) {
+                  yield* skip("unopenable");
+
+                  return;
+                }
+
+                const message = opened.value;
+                const input = { ...fence(), message: event.receipt.message };
+
+                const delivered = yield* mailbox.deliver(input).pipe(
+                  Effect.map(({ receipt }) =>
+                    Match.value(receipt.state).pipe(
+                      Match.when("expired", () =>
+                        Option.some("expired" as const)
+                      ),
+                      Match.when("acked", () =>
+                        Option.some("settled" as const)
+                      ),
+                      Match.orElse(() => Option.none())
+                    )
+                  ),
+                  Effect.catchIf(expiredRefusal, () =>
+                    Effect.succeed(Option.some("expired" as const))
+                  ),
+                  Effect.catchIf(settledRefusal, () =>
+                    Effect.succeed(Option.some("settled" as const))
+                  )
+                );
+
+                if (Option.isSome(delivered)) {
+                  yield* skip(delivered.value);
+
                   return;
                 }
 
                 yield* handler(message, { seq: event.seq });
-                yield* mailbox.ack(input);
+                yield* mailbox
+                  .ack(input)
+                  .pipe(Effect.catchIf(settledRefusal, () => Effect.void));
               }),
             { discard: true }
           )
