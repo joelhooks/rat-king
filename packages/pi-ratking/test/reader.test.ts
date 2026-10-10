@@ -10,6 +10,7 @@ import {
   FileSystem,
   Option,
   Path,
+  Predicate,
   Schedule,
   Schema,
 } from "effect";
@@ -101,6 +102,84 @@ it.live.prop(
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 4 }, timeout: 60_000 }
+);
+
+it.live(
+  "a reader that loses its connection re-acquires with its last lease as resume, so a mailbox restart costs no lease expiry wait",
+  () =>
+    Effect.gen(function* resumeProof() {
+      const fs = yield* FileSystem.FileSystem;
+      const state = yield* fs.makeTempDirectoryScoped();
+      const acquires: unknown[] = [];
+      let lists = 0;
+
+      const http = HttpClient.make((request) =>
+        Effect.sync(() => {
+          const nsid = new URL(request.url).pathname.replace("/xrpc/", "");
+
+          lists += nsid === "sh.mschf.ratking.mailbox.list" ? 1 : 0;
+
+          if (nsid !== "sh.mschf.ratking.runtime.acquireLease") {
+            return HttpClientResponse.fromWeb(
+              request,
+              lists === 1
+                ? Response.json({ events: [], throughSeq: 0 })
+                : Response.json(
+                    { error: "MailboxUnavailable" },
+                    { status: 503 }
+                  )
+            );
+          }
+
+          const input: unknown = Predicate.isTagged(request.body, "Uint8Array")
+            ? JSON.parse(new TextDecoder().decode(request.body.body))
+            : {};
+
+          acquires.push(input);
+
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({
+              lease: {
+                did: Predicate.hasProperty(input, "did") ? input.did : "",
+                expiresAt: "2026-01-01T00:00:00.000Z",
+                generation: acquires.length,
+                harness: Predicate.hasProperty(input, "harness")
+                  ? input.harness
+                  : {},
+                issuedAt: "2026-01-01T00:00:00.000Z",
+                leaseId: `3mxjs56afmy5${"abcdefg".charAt(acquires.length)}`,
+              },
+            })
+          );
+        })
+      );
+
+      yield* Effect.gen(function* proof() {
+        const ratking = yield* RatKing;
+
+        yield* ratking.run(facts, () => Effect.void);
+
+        yield* Effect.retry(
+          Effect.suspend(() =>
+            acquires.length >= 2
+              ? Effect.void
+              : Effect.fail(
+                  `reader has not re-acquired: ${JSON.stringify(acquires)}`
+                )
+          ),
+          Schedule.spaced("100 millis").pipe(
+            Schedule.while(({ attempt }) => attempt < 400)
+          )
+        );
+      }).pipe(Effect.provide(harness(state, http)));
+
+      expect(acquires[1]).toMatchObject({
+        generation: 1,
+        leaseId: "3mxjs56afmy5b",
+      });
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  60_000
 );
 
 it.live.prop(

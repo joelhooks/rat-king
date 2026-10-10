@@ -2,6 +2,7 @@
 import * as Defs from "@rat-king/lexicon/defs";
 import { ownIdentity, prepare, SendOutcomes } from "@rat-king/mailbox-client";
 import type {
+  ConsumeOptions,
   IdentityValue,
   LeaseFence,
   MessageMeta,
@@ -183,6 +184,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
   const self = yield* Deferred.make<Self, NotDelivered>();
   const established = yield* Ref.make(Option.none<Self>());
   const fence = yield* Ref.make(Option.none<LeaseFence>());
+  const lastLease = yield* Ref.make(Option.none<LeaseFence>());
   const seen = new Set<string>();
 
   const services = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
@@ -325,7 +327,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         yield* writeCursor(own.name, afterSeq);
       }
 
-      yield* client.consume(intake(own, deliver), {
+      const options: ConsumeOptions = {
         afterSeq,
         harness: {
           $type: "sh.mschf.ratking.runtime.lease#pi",
@@ -336,6 +338,14 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             Ref.set(attempts, 0),
             Ref.set(
               fence,
+              Option.some({
+                did: own.did,
+                generation: lease.generation,
+                leaseId: lease.leaseId,
+              })
+            ),
+            Ref.set(
+              lastLease,
               Option.some({
                 did: own.did,
                 generation: lease.generation,
@@ -358,7 +368,15 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             Effect.provideService(FileSystem.FileSystem, fs),
             Effect.provideService(Path.Path, path)
           ),
-      });
+      };
+
+      yield* client.consume(
+        intake(own, deliver),
+        Option.match(yield* Ref.get(lastLease), {
+          onNone: () => options,
+          onSome: (resume) => ({ ...options, resume }),
+        })
+      );
     }).pipe(
       Effect.ensuring(Ref.set(fence, Option.none())),
       Effect.scoped,
