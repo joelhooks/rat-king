@@ -1,5 +1,6 @@
 import { Config, ConfigProvider, Effect, FileSystem, Schema } from "effect";
 
+import { AlarmSettings } from "./alarm-config.ts";
 import { ShipAttempt, ShipSettings } from "./ship-config.ts";
 
 const Text = Schema.NonEmptyString;
@@ -59,6 +60,7 @@ const DoctorHost = Schema.Struct({
 });
 
 export const StageConfig = Schema.Struct({
+  alarm: Schema.optionalKey(AlarmSettings),
   comms: Schema.Struct({
     local: Paths,
     remote: Schema.Struct({ ...Paths.fields, ssh: Text }),

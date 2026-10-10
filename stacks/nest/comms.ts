@@ -195,7 +195,8 @@ export const collectComms = Effect.fn("Nest.collectComms")(
     paths:
       | StageConfigValue["comms"]["local"]
       | StageConfigValue["comms"]["remote"],
-    cut: number
+    cut: number,
+    onlyQuarantine?: boolean
   ) {
     const fs = yield* FileSystem.FileSystem;
 
@@ -203,7 +204,7 @@ export const collectComms = Effect.fn("Nest.collectComms")(
       new URL("comms-collector.py", import.meta.url).pathname
     );
 
-    const source = `import json\nconfig = ${JSON.stringify(JSON.stringify({ ...paths, cut: cut / 1000 }))}\nimport io, sys\nsys.stdin = io.StringIO(config)\n${script}`;
+    const source = `import json\nconfig = ${JSON.stringify(JSON.stringify({ ...paths, cut: cut / 1000, onlyQuarantine: onlyQuarantine === true }))}\nimport io, sys\nsys.stdin = io.StringIO(config)\n${script}`;
     const remote = "ssh" in paths;
     const command = remote ? "ssh" : "python3";
 

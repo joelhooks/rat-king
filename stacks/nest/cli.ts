@@ -13,6 +13,12 @@ import {
 } from "effect";
 
 import { refuse } from "../../packages/alchemy-nest/src/files.ts";
+import {
+  alarmCommand,
+  alarmWorker,
+  alarmPlist,
+  alarmCheck,
+} from "./alarm-command.ts";
 import { doneBar } from "./comms.ts";
 import { configDoctor } from "./config-doctor.ts";
 import { commsCounts, digest } from "./digest.ts";
@@ -35,6 +41,10 @@ const program = Effect.gen(function* launcher() {
       "health",
       "ship",
       "ship-plist",
+      "alarm",
+      "alarm-plist",
+      "alarm-check",
+      "alarm-worker",
       "digest",
       "doctor",
       "done-bar",
@@ -111,6 +121,12 @@ const program = Effect.gen(function* launcher() {
       })
     ),
     Match.when("ship", () => shipCommand(config)),
+    Match.when("alarm", () => alarmCommand(config, resolvedConfigPath)),
+    Match.when("alarm-plist", () =>
+      config.alarm === undefined
+        ? refuse("Alarm configuration required")
+        : Console.log(alarmPlist(config, resolvedConfigPath))
+    ),
     Match.when("ship-plist", () =>
       Effect.gen(function* printShipPlist() {
         if (config.ship === undefined) {
@@ -151,6 +167,26 @@ const program = Effect.gen(function* launcher() {
           catch: () => refuse("Nest runtime import failed"),
           try: async () => await import("./runtime.ts"),
         });
+
+        if (operation === "alarm-worker" || operation === "alarm-check") {
+          if (config.ship === undefined) {
+            return yield* refuse("Ship configuration required");
+          }
+
+          const marker = runtime.readAlarmDeployMarker(
+            config.ship.restart.marker
+          );
+
+          if (operation === "alarm-worker") {
+            return yield* alarmWorker(config, runtime.healthDigest(), marker);
+          }
+
+          return yield* Console.log(
+            JSON.stringify(
+              yield* alarmCheck(config, runtime.healthDigest(), marker)
+            )
+          );
+        }
 
         if (operation === "digest") {
           return yield* Console.log(
