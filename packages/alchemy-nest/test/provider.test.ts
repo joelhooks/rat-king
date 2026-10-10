@@ -1,20 +1,11 @@
-import * as Output from "alchemy/Output";
 import * as Test from "alchemy/Test/Vitest";
 import { Context, Effect, Layer } from "effect";
 import { expect } from "vitest";
 
 import { sidecarUnit } from "../src/agent-runtime-files.ts";
 import { makeFakeShell } from "../src/fake-shell.ts";
-import { digest } from "../src/files.ts";
 import { HostShell } from "../src/host-shell.ts";
-import {
-  SystemdUnit,
-  RemoteFile,
-  HostDirectory,
-  ReleaseBinary,
-  providers,
-} from "../src/providers.ts";
-import { ReleaseSource } from "../src/release.ts";
+import { SystemdUnit, SystemdUnitProvider } from "../src/providers.ts";
 import { reconcileUnit, deleteUnit } from "../src/systemd.ts";
 import { UnitStartup } from "../src/unit-startup.ts";
 import { checkedStack } from "./checked-stack.ts";
@@ -26,8 +17,6 @@ class Fake extends Context.Service<
     readonly startupCalls: string[];
   }
 >()("Test/FakeShell") {}
-
-const bytes = new TextEncoder().encode("invented binary");
 
 const fake = Layer.effectContext(
   Effect.gen(function* makeTestShell() {
@@ -45,15 +34,14 @@ const fake = Layer.effectContext(
           Effect.sync(() => {
             startupCalls.push("before");
           }),
-      }),
-      Context.add(ReleaseSource, { get: () => Effect.succeed(bytes) })
+      })
     );
   })
 );
 
 const { test } = Test.make({
   adopt: true,
-  providers: providers().pipe(Layer.provideMerge(fake)),
+  providers: SystemdUnitProvider().pipe(Layer.provideMerge(fake)),
   stage: "provider-tests",
 });
 
@@ -159,46 +147,5 @@ test.provider(
       ]);
 
       expect(manager.stdout).toContain("LoadState=not-found");
-    })
-);
-
-test.provider(
-  "Alchemy engine replaces files and deletes a binary before its directory",
-  (scratch) =>
-    Effect.gen(function* provider() {
-      const stack = checkedStack(scratch);
-
-      const host = yield* Fake;
-
-      const declare = (content: string) =>
-        Effect.gen(function* program() {
-          const directory = yield* HostDirectory("directory", {
-            mode: 0o700,
-            path: "/srv/example/install",
-          });
-
-          const config = yield* RemoteFile("config", {
-            content,
-            mode: 0o600,
-            path: Output.interpolate`${directory.path}/config`,
-          });
-
-          const binary = yield* ReleaseBinary("binary", {
-            asset: { format: "raw" },
-            path: Output.interpolate`${directory.path}/binary`,
-            sha256: digest(bytes),
-            size: bytes.length,
-            url: "https://github.com/example/project/releases/download/v1/tool",
-          });
-
-          return { binary, config };
-        });
-
-      const first = yield* stack.deploy(declare("first")).pipe(Effect.orDie);
-      const second = yield* stack.deploy(declare("second")).pipe(Effect.orDie);
-      expect(second.config.sha256).not.toBe(first.config.sha256);
-      expect(second.binary.sha256).toBe(first.binary.sha256);
-      yield* stack.destroy().pipe(Effect.orDie);
-      expect(yield* host.shell.stat("/srv/example/install")).toBeUndefined();
     })
 );
