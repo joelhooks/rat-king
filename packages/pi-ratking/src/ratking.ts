@@ -258,7 +258,11 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             onSome: (value) => canonicalName(settings.reserved, value.from),
           });
 
-          const verified = Option.exists(known, (name) => name === claimed);
+          const verified =
+            Option.exists(known, (name) => name === claimed) ||
+            (Schema.is(AgentName)(claimed) &&
+              didFor(settings.didTemplate, settings.reserved, claimed) ===
+                message.senderDid);
 
           const inbound: Inbound = {
             body: Option.match(payload, {

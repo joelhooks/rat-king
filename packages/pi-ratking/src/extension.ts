@@ -382,6 +382,22 @@ export const ratkingExtension = (options: ExtensionOptions) =>
 
       if (Option.isSome(request)) {
         void forward(request.value);
+
+        return;
+      }
+
+      const loose = Schema.decodeUnknownOption(
+        Schema.Struct({ requestId: Schema.String })
+      )(data);
+
+      if (Option.isSome(loose)) {
+        pi.events.emit(SEND_RESULT_EVENT, {
+          code: "NotAttempted" as const,
+          reason:
+            "InvalidRequest: ratking/send needs body, requestId, and optional to, replyTo and kind message or ask",
+          requestId: loose.value.requestId,
+          status: "not-delivered" as const,
+        });
       }
     });
 
