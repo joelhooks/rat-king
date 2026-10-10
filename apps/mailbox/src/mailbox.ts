@@ -92,7 +92,10 @@ export const deliverMessage = (
 ) => {
   let message = findMessage(tx, sender, messageId);
 
-  if (message.current.state === "expired") {
+  if (
+    message.current.state === "expired" ||
+    message.current.state === "acked"
+  ) {
     return message.current;
   }
 

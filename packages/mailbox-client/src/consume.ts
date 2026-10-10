@@ -5,6 +5,7 @@ import {
   Clock,
   DateTime,
   Effect,
+  Match,
   Option,
   Schedule,
   Schema,
@@ -273,9 +274,15 @@ export const consume = <E, R>(
 
                 const delivered = yield* mailbox.deliver(input).pipe(
                   Effect.map(({ receipt }) =>
-                    receipt.state === "expired"
-                      ? Option.some("expired" as const)
-                      : Option.none()
+                    Match.value(receipt.state).pipe(
+                      Match.when("expired", () =>
+                        Option.some("expired" as const)
+                      ),
+                      Match.when("acked", () =>
+                        Option.some("settled" as const)
+                      ),
+                      Match.orElse(() => Option.none())
+                    )
                   ),
                   Effect.catchIf(expiredRefusal, () =>
                     Effect.succeed(Option.some("expired" as const))
