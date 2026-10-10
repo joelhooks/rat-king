@@ -94,8 +94,10 @@ export const shipCycle = Effect.fn("Ship.cycle")(function* shipCycle<R>(
   yield* ports
     .notify(receipt)
     .pipe(
-      Effect.catch(() =>
-        Console.error("SHIP_NOTIFICATION_FAILED; deploy receipt preserved")
+      Effect.catch((error) =>
+        Console.error(
+          `SHIP_NOTIFICATION_FAILED sha=${sha.slice(0, 12)}: ${error.reason}; deploy receipt preserved`
+        )
       )
     );
 
