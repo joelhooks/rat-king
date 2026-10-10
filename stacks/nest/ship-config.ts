@@ -79,6 +79,7 @@ export const ShipReceipt = Schema.Struct({
   retryAt: Schema.optionalKey(Schema.Number),
   sha: Sha,
   start: Schema.Number,
+  stderrTail: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(2048))),
 });
 
 export const ShipCheckpoint = Schema.Struct({
