@@ -135,14 +135,37 @@ export const prepareShipNotification = Effect.fn("Ship.prepareNotification")(
   }
 );
 
+export const shipRecipients = (
+  notify: {
+    readonly to: readonly string[];
+    readonly quiet?: readonly string[];
+  },
+  routine: boolean
+): readonly string[] =>
+  notify.to.filter((name) => !(routine && (notify.quiet ?? []).includes(name)));
+
 export const sendShipNotification = Effect.fn("Ship.notify")(
-  function* sendShipNotification(config: StageConfigValue, text: string) {
+  function* sendShipNotification(
+    config: StageConfigValue,
+    text: string,
+    routine: boolean
+  ) {
     const { body, client, targets } = yield* prepareShipNotification(
       config,
       text
     );
 
-    for (const target of targets) {
+    const wanted = new Set(
+      config.ship === undefined
+        ? []
+        : shipRecipients(config.ship.notify, routine)
+    );
+
+    const recipients = targets.filter((_target, index) =>
+      wanted.has(config.ship?.notify.to[index] ?? "")
+    );
+
+    for (const target of recipients) {
       const envelope = yield* step(
         `seal ${target.name}`,
         client.seal(target.did, body, { encrypt: false })

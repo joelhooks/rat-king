@@ -397,7 +397,9 @@ export const shipCommand = Effect.fn("Ship.command")(
       notify: (receipt) =>
         sendShipNotification(
           config,
-          `ship ${receipt.sha.slice(0, 12)} ${receipt.result}; celld restart=${receipt.celldRestarted ?? "unknown"}; restart ${receipt.restartSeconds === null ? "unknown" : receipt.restartSeconds.toFixed(3)}s SR 🐀`
+          `ship ${receipt.sha.slice(0, 12)} ${receipt.result}; celld restart=${receipt.celldRestarted ?? "unknown"}; restart ${receipt.restartSeconds === null ? "unknown" : receipt.restartSeconds.toFixed(3)}s SR 🐀`,
+          receipt.result === "deferred" ||
+            (receipt.result === "success" && receipt.celldRestarted !== true)
         ).pipe(Effect.provideService(SecretStore, store)),
       record: (receipt) =>
         Schema.encodeEffect(Schema.fromJsonString(ShipReceipt))(receipt).pipe(

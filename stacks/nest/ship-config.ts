@@ -46,6 +46,7 @@ export const ShipSettings = Schema.Struct({
     config: Schema.optionalKey(Text),
     directory: Text,
     from: AgentName,
+    quiet: Schema.optionalKey(Schema.Array(AgentName)),
     secret: Text,
     to: Schema.NonEmptyArray(AgentName),
   }),

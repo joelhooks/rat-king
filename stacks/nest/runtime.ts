@@ -135,7 +135,7 @@ const beforeShipDeploy = Effect.fn("Ship.beforeDeploy")(
     }
 
     yield* announceRestart(attempt, (text) =>
-      sendShipNotification(config, text).pipe(
+      sendShipNotification(config, text, false).pipe(
         Effect.provide(secretStoreLayer({}))
       )
     ).pipe(

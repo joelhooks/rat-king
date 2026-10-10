@@ -1,8 +1,11 @@
 import { it } from "@effect/vitest";
-import { Schema } from "effect";
+import { Arbitrary, Schema } from "effect";
 import { expect } from "vitest";
 
-import { notificationDiagnostic } from "../../../stacks/nest/ship-notify.ts";
+import {
+  notificationDiagnostic,
+  shipRecipients,
+} from "../../../stacks/nest/ship-notify.ts";
 import { MailboxClientError } from "../../mailbox-client/src/index.ts";
 
 class InputFailure extends Schema.TaggedError<InputFailure>()("InputFailure", {
@@ -30,5 +33,23 @@ it.prop(
     const boundary = notificationDiagnostic(schemaFailure);
     expect(boundary).toContain("InputFailure");
     expect(boundary).not.toContain(credential);
+  }
+);
+
+const Names = Schema.Array(Schema.Literals(["desk", "owner", "switchboard"]));
+
+it.prop(
+  "a quiet recipient misses only routine ship notices; every recipient gets failures, restart notices and restart results",
+  [
+    Arbitrary.schema(Names),
+    Arbitrary.schema(Names),
+    Arbitrary.schema(Schema.Boolean),
+  ],
+  ([to, quiet, routine]) => {
+    const names = shipRecipients({ quiet, to }, routine);
+
+    expect(names).toEqual(
+      routine ? to.filter((name) => !quiet.includes(name)) : to
+    );
   }
 );
