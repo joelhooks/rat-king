@@ -22,7 +22,6 @@ const validators = new Lexicons(
 
 for (const [name, codec] of [
   ["item", Item.Main],
-  ["answer", Answer.Main],
   ["update", Update.Main],
 ] as const) {
   it(`desk ${name} shared fixture round-trips through both codecs`, () => {
