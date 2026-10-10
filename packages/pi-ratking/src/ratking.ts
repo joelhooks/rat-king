@@ -679,7 +679,18 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         });
       }
 
-      const sender = yield* directory.nameOf(record.value.did);
+      const claimed = Option.liftPredicate(
+        record.value.from,
+        (from) =>
+          Schema.is(AgentName)(from) &&
+          didFor(settings.didTemplate, settings.reserved, from) ===
+            record.value.did
+      );
+
+      const sender = Option.orElse(
+        yield* directory.nameOf(record.value.did),
+        () => claimed
+      );
 
       if (Option.isNone(sender)) {
         return yield* refused("UnknownName")(
