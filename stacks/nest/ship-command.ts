@@ -1,5 +1,5 @@
 import type { Path } from "effect";
-import { Effect, FileSystem, Schema, Stream } from "effect";
+import { Effect, FileSystem, Option, Schema, Stream } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
@@ -100,6 +100,32 @@ export const execute = Effect.fn("Ship.execute")(
         () => new FleetError({ reason: "Ship command failed; values redacted" })
       )
     )
+);
+
+const runnerHead = execute(
+  "git",
+  ["rev-parse", "HEAD"],
+  import.meta.dirname
+).pipe(
+  Effect.map((result) =>
+    result.code === 0
+      ? Option.some(result.output.trim())
+      : Option.none<string>()
+  ),
+  Effect.orElseSucceed(() => Option.none<string>())
+);
+
+export const runnerDrift = runnerHead.pipe(
+  Effect.map((started) =>
+    runnerHead.pipe(
+      Effect.map(
+        (now) =>
+          Option.isSome(started) &&
+          Option.isSome(now) &&
+          now.value !== started.value
+      )
+    )
+  )
 );
 
 const requireSuccess = Effect.fn("Ship.requireSuccess")(
@@ -415,7 +441,12 @@ export const shipCommand = Effect.fn("Ship.command")(
         ),
     };
 
-    return yield* shipLoop(ports, saved, ship.intervalSeconds);
+    return yield* shipLoop(
+      ports,
+      saved,
+      ship.intervalSeconds,
+      yield* runnerDrift
+    );
   },
   (effect) =>
     effect.pipe(

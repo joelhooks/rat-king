@@ -8,7 +8,7 @@ import { expect } from "vitest";
 import { initialTransition } from "xstate";
 
 import { shipMachine } from "../../../stacks/nest/ship-machine.ts";
-import { shipCycle } from "../../../stacks/nest/ship.ts";
+import { shipCycle, shipLoop } from "../../../stacks/nest/ship.ts";
 import type { ShipPorts, ShipSnapshot } from "../../../stacks/nest/ship.ts";
 
 const Cycle = Schema.Struct({
@@ -169,4 +169,48 @@ it.effect.prop(
           ),
       });
     })
+);
+
+it.live.prop(
+  "the ship loop runs until its own code changes and then exits, never before",
+  [Schema.Int.check(Schema.isBetween({ maximum: 5, minimum: 1 }))],
+  ([changesAt]) =>
+    Effect.gen(function* runnerDriftProof() {
+      let cycles = 0;
+      let fetches = 0;
+      const sha = "a".repeat(40);
+
+      const ports: ShipPorts = {
+        checkpoint: () => Effect.void,
+        ci: () => Effect.succeed(true),
+        deploy: () =>
+          Effect.succeed({
+            celldRestarted: false,
+            restartSeconds: 0,
+            result: "success",
+          }),
+        fetch: Effect.sync(() => {
+          fetches += 1;
+
+          return sha;
+        }),
+        notify: () => Effect.void,
+        record: () => Effect.void,
+      };
+
+      yield* shipLoop(
+        ports,
+        { failed: "", successful: sha },
+        0,
+        Effect.sync(() => {
+          cycles += 1;
+
+          return cycles >= changesAt;
+        })
+      );
+
+      expect(cycles).toBe(changesAt);
+      expect(fetches).toBe(changesAt);
+    }),
+  { timeout: 30_000 }
 );

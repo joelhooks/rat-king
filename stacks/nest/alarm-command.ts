@@ -13,7 +13,7 @@ import { observeAlarms } from "./alarm-sources.ts";
 import { AlarmJournal, alarmCycle, emptyJournal } from "./alarm.ts";
 import type { AlarmPorts, AlarmJournalValue } from "./alarm.ts";
 import type { HealthDigest } from "./health.ts";
-import { execute } from "./ship-command.ts";
+import { execute, runnerDrift } from "./ship-command.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
 
@@ -123,7 +123,17 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
       "Alarm operation unavailable; input values withheld"
     );
 
+    const drifted = yield* runnerDrift;
+
     for (;;) {
+      if (yield* drifted) {
+        return yield* Console.log(
+          JSON.stringify({
+            runner: "code changed; exiting for launchd restart",
+          })
+        );
+      }
+
       const started = yield* Clock.currentTimeMillis;
       yield* Effect.gen(function* cycle() {
         const prior = yield* readAlarmJournal(directory);

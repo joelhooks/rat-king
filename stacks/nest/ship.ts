@@ -120,7 +120,8 @@ export const shipLoop = <R>(
   ports: ShipPorts<R>,
   saved: Pick<ShipSnapshot["context"], "failed" | "successful"> &
     Partial<Pick<ShipSnapshot["context"], "deferred" | "retryAt">>,
-  intervalSeconds: number
+  intervalSeconds: number,
+  drifted: Effect.Effect<boolean, never, R>
 ) =>
   Effect.gen(function* runShipLoop() {
     const state = yield* Ref.make(initialTransition(shipMachine, saved)[0]);
@@ -130,5 +131,15 @@ export const shipLoop = <R>(
       yield* Console.log(
         JSON.stringify({ sha: next.context.sha, state: next.value })
       );
-    }).pipe(Effect.repeat(Schedule.spaced(`${intervalSeconds} seconds`)));
+
+      return yield* drifted;
+    }).pipe(
+      Effect.repeat({
+        schedule: Schedule.spaced(`${intervalSeconds} seconds`),
+        until: (stale) => stale,
+      })
+    );
+    yield* Console.log(
+      JSON.stringify({ runner: "code changed; exiting for launchd restart" })
+    );
   });
