@@ -29,6 +29,10 @@ export const consumerMachine = createMachine({
   },
 });
 
+export interface MessageMeta {
+  readonly seq: number;
+}
+
 export interface ConsumeOptions {
   readonly harness: Lease.MainValue["harness"];
   readonly resume?: LeaseFence;
@@ -39,7 +43,10 @@ export interface ConsumeOptions {
 export const consume = <E, R>(
   mailbox: typeof RatKingMailbox.Service,
   did: string,
-  handler: (message: OpenedMessage) => Effect.Effect<void, E, R>,
+  handler: (
+    message: OpenedMessage,
+    meta: MessageMeta
+  ) => Effect.Effect<void, E, R>,
   options: ConsumeOptions
 ): Effect.Effect<void, E | MailboxClientError, R> =>
   Effect.scoped(
@@ -218,7 +225,7 @@ export const consume = <E, R>(
                 const message = yield* mailbox.open(event.envelope);
                 const input = { ...fence(), message: event.receipt.message };
                 yield* mailbox.deliver(input);
-                yield* handler(message);
+                yield* handler(message, { seq: event.seq });
                 yield* mailbox.ack(input);
               }),
             { discard: true }

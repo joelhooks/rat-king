@@ -35,6 +35,10 @@ export default defineConfig({
         test: { name: "mailbox-client" },
       },
       {
+        extends: "packages/pi-ratking/vitest.config.ts",
+        test: { name: "pi-ratking" },
+      },
+      {
         extends: "packages/envelope/vitest.config.ts",
         test: { name: "envelope" },
       },
