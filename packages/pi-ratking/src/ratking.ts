@@ -37,6 +37,8 @@ import { Issuer } from "./issuer.ts";
 import { canonicalName, provisionLabel } from "./name.ts";
 import { decodePayload, encodePayload } from "./payload.ts";
 import type { Inbound, KindValue, PayloadValue } from "./payload.ts";
+import { quarantined, recover } from "./quarantine.ts";
+import type { Quarantined } from "./quarantine.ts";
 import { SecretStore } from "./secrets.ts";
 import { Threads, threadsLayer } from "./threads.ts";
 import type { Received, Reply } from "./threads.ts";
@@ -49,6 +51,7 @@ export const NotDeliveredCode = Schema.Literals([
   "NotAttempted",
   "Rejected",
   "Uncertain",
+  "Refused",
 ]);
 
 export class NotDelivered extends Schema.TaggedError<NotDelivered>()(
@@ -76,6 +79,7 @@ export type ReaderState = Data.TaggedEnum<{
     readonly attempt: number;
     readonly reason: string;
   };
+  Refused: { readonly name: string; readonly reason: string };
 }>;
 
 export const ReaderState = Data.taggedEnum<ReaderState>();
@@ -107,6 +111,7 @@ export interface Status {
   readonly reader: ReaderState;
   readonly self: Option.Option<{ readonly name: string; readonly did: string }>;
   readonly endpoint: string;
+  readonly quarantine: Quarantined;
 }
 
 export class RatKing extends Context.Service<
@@ -163,7 +168,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
   );
 
   const attempts = yield* Ref.make(0);
-  const self = yield* Deferred.make<Self>();
+  const self = yield* Deferred.make<Self, NotDelivered>();
   const established = yield* Ref.make(Option.none<Self>());
   const fence = yield* Ref.make(Option.none<LeaseFence>());
   const seen = new Set<string>();
@@ -186,8 +191,11 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     fs.readFileString(cursorFile(name)).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(Schema.fromJsonString(Cursor))),
       Effect.map((cursor) => cursor.afterSeq),
-      Effect.orElseSucceed(() => 0)
+      Effect.option
     );
+
+  const quarantineDir = (name: string) =>
+    path.join(settings.state, "quarantine", provisionLabel(name));
 
   const writeCursor = (name: string, afterSeq: number) =>
     Schema.encodeEffect(Schema.fromJsonString(Cursor))({ afterSeq }).pipe(
@@ -290,8 +298,16 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         serviceDid: settings.serviceDid,
       });
 
+      const saved = yield* readCursor(own.name);
+
+      const afterSeq = Option.isSome(saved) ? saved.value : yield* client.head;
+
+      if (Option.isNone(saved)) {
+        yield* writeCursor(own.name, afterSeq);
+      }
+
       yield* client.consume(intake(own, deliver), {
-        afterSeq: yield* readCursor(own.name),
+        afterSeq,
         harness: {
           $type: "sh.mschf.ratking.runtime.lease#pi",
           sessionId: facts.session,
@@ -317,6 +333,12 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               })
             ),
           ]).pipe(Effect.asVoid),
+        onSkip: ({ seq }) => writeCursor(own.name, seq),
+        unopenable: (event, error) =>
+          recover(quarantineDir(own.name), client)(event, error).pipe(
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path)
+          ),
       });
     }).pipe(
       Effect.ensuring(Ref.set(fence, Option.none())),
@@ -328,11 +350,28 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     facts: SessionFacts,
     deliver: Deliver
   ) {
-    const own = yield* supervise(
+    const claimed = yield* supervise(
       Option.none(),
-      Effect.gen(function* establish() {
-        const claimed = yield* claimName(facts);
+      claimName(facts).pipe(services)
+    );
 
+    if (settings.refuse.includes(claimed.name)) {
+      const reason = `${claimed.name} is held by another reader (refuse list in the Rat King config); no reader started`;
+
+      yield* Ref.set(
+        state,
+        ReaderState.Refused({ name: claimed.name, reason })
+      );
+
+      return yield* Deferred.fail(
+        self,
+        new NotDelivered({ code: "Refused", reason })
+      ).pipe(Effect.asVoid);
+    }
+
+    const own = yield* supervise(
+      Option.some(claimed.name),
+      Effect.gen(function* establish() {
         yield* Ref.set(state, ReaderState.Minting({ name: claimed.name }));
 
         const identity = yield* ensureIdentity(claimed.name);
@@ -375,6 +414,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                   Acquiring: () => "Identity not ready",
                   Live: () => "Identity not ready",
                   Minting: ({ name }) => `Still minting ${name}`,
+                  Refused: ({ reason }) => reason,
                   Retrying: ({ reason }) => reason,
                   Starting: ({ reason }) => reason,
                 }),
@@ -611,12 +651,21 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       return delivered;
     }),
     status: Effect.gen(function* status() {
+      const current = yield* Ref.get(established);
+
       return {
         endpoint: settings.endpoint,
+        quarantine: yield* Option.match(current, {
+          onNone: () =>
+            Effect.succeed<Quarantined>({ count: 0, latest: Option.none() }),
+          onSome: ({ name }) =>
+            quarantined(quarantineDir(name)).pipe(
+              Effect.provideService(FileSystem.FileSystem, fs),
+              Effect.provideService(Path.Path, path)
+            ),
+        }),
         reader: yield* Ref.get(state),
-        self: (yield* Ref.get(established)).pipe(
-          Option.map(({ did, name }) => ({ did, name }))
-        ),
+        self: current.pipe(Option.map(({ did, name }) => ({ did, name }))),
       };
     }),
   });
