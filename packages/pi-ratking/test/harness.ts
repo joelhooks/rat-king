@@ -6,6 +6,7 @@ import { HttpClient } from "effect/http";
 import { Settings } from "../src/config.ts";
 import { Directory, directoryLayer } from "../src/directory.ts";
 import { Issuer, IssuerError } from "../src/issuer.ts";
+import type { ReservedValue } from "../src/name.ts";
 import { ratKingLayer } from "../src/ratking.ts";
 import { SecretStore } from "../src/secrets.ts";
 
@@ -41,7 +42,11 @@ const issuer = Layer.effect(
 export const harness = (
   state: string,
   http: HttpClient.HttpClient,
-  refuse: readonly string[] = []
+  refuse: readonly string[] = [],
+  overrides: {
+    readonly reserved?: ReservedValue;
+    readonly documents?: readonly string[];
+  } = {}
 ) =>
   ratKingLayer.pipe(
     Layer.provideMerge(issuer),
@@ -63,6 +68,7 @@ export const harness = (
           secretsCommand: "secrets",
           serviceDid: "did:web:mailbox.example.invalid",
           state,
+          ...overrides,
         })
       )
     ),
