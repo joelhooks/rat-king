@@ -20,6 +20,7 @@ import { document, identity } from "../../mailbox-client/test/identity.ts";
 import { Directory } from "../src/directory.ts";
 import type { PiHost, SessionStart } from "../src/extension.ts";
 import {
+  injects,
   ratkingExtension,
   SEND_EVENT,
   SEND_RESULT_EVENT,
@@ -282,4 +283,16 @@ it.live.prop(
       expect(calls).toBe(0);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 4 }, timeout: 60_000 }
+);
+
+it.effect.prop(
+  "only unsettled non-data messages reach the model; data and settled messages stay on the event bus",
+  [
+    Arbitrary.schema(Schema.Literals(["message", "ask", "reply", "data"])),
+    Arbitrary.schema(Schema.Boolean),
+  ],
+  ([kind, settled]) =>
+    Effect.sync(() => {
+      expect(injects({ kind }, settled)).toBe(!settled && kind !== "data");
+    })
 );

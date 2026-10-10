@@ -2,7 +2,7 @@ import { Effect, Option, Schema } from "effect";
 
 import { AgentName } from "./name.ts";
 
-export const Kind = Schema.Literals(["message", "ask", "reply"]);
+export const Kind = Schema.Literals(["message", "ask", "reply", "data"]);
 
 export type KindValue = typeof Kind.Type;
 

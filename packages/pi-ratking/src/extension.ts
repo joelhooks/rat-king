@@ -44,9 +44,12 @@ export const SEND_RESULT_EVENT = "ratking/send:result";
 
 export const MESSAGE_EVENT = "ratking/message";
 
+export const injects = (inbound: { readonly kind: string }, settled: boolean) =>
+  !settled && inbound.kind !== "data";
+
 const SendRequest = Schema.Struct({
   body: Schema.String,
-  kind: Schema.optionalKey(Schema.Literals(["message", "ask"])),
+  kind: Schema.optionalKey(Schema.Literals(["message", "ask", "data"])),
   replyTo: Schema.optionalKey(Schema.String),
   requestId: Schema.String,
   to: Schema.optionalKey(Schema.String),
@@ -190,7 +193,11 @@ const forwardSend = (request: typeof SendRequest.Type) =>
         ? yield* ratking.send(request.to ?? "", request.body, {
             kind: request.kind ?? "message",
           })
-        : yield* ratking.reply(request.replyTo, request.body);
+        : yield* ratking.reply(
+            request.replyTo,
+            request.body,
+            request.kind === "data" ? { kind: "data" } : {}
+          );
 
     return {
       id: delivered.id,
@@ -293,7 +300,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       Effect.sync(() => {
         pi.events.emit(MESSAGE_EVENT, inboundDetails(inbound, settled));
 
-        if (!settled) {
+        if (injects(inbound, settled)) {
           pi.sendMessage(
             {
               content: renderInbound(tool, inbound),

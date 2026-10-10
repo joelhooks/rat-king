@@ -147,7 +147,7 @@ export class RatKing extends Context.Service<
     readonly reply: (
       id: string,
       body: string,
-      options?: Pick<SendOptions, "encrypt">
+      options?: Pick<SendOptions, "encrypt" | "kind">
     ) => Effect.Effect<Delivered, NotDelivered | AskFailed>;
     readonly pending: Effect.Effect<readonly Received[]>;
     readonly list: Effect.Effect<readonly Listed[]>;
@@ -731,7 +731,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         body,
         {
           ...options,
-          kind: "reply",
+          kind: options?.kind === "data" ? "data" : "reply",
           replyTo: { messageId: id, senderDid: record.value.did },
         },
         () => Effect.void

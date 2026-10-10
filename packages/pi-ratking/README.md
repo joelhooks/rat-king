@@ -47,7 +47,7 @@ On `session_start` the extension claims its name, ensures its identity and runs 
 
 Each inbound message is injected as a visible `ratking_message` with sender, body, id and a reply hint naming this tool. The handler checkpoints the event's `seq` before ack, so a restarted reader does not replay acked mail. While the reader holds its lease, sends carry the lease fence, as the mailbox requires.
 
-The payload is `{ from, body, kind?, replyTo? }`. It carries no session id: whoever holds the name's lease reads its mail. A sender name is marked unverified unless the directory maps the signed sender DID to it.
+The payload is `{ from, body, kind?, replyTo? }`. It carries no session id: whoever holds the name's lease reads its mail. A sender name is verified when the directory maps the signed sender DID to it, or when the claimed name derives that DID through the template or reserved table.
 
 A reader with no cursor starts at the mailbox's current head (`throughSeq`), so an identity with history never replays it. A message the server refuses to deliver or ack with `InvalidTransition` (already acked, expired or otherwise settled) is skipped and the cursor moves past it.
 
@@ -63,7 +63,7 @@ Pi keeps the first tool registered under a name and silently drops later ones. W
 
 ## Events for other extensions
 
-- Emit `ratking/send` with `{ requestId, to, body, kind? }`, or `{ requestId, replyTo, body }` to answer a received message. The extension emits `ratking/send:result` with `{ requestId, status: "delivered", id, seq, to }` or `{ requestId, status: "not-delivered", code, reason }`.
+- Emit `ratking/send` with `{ requestId, to, body, kind? }`, or `{ requestId, replyTo, body, kind? }` to answer a received message. `kind` is `message`, `ask` or `data`; `data` is for program-to-program traffic: the recipient gets it on `ratking/message` only, never in the model's context. A malformed request that still has a `requestId` is answered at once with `not-delivered`. The extension emits `ratking/send:result` with `{ requestId, status: "delivered", id, seq, to }` or `{ requestId, status: "not-delivered", code, reason }`.
 - `ratking/message` carries every inbound message: `{ id, from, did, verified, body, kind, replyTo, cc, settled }`. `settled` is true when the message answered a waiting ask.
 
 `ratkingExtension({ layer, facts, tool })` builds the extension against a `PiHost` port (events, tool and message registration, session start and end). The default export adapts Pi's `ExtensionAPI` to that port with the production layer; tests drive the same factory with Pi's `createEventBus` and a fake mailbox.
