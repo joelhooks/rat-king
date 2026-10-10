@@ -43,7 +43,7 @@ def request(method, key='', query='', conditional=False, payload=None, sink=None
         k = hmac.new(k, value.encode(), hashlib.sha256).digest()
     signature = hmac.new(k, string.encode(), hashlib.sha256).hexdigest()
     headers['authorization'] = 'AWS4-HMAC-SHA256 Credential=' + access + '/' + scope + ', SignedHeaders=' + signed + ', Signature=' + signature
-    connection = http.client.HTTPConnection(base.hostname, base.port, timeout=30)
+    connection = http.client.HTTPConnection(base.hostname, base.port, timeout=2 if operation == 'ready' else 30)
     try:
         connection.request(method, path + ('?' + query if query else ''), payload, headers)
         response = connection.getresponse()
@@ -125,7 +125,7 @@ elif operation == 'purge':
     status, _ = request('DELETE')
     print(json.dumps({'status': status, 'version': ''}))
 else:
-    method = {'read': 'HEAD', 'create': 'PUT', 'delete': 'DELETE', 'version': 'GET', 'pointer': 'HEAD'}[operation]
+    method = {'read': 'HEAD', 'create': 'PUT', 'delete': 'DELETE', 'version': 'GET', 'pointer': 'HEAD', 'ready': 'HEAD'}[operation]
     status, body = request(method, key='deploy/current.json' if operation == 'pointer' else '', query='versioning=' if operation == 'version' else '')
     version = ''
     if operation == 'version' and status == 200:

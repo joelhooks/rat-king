@@ -53,11 +53,22 @@ const Paths = Schema.Struct({
   sessions: Text,
 });
 
+const DoctorHost = Schema.Struct({
+  config: Schema.optionalKey(Text),
+  node: Schema.optionalKey(Text),
+});
+
 export const StageConfig = Schema.Struct({
   comms: Schema.Struct({
     local: Paths,
     remote: Schema.Struct({ ...Paths.fields, ssh: Text }),
   }),
+  doctor: Schema.optionalKey(
+    Schema.Struct({
+      primary: DoctorHost,
+      secondary: Schema.Struct({ ...DoctorHost.fields, ssh: Text }),
+    })
+  ),
   mintHost: Schema.optionalKey(
     Schema.Struct({
       did: Text,

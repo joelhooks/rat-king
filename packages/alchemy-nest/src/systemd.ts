@@ -345,12 +345,27 @@ const cleanupCreatedUnit = Effect.fn("SystemdUnit.cleanupCreated")(
   }
 );
 
+const cascadeChanged = (
+  output: UnitAttributes | undefined,
+  live: Pick<UnitAttributes, "active" | "invocationId" | "needDaemonReload">,
+  wrote: boolean
+) =>
+  output?.invocationId !== undefined &&
+  output.invocationId !== "" &&
+  live.invocationId !== undefined &&
+  live.invocationId !== "" &&
+  live.invocationId !== output.invocationId &&
+  live.active &&
+  !wrote &&
+  !live.needDaemonReload;
+
 export const reconcileUnit = Effect.fn("SystemdUnit.reconcile")(
   function* reconcileUnit(
     shell: Interface,
     props: UnitProps,
     output: UnitAttributes | undefined,
-    adopt: boolean
+    adopt: boolean,
+    processMatches: Effect.Effect<boolean> = Effect.succeed(false)
   ) {
     const valid = yield* validateUnit(props);
     const path = unitPath(valid);
@@ -385,12 +400,16 @@ export const reconcileUnit = Effect.fn("SystemdUnit.reconcile")(
 
     const wrote = before?.sha256 !== sha256;
 
+    const cascadeApplied =
+      cascadeChanged(output, live, wrote) && (yield* processMatches);
+
     const changed =
-      wrote ||
-      live.needDaemonReload ||
-      (output !== undefined &&
-        (output.sha256 !== sha256 ||
-          output.configSha256 !== configDigest(valid)));
+      !cascadeApplied &&
+      (wrote ||
+        live.needDaemonReload ||
+        (output !== undefined &&
+          (output.sha256 !== sha256 ||
+            output.configSha256 !== configDigest(valid))));
 
     const apply = Effect.gen(function* apply() {
       if (wrote) {

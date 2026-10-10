@@ -137,6 +137,10 @@ export const nodeUnit = (input: {
           ? []
           : [
               [
+                "ExecStartPre",
+                `/usr/local/bin/node ${quote(input.restartGate.path)} ${quote(input.restartGate.address)} before-node`,
+              ] satisfies readonly [string, string],
+              [
                 "ExecStartPost",
                 `/usr/local/bin/node ${quote(input.restartGate.path)} ${quote(input.restartGate.address)} node`,
               ] satisfies readonly [string, string],

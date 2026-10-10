@@ -2,6 +2,7 @@ import { Clock, DateTime, Effect, FileSystem, Schema } from "effect";
 
 import { collectComms } from "./comms.ts";
 import type { CountsValue } from "./comms.ts";
+import { configDoctor } from "./config-doctor.ts";
 import { Digest, DigestJson } from "./health.ts";
 import type { HealthDigest } from "./health.ts";
 import { FleetError } from "./stage-config.ts";
@@ -31,7 +32,11 @@ export const composeDigest = (
   health: HealthDigest | typeof FailedHealth.Type,
   local: CountsValue,
   remote: CountsValue,
-  at: string
+  at: string,
+  doctor?: {
+    readonly reasons: readonly string[];
+    readonly status: "ok" | "fail";
+  }
 ) => {
   const { sent } = local;
   const { fallbacks } = local;
@@ -41,6 +46,7 @@ export const composeDigest = (
 
   const reasons = [
     ...health.reasons,
+    ...(doctor?.reasons ?? []),
     ...(lost > 0
       ? [`${lost} messages lost (network and fallback both failed) in 24h`]
       : []),
@@ -53,7 +59,7 @@ export const composeDigest = (
 
   let status: "ok" | "warn" | "fail" = "ok";
 
-  if (health.status === "fail" || lost > 0) {
+  if (health.status === "fail" || doctor?.status === "fail" || lost > 0) {
     status = "fail";
   } else if (
     health.status === "warn" ||
@@ -132,7 +138,8 @@ export const digest = Effect.fn("Nest.digest")(function* digest<E>(
     facts,
     counts.primary,
     counts.secondary,
-    DateTime.formatIso(DateTime.makeUnsafe(now)).replace(/\.\d{3}Z$/u, "Z")
+    DateTime.formatIso(DateTime.makeUnsafe(now)).replace(/\.\d{3}Z$/u, "Z"),
+    yield* configDoctor(config)
   );
 
   const encoded = yield* Schema.encodeEffect(
