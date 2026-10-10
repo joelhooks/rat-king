@@ -33,6 +33,9 @@ export interface MessageMeta {
   readonly seq: number;
 }
 
+const expiredRefusal = (error: MailboxClientError) =>
+  error.error === "InvalidTransition" && error.reason === "Expired message";
+
 export interface ConsumeOptions {
   readonly harness: Lease.MainValue["harness"];
   readonly resume?: LeaseFence;
@@ -224,7 +227,16 @@ export const consume = <E, R>(
 
                 const message = yield* mailbox.open(event.envelope);
                 const input = { ...fence(), message: event.receipt.message };
-                yield* mailbox.deliver(input);
+
+                const live = yield* mailbox.deliver(input).pipe(
+                  Effect.map(({ receipt }) => receipt.state !== "expired"),
+                  Effect.catchIf(expiredRefusal, () => Effect.succeed(false))
+                );
+
+                if (!live) {
+                  return;
+                }
+
                 yield* handler(message, { seq: event.seq });
                 yield* mailbox.ack(input);
               }),

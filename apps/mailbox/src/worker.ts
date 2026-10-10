@@ -23,6 +23,8 @@ import { Clock, Effect, Layer, Schema } from "effect";
 import { authenticate, authenticateClaims, ReplayAuthority } from "./auth.ts";
 import type { Bindings } from "./bindings.ts";
 import { documentsLayer, didAllowlist, peerDocument } from "./documents.ts";
+import { logFailure } from "./failure-log.ts";
+import type { FailureScope } from "./failure-log.ts";
 import { failure } from "./failure.ts";
 import { validLease } from "./lease.ts";
 import {
@@ -59,6 +61,23 @@ export const bundle = {
   commit: __BUNDLE_COMMIT__,
   version: __BUNDLE_VERSION__,
 };
+
+const unknownPosition = () => ({});
+
+const RouteResult = Schema.Struct({
+  body: Schema.String,
+  seq: Schema.optionalKey(Schema.Int),
+  status: Schema.Int,
+});
+
+const ListPosition = Schema.Struct({ afterSeq: Schema.Int });
+
+const MessagePosition = Schema.Struct({
+  message: Schema.Struct({
+    messageId: Schema.String,
+    senderDid: Schema.String,
+  }),
+});
 
 const errorResponse = (error: XrpcFailure) =>
   Response.json(
@@ -301,8 +320,47 @@ export class Mailbox extends DurableObject<Bindings> {
           body: JSON.stringify(response.body) ?? "",
           status: response.status,
         })),
-        Effect.provide(serverLayer.pipe(Layer.provide(layer)))
+        Effect.provide(serverLayer.pipe(Layer.provide(layer))),
+        Effect.flatMap((response) =>
+          response.status < 400
+            ? Effect.succeed(response)
+            : this.failurePosition(request).pipe(
+                Effect.map((position) => ({ ...response, ...position }))
+              )
+        )
       )
+    );
+  }
+
+  private failurePosition(
+    request: XrpcRequest
+  ): Effect.Effect<{ readonly seq?: number }> {
+    if (request.nsid === List.Method.nsid) {
+      return Schema.decodeUnknownEffect(ListPosition)(request.params).pipe(
+        Effect.map(({ afterSeq }) => ({ seq: afterSeq })),
+        Effect.orElseSucceed(unknownPosition)
+      );
+    }
+
+    if (
+      request.nsid !== Deliver.Method.nsid &&
+      request.nsid !== Ack.Method.nsid
+    ) {
+      return Effect.succeed({});
+    }
+
+    return Schema.decodeUnknownEffect(MessagePosition)(request.input).pipe(
+      Effect.flatMap(({ message }) =>
+        MailboxStore.use((store) =>
+          store.transaction((tx) => {
+            const stored = tx.get(message.senderDid, message.messageId);
+
+            return stored === undefined ? {} : { seq: stored.admission.seq };
+          })
+        )
+      ),
+      Effect.provide(this.store),
+      Effect.orElseSucceed(unknownPosition)
     );
   }
   acquireLease(json: string) {
@@ -777,12 +835,31 @@ const wakeHosted = Effect.fn("Mailbox.wakeHosted")(function* wakeHosted(
   return yield* Effect.void;
 });
 
-export const fetchRequest = (
+const methods = new Set<string>(
+  [
+    Send.Method,
+    Ack.Method,
+    Deliver.Method,
+    Acquire.Method,
+    Renew.Method,
+    Release.Method,
+    PutDocument.Method,
+    List.Method,
+    Traffic.Method,
+    Resolve.Method,
+    Peer.Method,
+    Subscribe.Method,
+    SubscribeTraffic.Method,
+  ].map((method) => method.nsid)
+);
+
+const handleRequest = (
   request: Request,
   env: Bindings,
+  scope: FailureScope,
   context?: Pick<ExecutionContext, "waitUntil">
 ) =>
-  Effect.gen(function* handleRequest() {
+  Effect.gen(function* handle() {
     const url = new URL(request.url);
 
     if (url.pathname === "/.well-known/rat-king/version") {
@@ -802,6 +879,8 @@ export const fetchRequest = (
       const params = yield* Subscribe.decodeParams([
         ...url.searchParams.entries(),
       ]).pipe(Effect.mapError(() => failure("InvalidRequest")));
+
+      scope.recipient = params.recipientDid;
 
       return yield* Effect.tryPromise({
         catch: () => failure("MailboxUnavailable", 503),
@@ -984,10 +1063,19 @@ export const fetchRequest = (
       return yield* Effect.fail(failure("Forbidden", 403));
     }
 
+    scope.recipient = recipient;
+
     const response = yield* Effect.tryPromise({
       catch: () => failure("MailboxUnavailable", 503),
       try: () => env.MAILBOX.getByName(recipient).route(transport, issuer),
-    });
+    }).pipe(
+      Effect.flatMap(Schema.decodeUnknownEffect(RouteResult)),
+      Effect.mapError(() => failure("MailboxUnavailable", 503))
+    );
+
+    if (response.seq !== undefined) {
+      scope.seq = response.seq;
+    }
 
     if (nsid === Send.Method.nsid && response.status === 200) {
       yield* wakeHosted(env, recipient, response.body, context).pipe(
@@ -999,11 +1087,23 @@ export const fetchRequest = (
       headers: { "content-type": "application/json" },
       status: response.status,
     });
-  }).pipe(
+  });
+
+export const fetchRequest = (
+  request: Request,
+  env: Bindings,
+  context?: Pick<ExecutionContext, "waitUntil">
+) => {
+  const nsid = new URL(request.url).pathname.slice("/xrpc/".length);
+  const scope: FailureScope = { method: methods.has(nsid) ? nsid : "unknown" };
+
+  return handleRequest(request, env, scope, context).pipe(
     Effect.catchTag("XrpcFailure", (error) =>
       Effect.succeed(errorResponse(error))
-    )
+    ),
+    Effect.tap((response) => logFailure(scope, response))
   );
+};
 
 export default {
   fetch: (request: Request, env: Bindings, context?: ExecutionContext) =>
