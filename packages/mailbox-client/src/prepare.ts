@@ -24,7 +24,7 @@ import { importSigning, Identity } from "./identity.ts";
 import type { IdentityValue } from "./identity.ts";
 import { layer, RatKingMailbox } from "./mailbox.ts";
 import type { LeaseFence, OpenedMessage, SendOptions } from "./mailbox.ts";
-import { tid } from "./tid.ts";
+import { randomTid } from "./tid.ts";
 import { transportLayer } from "./transport.ts";
 
 const ownBrand: unique symbol = Symbol("OwnIdentity");
@@ -156,10 +156,7 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
   ) {
     const now = yield* Clock.currentTimeMillis;
 
-    const messageId = tid(
-      now,
-      crypto.getRandomValues(new Uint16Array(1))[0] ?? 0
-    );
+    const messageId = randomTid(now);
 
     const raw = {
       aad: {

@@ -1,5 +1,8 @@
-export const tid = (millis: number, clockId: number) => {
-  let number = BigInt(millis) * 1000n * 1024n + BigInt(clockId % 1024);
+export const tid = (millis: number, clockId: number, micros = 0) => {
+  let number =
+    (BigInt(millis) * 1000n + BigInt(Math.abs(micros) % 1000)) * 1024n +
+    BigInt(clockId % 1024);
+
   const alphabet = "234567abcdefghijklmnopqrstuvwxyz";
   let text = "";
 
@@ -9,4 +12,10 @@ export const tid = (millis: number, clockId: number) => {
   }
 
   return text;
+};
+
+export const randomTid = (millis: number) => {
+  const words = crypto.getRandomValues(new Uint16Array(2));
+
+  return tid(millis, words[0] ?? 0, words[1] ?? 0);
 };

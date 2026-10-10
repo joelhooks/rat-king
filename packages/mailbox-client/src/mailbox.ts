@@ -24,7 +24,7 @@ import { DidResolver, staticResolver } from "./auth.ts";
 import { clientError, MailboxClientError } from "./error.ts";
 import { importSigning, importAgreement } from "./identity.ts";
 import type { IdentityValue } from "./identity.ts";
-import { tid } from "./tid.ts";
+import { randomTid } from "./tid.ts";
 import { transportLayer } from "./transport.ts";
 import { watch } from "./watch.ts";
 
@@ -379,14 +379,10 @@ export const layer = (
 
           const now = yield* Clock.currentTimeMillis;
 
-          const clockId = yield* Effect.sync(() => {
-            const bytes = crypto.getRandomValues(new Uint8Array(2));
-
-            return (bytes[0] ?? 0) * 256 + (bytes[1] ?? 0);
-          });
+          const messageId = yield* Effect.sync(() => randomTid(now));
 
           const aad: RawAad = {
-            messageId: tid(now, clockId),
+            messageId,
             recipientDid: to,
             recipientKeyId: `${to}#encryption`,
             senderDid: identity.did,
