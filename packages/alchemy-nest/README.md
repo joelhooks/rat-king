@@ -90,3 +90,8 @@ The package ships TypeScript source. Importing it needs a toolchain that runs `.
 The consumer's pins must match this package exactly: `alchemy` `2.0.0-beta.81` and `effect` `4.0.1`. Pin both in the consumer's own `package.json` with no range. A different alchemy or effect resolves a second copy, and the provider and service types stop lining up.
 
 The package declares no `workspace:` or `catalog:` specifiers, so it resolves outside this workspace. Keep it that way.
+
+Two consumer settings in `pnpm-workspace.yaml`:
+
+- `allowBuilds` for `esbuild` and `workerd`. Without it, `pnpm install` exits 1 with `ERR_PNPM_IGNORED_BUILDS`.
+- An override `"@effect/platform-node-shared": 4.0.1`. Otherwise `@effect/platform-node` 4.0.1 resolves platform-node-shared 4.0.2, which wants effect `^4.0.2`, so the install warns about the peer and risks a second effect.
