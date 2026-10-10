@@ -13,6 +13,7 @@ import {
   Exit,
   Layer,
   ManagedRuntime,
+  Match,
   Option,
   Schema,
 } from "effect";
@@ -24,10 +25,11 @@ import { directoryLayer } from "./directory.ts";
 import { paneLabel } from "./herdr.ts";
 import type { SessionFacts } from "./identity.ts";
 import { issuerLayer } from "./issuer.ts";
-import { renderInbound } from "./payload.ts";
+import { messageView } from "./message-view.ts";
+import { LexiconRecord, renderInbound } from "./payload.ts";
 import type { Inbound } from "./payload.ts";
 import { RatKing, ratKingLayer } from "./ratking.ts";
-import type { Deliver } from "./ratking.ts";
+import type { Deliver, SendOptions } from "./ratking.ts";
 import { secretStoreLayer } from "./secrets.ts";
 import {
   description,
@@ -45,6 +47,20 @@ export const SEND_RESULT_EVENT = "ratking/send:result";
 
 export const MESSAGE_EVENT = "ratking/message";
 
+export const RECORD_EVENT = "ratking/record";
+
+export const STATUS_EVENT = "ratking/status";
+
+export const STATUS_RESULT_EVENT = "ratking/status:result";
+
+export interface ReaderStatus {
+  readonly name: string | null;
+  readonly did: string | null;
+  readonly reader: "live" | "acquiring" | "retired" | "off" | "send-only";
+  readonly leaseGeneration?: number;
+  readonly leaseUntil?: string;
+}
+
 export const RETIRE_EVENT = "ratking/retire";
 
 export const RETIRE_RESULT_EVENT = "ratking/retire:result";
@@ -54,13 +70,26 @@ const RELEASE_WAIT_MS = 2000;
 export const injects = (inbound: { readonly kind: string }, settled: boolean) =>
   !settled && inbound.kind !== "data";
 
-const SendRequest = Schema.Struct({
-  body: Schema.String,
+const sendFields = {
+  encrypt: Schema.optionalKey(Schema.Boolean),
   kind: Schema.optionalKey(Schema.Literals(["message", "ask", "data"])),
   replyTo: Schema.optionalKey(Schema.String),
   requestId: Schema.String,
   to: Schema.optionalKey(Schema.String),
-});
+};
+
+const SendRequest = Schema.Union([
+  Schema.Struct({
+    ...sendFields,
+    body: Schema.String,
+    record: Schema.optionalKey(Schema.Never),
+  }),
+  Schema.Struct({
+    ...sendFields,
+    body: Schema.optionalKey(Schema.Never),
+    record: LexiconRecord,
+  }),
+]);
 
 const platform = Layer.merge(NodeServices.layer, FetchHttpClient.layer);
 
@@ -152,6 +181,7 @@ export interface SessionStart {
 
 export interface PiHost {
   readonly events: EventBus;
+  readonly registerMessageRenderer: ExtensionAPI["registerMessageRenderer"];
   readonly registerTool: ExtensionAPI["registerTool"];
   readonly sendMessage: ExtensionAPI["sendMessage"];
   readonly onSessionStart: (
@@ -176,6 +206,9 @@ const piHost = (pi: ExtensionAPI): PiHost => ({
         },
       });
     });
+  },
+  registerMessageRenderer: (customType, renderer) => {
+    pi.registerMessageRenderer(customType, renderer);
   },
   registerTool: (tool) => {
     pi.registerTool(tool);
@@ -205,16 +238,20 @@ const forwardSend = (request: typeof SendRequest.Type) =>
   Effect.gen(function* forward() {
     const ratking = yield* RatKing;
 
+    const body = request.record ?? request.body;
+
+    const options: Pick<SendOptions, "encrypt" | "kind"> = {
+      kind: request.kind ?? "message",
+    };
+
+    if (request.encrypt !== undefined) {
+      Object.assign(options, { encrypt: request.encrypt });
+    }
+
     const delivered =
       request.replyTo === undefined
-        ? yield* ratking.send(request.to ?? "", request.body, {
-            kind: request.kind ?? "message",
-          })
-        : yield* ratking.reply(
-            request.replyTo,
-            request.body,
-            request.kind === "data" ? { kind: "data" } : {}
-          );
+        ? yield* ratking.send(request.to ?? "", body, options)
+        : yield* ratking.reply(request.replyTo, body, options);
 
     return {
       id: delivered.id,
@@ -311,10 +348,37 @@ export const ratkingExtension = (options: ExtensionOptions) =>
   async function piRatking(pi: PiHost) {
     const tool = await Effect.runPromise(options.tool);
 
+    pi.registerMessageRenderer(
+      "ratking_message",
+      (message, renderOptions, theme) =>
+        messageView({
+          details: message.details,
+          expanded: renderOptions.expanded,
+          theme,
+          tool,
+        })
+    );
+
     let runtime = Option.none<Runtime>();
 
     const deliver: Deliver = (inbound, settled) =>
       Effect.sync(() => {
+        if ("record" in inbound) {
+          pi.events.emit(RECORD_EVENT, {
+            did: inbound.did,
+            from: inbound.from,
+            id: inbound.id,
+            record: inbound.record,
+            ...Option.match(inbound.replyTo, {
+              onNone: () => ({}),
+              onSome: (replyTo) => ({ replyTo }),
+            }),
+            verified: inbound.verified,
+          });
+
+          return;
+        }
+
         pi.events.emit(MESSAGE_EVENT, inboundDetails(inbound, settled));
 
         if (injects(inbound, settled)) {
@@ -431,11 +495,65 @@ export const ratkingExtension = (options: ExtensionOptions) =>
         pi.events.emit(SEND_RESULT_EVENT, {
           code: "NotAttempted" as const,
           reason:
-            "InvalidRequest: ratking/send needs body, requestId, and optional to, replyTo and kind message or ask",
+            "InvalidRequest: ratking/send needs requestId and exactly one of body or record ($type string), with optional to, replyTo, encrypt and kind message, ask or data",
           requestId: loose.value.requestId,
           status: "not-delivered" as const,
         });
       }
+    });
+
+    pi.events.on(STATUS_EVENT, (data) => {
+      const request = Schema.decodeUnknownOption(
+        Schema.Struct({ requestId: Schema.String })
+      )(data);
+
+      if (Option.isNone(request)) {
+        return;
+      }
+
+      const status = async () => {
+        const current = await run<ReaderStatus>(
+          RatKing.use((ratking) => ratking.status).pipe(
+            Effect.map((value) => ({
+              did: value.self.pipe(
+                Option.map((own) => own.did),
+                Option.getOrNull
+              ),
+              name: value.self.pipe(
+                Option.map((own) => own.name),
+                Option.getOrNull
+              ),
+              ...Match.value(value.reader).pipe(
+                Match.tag("Live", (reader) => ({
+                  leaseGeneration: reader.generation,
+                  leaseUntil: reader.expiresAt,
+                  reader: "live" as const,
+                })),
+                Match.tag("Acquiring", () => ({
+                  reader: "acquiring" as const,
+                })),
+                Match.tag("SendOnly", () => ({ reader: "send-only" as const })),
+                Match.tag("Starting", "Minting", "Retrying", "Refused", () => ({
+                  reader: "off" as const,
+                })),
+                Match.exhaustive
+              ),
+            }))
+          ),
+          () => ({
+            did: null,
+            name: null,
+            reader: retired ? ("retired" as const) : ("off" as const),
+          })
+        );
+
+        pi.events.emit(STATUS_RESULT_EVENT, {
+          requestId: request.value.requestId,
+          ...current,
+        });
+      };
+
+      void status();
     });
 
     pi.events.on(RETIRE_EVENT, (data) => {

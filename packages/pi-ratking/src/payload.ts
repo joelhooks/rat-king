@@ -2,6 +2,27 @@ import { Effect, Option, Schema } from "effect";
 
 import { AgentName } from "./name.ts";
 
+export const LexiconRecord = Schema.StructWithRest(
+  Schema.Struct({ $type: Schema.String }),
+  [Schema.Record(Schema.String, Schema.Json)]
+);
+
+export type LexiconRecordValue = typeof LexiconRecord.Type;
+
+export const RecordJson = Schema.fromJsonString(LexiconRecord);
+
+export const decodeRecord = (body: string) =>
+  Schema.decodeEffect(RecordJson)(body).pipe(Effect.option);
+
+export interface InboundRecord {
+  readonly id: string;
+  readonly did: string;
+  readonly from: string;
+  readonly verified: boolean;
+  readonly record: LexiconRecordValue;
+  readonly replyTo: Option.Option<string>;
+}
+
 export const Kind = Schema.Literals(["message", "ask", "reply", "data"]);
 
 export type KindValue = typeof Kind.Type;

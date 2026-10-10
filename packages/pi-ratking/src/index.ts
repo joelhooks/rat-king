@@ -14,9 +14,14 @@ export {
   sessionName,
 } from "./name.ts";
 
-export { Payload, PayloadJson } from "./payload.ts";
+export { LexiconRecord, Payload, PayloadJson } from "./payload.ts";
 
-export type { Inbound, PayloadValue } from "./payload.ts";
+export type {
+  Inbound,
+  InboundRecord,
+  LexiconRecordValue,
+  PayloadValue,
+} from "./payload.ts";
 
 export {
   AskFailed,
@@ -28,4 +33,13 @@ export {
 
 export type { Delivered, Deliver, SendOptions, Status } from "./ratking.ts";
 
-export { MESSAGE_EVENT, SEND_EVENT, SEND_RESULT_EVENT } from "./extension.ts";
+export {
+  MESSAGE_EVENT,
+  RECORD_EVENT,
+  SEND_EVENT,
+  SEND_RESULT_EVENT,
+  STATUS_EVENT,
+  STATUS_RESULT_EVENT,
+} from "./extension.ts";
+
+export type { ReaderStatus } from "./extension.ts";

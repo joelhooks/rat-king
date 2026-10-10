@@ -33,7 +33,7 @@ The extension reads `RATKING_CONFIG`, or `~/.config/rat-king/pi.json`. Without a
 
 ## Identity and issuer
 
-Keys are P-256 pairs generated on the Pi's host. They are stored in the host secret store (agent-secrets) as `rat_king_fleet_agent_<label>_identity`, passed to `secrets add` on stdin, never in argv or logs. `<label>` is the name with `/` replaced by `.`. Existing secrets are reused and never rotated; their DID wins over the template. Reserved names are never minted; their secret must already exist on the host.
+Keys are P-256 pairs generated on the Pi's host. They are stored in the host secret store (agent-secrets) as `rat_king_fleet_agent_<label>_identity`, passed to `secrets add` on stdin, never in argv or logs. `<label>` is the name with `/` replaced by `.`. Existing secrets are reused and never rotated; their DID wins over the template. Reserved names are never minted; their secret must already exist on the host to read or send as that name. A reserved recipient needs no local secret. Its public document comes from the configured `documents`, the local directory, or a mailbox `getPeerDocument` lookup when neither has it. Aliases resolve to the canonical reserved name and DID.
 
 Registration goes through one service, `Issuer.ensure(name, publicDocument) → did`. `issuer` takes one of two shapes.
 
@@ -45,7 +45,7 @@ Registration goes through one service, `Issuer.ensure(name, publicDocument) → 
 
 On `session_start` the extension claims its name, ensures its identity and runs `@rat-king/mailbox-client`'s leased consumer for its DID. Failures retry with exponential backoff capped at 30 seconds and show in `status`; they are never fatal. On `session_shutdown` the runtime is disposed, which releases the lease, so a successor Pi acquires it at once.
 
-Each inbound message is injected as a visible `ratking_message` with sender, body, id and a reply hint naming this tool. The handler checkpoints the event's `seq` before ack, so a restarted reader does not replay acked mail. While the reader holds its lease, sends carry the lease fence, as the mailbox requires.
+Each inbound message is injected as a visible `ratking_message` with sender, body, id and a reply hint naming this tool, except program-to-program data and lexicon records. The transcript renderer defaults to one line with the sender label or name, first body line and message id. CC, reply and unverified markers remain visible. Pi's expand toggle (`ctrl+o`) shows the full message and reply hint. Rendering uses message details; model-facing content is unchanged. The handler checkpoints the event's `seq` before ack, so a restarted reader does not replay acked mail. While the reader holds its lease, sends carry the lease fence, as the mailbox requires.
 
 The payload is `{ from, body, kind?, replyTo? }`. It carries no session id: whoever holds the name's lease reads its mail. A sender name is verified when the directory maps the signed sender DID to it, or when the claimed name derives that DID through the template or reserved table.
 
@@ -53,7 +53,7 @@ A reader with no cursor starts at the mailbox's current head (`throughSeq`), so 
 
 A message that cannot be opened (unknown sender, bad signature, undecryptable or malformed envelope) triggers one lookup of the sender's document through the mailbox's `getPeerDocument`, then one more open. If that fails, the reader writes `state/quarantine/<label>/<seq>.json` with metadata only (`seq`, `messageId`, `senderDid`, `reason`, `at`; never the body or ciphertext), skips the message without deliver or ack, and moves the cursor past it. `status` shows the quarantine count and the latest entry.
 
-A decrypted body that is not a Rat King payload is still delivered, as raw text from the sender DID.
+A decrypted JSON object with a string `$type` that is not a Rat King message payload is delivered on `ratking/record` only, never injected into the model. Records use the same sender verification, checkpoint and ack path as messages. Other decrypted bodies still follow the raw-text message path.
 
 ## Tool
 
@@ -63,7 +63,9 @@ Pi keeps the first tool registered under a name and silently drops later ones. W
 
 ## Events for other extensions
 
-- Emit `ratking/send` with `{ requestId, to, body, kind? }`, or `{ requestId, replyTo, body, kind? }` to answer a received message. `kind` is `message`, `ask` or `data`; `data` is for program-to-program traffic: the recipient gets it on `ratking/message` only, never in the model's context. A malformed request that still has a `requestId` is answered at once with `not-delivered`. The extension emits `ratking/send:result` with `{ requestId, status: "delivered", id, seq, to }` or `{ requestId, status: "not-delivered", code, reason }`.
+- Emit `ratking/send` with `{ requestId, to, body, kind?, encrypt? }`, or `{ requestId, replyTo, body, kind?, encrypt? }` to answer a received message. Replace `body` with `record: { $type: string, ... }` to send a JSON lexicon record. Exactly one of `body` or `record` is required. Records are sealed as-is, without the message wrapper, and default to encrypted; `encrypt` overrides encryption per send. Message bodies keep the configured encryption default. `kind` is `message`, `ask` or `data`; `data` is for program-to-program traffic: the recipient gets it on `ratking/message` only, never in the model's context. Records carry their own fields; `kind` adds no wrapper or record field. `replyTo` links the envelope to a received message or record. A malformed request that still has a `requestId` is answered at once with `not-delivered`. The extension emits `ratking/send:result` with `{ requestId, status: "delivered", id, seq, to }` or `{ requestId, status: "not-delivered", code, reason }`.
+- `ratking/record` carries inbound lexicon records: `{ id, from, did, verified, record, replyTo? }`. It never injects a model message or settles a waiting text ask. A valid Rat King message payload takes the message path even if it also has a `$type`.
+- Emit `ratking/status` with `{ requestId }`. `ratking/status:result` answers with `{ requestId, name, did, reader, leaseGeneration?, leaseUntil? }`. `reader` is `live`, `acquiring`, `retired`, `off` or `send-only`. Live readers include their lease generation and expiry. `name` and `did` are null when no identity is available, including after retirement. Provisioning, retries and refusals report `off`; lease acquisition reports `acquiring`.
 - `ratking/message` carries every inbound message: `{ id, from, did, verified, body, kind, replyTo, cc, settled }`. `settled` is true when the message answered a waiting ask.
 - Emit `ratking/retire` with `{ requestId? }` when another session has taken over this Pi's name, for example once a restart handover commits. The reader stops and releases its lease while the Pi stays up, so a lingering old process can't ack mail its successor should read. The extension answers on `ratking/retire:result` with `{ requestId?, status: "retired" }`. Later sends are refused as retired until the next session start. Shutdown also waits up to 2 s for the lease release.
 

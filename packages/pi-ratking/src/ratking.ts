@@ -18,6 +18,7 @@ import {
   Effect,
   FileSystem,
   Layer,
+  Match,
   Option,
   Path,
   Ref,
@@ -43,8 +44,19 @@ import {
   provisionLabel,
   verifiedSender,
 } from "./name.ts";
-import { decodePayload, encodePayload } from "./payload.ts";
-import type { Inbound, KindValue, PayloadValue } from "./payload.ts";
+import {
+  decodePayload,
+  decodeRecord,
+  encodePayload,
+  RecordJson,
+} from "./payload.ts";
+import type {
+  Inbound,
+  InboundRecord,
+  KindValue,
+  LexiconRecordValue,
+  PayloadValue,
+} from "./payload.ts";
 import { quarantined, recover } from "./quarantine.ts";
 import type { Quarantined } from "./quarantine.ts";
 import { SecretStore } from "./secrets.ts";
@@ -114,7 +126,7 @@ export interface SendOptions {
 }
 
 export type Deliver = (
-  inbound: Inbound,
+  inbound: Inbound | InboundRecord,
   settled: boolean
 ) => Effect.Effect<void>;
 
@@ -134,7 +146,7 @@ export class RatKing extends Context.Service<
     ) => Effect.Effect<void, never, Scope.Scope>;
     readonly send: (
       to: string,
-      body: string,
+      body: string | LexiconRecordValue,
       options?: SendOptions
     ) => Effect.Effect<Delivered, NotDelivered>;
     readonly ask: (
@@ -148,7 +160,7 @@ export class RatKing extends Context.Service<
     >;
     readonly reply: (
       id: string,
-      body: string,
+      body: string | LexiconRecordValue,
       options?: Pick<SendOptions, "encrypt" | "kind">
     ) => Effect.Effect<Delivered, NotDelivered | AskFailed>;
     readonly pending: Effect.Effect<readonly Received[]>;
@@ -291,13 +303,32 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             verified,
           };
 
-          const settled = yield* threads.settle(inbound);
+          const record = Option.isNone(payload)
+            ? yield* decodeRecord(message.body)
+            : Option.none<LexiconRecordValue>();
 
-          if (!settled) {
+          if (Option.isSome(record)) {
             yield* threads.remember(inbound);
-          }
+            yield* deliver(
+              {
+                did: inbound.did,
+                from: inbound.from,
+                id: inbound.id,
+                record: record.value,
+                replyTo: inbound.replyTo,
+                verified: inbound.verified,
+              },
+              false
+            );
+          } else {
+            const settled = yield* threads.settle(inbound);
 
-          yield* deliver(inbound, settled);
+            if (!settled) {
+              yield* threads.remember(inbound);
+            }
+
+            yield* deliver(inbound, settled);
+          }
         }
 
         yield* writeCursor(own.name, meta.seq);
@@ -484,8 +515,10 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
   const lookup = Effect.fn("RatKing.lookup")(function* lookup(
     identity: Parameters<typeof ownIdentity>[0],
-    name: string
+    requested: string
   ) {
+    const name = canonicalName(settings.reserved, requested);
+
     if (!Schema.is(AgentName)(name)) {
       return yield* refused("UnknownName")(name);
     }
@@ -510,7 +543,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
   const transmit = Effect.fn("RatKing.transmit")(function* transmit<B>(
     to: string,
-    body: string,
+    body: string | LexiconRecordValue,
     options: SendOptions,
     before: (id: string, did: string) => Effect.Effect<B>
   ) {
@@ -532,26 +565,33 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       return yield* refused("Self")("Cannot message this Pi's own name");
     }
 
-    const payload: PayloadValue = { body, from: own.name };
+    const encodeMessage = (messageBody: string) =>
+      Effect.gen(function* messagePayload() {
+        const payload: PayloadValue = { body: messageBody, from: own.name };
 
-    const label = (own.label?.() ?? Option.none<string>()).pipe(
-      Option.map((text) => text.trim().slice(0, 256)),
-      Option.filter((text) => text !== "")
-    );
+        const label = (own.label?.() ?? Option.none<string>()).pipe(
+          Option.map((text) => text.trim().slice(0, 256)),
+          Option.filter((text) => text !== "")
+        );
 
-    if (Option.isSome(label)) {
-      Object.assign(payload, { label: label.value });
-    }
+        if (Option.isSome(label)) {
+          Object.assign(payload, { label: label.value });
+        }
 
-    if (options.kind !== undefined) {
-      Object.assign(payload, { kind: options.kind });
-    }
+        if (options.kind !== undefined) {
+          Object.assign(payload, { kind: options.kind });
+        }
 
-    if (options.replyTo !== undefined) {
-      Object.assign(payload, { replyTo: options.replyTo.messageId });
-    }
+        if (options.replyTo !== undefined) {
+          Object.assign(payload, { replyTo: options.replyTo.messageId });
+        }
 
-    const json = yield* encodePayload(payload).pipe(
+        return yield* encodePayload(payload);
+      });
+
+    const json = yield* Match.value(body).pipe(
+      Match.when(Match.string, encodeMessage),
+      Match.orElse(Schema.encodeEffect(RecordJson)),
       Effect.mapError(() => refused("NotAttempted")("Invalid payload"))
     );
 
@@ -572,7 +612,12 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               options.replyTo
             );
 
-      const encrypt = options.encrypt ?? settings.encrypt;
+      const encrypt =
+        options.encrypt ??
+        Match.value(body).pipe(
+          Match.when(Match.string, () => settings.encrypt),
+          Match.orElse(() => true)
+        );
 
       const envelope = yield* client.seal(
         target.did,
