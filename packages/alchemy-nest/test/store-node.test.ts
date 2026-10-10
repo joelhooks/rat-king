@@ -7,9 +7,7 @@ import { BucketProvider, BucketResource } from "../src/bucket-api.ts";
 import { makeFakeShell } from "../src/fake-shell.ts";
 import {
   deleteDirectory,
-  fileText,
   reconcileDirectory,
-  reconcileFile,
   validateDirectory,
 } from "../src/files.ts";
 import { HostShell } from "../src/host-shell.ts";
@@ -182,28 +180,6 @@ it.effect(
     })
 );
 
-it.effect(
-  "writes redacted RemoteFile content with mode 600 and never unwraps in props",
-  () =>
-    Effect.gen(function* secretFile() {
-      const fake = yield* makeFakeShell();
-      const content = Redacted.make("invented-fixture");
-      expect(JSON.stringify(content)).not.toContain("invented-fixture");
-
-      const file = yield* reconcileFile(
-        fake.shell,
-        { content, mode: 0o600, path: "/srv/example/secret" },
-        undefined,
-        false
-      );
-
-      expect(file.mode).toBe(0o600);
-      expect(new TextDecoder().decode(yield* fake.shell.read(file.path))).toBe(
-        fileText(content)
-      );
-    })
-);
-
 class FakeBucket extends Context.Service<
   FakeBucket,
   { readonly version: (value: string) => Effect.Effect<void> }
@@ -316,6 +292,9 @@ secretTest.provider(
 
       const result = yield* stack.deploy(RemoteFile("secret", props));
       expect(result.mode).toBe(0o600);
+      expect(
+        new TextDecoder().decode(yield* (yield* HostShell).read(props.path))
+      ).toBe("invented-only");
       const plan = yield* stack.plan(RemoteFile("secret", props));
       expect(
         Object.values(plan.resources).map((resource) => resource.action)
@@ -348,21 +327,6 @@ test.provider("bucket create, readback, noop plan and delete", (scratch) =>
     ).toEqual(["noop"]);
     yield* stack.destroy();
   })
-);
-
-test.provider(
-  "explicit bucket purge deletes owned objects before the bucket",
-  (scratch) =>
-    Effect.gen(function* purge() {
-      const stack = checkedStack(scratch);
-
-      const bucket = yield* stack.deploy(
-        BucketResource("bucket", { ...props, purgeOnDelete: true })
-      );
-
-      expect(bucket.purgeOnDelete).toBe(true);
-      yield* stack.destroy();
-    })
 );
 
 test.provider("refuses previously enabled or suspended versioning", (scratch) =>

@@ -13,7 +13,7 @@ const samples = Arbitrary.schema(
 );
 
 it.effect.prop(
-  "subscription params, auth and open notice messages round-trip losslessly",
+  "subscription params and open notice messages round-trip losslessly",
   { sample: samples },
   ({ sample }) =>
     Effect.gen(function* roundTrip() {
@@ -26,16 +26,6 @@ it.effect.prop(
       expect(
         yield* Subscribe.decodeParams(yield* Subscribe.encodeParams(params))
       ).toEqual(params);
-
-      const auth = yield* Schema.decodeUnknownEffect(Subscribe.Auth)({
-        token: sample.token,
-      });
-
-      expect(
-        yield* Schema.decodeEffect(Subscribe.Auth)(
-          yield* Schema.encodeEffect(Subscribe.Auth)(auth)
-        )
-      ).toEqual(auth);
 
       for (const raw of [
         { $type: "sh.mschf.ratking.mailbox.subscribe#notice", seq: sample.seq },

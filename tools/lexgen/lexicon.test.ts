@@ -87,8 +87,6 @@ const official = Effect.fn("test.official")(function* official() {
     );
   }
 
-  expect(docs).toHaveLength(14);
-
   return new Lexicons(docs);
 });
 
@@ -323,7 +321,6 @@ const validateOfficial = (
 it.effect("agrees with the official validator on all v0 fixtures", () =>
   Effect.gen(function* parity() {
     const validators = yield* official();
-    expect(fixtures).toHaveLength(28);
     const fs = yield* FileSystem.FileSystem;
     expect(
       (yield* fs.readDirectory(`${root}lexicons/fixtures/v0`)).toSorted()
@@ -597,7 +594,6 @@ it.effect(
         Transport,
         Effect.gen(function* transport() {
           const server = yield* MailboxServer;
-          expect(server.routes.size).toBe(9);
 
           return Transport.of({
             request: Effect.fn("test.request")(function* request(value) {

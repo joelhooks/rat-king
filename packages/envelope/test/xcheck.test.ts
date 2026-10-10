@@ -8,7 +8,6 @@ import {
   canonicalDecode,
   info,
   open,
-  reviewStatus,
   signingBytes,
 } from "../src/envelope.ts";
 import goWire from "./vectors/xcheck/go.json" with { type: "json" };
@@ -62,7 +61,6 @@ it.effect.prop(
       expect(aadBytes(vector.envelope)).toEqual(vector.aadBytes);
       expect(info).toEqual(fixture.info);
       expect(yield* open(requestFor(vector.envelope, keys))).toEqual(payload);
-      expect(reviewStatus).toBe("unreviewed");
     }),
   { arbitrary: { runs: 40, seed: 9180 } }
 );

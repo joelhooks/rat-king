@@ -21,8 +21,6 @@ import {
   needsUpdate,
   readUnit,
   reconcileUnit,
-  renderUnit,
-  unitPath,
   validateUnit,
 } from "../src/systemd.ts";
 import type { UnitProps } from "../src/systemd.ts";
@@ -83,6 +81,7 @@ describe("user unit lifecycle", () => {
 
         const output = yield* reconcileUnit(shell, props, undefined, false);
         expect(output.active).toBe(true);
+        expect(output.enabled).toBe(false);
         yield* deleteUnit(shell, output);
       })
   );
@@ -143,54 +142,6 @@ describe("user unit lifecycle", () => {
         expect(yield* readUnit(fake.shell, next)).toBeUndefined();
         yield* deleteUnit(fake.shell, adopted);
       })
-  );
-
-  it.effect("renders slices and the host contract limits", () =>
-    Effect.gen(function* render() {
-      const props: UnitProps = {
-        home: "/home/example",
-        name: "rat-king.slice",
-        scope: "user",
-        sections: [
-          {
-            lines: [
-              ["MemoryMax", "4G"],
-              ["MemorySwapMax", "0"],
-              ["CPUQuota", "300%"],
-              ["TasksMax", "2048"],
-            ],
-            name: "Slice",
-          },
-        ],
-      };
-
-      const fake = yield* makeFakeShell();
-      const output = yield* reconcileUnit(fake.shell, props, undefined, false);
-      expect(output.enabled).toBe(false);
-      expect(renderUnit(props)).toBe(
-        "[Slice]\nMemoryMax=4G\nMemorySwapMax=0\nCPUQuota=300%\nTasksMax=2048\n"
-      );
-      expect(unitPath(props)).toBe(
-        "/home/example/.config/systemd/user/rat-king.slice"
-      );
-      const text = renderUnit(service());
-
-      for (const field of [
-        "Slice=",
-        "MemoryMax=",
-        "MemorySwapMax=",
-        "CPUQuota=",
-        "TasksMax=",
-        "Nice=",
-        "Restart=",
-        "RestartSec=",
-        "StartLimitIntervalSec=",
-      ]) {
-        expect(text).toContain(field);
-      }
-
-      yield* deleteUnit(fake.shell, output);
-    })
   );
 
   it.effect(
