@@ -28,7 +28,7 @@
     "@oxlint/plugins": "1.83.0",
     "@types/node": "24.13.6",
     "@xstate/effect": "0.1.0-alpha.2",
-    "alchemy": "2.0.0-beta.80",
+    "alchemy": "2.0.0-beta.81",
     "effect": "4.0.1",
     "lefthook": "2.1.14",
     "oxfmt": "0.68.0",

@@ -69,3 +69,24 @@ Root `pnpm check` and `pnpm test` include this package. The normal suite makes n
 The live test creates a random `rat-king-test-*.service`, checks its memory and CPU caps, lowers its memory cap, adopts it with the same PID, proves a noop plan, deletes it and probes for zero test units and files. It creates `rat-king.slice` only when its file is absent and removes that slice only when the test created it.
 
 The Linux lifecycle and release archive reader adapt homeflare-kit at `cf20298`. Its MIT notice is in `LICENSE-homeflare-kit`.
+
+## Consuming from another repository
+
+The package is not published to a registry. A consumer pins it from a full rat-king commit sha:
+
+```json
+"@rat-king/alchemy-nest": "github:joelhooks/rat-king#<full sha>&path:/packages/alchemy-nest"
+```
+
+Never use a branch or tag. The sha is the pin, and the consumer's lockfile records it.
+
+The package ships TypeScript source. Importing it needs a toolchain that runs `.ts` files (Node 24 or later, or a bundler) and `allowImportingTsExtensions` when typechecking.
+
+| Entry point | Exports |
+| --- | --- |
+| `@rat-king/alchemy-nest` | `providers`, the four resources and their provider layers, `HostShell`, `HostError`, `RatsNest`, `Ssh`, `ReleaseSource`, `sourceLayer`, `ObjectStore`, `Celld` and the prop and attribute types |
+| `@rat-king/alchemy-nest/RatsNest` | `RatsNest` (`Host`, `layer`), `Host`, `layer` and `InventoryError` |
+
+The consumer's pins must match this package exactly: `alchemy` `2.0.0-beta.81` and `effect` `4.0.1`. Pin both in the consumer's own `package.json` with no range. A different alchemy or effect resolves a second copy, and the provider and service types stop lining up.
+
+The package declares no `workspace:` or `catalog:` specifiers, so it resolves outside this workspace. Keep it that way.
