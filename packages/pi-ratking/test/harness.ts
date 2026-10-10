@@ -10,18 +10,17 @@ import type { ReservedValue } from "../src/name.ts";
 import { ratKingLayer } from "../src/ratking.ts";
 import { SecretStore } from "../src/secrets.ts";
 
-const secrets = Layer.sync(SecretStore, () => {
-  const values = new Map<string, string>();
-
-  return SecretStore.of({
-    add: (name, value) =>
-      Effect.sync(() => {
-        values.set(name, Redacted.value(value));
-      }),
-    exists: (name) => Effect.sync(() => values.has(name)),
-    lease: (name) => Effect.sync(() => Redacted.make(values.get(name) ?? "")),
-  });
-});
+const secrets = (values: Map<string, string>) =>
+  Layer.sync(SecretStore, () =>
+    SecretStore.of({
+      add: (name, value) =>
+        Effect.sync(() => {
+          values.set(name, Redacted.value(value));
+        }),
+      exists: (name) => Effect.sync(() => values.has(name)),
+      lease: (name) => Effect.sync(() => Redacted.make(values.get(name) ?? "")),
+    })
+  );
 
 const issuer = Layer.effect(
   Issuer,
@@ -46,11 +45,12 @@ export const harness = (
   overrides: {
     readonly reserved?: ReservedValue;
     readonly documents?: readonly string[];
+    readonly secrets?: Map<string, string>;
   } = {}
 ) =>
   ratKingLayer.pipe(
     Layer.provideMerge(issuer),
-    Layer.provideMerge(secrets),
+    Layer.provideMerge(secrets(overrides.secrets ?? new Map<string, string>())),
     Layer.provideMerge(directoryLayer),
     Layer.provideMerge(
       Layer.succeed(

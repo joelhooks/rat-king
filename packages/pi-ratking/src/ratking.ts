@@ -171,6 +171,12 @@ export class RatKing extends Context.Service<
 
 const Cursor = Schema.Struct({ afterSeq: Schema.Int });
 
+const SavedLease = Schema.Struct({
+  did: Schema.String,
+  generation: Schema.Int,
+  leaseId: Schema.String,
+});
+
 const peersOf = (documents: readonly PeerDocument[]) => [
   ...new Map(documents.map((document) => [document.id, document])).values(),
 ];
@@ -212,6 +218,29 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
   const cursorFile = (name: string) =>
     path.join(settings.state, "cursors", `${provisionLabel(name)}.json`);
+
+  const leaseFile = (name: string) =>
+    path.join(settings.state, "leases", `${provisionLabel(name)}.json`);
+
+  const readLease = (name: string, did: string) =>
+    fs
+      .readFileString(leaseFile(name))
+      .pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(Schema.fromJsonString(SavedLease))
+        ),
+        Effect.option,
+        Effect.map(Option.filter((saved) => saved.did === did))
+      );
+
+  const writeLease = (name: string, saved: LeaseFence) =>
+    Schema.encodeEffect(Schema.fromJsonString(SavedLease))(saved).pipe(
+      Effect.flatMap((json) => writePrivateJson(leaseFile(name), json)),
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+      Effect.tapError(() => Effect.logWarning("Rat King lease not saved")),
+      Effect.ignore
+    );
 
   const readCursor = (name: string) =>
     fs.readFileString(cursorFile(name)).pipe(
@@ -383,6 +412,11 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                 leaseId: lease.leaseId,
               })
             ),
+            writeLease(own.name, {
+              did: own.did,
+              generation: lease.generation,
+              leaseId: lease.leaseId,
+            }),
             Ref.set(
               state,
               ReaderState.Live({
@@ -401,12 +435,24 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           ),
       };
 
+      const savedLease = yield* readLease(own.name, own.did);
+
       yield* client.consume(
         intake(own, deliver),
-        Option.match(yield* Ref.get(lastLease), {
-          onNone: () => options,
-          onSome: (resume) => ({ ...options, resume }),
-        })
+        Option.match(
+          Option.orElse(yield* Ref.get(lastLease), () => savedLease),
+          {
+            onNone: () => options,
+            onSome: (resume): ConsumeOptions => ({
+              ...options,
+              resume: {
+                did: resume.did,
+                generation: resume.generation,
+                leaseId: resume.leaseId,
+              },
+            }),
+          }
+        )
       );
     }).pipe(
       Effect.ensuring(Ref.set(fence, Option.none())),

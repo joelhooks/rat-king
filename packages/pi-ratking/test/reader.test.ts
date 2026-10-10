@@ -105,12 +105,13 @@ it.live.prop(
 );
 
 it.live(
-  "a reader that loses its connection re-acquires with its last lease as resume, so a mailbox restart costs no lease expiry wait",
+  "a reader re-acquires with its last lease as resume, after a lost connection and in a successor Pi on the same host, so neither a mailbox restart nor a session restart waits out the lease",
   () =>
     Effect.gen(function* resumeProof() {
       const fs = yield* FileSystem.FileSystem;
       const state = yield* fs.makeTempDirectoryScoped();
       const acquires: unknown[] = [];
+      const store = new Map<string, string>();
       let lists = 0;
 
       const http = HttpClient.make((request) =>
@@ -172,11 +173,48 @@ it.live(
             Schedule.while(({ attempt }) => attempt < 400)
           )
         );
-      }).pipe(Effect.provide(harness(state, http)));
+      }).pipe(
+        Effect.provide(harness(state, http, [], { secrets: store })),
+        Effect.scoped
+      );
 
       expect(acquires[1]).toMatchObject({
         generation: 1,
         leaseId: "3mxjs56afmy5b",
+      });
+
+      const saved: unknown = JSON.parse(
+        yield* fs.readFileString(`${state}/leases/tester.json`)
+      );
+
+      acquires.length = 0;
+      lists = 0;
+
+      yield* Effect.gen(function* successor() {
+        const ratking = yield* RatKing;
+
+        yield* ratking.run(facts, () => Effect.void);
+
+        yield* Effect.retry(
+          Effect.suspend(() =>
+            acquires.length >= 1
+              ? Effect.void
+              : Effect.fail("successor has not acquired")
+          ),
+          Schedule.spaced("50 millis").pipe(
+            Schedule.while(({ attempt }) => attempt < 400)
+          )
+        );
+      }).pipe(
+        Effect.provide(harness(state, http, [], { secrets: store })),
+        Effect.scoped
+      );
+
+      expect(acquires[0]).toMatchObject({
+        generation: Predicate.hasProperty(saved, "generation")
+          ? saved.generation
+          : -1,
+        leaseId: Predicate.hasProperty(saved, "leaseId") ? saved.leaseId : "",
       });
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   60_000
