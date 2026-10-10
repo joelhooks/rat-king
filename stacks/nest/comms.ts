@@ -59,12 +59,18 @@ export const Counts = Schema.Struct({
   ratking: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   raw: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   sent: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  unanswered: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
 });
 
 export type CountsValue = typeof Counts.Type;
 
-export const classify = (text: string | undefined) =>
-  text !== undefined && text.includes("Rat King") ? "ratking" : "raw";
+export const classify = (text: string | undefined) => {
+  if (text === undefined) {
+    return "unanswered";
+  }
+
+  return text.includes("Rat King") ? "ratking" : "raw";
+};
 
 export const doneBar = (local: CountsValue, remote: CountsValue) =>
   local.raw === 0 && remote.raw === 0 && local.lost === 0 && remote.lost === 0;
@@ -167,25 +173,19 @@ export const countFrames = <E, R>(
         Match.exhaustive
       )
     );
-    let raw = 0;
-    let ratking = 0;
+    const classified = { ratking: 0, raw: 0, unanswered: 0 };
 
     for (const [file, ids] of calls) {
       for (const id of ids) {
-        if (classify(results.get(file)?.get(id)) === "ratking") {
-          ratking += 1;
-        } else {
-          raw += 1;
-        }
+        classified[classify(results.get(file)?.get(id))] += 1;
       }
     }
 
     return {
+      ...classified,
       fallbacks,
       lost,
       quarantined,
-      ratking,
-      raw,
       sent,
     } satisfies CountsValue;
   });

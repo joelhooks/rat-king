@@ -3,6 +3,7 @@ import { Effect, Match, Schema, Stream } from "effect";
 import { expect } from "vitest";
 
 import { countFrames, doneBar } from "../../../stacks/nest/comms.ts";
+import { composeDigest } from "../../../stacks/nest/digest.ts";
 import { StageConfig } from "../../../stacks/nest/stage-config.ts";
 
 it.prop(
@@ -146,11 +147,24 @@ it.effect.prop(
       );
       expect(counts.quarantined).toBe(quarantined);
       expect(counts.raw).toBe(
-        sends.filter((call) => call.result !== "ratking").length
+        sends.filter((call) => call.result === "raw").length
       );
       expect(counts.ratking).toBe(
         sends.filter((call) => call.result === "ratking").length
       );
+      expect(counts.unanswered).toBe(
+        sends.filter((call) => call.result === "missing").length
+      );
+
+      const digest = composeDigest(
+        { reasons: [], status: "fail" },
+        counts,
+        counts,
+        "2026-10-10T01:00:00Z"
+      );
+
+      expect(digest.comms.raw_intercom_24h).toBe(counts.raw * 2);
+      expect(digest.comms.unanswered_24h).toBe(counts.unanswered * 2);
     })
 );
 
@@ -165,7 +179,13 @@ it.prop(
   "done-bar passes only with zero raw sends and zero losses on each host",
   [Thresholds],
   ([counts]) => {
-    const other = { fallbacks: 3, quarantined: 2, ratking: 10, sent: 50 };
+    const other = {
+      fallbacks: 3,
+      quarantined: 2,
+      ratking: 10,
+      sent: 50,
+      unanswered: 100,
+    };
 
     const passed = doneBar(
       { ...other, lost: counts.localLost, raw: counts.localRaw },
