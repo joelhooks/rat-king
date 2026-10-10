@@ -122,8 +122,10 @@ export const consume = <E, R>(
                 const current = yield* Clock.currentTimeMillis;
 
                 if (holder !== undefined) {
-                  yield* Effect.sleep(
-                    Math.max(1, Date.parse(holder.expiresAt) - current)
+                  yield* Effect.interruptible(
+                    Effect.sleep(
+                      Math.max(1, Date.parse(holder.expiresAt) - current)
+                    )
                   );
                 }
 
