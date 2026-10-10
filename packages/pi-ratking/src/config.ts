@@ -10,7 +10,7 @@ import {
   Schema,
 } from "effect";
 
-import { Did, Reserved } from "./name.ts";
+import { AgentName, Did, Reserved } from "./name.ts";
 import type { ReservedValue } from "./name.ts";
 
 export const ToolName = Schema.String.check(
@@ -43,6 +43,7 @@ export const PiConfig = Schema.Struct({
   documents: Schema.optionalKey(Schema.Array(Schema.String)),
   endpoint: Schema.String.check(Schema.isPattern(/^https?:\/\/\S+$/u)),
   issuer: Schema.optionalKey(IssuerSetting),
+  refuse: Schema.optionalKey(Schema.Array(AgentName)),
   reserved: Schema.optionalKey(Reserved),
   secretsCommand: Schema.optionalKey(Schema.String),
   serviceDid: Did,
@@ -59,6 +60,7 @@ export interface SettingsValue {
   readonly documents: readonly string[];
   readonly endpoint: string;
   readonly issuer: Option.Option<IssuerSettingValue>;
+  readonly refuse: readonly string[];
   readonly reserved: ReservedValue;
   readonly secretsCommand: string;
   readonly serviceDid: string;
@@ -132,6 +134,7 @@ export const loadSettings = Effect.fn("RatKing.loadSettings")(
       documents: config.documents ?? [],
       endpoint: config.endpoint,
       issuer: Option.fromNullishOr(config.issuer),
+      refuse: config.refuse ?? [],
       reserved: config.reserved ?? {},
       secretsCommand: config.secretsCommand ?? "secrets",
       serviceDid: config.serviceDid,

@@ -38,7 +38,11 @@ const issuer = Layer.effect(
   })
 );
 
-export const harness = (state: string, http: HttpClient.HttpClient) =>
+export const harness = (
+  state: string,
+  http: HttpClient.HttpClient,
+  refuse: readonly string[] = []
+) =>
   ratKingLayer.pipe(
     Layer.provideMerge(issuer),
     Layer.provideMerge(secrets),
@@ -53,6 +57,7 @@ export const harness = (state: string, http: HttpClient.HttpClient) =>
           documents: [],
           endpoint: "https://mailbox.example.invalid",
           issuer: Option.none(),
+          refuse,
           reserved: {},
           secretsCommand: "secrets",
           serviceDid: "did:web:mailbox.example.invalid",

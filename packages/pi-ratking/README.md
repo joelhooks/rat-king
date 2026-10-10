@@ -20,11 +20,12 @@ The extension reads `RATKING_CONFIG`, or `~/.config/rat-king/pi.json`. Without a
       "aliases": ["servo"]
     }
   },
+  "refuse": ["fleet-owner"],
   "toolName": "ratking"
 }
 ```
 
-`state` defaults to `~/.local/state/rat-king/pi`. It holds the name claims, read cursors, locks and `directory.json`, the name → DID and public document directory. `documents` lists files of public DID documents, such as the operator-configured fleet documents. `askTimeoutMs` defaults to ten minutes.
+`state` defaults to `~/.local/state/rat-king/pi`. It holds the name claims, read cursors, locks and `directory.json`, the name → DID and public document directory. `documents` lists files of public DID documents, such as the operator-configured fleet documents. `askTimeoutMs` defaults to ten minutes. A name in `refuse` starts no reader and mints nothing: `status` reports it as refused and every send fails with `NOT DELIVERED: Refused`. Use it for names another reader still holds.
 
 ## Names
 
@@ -48,6 +49,12 @@ Each inbound message is injected as a visible `ratking_message` with sender, bod
 
 The payload is `{ from, body, kind?, replyTo? }`. It carries no session id: whoever holds the name's lease reads its mail. A sender name is marked unverified unless the directory maps the signed sender DID to it.
 
+A reader with no cursor starts at the mailbox's current head (`throughSeq`), so an identity with history never replays it. A message the server refuses to deliver or ack with `InvalidTransition` (already acked, expired or otherwise settled) is skipped and the cursor moves past it.
+
+A message that cannot be opened (unknown sender, bad signature, undecryptable or malformed envelope) triggers one lookup of the sender's document through the mailbox's `getPeerDocument`, then one more open. If that fails, the reader writes `state/quarantine/<label>/<seq>.json` with metadata only (`seq`, `messageId`, `senderDid`, `reason`, `at`; never the body or ciphertext), skips the message without deliver or ack, and moves the cursor past it. `status` shows the quarantine count and the latest entry.
+
+A decrypted body that is not a Rat King payload is still delivered, as raw text from the sender DID.
+
 ## Tool
 
 The tool takes pi-intercom's parameters. `send`, `ask`, `reply`, `pending`, `list` and `status` work. `ask` waits for the reply whose `replyTo` names the ask and whose signed sender is the asked DID; other messages are injected normally. `handover`, `cancel`, `cwd` targeting and `openProjectPaneIfMissing` are refused with a clear error. A send the mailbox did not take returns `NOT DELIVERED: <code>`, with no fallback.
@@ -63,8 +70,8 @@ Pi keeps the first tool registered under a name and silently drops later ones. W
 
 ## Limits
 
-- A message from a DID missing from the local directory and configured documents cannot be opened. The reader restarts with backoff; until that sender's document is known, its message blocks later mail.
 - A host without an issuer can use only names with existing secrets and directory entries.
 - The issuer directory lists only names registered through it. Names registered with the command issuer are invisible to it.
-- An identity with mailbox history needs a seeded cursor in `state/cursors/<label>.json`; otherwise the reader replays history and stops on an already acked message.
+- A reader that loses its cursor resumes at the head; mail that arrived while it had none is skipped, not read.
+- A quarantined message stays unacked on the server; its sender sees no delivery.
 - Registered DID documents have no revoke route.

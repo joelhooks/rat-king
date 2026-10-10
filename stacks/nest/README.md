@@ -35,6 +35,8 @@ Additional stage inputs:
 
 - `RAT_KING_OPERATOR_DIDS='["did:web:operator.example.invalid"]'`
 - `RAT_KING_LEASE_RESOLVERS='[]'` until the owner supplies resolver DIDs
+- `RAT_KING_ISSUER_DID_TEMPLATE='did:web:{agent}.pi.example.invalid'` enables `identity.register`; unset, the Worker gets no issuer template and register answers 503
+- `RAT_KING_ISSUER_RESERVED='["switchboard"]'` lists names the issuer refuses; applied only with the template
 - `RAT_KING_DOCUMENTS` contains the operator's public DID document, never its private keys
 - `RAT_KING_AGENT_MODEL=faux`, `RAT_KING_CLAUDE_SIDECAR=false`
 - `RAT_KING_SLICE_MEMORY_MAX=1536M`; pilot slice CPUQuota is 150%, below a 2 CPU / 2 GB VM's limits

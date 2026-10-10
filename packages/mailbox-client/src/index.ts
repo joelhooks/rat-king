@@ -45,4 +45,4 @@ export type {
 
 export { consumerMachine } from "./consume.ts";
 
-export type { ConsumeOptions, MessageMeta } from "./consume.ts";
+export type { ConsumeOptions, MessageMeta, Skipped } from "./consume.ts";

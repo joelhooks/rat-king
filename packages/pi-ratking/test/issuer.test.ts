@@ -83,6 +83,7 @@ const services = (
             endpoint: "https://issuer.example.invalid",
             host: hostSecret,
           }),
+          refuse: [],
           reserved: {},
           secretsCommand: "secrets",
           serviceDid,
