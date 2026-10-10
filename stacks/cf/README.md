@@ -43,7 +43,7 @@ For the later live phase, set both approval and offline inputs explicitly, use f
 
 ## Projection and source evidence
 
-Installed Alchemy `2.0.0-beta.80` is authoritative, not the beta.79 documentation mirror. The installed Worker source has expanded environment binding typing and updated Effect HTTP imports compared with that mirror.
+Installed Alchemy `2.0.0-beta.81` is authoritative, not the beta.79 documentation mirror. The installed Worker source has expanded environment binding typing and updated Effect HTTP imports compared with that mirror.
 
 `WorkerProps.script` bypasses bundling. `WorkerProvider` places that string directly in the uploaded `main.js` module. The projection passes the exact `prepareDeployment.bundle` string, without rebuilding. `bundle: false` preserves explicitly declared compatibility flags instead of appending Alchemy defaults.
 
