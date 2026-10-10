@@ -19,10 +19,12 @@ import { harness } from "./harness.ts";
 
 const Status = Schema.Literals([400, 403, 409, 500, 503]);
 
+const Reason = Schema.Literals(["Conflict", "LeaseMismatch"]);
+
 it.live.prop(
-  "a send the mailbox does not take is a typed NOT DELIVERED, and an unknown name never reaches the network",
-  [Arbitrary.schema(Status)],
-  ([status]) =>
+  "a send the mailbox does not take is a typed NOT DELIVERED after retrying only uncertain admission or a lease that moved under it, and an unknown name never reaches the network",
+  [Arbitrary.schema(Status), Arbitrary.schema(Reason)],
+  ([status, reason]) =>
     Effect.gen(function* loudFailure() {
       const fs = yield* FileSystem.FileSystem;
       const state = yield* fs.makeTempDirectoryScoped();
@@ -39,7 +41,7 @@ it.live.prop(
           return HttpClientResponse.fromWeb(
             request,
             Response.json(
-              { error: isSend ? "Conflict" : "MailboxUnavailable" },
+              { error: isSend ? reason : "MailboxUnavailable" },
               { status: isSend ? status : 503 }
             )
           );
@@ -75,9 +77,11 @@ it.live.prop(
         const refused = yield* ratking.send("peer", "hello").pipe(Effect.flip);
 
         expect(refused.code).toBe(status < 500 ? "Rejected" : "Uncertain");
-        expect(submitted.length).toBe(status < 500 ? 1 : 3);
+        expect(submitted.length).toBe(
+          status < 500 && reason === "Conflict" ? 1 : 3
+        );
         expect(new Set(submitted).size).toBe(1);
       }).pipe(Effect.provide(harness(state, http)));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-  { arbitrary: { runs: 6 }, timeout: 60_000 }
+  { arbitrary: { runs: 20 }, timeout: 120_000 }
 );

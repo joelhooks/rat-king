@@ -682,7 +682,10 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             })
           ),
           Effect.flatMap((outcome) =>
-            SendOutcomes.$is("Uncertain")(outcome) && count < 3
+            (SendOutcomes.$is("Uncertain")(outcome) ||
+              (SendOutcomes.$is("Rejected")(outcome) &&
+                outcome.error.error === "LeaseMismatch")) &&
+            count < 3
               ? Effect.sleep(Duration.seconds(count)).pipe(
                   Effect.andThen(attempt(count + 1))
                 )
