@@ -75,6 +75,15 @@ const findMessage = (tx: Transaction, sender: string, messageId: string) => {
   return message;
 };
 
+const pastExpiry = (message: Message, now: number) =>
+  message.envelope.aad.expiresAt !== undefined &&
+  Date.parse(message.envelope.aad.expiresAt) <= now;
+
+const expiryDue = (message: Message, now: number) =>
+  pastExpiry(message, now) &&
+  Defs.isDeliveryStateKnown(message.current.state) &&
+  advance(message.current.state, "expire") === "expired";
+
 export const deliverMessage = (
   tx: Transaction,
   sender: string,
@@ -83,10 +92,15 @@ export const deliverMessage = (
 ) => {
   let message = findMessage(tx, sender, messageId);
 
-  if (
-    message.envelope.aad.expiresAt &&
-    Date.parse(message.envelope.aad.expiresAt) <= now
-  ) {
+  if (message.current.state === "expired") {
+    return message.current;
+  }
+
+  if (expiryDue(message, now)) {
+    return transitionMessage(tx, message, "expire", "Expired message");
+  }
+
+  if (pastExpiry(message, now)) {
     throw failure("InvalidTransition", 409, "Expired message");
   }
 
@@ -129,16 +143,27 @@ export const mailboxHandlers = (policy: MailboxPolicy) =>
               input.message.messageId
             );
 
-            if (
-              message.envelope.aad.expiresAt &&
-              Date.parse(message.envelope.aad.expiresAt) <= now &&
-              message.current.state !== "acked"
-            ) {
-              throw failure("InvalidTransition", 409, "Expired message");
-            }
-
             if (message.current.state === "acked") {
               return { receipt: message.current };
+            }
+
+            if (message.current.state === "expired") {
+              return { receipt: message.current };
+            }
+
+            if (expiryDue(message, now)) {
+              return {
+                receipt: transitionMessage(
+                  tx,
+                  message,
+                  "expire",
+                  "Expired message"
+                ),
+              };
+            }
+
+            if (pastExpiry(message, now)) {
+              throw failure("InvalidTransition", 409, "Expired message");
             }
 
             return { receipt: transitionMessage(tx, message, "ack") };
