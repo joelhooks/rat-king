@@ -30,6 +30,7 @@ export const Bucket = (
   props: {
     readonly host: Node;
     readonly name: string;
+    readonly prepared?: readonly Output.Output<string>[];
     readonly purgeOnDelete?: boolean;
     readonly slice: Output.Output<string>;
     readonly restartGateBundle?: string | undefined;
@@ -127,26 +128,18 @@ export const Bucket = (
       },
     });
 
-    const unit = yield* SystemdUnit(
-      "server",
-      Output.all(
+    const unit = yield* SystemdUnit("server", {
+      ...declaration,
+      prepared: [
         binary.path,
         data.path,
         identity.path,
-        identity.sha256,
-        binary.sha256,
         props.slice,
-        gate?.sha256 ?? props.slice
-      ).pipe(
-        Output.map((values) => ({
-          ...declaration,
-          restartOn:
-            gate === undefined
-              ? [values[3], values[4]]
-              : [values[3], values[4], values[6]],
-        }))
-      )
-    );
+        gate?.sha256 ?? props.slice,
+        ...(props.prepared ?? []),
+      ],
+      restartOn: Output.all(identity.sha256, binary.sha256),
+    });
 
     const maintenance = yield* RemoteFile("storage-maintenance", {
       content: storageMaintenanceScript,

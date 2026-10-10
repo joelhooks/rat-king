@@ -1,8 +1,9 @@
 import { Resource } from "alchemy";
 import { AdoptPolicy, Unowned } from "alchemy/AdoptPolicy";
 import { isResolved } from "alchemy/Diff";
+import * as Output from "alchemy/Output";
 import * as Provider from "alchemy/Provider";
-import { Effect, Option, Schema } from "effect";
+import { Config, Effect, Option, Schema } from "effect";
 
 import { absent } from "./absent.ts";
 import { recovering } from "./adoption.ts";
@@ -16,6 +17,7 @@ import {
   reconcileUnit,
   unitPath,
   validateUnit,
+  withoutLegacyHelperInputs,
   UnitSchema,
 } from "./systemd.ts";
 import type { UnitAttributes, UnitProps } from "./systemd.ts";
@@ -57,21 +59,43 @@ export const NodeProvider = () =>
       return NodeResource.Provider.of({
         delete: ({ output }) => deleteUnit(shell, output),
         diff: Effect.fn("Celld.Node.diff")(function* operation({
+          olds,
           news,
           output,
         }) {
-          if (!isResolved(news)) {
+          if (
+            Output.isExpr(news) ||
+            Effect.isEffect(news) ||
+            Config.isConfig(news)
+          ) {
             return absent;
           }
 
-          yield* validateUnit(news);
+          if (Symbol.iterator in news) {
+            return absent;
+          }
+
+          const operational = { ...news, prepared: [] };
+
+          if (!isResolved<NodeProps>(operational)) {
+            return absent;
+          }
+
+          yield* validateUnit(operational);
+
+          const previous = withoutLegacyHelperInputs(
+            olds,
+            operational,
+            output,
+            "prepared" in news
+          );
 
           if (output === undefined) {
             return { action: "update" };
           }
 
-          if (unitPath(news) !== output.path) {
-            if ((yield* readUnit(shell, news)) !== undefined) {
+          if (unitPath(operational) !== output.path) {
+            if ((yield* readUnit(shell, operational)) !== undefined) {
               return yield* refuse("Replacement node unit already exists.");
             }
 
@@ -79,10 +103,14 @@ export const NodeProvider = () =>
           }
 
           const changed =
-            needsUpdate(news, output, yield* readUnit(shell, news)) ||
-            news.publicUrl !== output.publicUrl ||
-            news.internalUrl !== output.internalUrl ||
-            news.version !== output.version;
+            needsUpdate(
+              operational,
+              previous ?? output,
+              yield* readUnit(shell, operational)
+            ) ||
+            operational.publicUrl !== output.publicUrl ||
+            operational.internalUrl !== output.internalUrl ||
+            operational.version !== output.version;
 
           return { action: changed ? "update" : "noop" };
         }),
@@ -120,6 +148,7 @@ export const NodeProvider = () =>
           };
         }),
         reconcile: Effect.fn("Celld.Node.reconcile")(function* operation({
+          olds,
           news,
           output,
         }) {
@@ -131,7 +160,17 @@ export const NodeProvider = () =>
             yield* startup.value.beforeStart(news.name, news.home);
           }
 
-          const unit = yield* reconcileUnit(shell, news, output, adopt);
+          const unit = yield* reconcileUnit(
+            shell,
+            news,
+            withoutLegacyHelperInputs(
+              olds,
+              news,
+              output,
+              news.prepared !== undefined
+            ),
+            adopt
+          );
 
           if (Option.isSome(startup)) {
             yield* startup.value.afterStart(news.name);

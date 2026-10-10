@@ -165,6 +165,12 @@ export const DeploymentProvider = () =>
 
       const installed = Effect.fn("Celld.Deployment.installed")(
         function* installed(props: DeploymentProps) {
+          const bundleMode = yield* shell.stat(`${props.directory}/worker.mjs`);
+
+          const configurationMode = yield* shell.stat(
+            `${props.directory}/${props.bindingsFile === undefined ? "wrangler.json" : "wrangler.public.json"}`
+          );
+
           const bundle = yield* shell.read(`${props.directory}/worker.mjs`);
 
           const configuration = yield* shell.read(
@@ -172,6 +178,8 @@ export const DeploymentProvider = () =>
           );
 
           return (
+            bundleMode?.mode === 0o600 &&
+            configurationMode?.mode === 0o600 &&
             bundle !== undefined &&
             configuration !== undefined &&
             digest(bundle) === textDigest(props.bundle) &&
@@ -322,16 +330,18 @@ export const DeploymentProvider = () =>
             });
           }
 
-          yield* shell.write({
-            bytes: new TextEncoder().encode(news.bundle),
-            mode: 0o600,
-            path: `${news.directory}/worker.mjs`,
-          });
-          yield* shell.write({
-            bytes: new TextEncoder().encode(news.configuration),
-            mode: 0o600,
-            path: `${news.directory}/${news.bindingsFile === undefined ? "wrangler.json" : "wrangler.public.json"}`,
-          });
+          if (!(yield* installed(news))) {
+            yield* shell.write({
+              bytes: new TextEncoder().encode(news.bundle),
+              mode: 0o600,
+              path: `${news.directory}/worker.mjs`,
+            });
+            yield* shell.write({
+              bytes: new TextEncoder().encode(news.configuration),
+              mode: 0o600,
+              path: `${news.directory}/${news.bindingsFile === undefined ? "wrangler.json" : "wrangler.public.json"}`,
+            });
+          }
 
           if (news.bindingsFile !== undefined) {
             yield* must(shell, [

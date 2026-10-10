@@ -3,7 +3,9 @@ import type { EventFromLogic } from "xstate";
 import { setup } from "xstate";
 
 const Context = Schema.Struct({
+  deferred: Schema.String,
   failed: Schema.String,
+  retryAt: Schema.Number,
   sha: Schema.String,
   successful: Schema.String,
 });
@@ -14,11 +16,13 @@ export const shipMachine = setup({
   schemas: {
     context: Schema.toStandardSchemaV1(Context),
     events: {
-      deferred: Empty,
+      deferred: Schema.toStandardSchemaV1(
+        Schema.Struct({ retryAt: Schema.Number })
+      ),
       failure: Empty,
       fetchFailed: Empty,
       observed: Schema.toStandardSchemaV1(
-        Schema.Struct({ sha: Schema.String })
+        Schema.Struct({ now: Schema.Number, sha: Schema.String })
       ),
       pending: Empty,
       ready: Empty,
@@ -26,23 +30,52 @@ export const shipMachine = setup({
       tick: Empty,
     },
     input: Schema.toStandardSchemaV1(
-      Schema.Struct({ failed: Schema.String, successful: Schema.String })
+      Schema.Struct({
+        deferred: Schema.optionalKey(Schema.String),
+        failed: Schema.String,
+        retryAt: Schema.optionalKey(Schema.Number),
+        successful: Schema.String,
+      })
     ),
   },
 }).createMachine({
-  context: ({ input }) => ({ ...input, sha: "" }),
+  context: ({ input }) => ({
+    ...input,
+    deferred: input.deferred ?? "",
+    retryAt: input.retryAt ?? 0,
+    sha: "",
+  }),
   id: "ship",
   initial: "idle",
   states: {
+    deferred: { on: { tick: { target: "fetching" } } },
     deploying: {
       on: {
-        deferred: { target: "idle" },
+        deferred: ({ context, event }) => ({
+          context: {
+            ...context,
+            deferred: context.sha,
+            retryAt: event.retryAt,
+          },
+          target: "deferred",
+        }),
         failure: ({ context }) => ({
-          context: { ...context, failed: context.sha },
+          context: {
+            ...context,
+            deferred: "",
+            failed: context.sha,
+            retryAt: 0,
+          },
           target: "failed",
         }),
         success: ({ context }) => ({
-          context: { ...context, failed: "", successful: context.sha },
+          context: {
+            ...context,
+            deferred: "",
+            failed: "",
+            retryAt: 0,
+            successful: context.sha,
+          },
           target: "idle",
         }),
       },
@@ -63,8 +96,15 @@ export const shipMachine = setup({
             return { context: { ...context, sha: event.sha }, target: "idle" };
           }
 
+          if (event.sha === context.deferred && event.now < context.retryAt) {
+            return {
+              context: { ...context, sha: event.sha },
+              target: "deferred",
+            };
+          }
+
           return {
-            context: { ...context, sha: event.sha },
+            context: { ...context, deferred: "", retryAt: 0, sha: event.sha },
             target: "waiting-ci",
           };
         },

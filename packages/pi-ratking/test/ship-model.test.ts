@@ -1,6 +1,7 @@
 /* oxlint-disable typescript/promise-function-async -- fast-check commands and asyncModelRun are Promise boundaries. */
 import { it } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Clock, Duration, Effect, Schema } from "effect";
+import { TestClock } from "effect/testing";
 import { asyncModelRun } from "fast-check";
 import type { AsyncCommand } from "fast-check";
 import { expect } from "vitest";
@@ -12,12 +13,15 @@ import type { ShipPorts, ShipSnapshot } from "../../../stacks/nest/ship.ts";
 
 const Cycle = Schema.Struct({
   ci: Schema.Boolean,
+  elapsed: Schema.Int.check(Schema.isBetween({ maximum: 100, minimum: 0 })),
   outcome: Schema.Literals(["success", "failed", "deferred"]),
   sha: Schema.Literals(["a".repeat(40), "b".repeat(40), "c".repeat(40)]),
 });
 
 interface Model {
+  deferred: string;
   failed: string;
+  retryAt: number;
   successful: string;
 }
 
@@ -46,18 +50,32 @@ it.effect.prop(
         check: () => true,
         run: (model, real) => {
           const operation = Effect.gen(function* cycleCommand() {
+            yield* TestClock.adjust(Duration.seconds(cycle.elapsed));
+            const now = (yield* Clock.currentTimeMillis) / 1000;
             const before = real.deployed;
 
             const eligible =
               cycle.ci &&
               cycle.sha !== model.successful &&
-              cycle.sha !== model.failed;
+              cycle.sha !== model.failed &&
+              (cycle.sha !== model.deferred || now >= model.retryAt);
+
+            if (
+              cycle.sha !== model.failed &&
+              cycle.sha !== model.successful &&
+              (cycle.sha !== model.deferred || now >= model.retryAt)
+            ) {
+              model.deferred = "";
+              model.retryAt = 0;
+            }
 
             const ports: ShipPorts = {
               checkpoint: (next) =>
                 Effect.sync(() => {
                   real.checkpoint = {
+                    deferred: next.deferred ?? "",
                     failed: next.failed,
+                    retryAt: next.retryAt ?? 0,
                     successful: next.successful,
                   };
                 }),
@@ -71,6 +89,7 @@ it.effect.prop(
                     celldRestarted: false,
                     restartSeconds: 0,
                     result: cycle.outcome,
+                    retryAt: now + 90,
                   };
                 }),
               fetch: Effect.succeed(cycle.sha),
@@ -86,6 +105,11 @@ it.effect.prop(
 
             real.snapshot = yield* shipCycle(real.snapshot, ports);
 
+            if (eligible) {
+              model.deferred = cycle.outcome === "deferred" ? cycle.sha : "";
+              model.retryAt = cycle.outcome === "deferred" ? now + 90 : 0;
+            }
+
             if (eligible && cycle.outcome === "success") {
               model.successful = cycle.sha;
               model.failed = "";
@@ -98,7 +122,15 @@ it.effect.prop(
             expect(real.deployed - before).toBe(eligible ? 1 : 0);
             expect(real.snapshot.context.successful).toBe(model.successful);
             expect(real.snapshot.context.failed).toBe(model.failed);
-            expect(real.checkpoint).toEqual(model);
+            expect(real.snapshot.context.deferred).toBe(model.deferred);
+            expect(real.snapshot.context.retryAt).toBe(model.retryAt);
+            expect(real.checkpoint.failed).toBe(model.failed);
+            expect(real.checkpoint.successful).toBe(model.successful);
+
+            if (eligible) {
+              expect(real.checkpoint).toEqual(model);
+            }
+
             expect(real.receipts).toBe(real.deployed);
             expect(real.notes).toBe(real.deployed);
           });
@@ -119,9 +151,14 @@ it.effect.prop(
         try: () =>
           asyncModelRun(
             () => ({
-              model: { failed: "", successful: "" },
+              model: { deferred: "", failed: "", retryAt: 0, successful: "" },
               real: {
-                checkpoint: { failed: "", successful: "" },
+                checkpoint: {
+                  deferred: "",
+                  failed: "",
+                  retryAt: 0,
+                  successful: "",
+                },
                 deployed: 0,
                 notes: 0,
                 receipts: 0,
