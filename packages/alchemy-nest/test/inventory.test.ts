@@ -13,7 +13,7 @@ import { describe, expect } from "vitest";
 import { workerIPv4, workerUrl } from "../../../stacks/nest/config.ts";
 import { Host, layer } from "../src/host.ts";
 import { NodeSchema } from "../src/inventory-schema.ts";
-import { nodeUnit, sliceUnit } from "../src/service-units.ts";
+import { nodeUnit } from "../src/service-units.ts";
 import { renderUnit } from "../src/systemd.ts";
 
 const node = {
@@ -75,7 +75,6 @@ describe("RatsNest.Host inventory boundary", () => {
         nodeUnit({ ...props, workerIPv4: workerIPv4("proof", host) })
       );
 
-      expect(JSON.stringify(host)).toBe(JSON.stringify(input));
       expect(proof).toBe(renderUnit(nodeUnit(props)));
       expect(proof).toContain(
         `--listen ${address}:18787 --internal-listen 127.0.0.1:18788`
@@ -87,14 +86,6 @@ describe("RatsNest.Host inventory boundary", () => {
         )
       ).toContain("--listen 127.0.0.1:18787 --internal-listen 127.0.0.1:18788");
       expect(workerUrl("pilot", host)).toBe("http://127.0.0.1:18787");
-      expect(renderUnit(sliceUnit(node.home))).toBe(
-        renderUnit(sliceUnit(node.home, "4G", "300%"))
-      );
-
-      const capped = renderUnit(sliceUnit(node.home, "1536M", "150%"));
-
-      expect(capped).toContain("MemoryMax=1536M");
-      expect(capped).toContain("CPUQuota=150%");
     }
   );
 

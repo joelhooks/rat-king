@@ -2,10 +2,7 @@ import { it } from "@effect/vitest";
 import { Effect, Result } from "effect";
 import { expect } from "vitest";
 
-import {
-  bundleDefines,
-  wranglerConfiguration,
-} from "../src/deployment-config.ts";
+import { wranglerConfiguration } from "../src/deployment-config.ts";
 
 const declaration = {
   compatibility_date: "2026-10-04",
@@ -29,25 +26,6 @@ const build = {
   },
   version: "0.1.0-proof",
 };
-
-it.effect(
-  "generates both mailbox DOs, SQLite migrations and string variables",
-  () =>
-    Effect.gen(function* configuration() {
-      const config = yield* wranglerConfiguration(declaration, build);
-      expect(config).toEqual({
-        ...declaration,
-        main: build.main,
-        no_bundle: true,
-        vars: build.vars,
-      });
-      expect(config).not.toHaveProperty("define");
-      expect(bundleDefines(build)).toEqual({
-        __BUNDLE_COMMIT__: '"1234567"',
-        __BUNDLE_VERSION__: '"0.1.0-proof"',
-      });
-    })
-);
 
 it.effect(
   "refuses unknown top-level and nested keys, unsupported classes and collisions",

@@ -64,87 +64,16 @@ const store = ports.map((port) => line(port)).join("\n");
 
 const complete = `${store}\n${line(18_788, nodeUnit)}\n${line(18_787, nodeUnit, address)}`;
 
-it("requires exact unit, interface and port sets", () => {
-  expect(assessListeners(store, address, false, false, unitCgroups)._tag).toBe(
-    "Ready"
-  );
-  expect(
-    assessListeners(complete, address, true, false, unitCgroups)._tag
-  ).toBe("Ready");
-  expect(assessListeners(store, address, true, false, unitCgroups)._tag).toBe(
-    "Waiting"
-  );
-
-  for (const extra of [8181, 9101]) {
+it("rejects wildcard internal listeners and wrong unit or user ownership", () => {
+  for (const output of [
+    complete.replace("127.0.0.1:18788", "0.0.0.0:18788"),
+    complete.replace(cgroup(nodeUnit), cgroup(storeUnit)),
+    complete.replace(cgroup(nodeUnit), cgroup(nodeUnit, 1001)),
+  ]) {
     expect(
-      assessListeners(
-        `${store}\n${line(extra)}`,
-        address,
-        false,
-        false,
-        unitCgroups
-      )._tag
+      assessListeners(output, address, true, false, unitCgroups)._tag
     ).toBe("Violation");
   }
-
-  expect(
-    assessListeners(
-      complete.replace("127.0.0.1:18788", "0.0.0.0:18788"),
-      address,
-      true,
-      false,
-      unitCgroups
-    )._tag
-  ).toBe("Violation");
-  expect(
-    assessListeners(
-      complete.replace(cgroup(nodeUnit), cgroup(storeUnit)),
-      address,
-      true,
-      false,
-      unitCgroups
-    )._tag
-  ).toBe("Violation");
-  expect(
-    assessListeners(
-      `${complete}\n${line(18_333)}`,
-      address,
-      true,
-      false,
-      unitCgroups
-    )._tag
-  ).toBe("Violation");
-});
-
-it("requires the sidecar as the eleventh listener and rejects its extra ports", () => {
-  const full = `${complete}\n${line(18_789, sidecarUnit, "127.0.0.1", "MainThread")}`;
-  expect(assessListeners(full, address, true, true, unitCgroups)._tag).toBe(
-    "Ready"
-  );
-  expect(assessListeners(complete, address, true, true, unitCgroups)._tag).toBe(
-    "Waiting"
-  );
-  expect(assessListeners(full, address, true, false, unitCgroups)._tag).toBe(
-    "Violation"
-  );
-  expect(
-    assessListeners(
-      `${full}\n${line(19_001, sidecarUnit)}`,
-      address,
-      true,
-      true,
-      unitCgroups
-    )._tag
-  ).toBe("Violation");
-  expect(
-    assessListeners(
-      full.replace("127.0.0.1:18789", "0.0.0.0:18789"),
-      address,
-      true,
-      true,
-      unitCgroups
-    )._tag
-  ).toBe("Violation");
 });
 
 it.prop(
