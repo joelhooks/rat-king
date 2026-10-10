@@ -65,7 +65,12 @@ const execute = Effect.fn("Ship.execute")(
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
     const handle = yield* spawner.spawn(
-      ChildProcess.make(command, args, { cwd, env, stdin: "ignore" })
+      ChildProcess.make(command, args, {
+        cwd,
+        env,
+        extendEnv: true,
+        stdin: "ignore",
+      })
     );
 
     let output = "";
