@@ -34,7 +34,13 @@ import { reasonOf } from "./errors.ts";
 import { claimName, ensureIdentity } from "./identity.ts";
 import type { SessionFacts } from "./identity.ts";
 import { Issuer } from "./issuer.ts";
-import { canonicalName, isReserved, provisionLabel } from "./name.ts";
+import {
+  AgentName,
+  canonicalName,
+  didFor,
+  isReserved,
+  provisionLabel,
+} from "./name.ts";
 import { decodePayload, encodePayload } from "./payload.ts";
 import type { Inbound, KindValue, PayloadValue } from "./payload.ts";
 import { quarantined, recover } from "./quarantine.ts";
@@ -428,6 +434,32 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
   const refused = (code: typeof NotDeliveredCode.Type) => (reason: string) =>
     new NotDelivered({ code, reason });
 
+  const lookup = Effect.fn("RatKing.lookup")(function* lookup(
+    identity: Parameters<typeof ownIdentity>[0],
+    name: string
+  ) {
+    if (!Schema.is(AgentName)(name)) {
+      return yield* refused("UnknownName")(name);
+    }
+
+    const did = didFor(settings.didTemplate, settings.reserved, name);
+
+    const document = yield* Effect.gen(function* fetchDocument() {
+      const client = yield* prepare({
+        endpoint: settings.endpoint,
+        own: yield* ownIdentity(identity),
+        peers: [],
+        serviceDid: settings.serviceDid,
+      });
+
+      return yield* client.refresh(did);
+    }).pipe(Effect.scoped, Effect.provideService(HttpClient.HttpClient, http));
+
+    yield* directory.record(name, document).pipe(Effect.ignore);
+
+    return { did, document, name };
+  });
+
   const transmit = Effect.fn("RatKing.transmit")(function* transmit<B>(
     to: string,
     body: string,
@@ -439,8 +471,12 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     const target = yield* directory
       .resolve(to)
       .pipe(
-        Effect.mapError((error) =>
-          refused("UnknownName")(`${error.name}: ${error.reason}`)
+        Effect.catchTag("UnknownName", (error) =>
+          lookup(own.identity, to).pipe(
+            Effect.mapError(() =>
+              refused("UnknownName")(`${error.name}: ${error.reason}`)
+            )
+          )
         )
       );
 
