@@ -138,5 +138,8 @@ it.effect.prop(
       expect(renderUnit(node)).toContain(
         "Environment=CELLD_LTX_RETENTION_SECS=604800"
       );
+      expect(renderUnit(node)).toContain(
+        "Environment=CELLD_SHUTDOWN_TOTAL_MS=8000"
+      );
     }).pipe(Effect.provide(NodeServices.layer))
 );
