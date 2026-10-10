@@ -60,6 +60,7 @@ import {
 } from "./config.ts";
 import { restoreOwnedData } from "./restore.ts";
 import type { RestoreRequest } from "./restore.ts";
+import { guardedShell } from "./ship-restart.ts";
 
 const issuerVars = Effect.gen(function* readIssuerVars() {
   const template = yield* Config.option(
@@ -92,9 +93,16 @@ export const connection = Layer.unwrap(
       return offlineLayer;
     }
 
-    return sshLayer(
-      yield* hosts.node(yield* Config.String("RAT_KING_LIVE_NODE"))
+    const target = yield* hosts.node(
+      yield* Config.String("RAT_KING_LIVE_NODE")
     );
+
+    return Layer.effect(
+      HostShell,
+      Effect.gen(function* shipConnection() {
+        return yield* guardedShell(yield* HostShell);
+      })
+    ).pipe(Layer.provide(sshLayer(target)));
   })
 ).pipe(Layer.provideMerge(inventoryLayer), Layer.orDie);
 

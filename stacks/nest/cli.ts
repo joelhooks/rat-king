@@ -2,6 +2,7 @@
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import {
   Clock,
+  Config,
   ConfigProvider,
   Console,
   Effect,
@@ -16,9 +17,11 @@ import { doneBar } from "./comms.ts";
 import { commsCounts, digest } from "./digest.ts";
 import { DigestJson, summarize } from "./health.ts";
 import { mintHost } from "./mint-host.ts";
+import { launchdPlist, shipCommand } from "./ship-command.ts";
 import { loadStageConfig, stageProvider } from "./stage-config.ts";
 
 const program = Effect.gen(function* launcher() {
+  const stageConfigPath = yield* Config.String("RAT_KING_STAGE_CONFIG");
   const config = yield* loadStageConfig;
 
   const action = yield* Schema.decodeUnknownEffect(
@@ -29,6 +32,8 @@ const program = Effect.gen(function* launcher() {
       "deploy",
       "backup",
       "health",
+      "ship",
+      "ship-plist",
       "digest",
       "done-bar",
       "mint-host",
@@ -62,6 +67,7 @@ const program = Effect.gen(function* launcher() {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const previous = flags[1] === undefined ? undefined : path.resolve(flags[1]);
+  const resolvedConfigPath = path.resolve(stageConfigPath);
   const directory = path.resolve(config.runtime.RAT_KING_STATE_DIR);
   const root = path.resolve(import.meta.dirname, "../..");
 
@@ -100,6 +106,16 @@ const program = Effect.gen(function* launcher() {
         }
 
         return yield* Effect.void;
+      })
+    ),
+    Match.when("ship", () => shipCommand(config)),
+    Match.when("ship-plist", () =>
+      Effect.gen(function* printShipPlist() {
+        if (config.ship === undefined) {
+          return yield* refuse("Ship configuration required");
+        }
+
+        return yield* Console.log(launchdPlist(config, resolvedConfigPath));
       })
     ),
     Match.when("mint-host", () => mintHost(config)),

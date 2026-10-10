@@ -29,6 +29,7 @@ import { stageName, workerIPv4, workerUrl } from "./config.ts";
 import { assess, collectHealth, DigestJson } from "./health.ts";
 import { isDeferredAdoption, qualifyRecoveryPlan } from "./recovery-plan.ts";
 import { preflightRestore, restoreSnapshot } from "./restore.ts";
+import { guardRestartPlan } from "./ship-restart.ts";
 import { connection, nestStack, nest } from "./stack.ts";
 
 export const claudeMtimeScript = String.raw`
@@ -78,6 +79,35 @@ const restoreBeforeGate = Effect.fn("Nest.restoreBeforeGate")(
       shell,
       dataRoot,
       yield* Config.String("RAT_KING_BACKUP_ROOT")
+    );
+  }
+);
+
+const beforeShipDeploy = Effect.fn("Ship.beforeDeploy")(
+  function* beforeShipDeploy(
+    action: Action,
+    stack: typeof nest,
+    stage: "proof" | "pilot" | "fleet"
+  ) {
+    if (
+      action !== "deploy" ||
+      !(yield* Config.Boolean("RAT_KING_SHIP_MODE").pipe(
+        Config.withDefault(false)
+      ))
+    ) {
+      return yield* Effect.void;
+    }
+
+    const planned = yield* evalStack(stack, (spec) => Plan.make(spec), {
+      stage,
+    }).pipe(adopt(true));
+
+    return yield* guardRestartPlan(
+      yield* HostShell,
+      Plan.describePlan(planned).resources.some(
+        (resource) =>
+          resource.resourceType === "Celld.Node" && resource.action !== "noop"
+      )
     );
   }
 );
@@ -395,6 +425,8 @@ export const run = (action: Action) =>
             return nestStack(request);
           })
         : nest;
+
+    yield* beforeShipDeploy(action, stack, stage);
 
     yield* deploy({ stack, stage }).pipe(adopt(true));
     const shell = yield* HostShell;
