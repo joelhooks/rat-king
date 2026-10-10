@@ -229,7 +229,10 @@ export const consume = <E, R>(
                 const input = { ...fence(), message: event.receipt.message };
 
                 const live = yield* mailbox.deliver(input).pipe(
-                  Effect.map(({ receipt }) => receipt.state !== "expired"),
+                  Effect.map(
+                    ({ receipt }) =>
+                      receipt.state !== "expired" && receipt.state !== "acked"
+                  ),
                   Effect.catchIf(expiredRefusal, () => Effect.succeed(false))
                 );
 
