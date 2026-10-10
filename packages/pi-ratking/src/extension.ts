@@ -82,13 +82,19 @@ const alive = (pid: number) => {
   }
 };
 
-const collectFacts = (
+export const collectFacts = (
   session: string,
-  sessionName?: () => string | undefined
+  sessionName?: () => string | undefined,
+  interactive = true
 ) =>
   Effect.gen(function* sessionFacts() {
-    const env = yield* Config.option(Config.String("RATKING_NAME"));
-    const paneId = yield* Config.option(Config.String("HERDR_PANE_ID"));
+    const env = yield* Config.option(
+      Config.String(interactive ? "RATKING_NAME" : "RATKING_PRINT_NAME")
+    );
+
+    const paneId = interactive
+      ? yield* Config.option(Config.String("HERDR_PANE_ID"))
+      : Option.none<string>();
 
     const pane = Option.isSome(paneId)
       ? yield* paneLabel(paneId.value)
@@ -107,6 +113,7 @@ const collectFacts = (
         ),
       pane,
       pid: process.pid,
+      reads: interactive || Option.isSome(env),
       session,
     } satisfies SessionFacts;
   }).pipe(Effect.provide(NodeServices.layer));
@@ -137,6 +144,7 @@ type Services = Layer.Success<typeof appLayer>;
 type Runtime = ManagedRuntime.ManagedRuntime<Services, NotConfigured>;
 
 export interface SessionStart {
+  readonly interactive?: boolean;
   readonly session: string;
   readonly sessionName?: () => string | undefined;
   readonly warn: (message: string) => void;
@@ -160,6 +168,7 @@ const piHost = (pi: ExtensionAPI): PiHost => ({
   onSessionStart: (handler) => {
     pi.on("session_start", async (_event, ctx) => {
       await handler({
+        interactive: ctx.hasUI,
         session: ctx.sessionManager.getSessionId(),
         sessionName: () => pi.getSessionName(),
         warn: (message) => {
@@ -180,7 +189,8 @@ export interface ExtensionOptions {
   readonly layer: Layer.Layer<Services, NotConfigured>;
   readonly facts: (
     session: string,
-    sessionName?: () => string | undefined
+    sessionName?: () => string | undefined,
+    interactive?: boolean
   ) => Effect.Effect<SessionFacts, Config.ConfigError>;
   readonly tool: Effect.Effect<string>;
 }
@@ -453,7 +463,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       await stop();
 
       const facts = await Effect.runPromise(
-        options.facts(start.session, start.sessionName)
+        options.facts(start.session, start.sessionName, start.interactive)
       );
 
       const live: Runtime = ManagedRuntime.make(

@@ -5,6 +5,7 @@ import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import {
   Arbitrary,
+  ConfigProvider,
   Deferred,
   Effect,
   FileSystem,
@@ -20,6 +21,7 @@ import { document, identity } from "../../mailbox-client/test/identity.ts";
 import { Directory } from "../src/directory.ts";
 import type { PiHost, SessionStart } from "../src/extension.ts";
 import {
+  collectFacts,
   injects,
   ratkingExtension,
   RETIRE_EVENT,
@@ -382,4 +384,50 @@ it.live.prop(
       expect(sends).toBe(0);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 3 }, timeout: 60_000 }
+);
+
+it.effect(
+  "a non-interactive Pi ignores the inherited RATKING_NAME and pane, and reads only with RATKING_PRINT_NAME",
+  () =>
+    Effect.gen(function* printFacts() {
+      const inherited = {
+        HERDR_PANE_ID: "wCD:p3S",
+        RATKING_NAME: "rats-nest/rats-nest-desk",
+      };
+
+      const print = yield* collectFacts("s1", undefined, false).pipe(
+        Effect.provide(
+          ConfigProvider.layer(ConfigProvider.fromUnknown(inherited))
+        )
+      );
+
+      expect(print.env).toEqual(Option.none());
+      expect(print.pane).toEqual(Option.none());
+      expect(print.reads).toBe(false);
+
+      const optedIn = yield* collectFacts("s1", undefined, false).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({
+              ...inherited,
+              RATKING_PRINT_NAME: "script-probe",
+            })
+          )
+        )
+      );
+
+      expect(optedIn.env).toEqual(Option.some("script-probe"));
+      expect(optedIn.reads).toBe(true);
+
+      const interactive = yield* collectFacts("s1", undefined, true).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({ RATKING_NAME: inherited.RATKING_NAME })
+          )
+        )
+      );
+
+      expect(interactive.env).toEqual(Option.some(inherited.RATKING_NAME));
+      expect(interactive.reads).toBe(true);
+    })
 );

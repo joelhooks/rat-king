@@ -87,6 +87,7 @@ export type ReaderState = Data.TaggedEnum<{
     readonly reason: string;
   };
   Refused: { readonly name: string; readonly reason: string };
+  SendOnly: { readonly name: string; readonly reason: string };
 }>;
 
 export const ReaderState = Data.taggedEnum<ReaderState>();
@@ -406,6 +407,17 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     yield* Ref.set(established, Option.some(own));
     yield* Deferred.succeed(self, own);
 
+    if (facts.reads === false) {
+      return yield* Ref.set(
+        state,
+        ReaderState.SendOnly({
+          name: own.name,
+          reason:
+            "Non-interactive Pi: send-only, no reader and no lease. Set RATKING_PRINT_NAME to read a name",
+        })
+      );
+    }
+
     return yield* supervise(
       Option.some(own.name),
       consumeOnce(own, facts, deliver).pipe(
@@ -439,6 +451,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                   Minting: ({ name }) => `Still minting ${name}`,
                   Refused: ({ reason }) => reason,
                   Retrying: ({ reason }) => reason,
+                  SendOnly: () => "Identity not ready",
                   Starting: ({ reason }) => reason,
                 }),
               })
@@ -613,14 +626,19 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         : Effect.fail(
             new AskFailed({
               code: "NoReader",
-              reason:
-                "This Pi's Rat King reader holds no lease, so a reply could not reach it; nothing sent",
+              reason: ReaderState.$is("SendOnly")(reader)
+                ? `${reader.reason}; nothing sent`
+                : "This Pi's Rat King reader holds no lease, so a reply could not reach it; nothing sent",
             })
           )
     ),
     Effect.retry(
       Schedule.spaced("250 millis").pipe(
-        Schedule.upTo({ duration: "30 seconds" })
+        Schedule.upTo({ duration: "30 seconds" }),
+        Schedule.while(
+          ({ input }: { readonly input: AskFailed }) =>
+            !input.reason.startsWith("Non-interactive")
+        )
       )
     )
   );

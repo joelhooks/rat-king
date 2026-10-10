@@ -39,6 +39,7 @@ export interface SessionFacts {
   readonly pane: Option.Option<string>;
   readonly label?: () => Option.Option<string>;
   readonly alive: (pid: number) => boolean;
+  readonly reads?: boolean;
 }
 
 const Claims = Schema.Record(

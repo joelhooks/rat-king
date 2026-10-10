@@ -95,6 +95,7 @@ export const statusText = (tool: string, status: Status) => {
     Refused: ({ reason }) => `REFUSED: ${reason}`,
     Retrying: ({ attempt, reason }) =>
       `retrying (attempt ${attempt}): ${reason}`,
+    SendOnly: ({ reason }) => `send-only: ${reason}`,
     Starting: () => "starting",
   });
 

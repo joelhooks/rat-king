@@ -104,6 +104,34 @@ it.live.prop(
 );
 
 it.live.prop(
+  "a send-only Pi (pi -p from a desk pane) never calls the mailbox lease or list; a reading Pi does",
+  [Arbitrary.schema(Schema.Boolean)],
+  ([reads]) =>
+    Effect.gen(function* sendOnlyProof() {
+      const fs = yield* FileSystem.FileSystem;
+      const state = yield* fs.makeTempDirectoryScoped();
+      const mailbox = fakeMailbox(0);
+
+      yield* Effect.gen(function* proof() {
+        const ratking = yield* RatKing;
+
+        yield* ratking.run({ ...facts, reads }, () => Effect.void);
+        yield* Effect.sleep(Duration.millis(300));
+
+        const status = yield* ratking.status;
+
+        const touched = mailbox.calls.filter(
+          (nsid) => nsid.includes(".lease.") || nsid.endsWith(".list")
+        );
+
+        expect(ReaderState.$is("SendOnly")(status.reader)).toBe(!reads);
+        expect(touched.length === 0).toBe(!reads);
+      }).pipe(Effect.provide(harness(state, mailbox.http)));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  { arbitrary: { runs: 4 }, timeout: 60_000 }
+);
+
+it.live.prop(
   "a reader without a cursor starts at the mailbox head, never seq 0; a saved cursor wins",
   [
     Arbitrary.schema(
