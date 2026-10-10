@@ -14,6 +14,7 @@ import {
 
 import { refuse } from "../../packages/alchemy-nest/src/files.ts";
 import { doneBar } from "./comms.ts";
+import { configDoctor } from "./config-doctor.ts";
 import { commsCounts, digest } from "./digest.ts";
 import { DigestJson, summarize } from "./health.ts";
 import { mintHost } from "./mint-host.ts";
@@ -35,6 +36,7 @@ const program = Effect.gen(function* launcher() {
       "ship",
       "ship-plist",
       "digest",
+      "doctor",
       "done-bar",
       "mint-host",
       "provision",
@@ -117,6 +119,18 @@ const program = Effect.gen(function* launcher() {
 
         return yield* Console.log(launchdPlist(config, resolvedConfigPath));
       })
+    ),
+    Match.when("doctor", () =>
+      configDoctor(config).pipe(
+        Effect.tap((facts) =>
+          Effect.sync(() => {
+            if (facts.status === "fail") {
+              process.exitCode = 1;
+            }
+          })
+        ),
+        Effect.flatMap((facts) => Console.log(JSON.stringify(facts)))
+      )
     ),
     Match.when("mint-host", () => mintHost(config)),
     Match.when(Match.is("provision", "mailbox"), () =>

@@ -7,6 +7,7 @@ import { Config, Effect, Layer, Option, Schema } from "effect";
 
 import { absent } from "./absent.ts";
 import { ownedPath, recovering, rotatingFile } from "./adoption.ts";
+import { legacyDeploymentFile } from "./deployment-file-adoption.ts";
 import {
   deleteDirectory,
   deleteFile,
@@ -129,6 +130,7 @@ export const RemoteFileProvider = () =>
         }),
         list: () => Effect.succeed([]),
         read: Effect.fn("RemoteFile.provider.read")(function* operation({
+          fqn,
           olds,
           output,
         }) {
@@ -144,15 +146,17 @@ export const RemoteFileProvider = () =>
           }
 
           const rotation = yield* rotatingFile(shell, olds);
+          const transferred = yield* legacyDeploymentFile(shell, fqn, live);
 
           if (
             !rotation &&
+            !transferred &&
             (live.sha256 !== textDigest(fileText(olds.content)) ||
               live.mode !== (olds.mode ?? 0o644))
           ) {
             return yield* new HostError({
               operation: "adopt",
-              reason: "Only a matching file may be adopted.",
+              reason: `Only a matching file may be adopted (resource ${fqn}).`,
             });
           }
 

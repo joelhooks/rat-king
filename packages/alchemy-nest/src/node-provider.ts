@@ -9,6 +9,7 @@ import { absent } from "./absent.ts";
 import { recovering } from "./adoption.ts";
 import { refuse } from "./files.ts";
 import { HostShell } from "./host-shell.ts";
+import { runningProcessMatches } from "./process-readback.ts";
 import {
   deleteUnit,
   needsUpdate,
@@ -160,6 +161,26 @@ export const NodeProvider = () =>
             yield* startup.value.beforeStart(news.name, news.home);
           }
 
+          const lines = news.sections.flatMap((section) =>
+            section.name === "Service" ? section.lines : []
+          );
+
+          const command = lines.find(([key]) => key === "ExecStart")?.[1];
+
+          const environment = lines.find(
+            ([key]) => key === "EnvironmentFile"
+          )?.[1];
+
+          const proof =
+            command === undefined || environment === undefined
+              ? Effect.succeed(false)
+              : runningProcessMatches(shell, {
+                  command,
+                  environment,
+                  fingerprints: news.restartOn ?? [],
+                  name: news.name,
+                });
+
           const unit = yield* reconcileUnit(
             shell,
             news,
@@ -169,7 +190,8 @@ export const NodeProvider = () =>
               output,
               news.prepared !== undefined
             ),
-            adopt
+            adopt,
+            proof
           );
 
           if (Option.isSome(startup)) {

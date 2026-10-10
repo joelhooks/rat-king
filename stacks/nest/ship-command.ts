@@ -14,6 +14,7 @@ import {
   ShipCheckpoint,
   ShipReceipt,
 } from "./ship-config.ts";
+import { sanitizeCandidateStderr } from "./ship-diagnostics.ts";
 import { sendShipNotification } from "./ship-notify.ts";
 import { shipLoop } from "./ship.ts";
 import type { ShipPorts } from "./ship.ts";
@@ -46,7 +47,7 @@ const Workflow = Schema.Struct({
   status: Schema.String,
 });
 
-const execute = Effect.fn("Ship.execute")(
+export const execute = Effect.fn("Ship.execute")(
   function* execute(
     command: string,
     args: readonly string[],
@@ -65,6 +66,7 @@ const execute = Effect.fn("Ship.execute")(
     );
 
     let output = "";
+    let stderr = "";
 
     const [code] = yield* Effect.all(
       [
@@ -76,12 +78,20 @@ const execute = Effect.fn("Ship.execute")(
             }
           })
         ),
-        Stream.runDrain(handle.stderr),
+        Stream.runForEach(handle.stderr.pipe(Stream.decodeText()), (text) =>
+          Effect.sync(() => {
+            stderr = (stderr + text).slice(-65_536);
+          })
+        ),
       ],
       { concurrency: "unbounded" }
     );
 
-    return { code: Number(code), output };
+    return {
+      code: Number(code),
+      output,
+      stderrTail: code === 0 ? undefined : sanitizeCandidateStderr(stderr),
+    };
   },
   Effect.scoped,
   (effect) =>
@@ -102,7 +112,7 @@ const requireSuccess = Effect.fn("Ship.requireSuccess")(
 
     if (result.code !== 0) {
       return yield* new FleetError({
-        reason: "Ship command returned failure; values redacted",
+        reason: `Candidate command failed (exit ${result.code}): ${result.stderrTail ?? "stderr unavailable"}`,
       });
     }
 
@@ -349,9 +359,14 @@ export const shipCommand = Effect.fn("Ship.command")(
             result: outcome,
           };
 
+          const diagnostic =
+            result.stderrTail === undefined
+              ? verdict
+              : { ...verdict, stderrTail: result.stderrTail };
+
           return last?.retryAt === undefined
-            ? verdict
-            : { ...verdict, retryAt: last.retryAt };
+            ? diagnostic
+            : { ...diagnostic, retryAt: last.retryAt };
         },
         (effect) =>
           effect.pipe(
