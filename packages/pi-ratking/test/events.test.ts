@@ -202,3 +202,84 @@ it.live.prop(
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 6 }, timeout: 60_000 }
 );
+
+const Malformed = Schema.Struct({
+  kind: Schema.Literals(["muster", "fyi"]),
+  requestId: Schema.String,
+});
+
+it.live.prop(
+  "a ratking/send that fails decode but carries a requestId is answered at once as NOT DELIVERED, and nothing is sent",
+  [Arbitrary.schema(Malformed)],
+  ([sample]) =>
+    Effect.gen(function* malformedSend() {
+      const fs = yield* FileSystem.FileSystem;
+      const state = yield* fs.makeTempDirectoryScoped();
+      let calls = 0;
+
+      const http = HttpClient.make((request) =>
+        Effect.sync(() => {
+          calls += request.url.endsWith("sh.mschf.ratking.mailbox.send")
+            ? 1
+            : 0;
+
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({ error: "MailboxUnavailable" }, { status: 503 })
+          );
+        })
+      );
+
+      const { end, pi, start } = fakePi();
+
+      yield* Effect.promise(async () => {
+        await ratkingExtension({
+          facts: (session) =>
+            Effect.succeed({
+              alive: () => false,
+              env: Option.some("tester"),
+              pane: Option.none(),
+              pid: 1,
+              session,
+            }),
+          layer: harness(state, http),
+          tool: Effect.succeed("ratking"),
+        })(pi);
+      });
+
+      yield* start;
+
+      const answered = yield* Deferred.make<
+        typeof Result.Type,
+        Schema.SchemaError
+      >();
+
+      pi.events.on(SEND_RESULT_EVENT, (data) => {
+        Deferred.doneUnsafe(answered, Schema.decodeUnknownEffect(Result)(data));
+      });
+
+      pi.events.emit(SEND_EVENT, {
+        body: "hello",
+        kind: sample.kind,
+        requestId: sample.requestId,
+        to: "peer",
+      });
+
+      const result = yield* Deferred.await(answered).pipe(
+        Effect.timeout("2 seconds")
+      );
+
+      yield* end;
+
+      expect(result).toMatchObject({
+        code: "NotAttempted",
+        requestId: sample.requestId,
+        status: "not-delivered",
+      });
+      expect(result.status === "not-delivered" && result.reason).toContain(
+        "InvalidRequest"
+      );
+      expect(calls).toBe(0);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  { arbitrary: { runs: 4 }, timeout: 60_000 }
+);

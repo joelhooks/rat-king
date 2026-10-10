@@ -108,3 +108,14 @@ export const deriveName = (
         new NameError({ reason: `Session name ${fallback} is already taken` })
       );
 };
+
+export const verifiedSender = (input: {
+  readonly template: string;
+  readonly reserved: ReservedValue;
+  readonly known: Option.Option<string>;
+  readonly claimed: string;
+  readonly did: string;
+}) =>
+  Option.exists(input.known, (name) => name === input.claimed) ||
+  (Schema.is(AgentName)(input.claimed) &&
+    didFor(input.template, input.reserved, input.claimed) === input.did);

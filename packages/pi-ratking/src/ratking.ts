@@ -40,6 +40,7 @@ import {
   didFor,
   isReserved,
   provisionLabel,
+  verifiedSender,
 } from "./name.ts";
 import { decodePayload, encodePayload } from "./payload.ts";
 import type { Inbound, KindValue, PayloadValue } from "./payload.ts";
@@ -258,11 +259,13 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             onSome: (value) => canonicalName(settings.reserved, value.from),
           });
 
-          const verified =
-            Option.exists(known, (name) => name === claimed) ||
-            (Schema.is(AgentName)(claimed) &&
-              didFor(settings.didTemplate, settings.reserved, claimed) ===
-                message.senderDid);
+          const verified = verifiedSender({
+            claimed,
+            did: message.senderDid,
+            known,
+            reserved: settings.reserved,
+            template: settings.didTemplate,
+          });
 
           const inbound: Inbound = {
             body: Option.match(payload, {

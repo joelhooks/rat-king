@@ -9,6 +9,7 @@ import {
   isReserved,
   provisionLabel,
   secretName,
+  verifiedSender,
 } from "../src/name.ts";
 import type { ReservedValue } from "../src/name.ts";
 
@@ -86,5 +87,65 @@ it.effect.prop(
     Effect.sync(() => {
       expect(secretName(a)).toMatch(/^[a-z][a-z0-9_.-]{0,127}$/u);
       expect(provisionLabel(a) === provisionLabel(b)).toBe(a === b);
+    })
+);
+
+const TEMPLATE = "did:web:{agent}.agents.example.invalid";
+
+it.effect.prop(
+  "a sender is verified exactly when the directory names it, or its claimed name derives its DID",
+  [
+    Arbitrary.schema(AgentName),
+    Arbitrary.schema(AgentName),
+    Arbitrary.schema(Schema.Boolean),
+    Arbitrary.schema(Schema.Boolean),
+  ],
+  ([claimed, other, listed, derived]) =>
+    Effect.sync(() => {
+      const did = derived
+        ? TEMPLATE.replace("{agent}", provisionLabel(claimed))
+        : "did:web:someone-else.example.invalid";
+
+      const known = listed ? Option.some(claimed) : Option.none();
+
+      expect(
+        verifiedSender({
+          claimed,
+          did,
+          known,
+          reserved: {},
+          template: TEMPLATE,
+        })
+      ).toBe(listed || derived);
+
+      expect(
+        verifiedSender({
+          claimed: other === claimed ? `${other}x` : other,
+          did: TEMPLATE.replace("{agent}", provisionLabel(claimed)),
+          known: Option.none(),
+          reserved: {},
+          template: TEMPLATE,
+        })
+      ).toBe(false);
+
+      expect(
+        verifiedSender({
+          claimed: "servo",
+          did: TEMPLATE.replace("{agent}", "servo"),
+          known: Option.none(),
+          reserved,
+          template: TEMPLATE,
+        })
+      ).toBe(false);
+
+      expect(
+        verifiedSender({
+          claimed: "did:web:x",
+          did: "did:web:x",
+          known: Option.none(),
+          reserved: {},
+          template: TEMPLATE,
+        })
+      ).toBe(false);
     })
 );
