@@ -10,6 +10,7 @@ export const Payload = Schema.Struct({
   body: Schema.String,
   from: AgentName,
   kind: Schema.optionalKey(Kind),
+  label: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(256))),
   replyTo: Schema.optionalKey(Schema.String),
 });
 
@@ -30,6 +31,7 @@ export interface Inbound {
   readonly id: string;
   readonly did: string;
   readonly from: string;
+  readonly label: Option.Option<string>;
   readonly verified: boolean;
   readonly body: string;
   readonly kind: KindValue;
@@ -46,9 +48,14 @@ export const replyHint = (tool: string, inbound: Inbound) =>
   ].join("\n");
 
 export const renderInbound = (tool: string, inbound: Inbound) => {
-  const sender = inbound.verified
+  const name = inbound.verified
     ? inbound.from
     : `${inbound.from} (unverified name; sender ${inbound.did})`;
+
+  const sender = Option.match(inbound.label, {
+    onNone: () => name,
+    onSome: (label) => `${label} (${name})`,
+  });
 
   const label = inbound.cc ? "Rat King CC" : "Rat King message";
 

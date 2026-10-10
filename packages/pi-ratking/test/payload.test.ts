@@ -5,7 +5,7 @@ import { expect } from "vitest";
 import { decodePayload, encodePayload, Payload } from "../src/payload.ts";
 
 it.effect.prop(
-  "a message on the wire carries only from, body, kind and replyTo, even when the caller holds a session id",
+  "a message on the wire carries only from, body, kind, label and replyTo, even when the caller holds a session id",
   [Arbitrary.schema(Payload), Arbitrary.schema(Schema.String)],
   ([payload, session]) =>
     Effect.gen(function* wire() {
@@ -19,7 +19,9 @@ it.effect.prop(
       );
 
       expect(
-        keys.every((key) => ["body", "from", "kind", "replyTo"].includes(key))
+        keys.every((key) =>
+          ["body", "from", "kind", "label", "replyTo"].includes(key)
+        )
       ).toBe(true);
 
       expect(yield* decodePayload(json)).toEqual(Option.some(payload));

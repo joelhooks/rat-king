@@ -31,10 +31,12 @@ struct TrafficView: View {
                                 VStack(alignment: .leading, spacing: 5) {
                                     HStack(alignment: .top, spacing: 8) {
                                         Text("›").foregroundStyle(TUITheme.accent)
-                                        Text(TrafficEntry.shortName(entry.senderDid) + " → " + TrafficEntry.shortName(entry.recipientDid))
+                                        Text(entry.message?.label ?? entry.route)
                                             .foregroundStyle(TUITheme.fg).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                                         Text(entry.state.uppercased()).foregroundStyle(TUITheme.receipt(entry.state)).font(TUITheme.microFont)
                                     }
+                                    if entry.message?.label != nil { Text(entry.route).font(TUITheme.microFont).foregroundStyle(TUITheme.dim) }
+                                    if let text = entry.message?.text { Text(text).foregroundStyle(TUITheme.fg).lineLimit(3) }
                                     Text(entry.messageId + " · \(entry.ciphertextSize) B").foregroundStyle(TUITheme.teal)
                                     Text(entry.time.formatted(date: .numeric, time: .standard) + " · #\(entry.seq)")
                                         .font(TUITheme.microFont).foregroundStyle(TUITheme.dim)
@@ -65,6 +67,7 @@ struct TrafficDetailView: View {
             VStack(alignment: .leading, spacing: 12) {
                 Button("[← back]") { dismiss() }.keyboardShortcut(.escape, modifiers: []).foregroundStyle(TUITheme.accent)
                 TerminalPanel(title: "MESSAGE / METADATA") {
+                    if let label = detail.selected.message?.label { field("CALL SIGN", label) }
                     field("FROM", detail.selected.senderDid)
                     field("TO", detail.selected.recipientDid)
                     field("MESSAGE ID", detail.selected.messageId)
@@ -85,8 +88,11 @@ struct TrafficDetailView: View {
                         observation(event)
                     }
                 }
-                TerminalPanel(title: copies.isEmpty ? "MESSAGE TEXT / NOT COPIED" : "MESSAGE TEXT / CC COPY") {
-                    if copies.isEmpty {
+                TerminalPanel(title: detail.selected.message != nil ? "MESSAGE TEXT / SIGNED PLAINTEXT" : copies.isEmpty ? "MESSAGE TEXT / NOT COPIED" : "MESSAGE TEXT / CC COPY") {
+                    if let text = detail.selected.message?.text {
+                        Text(text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        Text("Signature verified by the mailbox at admission.").foregroundStyle(TUITheme.dim)
+                    } else if copies.isEmpty {
                         Text("content not copied to this phone").foregroundStyle(TUITheme.dim)
                     } else {
                         ForEach(copies) { copy in CopyContentView(copy: copy) }

@@ -100,6 +100,16 @@ final class TrafficTests: XCTestCase {
         let resumedTrace = await service.trace; XCTAssertTrue(resumedTrace.contains("list:207"))
         store.stop(); await service.lateNotice()
     }
+    func testCallSignLeadsTheSenderLineAndAMissingOneFallsBackToTheName() throws {
+        var wire = try trafficWire(1).object()
+        wire["body"] = .string(#"{"body":"hello","from":"nicodemus","label":"🔮 Nicodemus · Rat King desk"}"#)
+        let labelled = try TrafficEntry(.map(wire))
+        XCTAssertEqual(labelled.message?.label, "🔮 Nicodemus · Rat King desk"); XCTAssertEqual(labelled.message?.text, "hello")
+        wire["body"] = .string(#"{"body":"hello","from":"nicodemus"}"#)
+        let bare = try TrafficEntry(.map(wire))
+        XCTAssertNil(bare.message?.label); XCTAssertEqual(bare.message?.label ?? bare.route, "sample-sender.example.invalid → sample-recipient.example.invalid")
+        XCTAssertNil(try TrafficEntry(trafficWire(1)).message)
+    }
 }
 private actor TrafficModelService {
     var trace: [String] = []

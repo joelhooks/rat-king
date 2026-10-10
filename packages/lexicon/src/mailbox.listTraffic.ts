@@ -5,6 +5,13 @@ import * as Runtime from "./runtime.ts";
 
 export const Entry = Schema.StructWithRest(
   Schema.Struct({
+    body: Schema.optionalKey(
+      Runtime.lexString({
+        description:
+          "UTF-8 body of a signed plaintext message, verified at admission. Absent for encrypted messages.",
+        type: "string",
+      })
+    ),
     ciphertextSize: Schema.Int.check(
       Schema.isGreaterThanOrEqualTo(0),
       Schema.isLessThanOrEqualTo(9_007_199_254_740_991)

@@ -1,15 +1,29 @@
 import Foundation
 
+struct MessageText: Equatable, Sendable {
+    let text: String; let label: String?
+    init(_ raw: String) {
+        guard let object = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
+              let body = object["body"] as? String, object["from"] is String else { text = raw; label = nil; return }
+        text = body
+        label = (object["label"] as? String).flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+    }
+}
+
 struct TrafficEntry: Identifiable, Equatable, Sendable {
     let seq: Int64; let recipientSeq: Int64
     let time: Date; let senderDid: String; let recipientDid: String
     let messageId: String; let ciphertextSize: Int64; let state: String
+    let body: String?
     var id: Int64 { seq }
+    var message: MessageText? { body.map(MessageText.init) }
+    var route: String { Self.shortName(senderDid) + " → " + Self.shortName(recipientDid) }
     init(_ value: Value) throws {
         seq = try value.required("seq").number; recipientSeq = try value.required("recipientSeq").number
         ciphertextSize = try value.required("ciphertextSize").number
         senderDid = try value.required("senderDid").text; recipientDid = try value.required("recipientDid").text
         messageId = try value.required("messageId").text; state = try value.required("state").text
+        body = try value["body"]?.text
         let timestamp = try value.required("time").text
         guard let date = ISO8601DateFormatter.fractional.date(from: timestamp) ?? ISO8601DateFormatter().date(from: timestamp),
               (1...9_007_199_254_740_991).contains(seq), (1...9_007_199_254_740_991).contains(recipientSeq),

@@ -72,7 +72,10 @@ const alive = (pid: number) => {
   }
 };
 
-const collectFacts = (session: string) =>
+const collectFacts = (
+  session: string,
+  sessionName?: () => string | undefined
+) =>
   Effect.gen(function* sessionFacts() {
     const env = yield* Config.option(Config.String("RATKING_NAME"));
     const paneId = yield* Config.option(Config.String("HERDR_PANE_ID"));
@@ -84,6 +87,14 @@ const collectFacts = (session: string) =>
     return {
       alive,
       env,
+      label: () =>
+        Option.orElse(
+          Option.filter(
+            Option.fromNullishOr(sessionName?.()),
+            (name) => name.trim() !== ""
+          ),
+          () => pane
+        ),
       pane,
       pid: process.pid,
       session,
@@ -97,6 +108,7 @@ const inboundDetails = (inbound: Inbound, settled: boolean) => ({
   from: inbound.from,
   id: inbound.id,
   kind: inbound.kind,
+  label: Option.getOrUndefined(inbound.label),
   replyTo: Option.getOrUndefined(inbound.replyTo),
   settled,
   verified: inbound.verified,
@@ -116,6 +128,7 @@ type Runtime = ManagedRuntime.ManagedRuntime<Services, NotConfigured>;
 
 export interface SessionStart {
   readonly session: string;
+  readonly sessionName?: () => string | undefined;
   readonly warn: (message: string) => void;
 }
 
@@ -138,6 +151,7 @@ const piHost = (pi: ExtensionAPI): PiHost => ({
     pi.on("session_start", async (_event, ctx) => {
       await handler({
         session: ctx.sessionManager.getSessionId(),
+        sessionName: () => pi.getSessionName(),
         warn: (message) => {
           ctx.ui.notify(message, "warning");
         },
@@ -155,7 +169,8 @@ const piHost = (pi: ExtensionAPI): PiHost => ({
 export interface ExtensionOptions {
   readonly layer: Layer.Layer<Services, NotConfigured>;
   readonly facts: (
-    session: string
+    session: string,
+    sessionName?: () => string | undefined
   ) => Effect.Effect<SessionFacts, Config.ConfigError>;
   readonly tool: Effect.Effect<string>;
 }
@@ -237,6 +252,12 @@ const parameters = Type.Object({
   ),
   cwd: Type.Optional(
     Type.String({ description: "Not supported: Rat King addresses by name." })
+  ),
+  encrypt: Type.Optional(
+    Type.Boolean({
+      description:
+        "End-to-end encrypt this send, ask or reply. Use it for secrets, credentials, customer data or private transcripts. Default: signed plaintext, readable by observers.",
+    })
   ),
   focus: Type.Optional(Type.Boolean({ description: "Unused." })),
   message: Type.Optional(
@@ -367,7 +388,9 @@ export const ratkingExtension = (options: ExtensionOptions) =>
     pi.onSessionStart(async (start) => {
       await stop();
 
-      const facts = await Effect.runPromise(options.facts(start.session));
+      const facts = await Effect.runPromise(
+        options.facts(start.session, start.sessionName)
+      );
 
       const live: Runtime = ManagedRuntime.make(
         Layer.effectDiscard(

@@ -1,6 +1,7 @@
 /* oxlint-disable promise/prefer-await-to-callbacks, typescript/promise-function-async -- Effect adapters require lazy Promise thunks, not callback-style control flow. */
 import { it } from "@effect/vitest";
-import { Effect } from "effect";
+import * as Defs from "@rat-king/lexicon/defs";
+import { Effect, Exit, Schema } from "effect";
 import { expect } from "vitest";
 
 import {
@@ -13,6 +14,8 @@ import {
   lowS,
   open,
   p256Order,
+  plaintextSuite,
+  seal,
   sign,
   signingBytes,
   suite,
@@ -243,5 +246,66 @@ it.effect(
 
         expect(result._tag).toBe("Failure");
       }
+    })
+);
+
+it.effect.prop(
+  "plaintext mail verifies, tampered body or sender fails, and the HPKE suite still round-trips",
+  { body: Schema.Uint8Array },
+  ({ body }) =>
+    Effect.gen(function* plaintextMail() {
+      const keys = yield* testKeys();
+
+      const request = (inner: typeof Defs.SigningPayload.Type) => ({
+        payload: inner,
+        recipientKey: keys.recipient.publicKey,
+        recipientKeyId: `${recipientDid}#encryption`,
+        signingKey: keys.sender.privateKey,
+        signingKeyId: `${senderDid}#atproto`,
+      });
+
+      const opening = (envelope: typeof Defs.EncryptedEnvelope.Type) =>
+        open({
+          envelope,
+          recipientDid,
+          recipientKey: keys.recipient.privateKey,
+          recipientKeyId: `${recipientDid}#encryption`,
+          resolveSigningKey: () => Effect.succeed(keys.sender.publicKey),
+        }).pipe(Effect.exit);
+
+      const clear = { ...payload(), body, suite: plaintextSuite };
+      const envelope = yield* seal(request(clear));
+      const opened = yield* opening(envelope);
+      expect(Exit.isSuccess(opened) && opened.value).toEqual(clear);
+
+      const signed = yield* Schema.decodeUnknownEffect(
+        Schema.toType(Defs.SignedMessage)
+      )(yield* canonicalDecode(envelope.ciphertext));
+
+      const forgedBody = canonical({
+        ...signed,
+        canonicalSigningBytes: signingBytes({
+          ...clear,
+          body: Uint8Array.of(...body, 0),
+        }),
+      });
+
+      expect(
+        Exit.isFailure(yield* opening({ ...envelope, ciphertext: forgedBody }))
+      ).toBe(true);
+      expect(
+        Exit.isFailure(
+          yield* opening({
+            ...envelope,
+            aad: payload("3m7x2ka4xv22a", "did:web:wrong.example").aad,
+          })
+        )
+      ).toBe(true);
+
+      const secret = { ...payload(), body, suite };
+      const encrypted = yield* seal(request(secret));
+      const decrypted = yield* opening(encrypted);
+      expect(encrypted.enc.length).toBeGreaterThan(1);
+      expect(Exit.isSuccess(decrypted) && decrypted.value).toEqual(secret);
     })
 );
