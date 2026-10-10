@@ -55,6 +55,8 @@ Pi keeps the first tool registered under a name and silently drops later ones. W
 - Emit `ratking/send` with `{ requestId, to, body, kind? }`, or `{ requestId, replyTo, body }` to answer a received message. The extension emits `ratking/send:result` with `{ requestId, status: "delivered", id, seq, to }` or `{ requestId, status: "not-delivered", code, reason }`.
 - `ratking/message` carries every inbound message: `{ id, from, did, verified, body, kind, replyTo, cc, settled }`. `settled` is true when the message answered a waiting ask.
 
+`ratkingExtension({ layer, facts, tool })` builds the extension against a `PiHost` port (events, tool and message registration, session start and end). The default export adapts Pi's `ExtensionAPI` to that port with the production layer; tests drive the same factory with Pi's `createEventBus` and a fake mailbox.
+
 ## Limits
 
 - A message from a DID missing from the local directory and configured documents cannot be opened. The reader restarts with backoff; until that sender's document is known, its message blocks later mail.

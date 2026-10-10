@@ -1,5 +1,9 @@
 // @effect-diagnostics asyncFunction:off -- Pi's extension API is the Promise boundary; Effect owns the work behind it.
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type {
+  EventBus,
+  ExtensionAPI,
+  ExtensionFactory,
+} from "@earendil-works/pi-coding-agent";
 import { NodeServices } from "@effect/platform-node";
 import {
   Cause,
@@ -108,10 +112,53 @@ const toolResult = (result: ToolText) => {
 
 type Services = Layer.Success<typeof appLayer>;
 
-type Runtime = ManagedRuntime.ManagedRuntime<
-  Services,
-  Layer.Error<typeof appLayer>
->;
+type Runtime = ManagedRuntime.ManagedRuntime<Services, NotConfigured>;
+
+export interface SessionStart {
+  readonly session: string;
+  readonly warn: (message: string) => void;
+}
+
+export interface PiHost {
+  readonly events: EventBus;
+  readonly registerTool: ExtensionAPI["registerTool"];
+  readonly sendMessage: ExtensionAPI["sendMessage"];
+  readonly onSessionStart: (
+    handler: (start: SessionStart) => Promise<void>
+  ) => void;
+  readonly onSessionEnd: (handler: () => Promise<void>) => void;
+}
+
+const piHost = (pi: ExtensionAPI): PiHost => ({
+  events: pi.events,
+  onSessionEnd: (handler) => {
+    pi.on("session_shutdown", handler);
+  },
+  onSessionStart: (handler) => {
+    pi.on("session_start", async (_event, ctx) => {
+      await handler({
+        session: ctx.sessionManager.getSessionId(),
+        warn: (message) => {
+          ctx.ui.notify(message, "warning");
+        },
+      });
+    });
+  },
+  registerTool: (tool) => {
+    pi.registerTool(tool);
+  },
+  sendMessage: (message, delivery) => {
+    pi.sendMessage(message, delivery);
+  },
+});
+
+export interface ExtensionOptions {
+  readonly layer: Layer.Layer<Services, NotConfigured>;
+  readonly facts: (
+    session: string
+  ) => Effect.Effect<SessionFacts, Config.ConfigError>;
+  readonly tool: Effect.Effect<string>;
+}
 
 const notRunning = (cause: Cause.Cause<NotConfigured>) =>
   Option.match(Cause.findErrorOption(cause), {
@@ -215,130 +262,139 @@ const parameters = Type.Object({
   to: Type.Optional(Type.String({ description: "Target Rat King name." })),
 });
 
-export default async function piRatking(pi: ExtensionAPI) {
-  const tool = await Effect.runPromise(
-    toolName.pipe(Effect.provide(NodeServices.layer))
-  );
+export const ratkingExtension = (options: ExtensionOptions) =>
+  async function piRatking(pi: PiHost) {
+    const tool = await Effect.runPromise(options.tool);
 
-  let runtime = Option.none<Runtime>();
+    let runtime = Option.none<Runtime>();
 
-  const deliver: Deliver = (inbound, settled) =>
-    Effect.sync(() => {
-      pi.events.emit(MESSAGE_EVENT, inboundDetails(inbound, settled));
+    const deliver: Deliver = (inbound, settled) =>
+      Effect.sync(() => {
+        pi.events.emit(MESSAGE_EVENT, inboundDetails(inbound, settled));
 
-      if (!settled) {
-        pi.sendMessage(
-          {
-            content: renderInbound(tool, inbound),
-            customType: "ratking_message",
-            details: inboundDetails(inbound, settled),
-            display: true,
-          },
-          { deliverAs: "followUp", triggerTurn: true }
-        );
+        if (!settled) {
+          pi.sendMessage(
+            {
+              content: renderInbound(tool, inbound),
+              customType: "ratking_message",
+              details: inboundDetails(inbound, settled),
+              display: true,
+            },
+            { deliverAs: "followUp", triggerTurn: true }
+          );
+        }
+      });
+
+    const run = async <A>(
+      effect: Effect.Effect<A, never, Services>,
+      fallback: (reason: string) => A,
+      signal?: AbortSignal
+    ) => {
+      if (Option.isNone(runtime)) {
+        return fallback("Rat King has not started");
+      }
+
+      const exit = await runtime.value.runPromiseExit(
+        effect,
+        signal === undefined ? undefined : { signal }
+      );
+
+      return Exit.match(exit, {
+        onFailure: (cause) =>
+          fallback(
+            Cause.hasInterruptsOnly(cause) ? "Cancelled" : notRunning(cause)
+          ),
+        onSuccess: (value) => value,
+      });
+    };
+
+    const stop = async () => {
+      const previous = runtime;
+
+      runtime = Option.none();
+
+      if (Option.isSome(previous)) {
+        await previous.value.dispose();
+      }
+    };
+
+    pi.registerTool({
+      description: description(tool),
+      execute: async (_id, params, signal) =>
+        await run(
+          Effect.gen(function* execute() {
+            const decoded = yield* Schema.decodeEffect(ToolParams)(params);
+            const settings = yield* Settings;
+
+            return yield* runAction(tool, settings.askTimeoutMs, decoded);
+          }).pipe(
+            Effect.orElseSucceed((): ToolText => ({
+              details: { error: true },
+              isError: true,
+              text: "Invalid Rat King tool parameters",
+            })),
+            Effect.map(toolResult)
+          ),
+          (reason) =>
+            toolResult(notConfiguredText(new NotConfigured({ reason }))),
+          signal
+        ),
+      label: "Rat King",
+      name: tool,
+      parameters,
+      promptSnippet: promptSnippet(tool),
+    });
+
+    const forward = async (request: typeof SendRequest.Type) => {
+      const outcome = await run(forwardSend(request), (reason) => ({
+        code: "NotConfigured" as const,
+        reason,
+        requestId: request.requestId,
+        status: "not-delivered" as const,
+      }));
+
+      pi.events.emit(SEND_RESULT_EVENT, outcome);
+    };
+
+    pi.events.on(SEND_EVENT, (data) => {
+      const request = Schema.decodeUnknownOption(SendRequest)(data);
+
+      if (Option.isSome(request)) {
+        void forward(request.value);
       }
     });
 
-  const run = async <A>(
-    effect: Effect.Effect<A, never, Services>,
-    fallback: (reason: string) => A,
-    signal?: AbortSignal
-  ) => {
-    if (Option.isNone(runtime)) {
-      return fallback("Rat King has not started");
-    }
+    pi.onSessionStart(async (start) => {
+      await stop();
 
-    const exit = await runtime.value.runPromiseExit(
-      effect,
-      signal === undefined ? undefined : { signal }
-    );
+      const facts = await Effect.runPromise(options.facts(start.session));
 
-    return Exit.match(exit, {
-      onFailure: (cause) =>
-        fallback(
-          Cause.hasInterruptsOnly(cause) ? "Cancelled" : notRunning(cause)
-        ),
-      onSuccess: (value) => value,
+      const live: Runtime = ManagedRuntime.make(
+        Layer.effectDiscard(
+          RatKing.use((ratking) => ratking.run(facts, deliver))
+        ).pipe(Layer.provideMerge(options.layer))
+      );
+
+      runtime = Option.some(live);
+
+      const exit = await live.runPromiseExit(Effect.void);
+
+      if (Exit.isFailure(exit)) {
+        start.warn(`Rat King is off: ${notRunning(exit.cause)}`);
+      }
     });
+
+    pi.onSessionEnd(stop);
   };
 
-  const stop = async () => {
-    const previous = runtime;
+const production = ratkingExtension({
+  facts: collectFacts,
+  layer: appLayer,
+  tool: toolName.pipe(Effect.provide(NodeServices.layer)),
+});
 
-    runtime = Option.none();
+const extension: ExtensionFactory = async (pi) => {
+  await production(piHost(pi));
+};
 
-    if (Option.isSome(previous)) {
-      await previous.value.dispose();
-    }
-  };
-
-  pi.registerTool({
-    description: description(tool),
-    execute: async (_id, params, signal) =>
-      await run(
-        Effect.gen(function* execute() {
-          const decoded = yield* Schema.decodeEffect(ToolParams)(params);
-          const settings = yield* Settings;
-
-          return yield* runAction(tool, settings.askTimeoutMs, decoded);
-        }).pipe(
-          Effect.orElseSucceed((): ToolText => ({
-            details: { error: true },
-            isError: true,
-            text: "Invalid Rat King tool parameters",
-          })),
-          Effect.map(toolResult)
-        ),
-        (reason) =>
-          toolResult(notConfiguredText(new NotConfigured({ reason }))),
-        signal
-      ),
-    label: "Rat King",
-    name: tool,
-    parameters,
-    promptSnippet: promptSnippet(tool),
-  });
-
-  const forward = async (request: typeof SendRequest.Type) => {
-    const outcome = await run(forwardSend(request), (reason) => ({
-      code: "NotConfigured" as const,
-      reason,
-      requestId: request.requestId,
-      status: "not-delivered" as const,
-    }));
-
-    pi.events.emit(SEND_RESULT_EVENT, outcome);
-  };
-
-  pi.events.on(SEND_EVENT, (data) => {
-    const request = Schema.decodeUnknownOption(SendRequest)(data);
-
-    if (Option.isSome(request)) {
-      void forward(request.value);
-    }
-  });
-
-  pi.on("session_start", async (_event, ctx) => {
-    await stop();
-
-    const facts = await Effect.runPromise(
-      collectFacts(ctx.sessionManager.getSessionId())
-    );
-
-    const live: Runtime = ManagedRuntime.make(
-      Layer.effectDiscard(
-        RatKing.use((ratking) => ratking.run(facts, deliver))
-      ).pipe(Layer.provideMerge(appLayer))
-    );
-
-    runtime = Option.some(live);
-
-    const exit = await live.runPromiseExit(Effect.void);
-
-    if (Exit.isFailure(exit)) {
-      ctx.ui.notify(`Rat King is off: ${notRunning(exit.cause)}`, "warning");
-    }
-  });
-
-  pi.on("session_shutdown", stop);
-}
+export default extension;
