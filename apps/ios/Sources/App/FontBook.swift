@@ -47,6 +47,17 @@ enum FontBook {
         return Font.system(size: size, weight: .regular, design: .monospaced)
     }
 
+    // Widest advance of the body font, so a fold column never overruns its line.
+    static var columnWidth: CGFloat {
+        if let measuredColumn { return measuredColumn }
+        registerFontsIfNeeded()
+        let font = pixelPostScriptName.flatMap { UIFont(name: $0, size: 11) } ?? UIFont.monospacedSystemFont(ofSize: 11, weight: .regular)
+        let width = max(1, ["W", "M", "@", "0", "…"].map { ($0 as NSString).size(withAttributes: [.font: font]).width }.max() ?? 7)
+        measuredColumn = width
+        return width
+    }
+    private static var measuredColumn: CGFloat?
+
     static func pixelFontBold(size: CGFloat) -> Font {
         // Geist Pixel doesn't really do weights; keep the bold "feel" via size/contrast elsewhere.
         registerFontsIfNeeded()

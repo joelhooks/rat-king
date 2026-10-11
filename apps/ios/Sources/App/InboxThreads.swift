@@ -107,8 +107,8 @@ func inboxThreads(_ messages: [MailItem], preferences: [String: ThreadPreference
             let line = try deskAnswerLine(value), note = try value["note"]?.text
             threads[index].lines.append(line); threads[index].latestSummary = InboxThread.firstLine(note ?? line)
         default:
-            let line = (mail.outgoingTo == nil ? "" : "YOU: ") + MessageText(mail.text).text
-            threads[index].lines.append(line); threads[index].latestSummary = InboxThread.firstLine(line)
+            let parsed = MessageText(mail.text), prefix = mail.outgoingTo == nil ? "" : "YOU: "
+            threads[index].lines.append(prefix + parsed.text); threads[index].latestSummary = prefix + parsed.preview
         }
     }
     // Apply supersession again so it does not depend on mailbox arrival order.
