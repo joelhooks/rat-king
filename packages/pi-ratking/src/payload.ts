@@ -31,6 +31,7 @@ export type KindValue = typeof Kind.Type;
 
 export const Payload = Schema.Struct({
   body: Schema.String,
+  cc: Schema.optionalKey(Schema.Array(AgentName)),
   from: AgentName,
   kind: Schema.optionalKey(Kind),
   label: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(256))),
@@ -38,6 +39,8 @@ export const Payload = Schema.Struct({
   summary: Schema.optionalKey(
     Schema.String.check(Schema.isMaxLength(SUMMARY_MAX))
   ),
+  thread: Schema.optionalKey(Schema.String),
+  to: Schema.optionalKey(AgentName),
 });
 
 export type PayloadValue = typeof Payload.Type;
@@ -53,7 +56,14 @@ export const encodePayload = Effect.fn("RatKing.encodePayload")(
 export const decodePayload = (body: string) =>
   Schema.decodeEffect(PayloadJson)(body).pipe(Effect.option);
 
+export const RelaySource = Schema.Struct({
+  did: Schema.String,
+  encrypted: Schema.Boolean,
+  name: AgentName,
+});
+
 export interface Inbound {
+  readonly relay?: typeof RelaySource.Type;
   readonly id: string;
   readonly did: string;
   readonly from: string;
@@ -64,11 +74,19 @@ export interface Inbound {
   readonly replyTo: Option.Option<string>;
   readonly summary: Option.Option<string>;
   readonly cc: boolean;
+  readonly ccNames?: readonly string[];
+  readonly to?: string;
+  readonly thread?: string;
 }
 
 export const replyHint = (tool: string, inbound: Inbound) =>
   [
-    `To reply: ${tool}({ action: "reply", replyTo: "${inbound.id}", summary: "...", message: "..." })`,
+    `To reply${inbound.relay === undefined ? "" : ` to ${inbound.from}`}: ${tool}({ action: "reply", replyTo: "${inbound.id}", ${inbound.relay === undefined ? "" : "replyAll: false, "}summary: "...", message: "..." })`,
+    ...(inbound.relay === undefined
+      ? []
+      : [
+          `To confirm handled without replying: ${tool}({ action: "handled", replyTo: "${inbound.id}" })`,
+        ]),
     ...(inbound.kind === "ask"
       ? ["The sender is waiting for this reply."]
       : []),
@@ -92,7 +110,10 @@ export const renderInbound = (tool: string, inbound: Inbound) => {
   });
 
   return [
-    `**${label} from ${sender}** · id ${inbound.id}${thread}`,
+    `**${label} from ${sender}** · id ${inbound.id}${thread}${inbound.relay === undefined ? "" : ` · via ${inbound.relay.name}`}`,
+    ...((inbound.ccNames?.length ?? 0) > 0
+      ? [`cc: ${(inbound.ccNames ?? []).join(", ")}`]
+      : []),
     "",
     ...Option.match(inbound.summary, {
       onNone: () => [],

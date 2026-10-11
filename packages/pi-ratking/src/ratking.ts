@@ -11,6 +11,7 @@ import type {
   SendOutcome,
 } from "@rat-king/mailbox-client";
 import {
+  Clock,
   Context,
   Data,
   Deferred,
@@ -47,7 +48,7 @@ import {
 import {
   decodePayload,
   decodeRecord,
-  encodePayload,
+  PayloadJson,
   RecordJson,
   SUMMARY_MAX,
 } from "./payload.ts";
@@ -60,8 +61,14 @@ import type {
 } from "./payload.ts";
 import { quarantined, recover } from "./quarantine.ts";
 import type { Quarantined } from "./quarantine.ts";
+import {
+  openRelay,
+  deliverRelay,
+  RelayHandled,
+  RelayJournal,
+} from "./relay.ts";
 import { SecretStore } from "./secrets.ts";
-import { Threads, threadsLayer } from "./threads.ts";
+import { replyRecipients, Threads, threadsLayer } from "./threads.ts";
 import type { Received, Reply } from "./threads.ts";
 
 export const NotDeliveredCode = Schema.Literals([
@@ -73,6 +80,7 @@ export const NotDeliveredCode = Schema.Literals([
   "Rejected",
   "Uncertain",
   "Refused",
+  "Partial",
 ]);
 
 export class NotDelivered extends Schema.TaggedError<NotDelivered>()(
@@ -128,6 +136,19 @@ export interface SendOptions {
   readonly kind?: KindValue;
   readonly replyTo?: { readonly messageId: string; readonly senderDid: string };
   readonly summary?: string;
+  readonly cc?: readonly string[];
+  readonly thread?: string;
+}
+
+interface RelayRoute {
+  readonly message: (
+    inbound: Inbound,
+    settled: boolean,
+    encrypted: boolean
+  ) => Effect.Effect<void, NotDelivered>;
+  readonly record: (
+    inbound: InboundRecord
+  ) => Effect.Effect<void, NotDelivered>;
 }
 
 export type Deliver = (
@@ -158,7 +179,7 @@ export class RatKing extends Context.Service<
       to: string,
       body: string,
       timeout: Duration.Input,
-      options?: Pick<SendOptions, "encrypt">
+      options?: Pick<SendOptions, "encrypt" | "cc" | "summary">
     ) => Effect.Effect<
       { readonly delivered: Delivered; readonly reply: Reply },
       NotDelivered | AskFailed
@@ -166,7 +187,12 @@ export class RatKing extends Context.Service<
     readonly reply: (
       id: string,
       body: string | LexiconRecordValue,
-      options?: Pick<SendOptions, "encrypt" | "kind">
+      options?: Pick<SendOptions, "encrypt" | "kind" | "summary"> & {
+        readonly replyAll?: boolean;
+      }
+    ) => Effect.Effect<Delivered, NotDelivered | AskFailed>;
+    readonly handled: (
+      id: string
     ) => Effect.Effect<Delivered, NotDelivered | AskFailed>;
     readonly pending: Effect.Effect<readonly Received[]>;
     readonly list: Effect.Effect<readonly Listed[]>;
@@ -294,12 +320,10 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     });
 
   const intake =
-    (own: Self, deliver: Deliver) =>
+    (own: Self, route: RelayRoute) =>
     (message: OpenedMessage, meta: MessageMeta) =>
       Effect.gen(function* takeIn() {
         if (!seen.has(message.tid)) {
-          seen.add(message.tid);
-
           const payload = yield* decodePayload(message.body);
           const known = yield* directory.nameOf(message.senderDid);
 
@@ -321,7 +345,9 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               onNone: () => message.body,
               onSome: (value) => value.body,
             }),
-            cc: message.cc !== undefined,
+            cc:
+              message.cc !== undefined ||
+              Option.exists(payload, (value) => (value.cc?.length ?? 0) > 0),
             did: message.senderDid,
             from: claimed,
             id: message.tid,
@@ -338,38 +364,49 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             verified,
           };
 
+          if (Option.isSome(payload)) {
+            if (payload.value.cc !== undefined) {
+              Object.assign(inbound, { ccNames: payload.value.cc });
+            }
+
+            if (payload.value.to !== undefined) {
+              Object.assign(inbound, { to: payload.value.to });
+            }
+
+            if (payload.value.thread !== undefined) {
+              Object.assign(inbound, { thread: payload.value.thread });
+            }
+          }
+
           const record = Option.isNone(payload)
             ? yield* decodeRecord(message.body)
             : Option.none<LexiconRecordValue>();
 
           if (Option.isSome(record)) {
             yield* threads.remember(inbound);
-            yield* deliver(
-              {
-                did: inbound.did,
-                from: inbound.from,
-                id: inbound.id,
-                record: record.value,
-                replyTo: inbound.replyTo,
-                verified: inbound.verified,
-              },
-              false
-            );
+            yield* route.record({
+              did: inbound.did,
+              from: inbound.from,
+              id: inbound.id,
+              record: record.value,
+              replyTo: inbound.replyTo,
+              verified: inbound.verified,
+            });
           } else {
             const settled = yield* threads.settle(inbound);
 
-            if (!settled) {
-              yield* threads.remember(inbound);
-            }
+            yield* threads.remember(inbound);
 
-            yield* deliver(inbound, settled);
+            yield* route.message(inbound, settled, message.encrypted ?? true);
           }
+
+          seen.add(message.tid);
         }
 
         yield* writeCursor(own.name, meta.seq);
       });
 
-  const consumeOnce = (own: Self, facts: SessionFacts, deliver: Deliver) =>
+  const consumeOnce = (own: Self, facts: SessionFacts, route: RelayRoute) =>
     Effect.gen(function* consumeLease() {
       yield* Ref.set(
         state,
@@ -444,7 +481,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       const savedLease = yield* readLease(own.name, own.did);
 
       yield* client.consume(
-        intake(own, deliver),
+        intake(own, route),
         Option.match(
           Option.orElse(yield* Ref.get(lastLease), () => savedLease),
           {
@@ -465,77 +502,6 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       Effect.scoped,
       Effect.provideService(HttpClient.HttpClient, http)
     );
-
-  const loop = Effect.fn("RatKing.run")(function* loop(
-    facts: SessionFacts,
-    deliver: Deliver
-  ) {
-    const claimed = yield* supervise(
-      Option.none(),
-      claimName(facts).pipe(services)
-    );
-
-    if (settings.refuse.includes(claimed.name)) {
-      const reason = `${claimed.name} is held by another reader (refuse list in the Rat King config); no reader started`;
-
-      yield* Ref.set(
-        state,
-        ReaderState.Refused({ name: claimed.name, reason })
-      );
-
-      return yield* Deferred.fail(
-        self,
-        new NotDelivered({ code: "Refused", reason })
-      ).pipe(Effect.asVoid);
-    }
-
-    const own = yield* supervise(
-      Option.some(claimed.name),
-      Effect.gen(function* establish() {
-        yield* Ref.set(state, ReaderState.Minting({ name: claimed.name }));
-
-        const identity = yield* ensureIdentity(claimed.name);
-
-        return {
-          did: identity.did,
-          identity,
-          label: facts.label ?? (() => facts.pane),
-          name: claimed.name,
-        };
-      }).pipe(services)
-    );
-
-    yield* Ref.set(established, Option.some(own));
-    yield* Deferred.succeed(self, own);
-
-    if (facts.reads === false) {
-      return yield* Ref.set(
-        state,
-        ReaderState.SendOnly({
-          name: own.name,
-          reason:
-            "Non-interactive Pi: send-only, no reader and no lease. Set RATKING_PRINT_NAME to read a name",
-        })
-      );
-    }
-
-    return yield* supervise(
-      Option.some(own.name),
-      consumeOnce(own, facts, deliver).pipe(
-        Effect.andThen(
-          Effect.fail(
-            new NotDelivered({
-              code: "Uncertain",
-              reason: "Reader stopped; restarting",
-            })
-          )
-        )
-      )
-    ).pipe(Effect.forever);
-  });
-
-  const run = (facts: SessionFacts, deliver: Deliver) =>
-    loop(facts, deliver).pipe(Effect.forkScoped, Effect.asVoid);
 
   const awaitSelf = Deferred.await(self).pipe(
     Effect.timeoutOrElse({
@@ -601,25 +567,92 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
   ) {
     const own = yield* awaitSelf;
 
-    const target = yield* directory
-      .resolve(to)
-      .pipe(
-        Effect.catchTag("UnknownName", (error) =>
-          lookup(own.identity, to).pipe(
-            Effect.mapError(() =>
-              refused("UnknownName")(`${error.name}: ${error.reason}`)
+    const names = [
+      ...new Set(
+        [to, ...(options.cc ?? [])].map((name) =>
+          canonicalName(settings.reserved, name)
+        )
+      ),
+    ];
+
+    const targets: Resolved[] = [];
+
+    for (const name of names) {
+      const target = yield* directory
+        .resolve(name)
+        .pipe(
+          Effect.catchTag("UnknownName", (error) =>
+            lookup(own.identity, name).pipe(
+              Effect.mapError(() =>
+                refused("UnknownName")(`${error.name}: ${error.reason}`)
+              )
             )
           )
+        );
+
+      if (target.did === own.did) {
+        if (name === names[0]) {
+          return yield* refused("Self")("Cannot message this Pi's own name");
+        }
+
+        continue;
+      }
+
+      if (!targets.some((known) => known.did === target.did)) {
+        targets.push(target);
+      }
+    }
+
+    const [primary] = targets;
+
+    if (primary === undefined) {
+      return yield* refused("NotAttempted")("No recipient");
+    }
+
+    const accepted: Delivered[] = [];
+
+    return yield* Effect.gen(function* sealAndSend() {
+      const client = yield* prepare({
+        endpoint: settings.endpoint,
+        own: yield* ownIdentity(own.identity),
+        peers: targets.map((target) => target.document),
+        serviceDid: settings.serviceDid,
+      });
+
+      const textBody = Match.value(body).pipe(
+        Match.when(Match.string, (text) => Option.some(text)),
+        Match.orElse(() => Option.none<string>())
+      );
+
+      const encrypt =
+        options.encrypt ?? (Option.isSome(textBody) ? settings.encrypt : true);
+
+      const replyTo =
+        options.replyTo === undefined
+          ? undefined
+          : yield* Schema.decodeUnknownEffect(Schema.toType(Defs.MessageRef))(
+              options.replyTo
+            );
+
+      let json = yield* Match.value(body).pipe(
+        Match.when(Match.string, () => Effect.succeed(Option.none<string>())),
+        Match.orElse((record) =>
+          Schema.encodeEffect(RecordJson)(record).pipe(Effect.map(Option.some))
         )
       );
 
-    if (target.did === own.did) {
-      return yield* refused("Self")("Cannot message this Pi's own name");
-    }
+      const encodeForId = (id: string) => {
+        if (Option.isSome(json)) {
+          return json.value;
+        }
 
-    const encodeMessage = (messageBody: string) =>
-      Effect.gen(function* messagePayload() {
-        const payload: PayloadValue = { body: messageBody, from: own.name };
+        const payload: PayloadValue = {
+          body: Option.getOrElse(textBody, () => ""),
+          cc: targets.slice(1).map((target) => target.name),
+          from: own.name,
+          thread: options.thread ?? id,
+          to: primary.name,
+        };
 
         const label = (own.label?.() ?? Option.none<string>()).pipe(
           Option.map((text) => text.trim().slice(0, 256)),
@@ -644,104 +677,328 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           Object.assign(payload, { summary });
         }
 
-        return yield* encodePayload(payload);
-      });
+        const text = Schema.encodeSync(PayloadJson)(payload);
+        json = Option.some(text);
 
-    const json = yield* Match.value(body).pipe(
-      Match.when(Match.string, encodeMessage),
-      Match.orElse(Schema.encodeEffect(RecordJson)),
-      Effect.mapError(() => refused("NotAttempted")("Invalid payload"))
-    );
+        return text;
+      };
 
-    return yield* Effect.gen(function* sealAndSend() {
-      const handle = yield* ownIdentity(own.identity);
+      const envelopes: Defs.EncryptedEnvelopeValue[] = [];
 
-      const client = yield* prepare({
-        endpoint: settings.endpoint,
-        own: handle,
-        peers: [target.document],
-        serviceDid: settings.serviceDid,
-      });
-
-      const replyTo =
-        options.replyTo === undefined
-          ? undefined
-          : yield* Schema.decodeUnknownEffect(Schema.toType(Defs.MessageRef))(
-              options.replyTo
-            );
-
-      const encrypt =
-        options.encrypt ??
-        Match.value(body).pipe(
-          Match.when(Match.string, () => settings.encrypt),
-          Match.orElse(() => true)
-        );
-
-      const envelope = yield* client.seal(
-        target.did,
-        json,
-        replyTo === undefined ? { encrypt } : { encrypt, replyTo }
-      );
-
-      const extra = yield* before(envelope.aad.messageId, target.did);
-
-      const attempt = (count: number): Effect.Effect<SendOutcome> =>
-        Ref.get(fence).pipe(
-          Effect.flatMap((held) =>
-            Option.match(held, {
-              onNone: () => client.send(envelope),
-              onSome: (current) => client.send(envelope, { fence: current }),
-            })
-          ),
-          Effect.flatMap((outcome) =>
-            (SendOutcomes.$is("Uncertain")(outcome) ||
-              (SendOutcomes.$is("Rejected")(outcome) &&
-                outcome.error.error === "LeaseMismatch")) &&
-            count < 3
-              ? Effect.sleep(Duration.seconds(count)).pipe(
-                  Effect.andThen(attempt(count + 1))
-                )
-              : Effect.succeed(outcome)
+      for (const target of targets) {
+        envelopes.push(
+          yield* client.seal(
+            target.did,
+            encodeForId,
+            replyTo === undefined ? { encrypt } : { encrypt, replyTo }
           )
         );
+      }
 
-      const outcome = yield* attempt(1);
+      const [first] = envelopes;
 
-      const delivered = yield* SendOutcomes.$match(outcome, {
-        Accepted: ({ receipt }) =>
-          Effect.succeed({
-            did: target.did,
-            id: envelope.aad.messageId,
-            seq: receipt.seq,
-            to: target.name,
-          }),
-        NotAttempted: ({ reason }) =>
-          Effect.fail(refused("NotAttempted")(reason)),
-        Rejected: ({ error }) =>
-          Effect.fail(
-            refused("Rejected")(
-              `${error.error ?? "Rejected"} (${error.status ?? "4xx"}): ${error.reason}`
+      if (first === undefined) {
+        return yield* refused("NotAttempted")("No envelope");
+      }
+
+      const extra = yield* before(first.aad.messageId, primary.did);
+
+      for (const envelope of envelopes) {
+        const target = targets.find(
+          (entry) => entry.did === envelope.aad.recipientDid
+        );
+
+        if (target === undefined) {
+          return yield* refused("NotAttempted")("Missing sealed recipient");
+        }
+
+        const attempt = (count: number): Effect.Effect<SendOutcome> =>
+          Ref.get(fence).pipe(
+            Effect.flatMap((held) =>
+              Option.match(held, {
+                onNone: () => client.send(envelope),
+                onSome: (current) => client.send(envelope, { fence: current }),
+              })
+            ),
+            Effect.flatMap((outcome) =>
+              (SendOutcomes.$is("Uncertain")(outcome) ||
+                (SendOutcomes.$is("Rejected")(outcome) &&
+                  outcome.error.error === "LeaseMismatch")) &&
+              count < 3
+                ? Effect.sleep(Duration.seconds(count)).pipe(
+                    Effect.andThen(attempt(count + 1))
+                  )
+                : Effect.succeed(outcome)
             )
-          ),
-        Uncertain: ({ error }) =>
-          Effect.fail(
-            refused("Uncertain")(
-              `Admission not confirmed after 3 tries: ${error.reason}`
-            )
-          ),
-      });
+          );
+
+        const outcome = yield* attempt(1);
+
+        const delivered = yield* SendOutcomes.$match(outcome, {
+          Accepted: ({ receipt }) =>
+            Effect.succeed({
+              did: target.did,
+              id: envelope.aad.messageId,
+              seq: receipt.seq,
+              to: target.name,
+            }),
+          NotAttempted: ({ reason }) =>
+            Effect.fail(refused("NotAttempted")(reason)),
+          Rejected: ({ error }) =>
+            Effect.fail(
+              refused("Rejected")(
+                `${error.error ?? "Rejected"} (${error.status ?? "4xx"}): ${error.reason}`
+              )
+            ),
+          Uncertain: ({ error }) =>
+            Effect.fail(
+              refused("Uncertain")(
+                `Admission not confirmed after 3 tries: ${error.reason}`
+              )
+            ),
+        });
+
+        accepted.push(delivered);
+      }
+
+      const [delivered] = accepted;
+
+      if (delivered === undefined) {
+        return yield* refused("NotAttempted")("No delivery");
+      }
 
       return { delivered, extra };
     }).pipe(
       Effect.scoped,
       Effect.provideService(HttpClient.HttpClient, http),
-      Effect.mapError((error) =>
-        Schema.is(NotDelivered)(error)
+      Effect.mapError((error) => {
+        if (accepted.length > 0) {
+          return refused("Partial")(
+            `Accepted by ${accepted.map((entry) => `${entry.to} (id ${entry.id})`).join(", ")}; remaining delivery failed: ${reasonOf(error)}. Do not resend to accepted recipients.`
+          );
+        }
+
+        return Schema.is(NotDelivered)(error)
           ? error
-          : refused("NotAttempted")(reasonOf(error))
-      )
+          : refused("NotAttempted")(reasonOf(error));
+      })
     );
   });
+
+  const routing = (
+    own: Self,
+    deliver: Deliver
+  ): Effect.Effect<RelayRoute, NotDelivered, Scope.Scope> =>
+    Effect.gen(function* routeReader() {
+      const config = settings.relay;
+
+      if (
+        config === undefined ||
+        (config.name !== own.name && config.to !== own.name)
+      ) {
+        return {
+          message: (inbound: Inbound, settled: boolean) =>
+            deliver(inbound, settled),
+          record: (inbound: InboundRecord) => deliver(inbound, false),
+        } satisfies RelayRoute;
+      }
+
+      if (config.to === own.name) {
+        return {
+          message: (inbound: Inbound, settled: boolean) =>
+            deliver(inbound, settled),
+          record: (inbound: InboundRecord) =>
+            Effect.gen(function* staffRecord() {
+              const accepted = yield* deliverRelay(config, own.name, inbound, {
+                deliver,
+                remember: threads.remember,
+              });
+
+              if (!accepted) {
+                yield* deliver(inbound, false);
+              }
+            }),
+        } satisfies RelayRoute;
+      }
+
+      const scope = yield* Effect.scope;
+
+      const file = path.join(
+        settings.state,
+        "relay",
+        `${provisionLabel(own.name)}.json`
+      );
+
+      const persistenceError = (error: { readonly _tag: string }) =>
+        new NotDelivered({
+          code: "NotAttempted",
+          reason: `Relay journal: ${reasonOf(error)}`,
+        });
+
+      const relay = yield* openRelay(config, {
+        inject: deliver,
+        load: fs.exists(file).pipe(
+          Effect.flatMap((exists) =>
+            exists
+              ? fs
+                  .readFileString(file)
+                  .pipe(
+                    Effect.flatMap(
+                      Schema.decodeEffect(Schema.fromJsonString(RelayJournal))
+                    )
+                  )
+              : Effect.succeed([])
+          ),
+          Effect.mapError(persistenceError)
+        ),
+        now: Clock.currentTimeMillis,
+        save: (entries) =>
+          Schema.encodeEffect(Schema.fromJsonString(RelayJournal))(
+            entries
+          ).pipe(
+            Effect.flatMap((json) => writePrivateJson(file, json)),
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+            Effect.mapError(persistenceError)
+          ),
+      });
+
+      const recoverRelay = Clock.currentTimeMillis.pipe(
+        Effect.flatMap(relay.recover)
+      );
+
+      yield* recoverRelay;
+      yield* recoverRelay.pipe(
+        Effect.tapError(() =>
+          Effect.logWarning("Rat King relay recovery failed")
+        ),
+        Effect.ignore,
+        Effect.repeat(Schedule.spaced("1 second")),
+        Effect.forkIn(scope)
+      );
+
+      return {
+        message: (inbound, settled, encrypted) =>
+          Effect.gen(function* routeMessage() {
+            const record = yield* relay.receive(
+              inbound,
+              settled,
+              encrypted,
+              yield* Clock.currentTimeMillis
+            );
+
+            if (Option.isSome(record)) {
+              yield* transmit(
+                config.to,
+                record.value,
+                { encrypt: encrypted },
+                () => Effect.void
+              ).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning(
+                    "Rat King relay forward failed",
+                    error.code
+                  ).pipe(Effect.andThen(relay.failed(inbound.id)))
+                ),
+                Effect.tapError(() =>
+                  Effect.logWarning("Rat King relay fallback journal failed")
+                ),
+                Effect.ignore,
+                Effect.forkIn(scope)
+              );
+            }
+          }),
+        record: (inbound) =>
+          Effect.gen(function* routeRecord() {
+            const handled = Schema.decodeUnknownOption(RelayHandled)(
+              inbound.record
+            );
+
+            yield* config.mode === "front" &&
+            inbound.verified &&
+            inbound.from === config.to &&
+            Option.isSome(handled)
+              ? relay.handled(handled.value.id)
+              : deliver(inbound, false);
+          }),
+      } satisfies RelayRoute;
+    });
+
+  const loop = Effect.fn("RatKing.run")(function* loop(
+    facts: SessionFacts,
+    deliver: Deliver
+  ) {
+    const claimed = yield* supervise(
+      Option.none(),
+      claimName(facts).pipe(services)
+    );
+
+    if (settings.refuse.includes(claimed.name)) {
+      const reason = `${claimed.name} is held by another reader (refuse list in the Rat King config); no reader started`;
+
+      yield* Ref.set(
+        state,
+        ReaderState.Refused({ name: claimed.name, reason })
+      );
+
+      return yield* Deferred.fail(
+        self,
+        new NotDelivered({ code: "Refused", reason })
+      ).pipe(Effect.asVoid);
+    }
+
+    const own = yield* supervise(
+      Option.some(claimed.name),
+      Effect.gen(function* establish() {
+        yield* Ref.set(state, ReaderState.Minting({ name: claimed.name }));
+
+        const identity = yield* ensureIdentity(claimed.name);
+
+        return {
+          did: identity.did,
+          identity,
+          label: facts.label ?? (() => facts.pane),
+          name: claimed.name,
+        };
+      }).pipe(services)
+    );
+
+    yield* Ref.set(established, Option.some(own));
+    yield* Deferred.succeed(self, own);
+
+    if (facts.reads === false) {
+      return yield* Ref.set(
+        state,
+        ReaderState.SendOnly({
+          name: own.name,
+          reason:
+            "Non-interactive Pi: send-only, no reader and no lease. Set RATKING_PRINT_NAME to read a name",
+        })
+      );
+    }
+
+    const route = yield* supervise(
+      Option.some(own.name),
+      routing(own, deliver)
+    );
+
+    return yield* supervise(
+      Option.some(own.name),
+      consumeOnce(own, facts, route).pipe(
+        Effect.andThen(
+          Effect.fail(
+            new NotDelivered({
+              code: "Uncertain",
+              reason: "Reader stopped; restarting",
+            })
+          )
+        )
+      )
+    ).pipe(Effect.forever);
+  });
+
+  const run = (facts: SessionFacts, deliver: Deliver) =>
+    loop(facts, deliver).pipe(Effect.forkScoped, Effect.asVoid);
 
   const awaitLive = Ref.get(state).pipe(
     Effect.flatMap((reader) =>
@@ -765,6 +1022,55 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         )
       )
     )
+  );
+
+  const confirmHandled = Effect.fn("RatKing.confirmHandled")(
+    function* confirmHandled(id: string) {
+      const record = yield* threads.lookup(id);
+
+      if (Option.isNone(record) || record.value.relay === undefined) {
+        return yield* new AskFailed({
+          code: "NoSuchMessage",
+          reason: `No relayed message ${id} reached this Pi`,
+        });
+      }
+
+      const config = settings.relay;
+      const own = yield* awaitSelf;
+
+      if (
+        config === undefined ||
+        own.name !== config.to ||
+        record.value.relay.name !== config.name
+      ) {
+        return yield* refused("NotAttempted")(
+          "Handled confirmation is available only on the configured EA"
+        );
+      }
+
+      const target = yield* directory
+        .resolve(config.name)
+        .pipe(
+          Effect.mapError(() => refused("UnknownName")("Relay desk is unknown"))
+        );
+
+      if (target.did !== record.value.relay.did) {
+        return yield* refused("NotAttempted")(
+          "Relay desk DID changed; no confirmation sent"
+        );
+      }
+
+      const { delivered } = yield* transmit(
+        config.name,
+        { $type: "sh.mschf.ratking.relay#handled", id },
+        { encrypt: record.value.relay.encrypted, kind: "data" },
+        () => Effect.void
+      );
+
+      yield* threads.answer(id);
+
+      return delivered;
+    }
   );
 
   return RatKing.of({
@@ -811,6 +1117,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         )
       );
     }),
+    handled: confirmHandled,
     list: Effect.gen(function* list() {
       const remote = yield* issuer.names.pipe(
         Effect.tapError(() =>
@@ -868,18 +1175,53 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         );
       }
 
+      const own = yield* awaitSelf;
+
+      const recipients = replyRecipients(
+        { ...record.value, from: sender.value },
+        own.name,
+        options?.replyAll ?? true
+      );
+
+      const [target] = recipients;
+
+      if (target === undefined) {
+        return yield* refused("Self")("No other thread participant");
+      }
+
+      const replyOptions: SendOptions = {
+        ...options,
+        cc: recipients.slice(1),
+        kind: options?.kind === "data" ? "data" : "reply",
+        replyTo: { messageId: id, senderDid: record.value.did },
+        thread: record.value.thread ?? id,
+      };
+
+      if (record.value.relay !== undefined && options?.encrypt === undefined) {
+        Object.assign(replyOptions, { encrypt: record.value.relay.encrypted });
+      }
+
       const { delivered } = yield* transmit(
-        sender.value,
+        target,
         body,
-        {
-          ...options,
-          kind: options?.kind === "data" ? "data" : "reply",
-          replyTo: { messageId: id, senderDid: record.value.did },
-        },
+        replyOptions,
         () => Effect.void
       );
 
       yield* threads.answer(id);
+
+      if (
+        record.value.relay !== undefined &&
+        settings.relay?.mode === "front"
+      ) {
+        yield* confirmHandled(id).pipe(
+          Effect.mapError((error) =>
+            refused("Partial")(
+              `Reply accepted by ${delivered.to} (id ${delivered.id}); handled confirmation failed: ${reasonOf(error)}. Use handled to retry only the confirmation.`
+            )
+          )
+        );
+      }
 
       return delivered;
     }),

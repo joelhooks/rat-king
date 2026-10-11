@@ -16,6 +16,8 @@ export {
 
 export { LexiconRecord, Payload, PayloadJson } from "./payload.ts";
 
+export { RelayRecord, RelayHandled, relayedInbound } from "./relay.ts";
+
 export type {
   Inbound,
   InboundRecord,

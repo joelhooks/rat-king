@@ -10,6 +10,9 @@ const Case = Schema.Struct({
     Schema.isPattern(/^[a-z](?:[a-z ]{0,598}[a-z])?$/u)
   ),
   cc: Schema.Boolean,
+  ccNames: Schema.UndefinedOr(
+    Schema.Array(Schema.Literal("a")).check(Schema.isMaxLength(1))
+  ),
   label: Schema.UndefinedOr(Schema.Literal("📞 Ernestine · Switchboard")),
   padding: Schema.Int.check(Schema.isBetween({ maximum: 60, minimum: 0 })),
   replyTo: Schema.UndefinedOr(Schema.Literal("3m7x2ka4xv22b")),
@@ -72,6 +75,10 @@ it.effect.prop(
 
       if (/\+\d+ lines?$/u.test(collapsed.at(-1) ?? "")) {
         expect(collapsed).toHaveLength(4);
+      }
+
+      if ((sample.ccNames?.length ?? 0) > 0) {
+        expect(collapsed[0]).toContain("cc: a");
       }
 
       if (!sample.verified) {

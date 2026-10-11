@@ -10,12 +10,16 @@ export interface Reply {
 }
 
 export interface Received {
+  readonly relay?: NonNullable<Inbound["relay"]>;
   readonly id: string;
   readonly from: string;
   readonly did: string;
   readonly ask: boolean;
   readonly answered: boolean;
   readonly preview: string;
+  readonly ccNames?: readonly string[];
+  readonly to?: string;
+  readonly thread?: string;
 }
 
 export interface ThreadsApi {
@@ -30,6 +34,23 @@ export interface ThreadsApi {
   readonly answer: (id: string) => Effect.Effect<void>;
   readonly pending: Effect.Effect<readonly Received[]>;
 }
+
+export const replyRecipients = (
+  record: Received,
+  self: string,
+  replyAll = true
+) =>
+  [
+    ...new Set(
+      replyAll
+        ? [
+            record.from,
+            ...(record.to === undefined ? [] : [record.to]),
+            ...(record.ccNames ?? []),
+          ]
+        : [record.from]
+    ),
+  ].filter((name) => name !== self);
 
 const keep = 200;
 
@@ -64,14 +85,32 @@ const makeThreads = Effect.sync((): ThreadsApi => {
     ),
     remember: (inbound) =>
       Effect.sync(() => {
-        received.set(inbound.id, {
+        const record: Received = {
           answered: false,
           ask: inbound.kind === "ask",
           did: inbound.did,
           from: inbound.from,
           id: inbound.id,
           preview: inbound.body.replaceAll(/\s+/gu, " ").slice(0, 80),
-        });
+        };
+
+        if (inbound.ccNames !== undefined) {
+          Object.assign(record, { ccNames: inbound.ccNames });
+        }
+
+        if (inbound.to !== undefined) {
+          Object.assign(record, { to: inbound.to });
+        }
+
+        if (inbound.thread !== undefined) {
+          Object.assign(record, { thread: inbound.thread });
+        }
+
+        if (inbound.relay !== undefined) {
+          Object.assign(record, { relay: inbound.relay });
+        }
+
+        received.set(inbound.id, record);
 
         for (const id of [...received.keys()].slice(0, -keep)) {
           received.delete(id);

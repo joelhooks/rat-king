@@ -6,7 +6,12 @@ import { it } from "@effect/vitest";
 import * as Defs from "@rat-king/lexicon/defs";
 import * as List from "@rat-king/lexicon/mailbox.list";
 import * as Send from "@rat-king/lexicon/mailbox.send";
-import { ownIdentity, prepare } from "@rat-king/mailbox-client";
+import {
+  layer as mailboxLayer,
+  ownIdentity,
+  prepare,
+  RatKingMailbox,
+} from "@rat-king/mailbox-client";
 import {
   Arbitrary,
   ConfigProvider,
@@ -42,7 +47,8 @@ import {
   SEND_EVENT,
   SEND_RESULT_EVENT,
 } from "../src/extension.ts";
-import { LexiconRecord } from "../src/payload.ts";
+import { LexiconRecord, PayloadJson } from "../src/payload.ts";
+import { RelayHandled } from "../src/relay.ts";
 import { SecretStore } from "../src/secrets.ts";
 import { harness } from "./harness.ts";
 
@@ -110,6 +116,7 @@ const fakePi = () => {
 const Case = Schema.Struct({
   body: Schema.String,
   known: Schema.Boolean,
+  relayed: Schema.Boolean,
   requestId: Schema.String,
 });
 
@@ -193,11 +200,21 @@ it.live.prop(
         Deferred.doneUnsafe(answered, Schema.decodeUnknownEffect(Result)(data));
       });
 
-      pi.events.emit(SEND_EVENT, {
+      const request = {
         body: sample.body,
         requestId: sample.requestId,
         to: sample.known ? "peer" : "nobody",
-      });
+      };
+
+      if (sample.relayed) {
+        Object.assign(request, {
+          replyTo: "3m7x2ka4xv22a",
+          replyToDid: PEER,
+          thread: "3m7x2ka4xv22a",
+        });
+      }
+
+      pi.events.emit(SEND_EVENT, request);
 
       const result = yield* Deferred.await(answered);
 
@@ -207,6 +224,7 @@ it.live.prop(
 
       if (sample.known) {
         expect(result).toMatchObject({ status: "delivered", to: "peer" });
+
         expect(submitted.map((each) => each.envelope.aad.recipientDid)).toEqual(
           [PEER]
         );
@@ -486,6 +504,7 @@ const host = () => {
   };
 
   const messages: unknown[] = [];
+  const deliveries: unknown[] = [];
 
   const pi: PiHost = {
     events: createEventBus(),
@@ -497,12 +516,13 @@ const host = () => {
     },
     registerMessageRenderer: () => {},
     registerTool: () => {},
-    sendMessage: (message) => {
+    sendMessage: (message, delivery) => {
       messages.push(message);
+      deliveries.push(delivery);
     },
   };
 
-  return { lifecycle, messages, pi };
+  return { deliveries, lifecycle, messages, pi };
 };
 
 const facts = (session: string) =>
@@ -518,7 +538,7 @@ const facts = (session: string) =>
 it.live.prop(
   "inbound records stay on ratking/record, messages keep their path, and both checkpoint before ack",
   [
-    Arbitrary.schema(Schema.Literals(["record", "message", "raw"])),
+    Arbitrary.schema(Schema.Literals(["record", "message", "raw", "relay"])),
     Arbitrary.schema(Schema.String),
   ],
   ([mode, body]) =>
@@ -529,6 +549,9 @@ it.live.prop(
       const peer = yield* identity(RECORD_PEER);
       const ownDocument = yield* document(own);
       const peerDocument = yield* document(peer);
+      const person = yield* identity("did:web:person.agents.example.invalid");
+      const personDocument = yield* document(person);
+      const outbound: Defs.EncryptedEnvelopeValue[] = [];
 
       const value = Match.value(mode).pipe(
         Match.when("record", () => ({ $type: "sh.example.desk.answer", body })),
@@ -539,6 +562,20 @@ it.live.prop(
           kind: "message",
         })),
         Match.when("raw", () => ({ $type: 17, body })),
+        Match.when("relay", () => ({
+          $type: "sh.mschf.ratking.relay#message",
+          body,
+          cc: false,
+          did: person.did,
+          encrypted: true,
+          from: "person",
+          id: "3m7x2ka4xv22a",
+          kind: "ask",
+          label: "Yaffle",
+          replyTo: null,
+          summary: "Original summary",
+          verified: true,
+        })),
         Match.exhaustive
       );
 
@@ -637,6 +674,33 @@ it.live.prop(
             Match.when("sh.mschf.ratking.runtime.releaseLease", () =>
               Effect.succeed({})
             ),
+            Match.when("sh.mschf.ratking.mailbox.send", () =>
+              Effect.gen(function* sendStaffMail() {
+                if (!Predicate.isTagged(request.body, "Uint8Array")) {
+                  throw new Error("No request body");
+                }
+
+                const input = yield* Schema.decodeUnknownEffect(
+                  Schema.fromJsonString(
+                    Schema.Struct({ envelope: Defs.EncryptedEnvelope })
+                  )
+                )(new TextDecoder().decode(request.body.body));
+
+                outbound.push(input.envelope);
+
+                return {
+                  receipt: {
+                    message: {
+                      messageId: input.envelope.aad.messageId,
+                      senderDid: input.envelope.aad.senderDid,
+                    },
+                    recipientDid: input.envelope.aad.recipientDid,
+                    seq: outbound.length + 1,
+                    state: "accepted",
+                  },
+                };
+              })
+            ),
             Match.orElse(() => Effect.die(`Unexpected mailbox request ${nsid}`))
           );
 
@@ -676,15 +740,23 @@ it.live.prop(
           );
           yield* directory.record("tester", ownDocument);
           yield* directory.record("handset", peerDocument);
+          yield* directory.record("person", personDocument);
         })
       ).pipe(
         Layer.orDie,
         Layer.provideMerge(
-          harness(state, http).pipe(Layer.provideMerge(socketPort))
+          harness(state, http, [], {
+            relay: {
+              fallbackMinutes: 10,
+              mode: "front",
+              name: "handset",
+              to: "tester",
+            },
+          }).pipe(Layer.provideMerge(socketPort))
         )
       );
 
-      const { lifecycle, messages, pi } = host();
+      const { lifecycle, messages, deliveries, pi } = host();
       const records: unknown[] = [];
       const received: unknown[] = [];
       pi.events.on(RECORD_EVENT, (data) => {
@@ -708,6 +780,100 @@ it.live.prop(
         await lifecycle.start({ session: "inbound", warn: () => {} });
       });
       yield* Deferred.await(acked).pipe(Effect.timeout("5 seconds"));
+
+      if (mode === "relay") {
+        const answered = yield* Deferred.make<
+          typeof Result.Type,
+          Schema.SchemaError
+        >();
+
+        pi.events.on(SEND_RESULT_EVENT, (data) => {
+          Deferred.doneUnsafe(
+            answered,
+            Schema.decodeUnknownEffect(Result)(data)
+          );
+        });
+        pi.events.emit(SEND_EVENT, {
+          body: "answer",
+          replyAll: false,
+          replyTo: "3m7x2ka4xv22a",
+          requestId: "staff-answer",
+        });
+        expect(
+          (yield* Deferred.await(answered).pipe(Effect.timeout("5 seconds")))
+            .status
+        ).toBe("delivered");
+        expect(outbound.map((sent) => sent.aad.recipientDid)).toEqual([
+          person.did,
+          peer.did,
+        ]);
+        const [answer, confirmation] = outbound;
+
+        if (answer === undefined || confirmation === undefined) {
+          throw new Error("Missing staff answer or confirmation");
+        }
+
+        const answerOpened = yield* RatKingMailbox.use((mailbox) =>
+          mailbox.open(answer)
+        ).pipe(
+          Effect.provide(
+            mailboxLayer({
+              documents: [ownDocument, peerDocument],
+              endpoint: "https://mailbox.example.invalid",
+              identity: person,
+              serviceDid: "did:web:mailbox.example.invalid",
+            })
+          ),
+          Effect.provideService(HttpClient.HttpClient, http)
+        );
+
+        expect(answerOpened.replyTo).toEqual({
+          messageId: "3m7x2ka4xv22a",
+          senderDid: person.did,
+        });
+        expect(answerOpened.encrypted).toBe(true);
+        expect(
+          (yield* Schema.decodeEffect(PayloadJson)(answerOpened.body)).thread
+        ).toBe("3m7x2ka4xv22a");
+
+        const confirmationOpened = yield* RatKingMailbox.use((mailbox) =>
+          mailbox.open(confirmation)
+        ).pipe(
+          Effect.provide(
+            mailboxLayer({
+              documents: [ownDocument],
+              endpoint: "https://mailbox.example.invalid",
+              identity: peer,
+              serviceDid: "did:web:mailbox.example.invalid",
+            })
+          ),
+          Effect.provideService(HttpClient.HttpClient, http)
+        );
+
+        expect(confirmationOpened.encrypted).toBe(true);
+        expect(
+          yield* Schema.decodeEffect(Schema.fromJsonString(RelayHandled))(
+            confirmationOpened.body
+          )
+        ).toEqual({
+          $type: "sh.mschf.ratking.relay#handled",
+          id: "3m7x2ka4xv22a",
+        });
+        expect(records).toEqual([]);
+        expect(received[0]).toMatchObject({
+          body,
+          from: "person",
+          id: "3m7x2ka4xv22a",
+          label: "Yaffle",
+          relay: { name: "handset" },
+          summary: "Original summary",
+        });
+        expect(messages).toHaveLength(1);
+        expect(deliveries).toEqual([
+          { deliverAs: "followUp", triggerTurn: true },
+        ]);
+      }
+
       yield* Effect.promise(async () => {
         await lifecycle.end();
       });
@@ -725,7 +891,7 @@ it.live.prop(
         ]);
         expect(received).toEqual([]);
         expect(messages).toEqual([]);
-      } else {
+      } else if (mode !== "relay") {
         expect(records).toEqual([]);
         expect(received).toHaveLength(1);
         expect(received[0]).toMatchObject({
@@ -736,7 +902,7 @@ it.live.prop(
         expect(messages).toHaveLength(1);
       }
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-  { arbitrary: { runs: 8 }, timeout: 60_000 }
+  { arbitrary: { runs: 20 }, timeout: 60_000 }
 );
 
 const RecordCase = Schema.StructWithRest(

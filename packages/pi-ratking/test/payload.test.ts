@@ -5,7 +5,7 @@ import { expect } from "vitest";
 import { decodePayload, encodePayload, Payload } from "../src/payload.ts";
 
 it.effect.prop(
-  "a message on the wire carries only from, body, kind, label, replyTo and summary, even when the caller holds a session id",
+  "a message on the wire carries signed message and thread fields, never caller session ids",
   [Arbitrary.schema(Payload), Arbitrary.schema(Schema.String)],
   ([payload, session]) =>
     Effect.gen(function* wire() {
@@ -20,7 +20,17 @@ it.effect.prop(
 
       expect(
         keys.every((key) =>
-          ["body", "from", "kind", "label", "replyTo", "summary"].includes(key)
+          [
+            "body",
+            "cc",
+            "from",
+            "kind",
+            "label",
+            "replyTo",
+            "summary",
+            "thread",
+            "to",
+          ].includes(key)
         )
       ).toBe(true);
 

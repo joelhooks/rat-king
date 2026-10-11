@@ -9,18 +9,22 @@ import {
 } from "@earendil-works/pi-tui";
 import { Option, Schema } from "effect";
 
-import { Kind, renderInbound } from "./payload.ts";
+import { Kind, RelaySource, renderInbound } from "./payload.ts";
 
 const Details = Schema.Struct({
   body: Schema.String,
   cc: Schema.Boolean,
+  ccNames: Schema.optional(Schema.Array(Schema.String)),
   did: Schema.String,
   from: Schema.String,
   id: Schema.String,
   kind: Kind,
   label: Schema.optional(Schema.String),
+  relay: Schema.optional(RelaySource),
   replyTo: Schema.optional(Schema.String),
   summary: Schema.optional(Schema.String),
+  thread: Schema.optional(Schema.String),
+  to: Schema.optional(Schema.String),
   verified: Schema.Boolean,
 });
 
@@ -36,6 +40,8 @@ export const compactLines = (
   value: {
     readonly body: string;
     readonly cc: boolean;
+    readonly ccNames?: readonly string[] | undefined;
+    readonly relay?: typeof RelaySource.Type | undefined;
     readonly from: string;
     readonly label?: string | undefined;
     readonly replyTo?: string | undefined;
@@ -44,9 +50,16 @@ export const compactLines = (
   },
   width: number
 ): readonly string[] => {
+  let ccMarker = value.cc ? ["CC"] : [];
+
+  if ((value.ccNames?.length ?? 0) > 0) {
+    ccMarker = [`cc: ${(value.ccNames ?? []).map(oneLine).join(", ")}`];
+  }
+
   const markers = [
     ...(value.verified ? [] : ["unverified"]),
-    ...(value.cc ? ["CC"] : []),
+    ...(value.relay === undefined ? [] : [`via ${oneLine(value.relay.name)}`]),
+    ...ccMarker,
     ...(value.replyTo === undefined ? [] : ["↩"]),
   ];
 
@@ -101,11 +114,33 @@ export const messageView = (input: {
   return details.pipe(
     Option.map((value) => {
       const inbound = {
-        ...value,
+        body: value.body,
+        cc: value.cc,
+        did: value.did,
+        from: value.from,
+        id: value.id,
+        kind: value.kind,
         label: Option.fromNullishOr(value.label),
         replyTo: Option.fromNullishOr(value.replyTo),
         summary: Option.fromNullishOr(value.summary),
+        verified: value.verified,
       };
+
+      if (value.relay !== undefined) {
+        Object.assign(inbound, { relay: value.relay });
+      }
+
+      if (value.ccNames !== undefined) {
+        Object.assign(inbound, { ccNames: value.ccNames });
+      }
+
+      if (value.thread !== undefined) {
+        Object.assign(inbound, { thread: value.thread });
+      }
+
+      if (value.to !== undefined) {
+        Object.assign(inbound, { to: value.to });
+      }
 
       const text = new Text("", 0, 0);
 

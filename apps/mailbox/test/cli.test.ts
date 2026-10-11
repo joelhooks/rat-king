@@ -76,6 +76,7 @@ it.effect(
 
       expect(result).toEqual({
         body: "proof message",
+        encrypted: true,
         senderDid,
         tid: payload.aad.messageId,
         verified: true,

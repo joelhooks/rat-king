@@ -32,6 +32,15 @@ export const IssuerSetting = Schema.Union([CommandIssuer, ServiceIssuer]);
 
 export type IssuerSettingValue = typeof IssuerSetting.Type;
 
+export const RelaySetting = Schema.Struct({
+  fallbackMinutes: Schema.Finite.check(Schema.isGreaterThan(0)),
+  mode: Schema.Literals(["copy", "front"]),
+  name: AgentName,
+  to: AgentName,
+});
+
+export type RelaySettingValue = typeof RelaySetting.Type;
+
 export const PiConfig = Schema.Struct({
   askTimeoutMs: Schema.optionalKey(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
@@ -45,6 +54,7 @@ export const PiConfig = Schema.Struct({
   endpoint: Schema.String.check(Schema.isPattern(/^https?:\/\/\S+$/u)),
   issuer: Schema.optionalKey(IssuerSetting),
   refuse: Schema.optionalKey(Schema.Array(AgentName)),
+  relay: Schema.optionalKey(RelaySetting),
   reserved: Schema.optionalKey(Reserved),
   secretsCommand: Schema.optionalKey(Schema.String),
   serviceDid: Did,
@@ -64,6 +74,7 @@ export interface SettingsValue {
   readonly issuer: Option.Option<IssuerSettingValue>;
   readonly refuse: readonly string[];
   readonly reserved: ReservedValue;
+  readonly relay?: RelaySettingValue;
   readonly secretsCommand: string;
   readonly serviceDid: string;
   readonly state: string;
@@ -129,7 +140,7 @@ export const loadSettings = Effect.fn("RatKing.loadSettings")(
     const { config, home } = yield* readConfig();
     const state = config.state ?? path.join(home, ".local/state/rat-king/pi");
 
-    return Settings.of({
+    const settings = Settings.of({
       askTimeoutMs: config.askTimeoutMs ?? 600_000,
       didTemplate: config.didTemplate,
       directory: config.directory ?? path.join(state, "directory.json"),
@@ -143,6 +154,12 @@ export const loadSettings = Effect.fn("RatKing.loadSettings")(
       serviceDid: config.serviceDid,
       state,
     });
+
+    if (config.relay !== undefined) {
+      Object.assign(settings, { relay: config.relay });
+    }
+
+    return settings;
   }
 );
 
