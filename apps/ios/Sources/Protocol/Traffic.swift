@@ -1,11 +1,13 @@
 import Foundation
 
+// pi-ratking payload: body, self-asserted `from` name, optional callsign label
+// and the answered message ID. Anything else is plain text.
 struct MessageText: Equatable, Sendable {
-    let text: String; let label: String?
+    let text: String; let label: String?; let from: String?; let replyTo: String?
     init(_ raw: String) {
         guard let object = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
-              let body = object["body"] as? String, object["from"] is String else { text = raw; label = nil; return }
-        text = body
+              let body = object["body"] as? String, let from = object["from"] as? String else { text = raw; label = nil; from = nil; replyTo = nil; return }
+        text = body; self.from = from; replyTo = object["replyTo"] as? String
         label = (object["label"] as? String).flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
     }
 }

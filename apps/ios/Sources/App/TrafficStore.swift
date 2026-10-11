@@ -27,6 +27,10 @@ func nextTrafficState(_ state: TrafficState, _ event: TrafficEvent) -> TrafficSt
         let entries = Dictionary(uniqueKeysWithValues: availableRows.map { ($0.messageKey, $0) })
         return presentation.visible.compactMap { entries[$0] }
     }
+    // Opened rows count as read; like archives, memory-only.
+    private(set) var seen: Set<String> = []
+    var archivedRows: [TrafficEntry] { journal.messages.filter { archived.contains($0.messageKey) } }
+    func markSeen(_ key: String) { seen.insert(key) }
     func revealNew() { presentation.reveal(availableRows.map(\.messageKey)) }
     func archive(_ key: String) { archived.insert(key); presentation.update(availableRows.map(\.messageKey)) }
     func restoreAll() { archived = []; revealNew() }

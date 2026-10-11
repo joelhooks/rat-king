@@ -4,6 +4,12 @@ struct TrafficView: View {
     let store: TrafficStore
     var inbox: InboxStore?
     var copies: [CarbonCopy] = []
+    @Binding var filter: ListFilter
+    private var shownRows: [TrafficEntry] {
+        (filter.scope == .archived ? store.archivedRows : store.rows).filter {
+            filter.admits(trafficFacts($0, seen: store.seen.contains($0.messageKey), archived: store.archived.contains($0.messageKey)))
+        }
+    }
     private var unlinked: [CarbonCopy] { copies.filter { copy in !store.journal.entries.contains(where: copy.matches) } }
     @State private var path: [String] = []
     var body: some View {
@@ -15,6 +21,7 @@ struct TrafficView: View {
                     Button("[r reconnect]") { store.refresh() }.keyboardShortcut("r", modifiers: []).foregroundStyle(TUITheme.accent)
                 }.padding(12)
                 TerminalHints(text: "tap → details · edge swipe → back · pull → refresh")
+                TerminalFilterBar(filter: $filter, projects: store.journal.messages.flatMap { trafficFacts($0, seen: true, archived: false).projects }).padding(.horizontal, 12)
                 if let error = store.lastError { Text("! " + error).foregroundStyle(TUITheme.err).padding(12) }
                 ScrollViewReader { proxy in
                     ScrollView {
@@ -27,15 +34,17 @@ struct TrafficView: View {
                                     Button("[\(store.presentation.pending.count) new ↑]") { store.revealNew(); proxy.scrollTo("top", anchor: .top) }.foregroundStyle(TUITheme.accent).padding(12)
                                 }
                                 if !store.archived.isEmpty { Button("[restore archived traffic]") { store.restoreAll() }.foregroundStyle(TUITheme.accent).padding(12) }
-                                if store.rows.isEmpty { Text("No captured traffic yet. Capture starts at deploy.").foregroundStyle(TUITheme.dim).padding(12) }
+                                let rows = shownRows
+                                if store.rows.isEmpty, filter == ListFilter() { Text("No captured traffic yet. Capture starts at deploy.").foregroundStyle(TUITheme.dim).padding(12) }
+                                else if rows.isEmpty { Text("Nothing matches this filter.").foregroundStyle(TUITheme.dim).padding(12) }
                                 ForEach(unlinked) { copy in
                                     TerminalPanel(title: "UNLINKED COPY") {
                                         CopyContentView(copy: copy)
                                         Text("No matching primary observed. Not attached to a traffic row.").foregroundStyle(TUITheme.warn)
                                     }.padding(12)
                                 }
-                                ForEach(store.rows, id: \.messageKey) { entry in
-                                    Button { path.append(entry.messageKey) } label: { TrafficRow(entry: entry) }
+                                ForEach(rows, id: \.messageKey) { entry in
+                                    Button { path.append(entry.messageKey) } label: { TrafficRow(entry: entry, unread: !store.seen.contains(entry.messageKey)) }
                                         .buttonStyle(.plain).accessibilityIdentifier("traffic-row-\(entry.seq)")
                                         .accessibilityLabel("\(entry.time.formatted()), \(entry.senderDid) to \(entry.recipientDid), \(entry.messageId), \(entry.ciphertextSize) bytes, \(entry.state), details")
                                     ThinDivider()
@@ -47,11 +56,11 @@ struct TrafficView: View {
             }.background(TUITheme.bg).toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: String.self) { key in
                 if let selected = store.journal.messages.first(where: { $0.messageKey == key }) {
-                    TrafficDetailView(detail: TrafficDetail(selected: selected, entries: store.journal.entries), inbox: inbox, copies: copies.filter { $0.matches(selected) }, archiveNext: {
-                        let next = nextInboxID(after: key, in: store.rows.map(\.messageKey))
+                    TrafficDetailView(detail: TrafficDetail(selected: selected, entries: store.journal.entries), inbox: inbox, copies: copies.filter { $0.matches(selected) }, archiveNext: store.archived.contains(key) ? nil : {
+                        let next = nextInboxID(after: key, in: shownRows.map(\.messageKey))
                         store.archive(key)
                         if let next { path = [next] } else { path = [] }
-                    })
+                    }).onAppear { store.markSeen(key) }
                 }
             }
         }.font(TUITheme.monoFont).foregroundStyle(TUITheme.fg).tint(TUITheme.accent)
@@ -59,10 +68,11 @@ struct TrafficView: View {
 }
 private struct TrafficRow: View {
     let entry: TrafficEntry
+    var unread = false
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
             HStack(alignment: .top, spacing: 8) {
-                Text("›").foregroundStyle(TUITheme.accent)
+                Text(unread ? "●" : "›").foregroundStyle(unread ? TUITheme.teal : TUITheme.accent)
                 Text(entry.message?.label ?? entry.route).foregroundStyle(TUITheme.fg).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                 Text(entry.state.uppercased()).foregroundStyle(TUITheme.receipt(entry.state)).font(TUITheme.microFont)
             }

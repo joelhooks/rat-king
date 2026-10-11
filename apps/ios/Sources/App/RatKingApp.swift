@@ -8,6 +8,7 @@ struct RatKingApp: App {
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--terminal-gesture-test") { TerminalGestureHarness() }
             else if ProcessInfo.processInfo.arguments.contains("--traffic-preview-test") { TrafficPreviewHarness() }
+            else if ProcessInfo.processInfo.arguments.contains("--conversation-test") { ConversationHarness() }
             else { TerminalView() }
             #else
             TerminalView()
@@ -18,8 +19,7 @@ struct RatKingApp: App {
 struct TerminalView: View {
     @State private var store = InboxStore()
     @State private var tab = 0
-    @State private var recipient = ""
-    @State private var draft = ""
+    @State private var filters = ListFilters()
     @State private var importing = false
     @Environment(\.scenePhase) private var scenePhase
     var body: some View {
@@ -33,7 +33,7 @@ struct TerminalView: View {
             }.padding(8).background(TUITheme.panel)
             ThinDivider()
             HStack(spacing: 8) {
-                ForEach(Array(["MAIL", "COMPOSE", "IDENTITY", "TRAFFIC"].enumerated()), id: \.offset) { index, label in
+                ForEach(Array(["CHATS", "MAIL", "IDENTITY", "TRAFFIC"].enumerated()), id: \.offset) { index, label in
                     Button { tab = index } label: {
                         Text(tab == index ? "[\(index + 1) \(label)]" : "\(index + 1) \(label)")
                             .foregroundStyle(tab == index ? TUITheme.accent : TUITheme.dim)
@@ -49,10 +49,10 @@ struct TerminalView: View {
             if tab != 3 || store.traffic == nil, let error = store.lastError { Text("! " + error).foregroundStyle(TUITheme.err).frame(maxWidth: .infinity, alignment: .leading).padding(12).textSelection(.enabled) }
             Group {
                 switch tab {
-                case 0: inbox
-                case 1: compose
+                case 0: ConversationsView(store: store, filters: filters)
+                case 1: DeskInboxView(store: store, filter: $filters.desk)
                 case 3:
-                    if let traffic = store.traffic { TrafficView(store: traffic, inbox: store, copies: store.copies) } else { Text("Phone identity required for traffic.").foregroundStyle(TUITheme.warn) }
+                    if let traffic = store.traffic { TrafficView(store: traffic, inbox: store, copies: store.copies, filter: $filters.traffic) } else { Text("Phone identity required for traffic.").foregroundStyle(TUITheme.warn) }
                 default: identity
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -69,7 +69,7 @@ struct TerminalView: View {
         .font(TUITheme.monoFont).foregroundStyle(TUITheme.fg).background(TUITheme.bg)
         .task { if scenePhase == .active { store.start(); if tab == 3 { store.traffic?.start() } } }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { store.start(); if tab == 3 { store.traffic?.start() } } else { store.stop(); draft = "" }
+            if phase == .active { store.start(); if tab == 3 { store.traffic?.start() } } else { store.stop() }
         }
         .onChange(of: tab) { _, selected in
             if selected == 3, scenePhase == .active { store.traffic?.start() } else { store.traffic?.stop() }
@@ -80,25 +80,6 @@ struct TerminalView: View {
                 if let data = try? Data(contentsOf: url) { store.importPeers(data) }
             }
         }
-    }
-    private var inbox: some View {
-        DeskInboxView(store: store)
-    }
-    private var compose: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("TO").foregroundStyle(TUITheme.dim)
-            Picker("Recipient", selection: $recipient) {
-                Text("Select peer").tag("")
-                ForEach(store.peers.keys.sorted(), id: \.self) { Text($0).tag($0) }
-            }.tint(TUITheme.teal)
-            TextEditor(text: $draft).font(TUITheme.monoFont).scrollContentBackground(.hidden).padding(8).background(TUITheme.panel)
-            if store.hasPendingSend { Text("Saved send pending. Retry sends the SAME envelope, not the current draft.").foregroundStyle(TUITheme.warn) }
-            if let receipt = store.lastSend { Text("LAST SEND: " + receipt.uppercased()).foregroundStyle(TUITheme.ok) }
-            Text("Signed plaintext. Not encrypted.").foregroundStyle(TUITheme.warn)
-            Button(store.hasPendingSend ? "[RETRY PENDING SEND]" : "[SIGN + SEND]") {
-                Task { await store.send(to: recipient, text: draft); if !store.hasPendingSend, store.lastError == nil { draft = "" } }
-            }.disabled(store.state != .live || store.sending).foregroundStyle(TUITheme.accent)
-        }.padding(12)
     }
     private var identity: some View {
         ScrollView {
