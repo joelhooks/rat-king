@@ -75,6 +75,7 @@ it.effect.prop(
               kind: "reply",
               label: Option.none(),
               replyTo: step.replyTo,
+              summary: Option.none(),
               verified: true,
             };
 

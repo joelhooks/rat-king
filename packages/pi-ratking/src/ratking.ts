@@ -49,6 +49,7 @@ import {
   decodeRecord,
   encodePayload,
   RecordJson,
+  SUMMARY_MAX,
 } from "./payload.ts";
 import type {
   Inbound,
@@ -119,10 +120,14 @@ export interface Delivered {
   readonly did: string;
 }
 
+const oneLineSummary = (text: string) =>
+  text.replaceAll(/\s+/gu, " ").trim().slice(0, SUMMARY_MAX);
+
 export interface SendOptions {
   readonly encrypt?: boolean;
   readonly kind?: KindValue;
   readonly replyTo?: { readonly messageId: string; readonly senderDid: string };
+  readonly summary?: string;
 }
 
 export type Deliver = (
@@ -329,6 +334,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               Option.flatMapNullishOr(payload, (value) => value.replyTo),
               () => Option.fromNullishOr(message.replyTo?.messageId)
             ),
+            summary: Option.flatMapNullishOr(payload, (value) => value.summary),
             verified,
           };
 
@@ -630,6 +636,12 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
         if (options.replyTo !== undefined) {
           Object.assign(payload, { replyTo: options.replyTo.messageId });
+        }
+
+        const summary = oneLineSummary(options.summary ?? "");
+
+        if (summary !== "") {
+          Object.assign(payload, { summary });
         }
 
         return yield* encodePayload(payload);

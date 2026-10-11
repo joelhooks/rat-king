@@ -66,7 +66,9 @@ it.live.prop(
           () => Effect.void
         );
 
-        yield* ratking.send("peer", "hello").pipe(Effect.flip);
+        yield* ratking
+          .send("peer", "hello", { summary: "  Deploy\n done,  all green " })
+          .pipe(Effect.flip);
 
         const [wire] = submitted;
 
@@ -82,6 +84,10 @@ it.live.prop(
           Option.some(callSign)
         );
 
+        expect(payload.pipe(Option.map((value) => value.summary))).toEqual(
+          Option.some("Deploy done, all green")
+        );
+
         const rendered = renderInbound("ratking", {
           body: "hello",
           cc: false,
@@ -91,6 +97,7 @@ it.live.prop(
           kind: "message",
           label: Option.flatMapNullishOr(payload, (value) => value.label),
           replyTo: Option.none(),
+          summary: Option.none(),
           verified: true,
         });
 

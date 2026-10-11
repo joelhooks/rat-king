@@ -3,7 +3,7 @@ import type { Duration } from "effect";
 
 import type { NotConfigured } from "./config.ts";
 import { RatKing, ReaderState } from "./ratking.ts";
-import type { NotDelivered, Status } from "./ratking.ts";
+import type { NotDelivered, SendOptions, Status } from "./ratking.ts";
 
 export const Action = Schema.Literals([
   "list",
@@ -35,6 +35,7 @@ export const ToolParams = Schema.Struct({
   openProjectPaneIfMissing: Schema.optionalKey(Schema.Boolean),
   replyTo: Schema.optionalKey(Schema.String),
   retryOf: Schema.optionalKey(Schema.String),
+  summary: Schema.optionalKey(Schema.String),
   supersedes: Schema.optionalKey(Schema.String),
   to: Schema.optionalKey(Schema.String),
 });
@@ -69,11 +70,13 @@ Messages are signed plaintext by default, readable by operators and observers su
 
 Address agents by Rat King name (for example switchboard, or project/row).
 
+Give every send, ask and reply a summary: one line (at most 280 characters) that leads with the point or the ask. Phones and compact views show it first; the message holds the detail.
+
 Usage:
-  ${tool}({ action: "send", to: "name", message: "..." })            → Deliver a message
+  ${tool}({ action: "send", to: "name", summary: "...", message: "..." }) → Deliver a message
   ${tool}({ action: "send", to: "name", message: "...", encrypt: true }) → Deliver an encrypted message
-  ${tool}({ action: "ask", to: "name", message: "..." })             → Ask and wait for the threaded reply
-  ${tool}({ action: "reply", replyTo: "<id>", message: "..." })      → Answer a message by its id
+  ${tool}({ action: "ask", to: "name", summary: "...", message: "..." }) → Ask and wait for the threaded reply
+  ${tool}({ action: "reply", replyTo: "<id>", summary: "...", message: "..." }) → Answer a message by its id
   ${tool}({ action: "pending" })                                     → Unanswered inbound asks
   ${tool}({ action: "list" })                                        → The Rat King directory
   ${tool}({ action: "status" })                                      → This Pi's name and reader`;
@@ -151,8 +154,15 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
 ) {
   const ratking = yield* RatKing;
 
-  const encryption =
-    params.encrypt === undefined ? {} : { encrypt: params.encrypt };
+  const encryption: SendOptions = {};
+
+  if (params.encrypt !== undefined) {
+    Object.assign(encryption, { encrypt: params.encrypt });
+  }
+
+  if (params.summary !== undefined) {
+    Object.assign(encryption, { summary: params.summary });
+  }
 
   if (params.openProjectPaneIfMissing === true) {
     return loud(

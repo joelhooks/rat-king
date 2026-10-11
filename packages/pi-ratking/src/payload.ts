@@ -23,6 +23,8 @@ export interface InboundRecord {
   readonly replyTo: Option.Option<string>;
 }
 
+export const SUMMARY_MAX = 280;
+
 export const Kind = Schema.Literals(["message", "ask", "reply", "data"]);
 
 export type KindValue = typeof Kind.Type;
@@ -33,6 +35,9 @@ export const Payload = Schema.Struct({
   kind: Schema.optionalKey(Kind),
   label: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(256))),
   replyTo: Schema.optionalKey(Schema.String),
+  summary: Schema.optionalKey(
+    Schema.String.check(Schema.isMaxLength(SUMMARY_MAX))
+  ),
 });
 
 export type PayloadValue = typeof Payload.Type;
@@ -57,12 +62,13 @@ export interface Inbound {
   readonly body: string;
   readonly kind: KindValue;
   readonly replyTo: Option.Option<string>;
+  readonly summary: Option.Option<string>;
   readonly cc: boolean;
 }
 
 export const replyHint = (tool: string, inbound: Inbound) =>
   [
-    `To reply: ${tool}({ action: "reply", replyTo: "${inbound.id}", message: "..." })`,
+    `To reply: ${tool}({ action: "reply", replyTo: "${inbound.id}", summary: "...", message: "..." })`,
     ...(inbound.kind === "ask"
       ? ["The sender is waiting for this reply."]
       : []),
@@ -88,6 +94,10 @@ export const renderInbound = (tool: string, inbound: Inbound) => {
   return [
     `**${label} from ${sender}** · id ${inbound.id}${thread}`,
     "",
+    ...Option.match(inbound.summary, {
+      onNone: () => [],
+      onSome: (summary) => [`Summary: ${summary}`, ""],
+    }),
     inbound.body,
     "",
     replyHint(tool, inbound),

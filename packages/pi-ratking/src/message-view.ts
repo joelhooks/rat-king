@@ -5,6 +5,7 @@ import {
   stripTerminalSequences,
   truncateToWidth,
   visibleWidth,
+  wrapTextWithAnsi,
 } from "@earendil-works/pi-tui";
 import { Option, Schema } from "effect";
 
@@ -19,11 +20,75 @@ const Details = Schema.Struct({
   kind: Kind,
   label: Schema.optional(Schema.String),
   replyTo: Schema.optional(Schema.String),
+  summary: Schema.optional(Schema.String),
   verified: Schema.Boolean,
 });
 
 const oneLine = (text: string) =>
   stripTerminalSequences(text).replaceAll(/[\r\n\t]+/gu, " ");
+
+export const COMPACT_LINES = 4;
+
+const plain = (text: string) =>
+  stripTerminalSequences(text).replaceAll(/[\r\t]+/gu, " ");
+
+export const compactLines = (
+  value: {
+    readonly body: string;
+    readonly cc: boolean;
+    readonly from: string;
+    readonly label?: string | undefined;
+    readonly replyTo?: string | undefined;
+    readonly summary?: string | undefined;
+    readonly verified: boolean;
+  },
+  width: number
+): readonly string[] => {
+  const markers = [
+    ...(value.verified ? [] : ["unverified"]),
+    ...(value.cc ? ["CC"] : []),
+    ...(value.replyTo === undefined ? [] : ["↩"]),
+  ];
+
+  const markerText = markers.map((marker) => ` · ${marker}`).join("");
+
+  const sender = truncateToWidth(
+    oneLine(value.label ?? value.from),
+    Math.max(1, width - visibleWidth("📨 ") - visibleWidth(markerText))
+  );
+
+  const heading = truncateToWidth(`📨 ${sender}${markerText}`, width);
+
+  const source = plain(value.summary ?? value.body).trim();
+
+  const wrapped = source
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line !== "")
+    .flatMap((line) => wrapTextWithAnsi(line, width));
+
+  const room = COMPACT_LINES - 1;
+
+  if (wrapped.length <= room) {
+    return [heading, ...wrapped];
+  }
+
+  const hidden = wrapped.length - (room - 1);
+
+  const more = ` … +${hidden} line${hidden === 1 ? "" : "s"}`;
+
+  const last = truncateToWidth(
+    wrapped[room - 1] ?? "",
+    Math.max(0, width - visibleWidth(more)),
+    ""
+  );
+
+  return [
+    heading,
+    ...wrapped.slice(0, room - 1),
+    truncateToWidth(`${last}${more}`, width),
+  ];
+};
 
 export const messageView = (input: {
   readonly details: unknown;
@@ -39,6 +104,7 @@ export const messageView = (input: {
         ...value,
         label: Option.fromNullishOr(value.label),
         replyTo: Option.fromNullishOr(value.replyTo),
+        summary: Option.fromNullishOr(value.summary),
       };
 
       const text = new Text("", 0, 0);
@@ -63,46 +129,9 @@ export const messageView = (input: {
             return text.render(width);
           }
 
-          const markers = [
-            ...(value.verified ? [] : ["unverified"]),
-            ...(value.cc ? ["CC"] : []),
-            ...(value.replyTo === undefined ? [] : ["↩ in reply to"]),
-          ];
-
-          const suffix = ` · ${oneLine(value.id)}`;
-
-          const markerText = markers.map((marker) => ` · ${marker}`).join("");
-
-          const sender = truncateToWidth(
-            oneLine(value.label ?? value.from),
-            Math.max(
-              0,
-              width -
-                visibleWidth(suffix) -
-                visibleWidth(markerText) -
-                visibleWidth("📨 ") -
-                3
-            )
+          return compactLines(value, width).map((line, index) =>
+            input.theme.fg(index === 0 ? "dim" : "customMessageText", line)
           );
-
-          const heading = truncateToWidth(
-            `📨 ${sender}${markerText}`,
-            Math.max(0, width - visibleWidth(suffix) - 3)
-          );
-
-          const body = truncateToWidth(
-            oneLine(value.body.split(/\r?\n/u)[0] ?? ""),
-            Math.max(
-              0,
-              width - visibleWidth(heading) - visibleWidth(suffix) - 3
-            )
-          );
-
-          const line = truncateToWidth(`${heading} · ${body}${suffix}`, width);
-
-          text.setText(input.theme.fg("customMessageText", line));
-
-          return text.render(width);
         },
       };
     }),

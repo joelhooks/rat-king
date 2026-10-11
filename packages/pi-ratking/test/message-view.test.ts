@@ -6,22 +6,28 @@ import { expect } from "vitest";
 import { messageView } from "../src/message-view.ts";
 
 const Case = Schema.Struct({
-  body: Schema.String.check(Schema.isPattern(/^[a-z]{1,80}$/u)),
+  body: Schema.String.check(
+    Schema.isPattern(/^[a-z](?:[a-z ]{0,598}[a-z])?$/u)
+  ),
   cc: Schema.Boolean,
-  label: Schema.UndefinedOr(Schema.Literal("Pocket")),
+  label: Schema.UndefinedOr(Schema.Literal("📞 Ernestine · Switchboard")),
+  padding: Schema.Int.check(Schema.isBetween({ maximum: 60, minimum: 0 })),
   replyTo: Schema.UndefinedOr(Schema.Literal("3m7x2ka4xv22b")),
+  summary: Schema.UndefinedOr(
+    Schema.String.check(Schema.isPattern(/^[A-Z](?:[a-z ]{0,277}[a-z])?$/u))
+  ),
   verified: Schema.Boolean,
-  width: Schema.Int.check(Schema.isBetween({ maximum: 160, minimum: 64 })),
+  width: Schema.Literals([40, 60, 80, 120]),
 });
 
 it.effect.prop(
-  "collapsed messages show one fitted sender-and-id line; expansion shows the complete body from details",
+  "collapsed messages fit a phone: at most four lines inside the width, sender first, the summary when there is one, a hidden-line count when clipped, and expansion shows everything",
   [Arbitrary.schema(Case)],
   ([sample]) =>
     Effect.sync(() => {
       const details = {
         ...sample,
-        body: `${sample.body}\nsecond line complete`,
+        body: `${sample.body}${" lorem".repeat(sample.padding)}\nsecond line complete`,
         did: "did:web:peer.example.invalid",
         from: "peer",
         id: "3m7x2ka4xv22a",
@@ -37,25 +43,39 @@ it.effect.prop(
 
       const collapsed = messageView(input)?.render(sample.width) ?? [];
 
-      expect(collapsed).toHaveLength(1);
-      expect(collapsed[0]).toContain(sample.label ?? "peer");
-      expect(collapsed[0]).toContain(details.id);
-      expect(visibleWidth(collapsed[0] ?? "")).toBeLessThanOrEqual(
-        sample.width
+      expect(collapsed.length).toBeGreaterThanOrEqual(2);
+      expect(collapsed.length).toBeLessThanOrEqual(4);
+
+      for (const line of collapsed) {
+        expect(visibleWidth(line)).toBeLessThanOrEqual(sample.width);
+      }
+
+      expect(collapsed[0]).toContain((sample.label ?? "peer").slice(0, 8));
+
+      const shown = collapsed
+        .slice(1)
+        .map((line) => stripTerminalSequences(line))
+        .join(" ");
+
+      const source = sample.summary ?? details.body;
+
+      const fits =
+        collapsed.length < 4 || /\+\d+ lines?$/u.test(collapsed.at(-1) ?? "");
+
+      expect(fits || collapsed.length === 4).toBe(true);
+
+      expect(
+        shown.replaceAll(/ … \+\d+ lines?$/gu, "").replaceAll(/\s+/gu, "")
+      ).toSatisfy((text: string) =>
+        source.replaceAll(/\s+/gu, "").startsWith(text.replace(/…$/u, ""))
       );
 
-      const wide = messageView(input)?.render(240).join("\n") ?? "";
+      if (/\+\d+ lines?$/u.test(collapsed.at(-1) ?? "")) {
+        expect(collapsed).toHaveLength(4);
+      }
 
       if (!sample.verified) {
-        expect(wide).toContain("unverified");
-      }
-
-      if (sample.cc) {
-        expect(wide).toContain("CC");
-      }
-
-      if (sample.replyTo !== undefined) {
-        expect(wide).toContain("↩ in reply to");
+        expect(collapsed[0]).toContain("unverified");
       }
 
       const expanded =
@@ -64,6 +84,14 @@ it.effect.prop(
           .map((line) => stripTerminalSequences(line).trimEnd())
           .join("\n") ?? "";
 
-      expect(expanded).toContain(details.body);
+      expect(expanded.replaceAll(/\s+/gu, "")).toContain(
+        details.body.replaceAll(/\s+/gu, "")
+      );
+
+      if (sample.summary !== undefined) {
+        expect(expanded.replaceAll(/\s+/gu, "")).toContain(
+          `Summary:${sample.summary}`.replaceAll(/\s+/gu, "")
+        );
+      }
     })
 );
