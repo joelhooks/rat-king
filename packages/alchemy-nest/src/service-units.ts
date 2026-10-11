@@ -71,7 +71,7 @@ export const storeUnit = (input: {
             "-debug=false",
             "-volume.pprof=false",
             "-master.volumeSizeLimitMB=64",
-            "-volume.max=64",
+            "-volume.max=256",
           ].join(" "),
         ],
         ...(input.restartGate === undefined
