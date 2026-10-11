@@ -10,6 +10,7 @@ export interface Reply {
 }
 
 export interface Received {
+  readonly relay?: NonNullable<Inbound["relay"]>;
   readonly id: string;
   readonly from: string;
   readonly did: string;
@@ -103,6 +104,10 @@ const makeThreads = Effect.sync((): ThreadsApi => {
 
         if (inbound.thread !== undefined) {
           Object.assign(record, { thread: inbound.thread });
+        }
+
+        if (inbound.relay !== undefined) {
+          Object.assign(record, { relay: inbound.relay });
         }
 
         received.set(inbound.id, record);

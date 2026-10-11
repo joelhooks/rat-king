@@ -61,7 +61,12 @@ import type {
 } from "./payload.ts";
 import { quarantined, recover } from "./quarantine.ts";
 import type { Quarantined } from "./quarantine.ts";
-import { openRelay, RelayHandled, RelayJournal } from "./relay.ts";
+import {
+  openRelay,
+  deliverRelay,
+  RelayHandled,
+  RelayJournal,
+} from "./relay.ts";
 import { SecretStore } from "./secrets.ts";
 import { replyRecipients, Threads, threadsLayer } from "./threads.ts";
 import type { Received, Reply } from "./threads.ts";
@@ -185,6 +190,9 @@ export class RatKing extends Context.Service<
       options?: Pick<SendOptions, "encrypt" | "kind" | "summary"> & {
         readonly replyAll?: boolean;
       }
+    ) => Effect.Effect<Delivered, NotDelivered | AskFailed>;
+    readonly handled: (
+      id: string
     ) => Effect.Effect<Delivered, NotDelivered | AskFailed>;
     readonly pending: Effect.Effect<readonly Received[]>;
     readonly list: Effect.Effect<readonly Listed[]>;
@@ -784,11 +792,32 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     Effect.gen(function* routeReader() {
       const config = settings.relay;
 
-      if (config === undefined || config.name !== own.name) {
+      if (
+        config === undefined ||
+        (config.name !== own.name && config.to !== own.name)
+      ) {
         return {
           message: (inbound: Inbound, settled: boolean) =>
             deliver(inbound, settled),
           record: (inbound: InboundRecord) => deliver(inbound, false),
+        } satisfies RelayRoute;
+      }
+
+      if (config.to === own.name) {
+        return {
+          message: (inbound: Inbound, settled: boolean) =>
+            deliver(inbound, settled),
+          record: (inbound: InboundRecord) =>
+            Effect.gen(function* staffRecord() {
+              const accepted = yield* deliverRelay(config, own.name, inbound, {
+                deliver,
+                remember: threads.remember,
+              });
+
+              if (!accepted) {
+                yield* deliver(inbound, false);
+              }
+            }),
         } satisfies RelayRoute;
       }
 
@@ -995,6 +1024,55 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     )
   );
 
+  const confirmHandled = Effect.fn("RatKing.confirmHandled")(
+    function* confirmHandled(id: string) {
+      const record = yield* threads.lookup(id);
+
+      if (Option.isNone(record) || record.value.relay === undefined) {
+        return yield* new AskFailed({
+          code: "NoSuchMessage",
+          reason: `No relayed message ${id} reached this Pi`,
+        });
+      }
+
+      const config = settings.relay;
+      const own = yield* awaitSelf;
+
+      if (
+        config === undefined ||
+        own.name !== config.to ||
+        record.value.relay.name !== config.name
+      ) {
+        return yield* refused("NotAttempted")(
+          "Handled confirmation is available only on the configured EA"
+        );
+      }
+
+      const target = yield* directory
+        .resolve(config.name)
+        .pipe(
+          Effect.mapError(() => refused("UnknownName")("Relay desk is unknown"))
+        );
+
+      if (target.did !== record.value.relay.did) {
+        return yield* refused("NotAttempted")(
+          "Relay desk DID changed; no confirmation sent"
+        );
+      }
+
+      const { delivered } = yield* transmit(
+        config.name,
+        { $type: "sh.mschf.ratking.relay#handled", id },
+        { encrypt: record.value.relay.encrypted, kind: "data" },
+        () => Effect.void
+      );
+
+      yield* threads.answer(id);
+
+      return delivered;
+    }
+  );
+
   return RatKing.of({
     ask: Effect.fn("RatKing.ask")(function* ask(to, body, timeout, options) {
       yield* awaitLive;
@@ -1039,6 +1117,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         )
       );
     }),
+    handled: confirmHandled,
     list: Effect.gen(function* list() {
       const remote = yield* issuer.names.pipe(
         Effect.tapError(() =>
@@ -1110,20 +1189,39 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         return yield* refused("Self")("No other thread participant");
       }
 
+      const replyOptions: SendOptions = {
+        ...options,
+        cc: recipients.slice(1),
+        kind: options?.kind === "data" ? "data" : "reply",
+        replyTo: { messageId: id, senderDid: record.value.did },
+        thread: record.value.thread ?? id,
+      };
+
+      if (record.value.relay !== undefined && options?.encrypt === undefined) {
+        Object.assign(replyOptions, { encrypt: record.value.relay.encrypted });
+      }
+
       const { delivered } = yield* transmit(
         target,
         body,
-        {
-          ...options,
-          cc: recipients.slice(1),
-          kind: options?.kind === "data" ? "data" : "reply",
-          replyTo: { messageId: id, senderDid: record.value.did },
-          thread: record.value.thread ?? id,
-        },
+        replyOptions,
         () => Effect.void
       );
 
       yield* threads.answer(id);
+
+      if (
+        record.value.relay !== undefined &&
+        settings.relay?.mode === "front"
+      ) {
+        yield* confirmHandled(id).pipe(
+          Effect.mapError((error) =>
+            refused("Partial")(
+              `Reply accepted by ${delivered.to} (id ${delivered.id}); handled confirmation failed: ${reasonOf(error)}. Use handled to retry only the confirmation.`
+            )
+          )
+        );
+      }
 
       return delivered;
     }),

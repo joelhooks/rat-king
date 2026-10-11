@@ -3,7 +3,7 @@ import { createMachine, transition } from "xstate";
 
 import type { RelaySettingValue } from "./config.ts";
 import { Kind } from "./payload.ts";
-import type { Inbound, LexiconRecordValue } from "./payload.ts";
+import type { Inbound, InboundRecord, LexiconRecordValue } from "./payload.ts";
 
 export const RelayRecord = Schema.Struct({
   $type: Schema.Literal("sh.mschf.ratking.relay#message"),
@@ -90,6 +90,57 @@ export const relayedInbound = (record: typeof RelayRecord.Type): Inbound => {
 
   return inbound;
 };
+
+export const projectRelay = (
+  config: RelaySettingValue,
+  ownName: string,
+  inbound: InboundRecord
+): Option.Option<Inbound> => {
+  if (
+    ownName !== config.to ||
+    !inbound.verified ||
+    inbound.from !== config.name
+  ) {
+    return Option.none();
+  }
+
+  return Schema.decodeUnknownOption(RelayRecord)(inbound.record).pipe(
+    Option.filter((record) => record.kind !== "data"),
+    Option.map((record) => ({
+      ...relayedInbound(record),
+      relay: {
+        did: inbound.did,
+        encrypted: record.encrypted,
+        name: config.name,
+      },
+    }))
+  );
+};
+
+export const deliverRelay = (
+  config: RelaySettingValue,
+  ownName: string,
+  inbound: InboundRecord,
+  ports: {
+    readonly remember: (original: Inbound) => Effect.Effect<void>;
+    readonly deliver: (
+      original: Inbound,
+      settled: boolean
+    ) => Effect.Effect<void>;
+  }
+) =>
+  Effect.gen(function* deliverToStaff() {
+    const original = projectRelay(config, ownName, inbound);
+
+    if (Option.isNone(original)) {
+      return false;
+    }
+
+    yield* ports.remember(original.value);
+    yield* ports.deliver(original.value, false);
+
+    return true;
+  });
 
 export const relayLifecycle = createMachine({
   context: {},

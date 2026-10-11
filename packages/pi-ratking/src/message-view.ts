@@ -9,7 +9,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { Option, Schema } from "effect";
 
-import { Kind, renderInbound } from "./payload.ts";
+import { Kind, RelaySource, renderInbound } from "./payload.ts";
 
 const Details = Schema.Struct({
   body: Schema.String,
@@ -20,6 +20,7 @@ const Details = Schema.Struct({
   id: Schema.String,
   kind: Kind,
   label: Schema.optional(Schema.String),
+  relay: Schema.optional(RelaySource),
   replyTo: Schema.optional(Schema.String),
   summary: Schema.optional(Schema.String),
   thread: Schema.optional(Schema.String),
@@ -40,6 +41,7 @@ export const compactLines = (
     readonly body: string;
     readonly cc: boolean;
     readonly ccNames?: readonly string[] | undefined;
+    readonly relay?: typeof RelaySource.Type | undefined;
     readonly from: string;
     readonly label?: string | undefined;
     readonly replyTo?: string | undefined;
@@ -56,6 +58,7 @@ export const compactLines = (
 
   const markers = [
     ...(value.verified ? [] : ["unverified"]),
+    ...(value.relay === undefined ? [] : [`via ${oneLine(value.relay.name)}`]),
     ...ccMarker,
     ...(value.replyTo === undefined ? [] : ["↩"]),
   ];
@@ -122,6 +125,10 @@ export const messageView = (input: {
         summary: Option.fromNullishOr(value.summary),
         verified: value.verified,
       };
+
+      if (value.relay !== undefined) {
+        Object.assign(inbound, { relay: value.relay });
+      }
 
       if (value.ccNames !== undefined) {
         Object.assign(inbound, { ccNames: value.ccNames });

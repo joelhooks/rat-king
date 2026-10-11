@@ -4,6 +4,7 @@ import { Effect, Layer, Option, Redacted } from "effect";
 import { HttpClient } from "effect/http";
 
 import { Settings } from "../src/config.ts";
+import type { RelaySettingValue } from "../src/config.ts";
 import { Directory, directoryLayer } from "../src/directory.ts";
 import { Issuer, IssuerError } from "../src/issuer.ts";
 import type { ReservedValue } from "../src/name.ts";
@@ -44,6 +45,7 @@ export const harness = (
   refuse: readonly string[] = [],
   overrides: {
     readonly reserved?: ReservedValue;
+    readonly relay?: RelaySettingValue;
     readonly documents?: readonly string[];
     readonly secrets?: Map<string, string>;
   } = {}

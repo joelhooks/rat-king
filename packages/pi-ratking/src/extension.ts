@@ -161,6 +161,7 @@ const inboundDetails = (inbound: Inbound, settled: boolean) => ({
   id: inbound.id,
   kind: inbound.kind,
   label: Option.getOrUndefined(inbound.label),
+  relay: inbound.relay,
   replyTo: Option.getOrUndefined(inbound.replyTo),
   settled,
   summary: Option.getOrUndefined(inbound.summary),
@@ -321,12 +322,13 @@ const parameters = Type.Object({
       "handover",
       "reply",
       "pending",
+      "handled",
       "status",
       "cancel",
     ].map((action) => Type.Literal(action)),
     {
       description:
-        "send, ask (waits for the reply), reply, pending, list, status. handover and cancel are refused on Rat King.",
+        "send, ask (waits for the reply), reply, handled (confirm a relayed original id), pending, list, status. handover and cancel are refused on Rat King.",
     }
   ),
   attachments: Type.Optional(

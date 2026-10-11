@@ -13,6 +13,7 @@ export const Action = Schema.Literals([
   "handover",
   "reply",
   "pending",
+  "handled",
   "status",
   "cancel",
 ]);
@@ -74,7 +75,7 @@ Messages are signed plaintext by default, readable by operators and observers su
 
 Address agents by Rat King name (for example switchboard, or project/row).
 
-send and ask accept cc: ["name", ...]. reply defaults to reply-all; replyAll: false answers only the sender.
+send and ask accept cc: ["name", ...]. reply defaults to reply-all; replyAll: false answers only the sender. handled with replyTo confirms a relayed original to its desk without replying to the sender.
 
 Give every send, ask and reply a summary: one line (at most 280 characters) that leads with the point or the ask. Phones and compact views show it first; the message holds the detail.
 
@@ -237,6 +238,20 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
               )
         )
       )
+    ),
+    Match.when("handled", () =>
+      Effect.gen(function* handled() {
+        if (params.replyTo === undefined) {
+          return loud("Pass replyTo: the original id of the relayed message.");
+        }
+
+        const delivered = yield* ratking.handled(params.replyTo);
+
+        return ok(
+          `Handled confirmed to ${delivered.to} (id ${delivered.id}, seq ${delivered.seq}).`,
+          { id: delivered.id, replyTo: params.replyTo, seq: delivered.seq }
+        );
+      })
     ),
     Match.when("reply", () =>
       Effect.gen(function* reply() {

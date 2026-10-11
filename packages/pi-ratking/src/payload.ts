@@ -56,7 +56,14 @@ export const encodePayload = Effect.fn("RatKing.encodePayload")(
 export const decodePayload = (body: string) =>
   Schema.decodeEffect(PayloadJson)(body).pipe(Effect.option);
 
+export const RelaySource = Schema.Struct({
+  did: Schema.String,
+  encrypted: Schema.Boolean,
+  name: AgentName,
+});
+
 export interface Inbound {
+  readonly relay?: typeof RelaySource.Type;
   readonly id: string;
   readonly did: string;
   readonly from: string;
@@ -74,7 +81,12 @@ export interface Inbound {
 
 export const replyHint = (tool: string, inbound: Inbound) =>
   [
-    `To reply: ${tool}({ action: "reply", replyTo: "${inbound.id}", summary: "...", message: "..." })`,
+    `To reply${inbound.relay === undefined ? "" : ` to ${inbound.from}`}: ${tool}({ action: "reply", replyTo: "${inbound.id}", ${inbound.relay === undefined ? "" : "replyAll: false, "}summary: "...", message: "..." })`,
+    ...(inbound.relay === undefined
+      ? []
+      : [
+          `To confirm handled without replying: ${tool}({ action: "handled", replyTo: "${inbound.id}" })`,
+        ]),
     ...(inbound.kind === "ask"
       ? ["The sender is waiting for this reply."]
       : []),
@@ -98,7 +110,7 @@ export const renderInbound = (tool: string, inbound: Inbound) => {
   });
 
   return [
-    `**${label} from ${sender}** · id ${inbound.id}${thread}`,
+    `**${label} from ${sender}** · id ${inbound.id}${thread}${inbound.relay === undefined ? "" : ` · via ${inbound.relay.name}`}`,
     ...((inbound.ccNames?.length ?? 0) > 0
       ? [`cc: ${(inbound.ccNames ?? []).join(", ")}`]
       : []),
