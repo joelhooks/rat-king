@@ -72,7 +72,7 @@ it.effect(
 
       expect(storeText).toContain("WorkingDirectory=/srv/example/store");
       expect(storeText).not.toContain('WorkingDirectory="');
-      expect(storeText).toContain("MemoryMax=1G");
+      expect(storeText).toContain("MemoryMax=2G");
       expect(storeText).toContain("CPUQuota=100%");
       expect(storeText).toContain("SENTRY_DSN=");
       expect(storeText).toContain("OTEL_SDK_DISABLED=true");

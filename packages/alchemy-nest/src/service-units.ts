@@ -86,7 +86,7 @@ export const storeUnit = (input: {
         ["Environment", "SENTRY_DSN="],
         ["Environment", "OTEL_SDK_DISABLED=true"],
         ["Slice", "rat-king.slice"],
-        ["MemoryMax", "1G"],
+        ["MemoryMax", "2G"],
         ["MemorySwapMax", "0"],
         ["CPUQuota", "100%"],
         ["TasksMax", "512"],
