@@ -52,6 +52,7 @@ const settings = Schema.decodeUnknownSync(AlarmSettings)({
 });
 
 const facts: typeof AlarmFacts.Type = {
+  cacheBreaches: [],
   deploy: null,
   deployKnown: true,
   digest: "ok",

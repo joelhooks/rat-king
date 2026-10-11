@@ -12,7 +12,16 @@ export const DeployMarker = Schema.Struct({
   started: Schema.Finite,
 });
 
+export const CacheBreach = Schema.Struct({
+  fullRewrites: Count,
+  host: Schema.String,
+  hour: Schema.String,
+  name: Schema.optional(Schema.NullOr(Schema.String)),
+  session: Schema.String,
+});
+
 export const AlarmFacts = Schema.Struct({
+  cacheBreaches: Schema.NullOr(Schema.Array(CacheBreach)),
   deploy: Schema.NullOr(
     Schema.Struct({
       phase: Schema.Literals(["restarting", "done"]),
@@ -220,6 +229,43 @@ const quarantineReading = (
     : ok;
 };
 
+export const CACHE_PAGE_SESSIONS = 3;
+
+const cacheReading = (
+  facts: typeof AlarmFacts.Type,
+  now: number
+): AlarmReadingValue => {
+  if (facts.cacheBreaches === null) {
+    return unknown;
+  }
+
+  const current = facts.cacheBreaches.filter(
+    (breach) => now - Date.parse(breach.hour) < 7_200_000
+  );
+
+  const sessions = [
+    ...new Set(current.map((breach) => `${breach.host}/${breach.session}`)),
+  ];
+
+  if (sessions.length === 0) {
+    return ok;
+  }
+
+  const worst = current
+    .toSorted((a, b) => b.fullRewrites - a.fullRewrites)
+    .slice(0, 3)
+    .map(
+      (breach) =>
+        `${breach.name ?? breach.session} on ${breach.host} ${breach.fullRewrites} rebuilds`
+    )
+    .join("; ");
+
+  return firing(
+    sessions.length >= CACHE_PAGE_SESSIONS ? "critical" : "warn",
+    `${sessions.length} sessions did 10 or more full cache rebuilds in an hour: ${worst}`
+  );
+};
+
 const digestReading = (facts: typeof AlarmFacts.Type): AlarmReadingValue => {
   if (facts.measurementFailed || facts.digest === "fail") {
     return firing(
@@ -239,6 +285,7 @@ export const observeAlarms = (
   const sources = trackSources(prior, facts, now);
 
   const readings: typeof Readings.Type = {
+    "cache.rewrites": cacheReading(facts, now),
     "celld.down": downReading(facts, sources, now),
     "celld.restarted": restartReading(facts, sources, now),
     "digest.fail": digestReading(facts),

@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { DateTime, Effect, Schema } from "effect";
 import { expect } from "vitest";
 
 import type { AlarmFacts } from "../../../stacks/nest/alarm-sources.ts";
@@ -25,6 +25,7 @@ it.effect.prop(
       const now = 1_000_000;
 
       const facts: typeof AlarmFacts.Type = {
+        cacheBreaches: null,
         deploy: {
           phase: "restarting",
           started: (now - input.age * 1000) / 1000,
@@ -119,5 +120,63 @@ it.effect.prop(
       expect(uncertain.readings["readers.stuck"].status).toBe("unknown");
       expect(uncertain.readings["quarantine.growth"].status).toBe("unknown");
       expect(uncertain.readings["digest.fail"].status).toBe("firing");
+    })
+);
+
+const Breaches = Schema.Struct({
+  hoursAgo: Schema.Array(
+    Schema.Int.check(Schema.isBetween({ maximum: 30, minimum: 0 }))
+  ),
+  known: Schema.Boolean,
+});
+
+it.effect.prop(
+  "cache rebuild breaches fire only for recent hours, page only at three or more sessions, and stay unknown without the feed",
+  [Breaches],
+  ([input]) =>
+    Effect.sync(() => {
+      const now = Date.parse("2026-10-11T04:30:00Z");
+
+      const cacheBreaches = input.hoursAgo.map((ago, index) => ({
+        fullRewrites: 10 + index,
+        host: "host-a.invalid",
+        hour: DateTime.formatIso(DateTime.makeUnsafe(now - ago * 3_600_000)),
+        name: null,
+        session: `session-${index}`,
+      }));
+
+      const facts: typeof AlarmFacts.Type = {
+        cacheBreaches: input.known ? cacheBreaches : null,
+        deploy: null,
+        deployKnown: true,
+        digest: "ok",
+        doctor: true,
+        entered: null,
+        health: 200,
+        measurementFailed: false,
+        quarantinedHour: 0,
+        readers: {},
+        receipts: [],
+        receiptsKnown: true,
+        slots: { free: 100, max: 100 },
+      };
+
+      const reading = observeAlarms(emptySources, facts, now).readings[
+        "cache.rewrites"
+      ];
+
+      const recent = input.hoursAgo.filter((ago) => ago < 2).length;
+
+      if (!input.known) {
+        expect(reading.status).toBe("unknown");
+
+        return;
+      }
+
+      expect(reading.status).toBe(recent === 0 ? "ok" : "firing");
+
+      if (reading.status === "firing") {
+        expect(reading.severity).toBe(recent >= 3 ? "critical" : "warn");
+      }
     })
 );

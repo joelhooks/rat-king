@@ -10,7 +10,7 @@ import {
 
 import { prepareAlarmMail } from "./alarm-mail.ts";
 import type { DeployMarker } from "./alarm-sources.ts";
-import { AlarmFacts } from "./alarm-sources.ts";
+import { AlarmFacts, CacheBreach } from "./alarm-sources.ts";
 import { collectComms } from "./comms.ts";
 import { configDoctor } from "./config-doctor.ts";
 import { FleetDigest } from "./digest.ts";
@@ -21,6 +21,8 @@ import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
 
 const Alive = Schema.Struct({ alive: Schema.Boolean });
+
+type CacheBreachValue = typeof CacheBreach.Type;
 
 const readerStatus = Effect.fn("Alarm.readerStatus")(function* readerStatus(
   config: StageConfigValue,
@@ -111,6 +113,28 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
 
     const observations = yield* Effect.all(
       {
+        cache: Option.match(Option.fromNullishOr(config.alarm.cacheHealth), {
+          onNone: () =>
+            Effect.succeed(Option.none<readonly CacheBreachValue[]>()),
+          onSome: (file) =>
+            fs.readFileString(file).pipe(
+              Effect.map((text) =>
+                text
+                  .trim()
+                  .split("\n")
+                  .filter(Boolean)
+                  .flatMap((line) =>
+                    Result.match(
+                      Schema.decodeResult(Schema.fromJsonString(CacheBreach))(
+                        line
+                      ),
+                      { onFailure: () => [], onSuccess: (breach) => [breach] }
+                    )
+                  )
+              ),
+              Effect.option
+            ),
+        }),
         deploy: probe(deploy),
         digest: fs
           .exists(`${config.runtime.RAT_KING_STATE_DIR}/health.jsonl`)
@@ -194,6 +218,7 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
     const readers = Object.fromEntries(observations.readers);
 
     return yield* Schema.decodeUnknownEffect(AlarmFacts)({
+      cacheBreaches: Option.getOrNull(observations.cache),
       deploy: Option.getOrNull(observations.deploy),
       deployKnown: Option.isSome(observations.deploy),
       digest: Option.getOrNull(observations.digest)?.status ?? null,
