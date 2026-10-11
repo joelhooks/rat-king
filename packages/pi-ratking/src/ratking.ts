@@ -11,6 +11,7 @@ import type {
   SendOutcome,
 } from "@rat-king/mailbox-client";
 import {
+  Clock,
   Context,
   Data,
   Deferred,
@@ -60,6 +61,7 @@ import type {
 } from "./payload.ts";
 import { quarantined, recover } from "./quarantine.ts";
 import type { Quarantined } from "./quarantine.ts";
+import { openRelay, RelayHandled, RelayJournal } from "./relay.ts";
 import { SecretStore } from "./secrets.ts";
 import { Threads, threadsLayer } from "./threads.ts";
 import type { Received, Reply } from "./threads.ts";
@@ -128,6 +130,17 @@ export interface SendOptions {
   readonly kind?: KindValue;
   readonly replyTo?: { readonly messageId: string; readonly senderDid: string };
   readonly summary?: string;
+}
+
+interface RelayRoute {
+  readonly message: (
+    inbound: Inbound,
+    settled: boolean,
+    encrypted: boolean
+  ) => Effect.Effect<void, NotDelivered>;
+  readonly record: (
+    inbound: InboundRecord
+  ) => Effect.Effect<void, NotDelivered>;
 }
 
 export type Deliver = (
@@ -294,12 +307,10 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     });
 
   const intake =
-    (own: Self, deliver: Deliver) =>
+    (own: Self, route: RelayRoute) =>
     (message: OpenedMessage, meta: MessageMeta) =>
       Effect.gen(function* takeIn() {
         if (!seen.has(message.tid)) {
-          seen.add(message.tid);
-
           const payload = yield* decodePayload(message.body);
           const known = yield* directory.nameOf(message.senderDid);
 
@@ -344,17 +355,14 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
           if (Option.isSome(record)) {
             yield* threads.remember(inbound);
-            yield* deliver(
-              {
-                did: inbound.did,
-                from: inbound.from,
-                id: inbound.id,
-                record: record.value,
-                replyTo: inbound.replyTo,
-                verified: inbound.verified,
-              },
-              false
-            );
+            yield* route.record({
+              did: inbound.did,
+              from: inbound.from,
+              id: inbound.id,
+              record: record.value,
+              replyTo: inbound.replyTo,
+              verified: inbound.verified,
+            });
           } else {
             const settled = yield* threads.settle(inbound);
 
@@ -362,14 +370,16 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               yield* threads.remember(inbound);
             }
 
-            yield* deliver(inbound, settled);
+            yield* route.message(inbound, settled, message.encrypted ?? true);
           }
+
+          seen.add(message.tid);
         }
 
         yield* writeCursor(own.name, meta.seq);
       });
 
-  const consumeOnce = (own: Self, facts: SessionFacts, deliver: Deliver) =>
+  const consumeOnce = (own: Self, facts: SessionFacts, route: RelayRoute) =>
     Effect.gen(function* consumeLease() {
       yield* Ref.set(
         state,
@@ -444,7 +454,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       const savedLease = yield* readLease(own.name, own.did);
 
       yield* client.consume(
-        intake(own, deliver),
+        intake(own, route),
         Option.match(
           Option.orElse(yield* Ref.get(lastLease), () => savedLease),
           {
@@ -465,77 +475,6 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       Effect.scoped,
       Effect.provideService(HttpClient.HttpClient, http)
     );
-
-  const loop = Effect.fn("RatKing.run")(function* loop(
-    facts: SessionFacts,
-    deliver: Deliver
-  ) {
-    const claimed = yield* supervise(
-      Option.none(),
-      claimName(facts).pipe(services)
-    );
-
-    if (settings.refuse.includes(claimed.name)) {
-      const reason = `${claimed.name} is held by another reader (refuse list in the Rat King config); no reader started`;
-
-      yield* Ref.set(
-        state,
-        ReaderState.Refused({ name: claimed.name, reason })
-      );
-
-      return yield* Deferred.fail(
-        self,
-        new NotDelivered({ code: "Refused", reason })
-      ).pipe(Effect.asVoid);
-    }
-
-    const own = yield* supervise(
-      Option.some(claimed.name),
-      Effect.gen(function* establish() {
-        yield* Ref.set(state, ReaderState.Minting({ name: claimed.name }));
-
-        const identity = yield* ensureIdentity(claimed.name);
-
-        return {
-          did: identity.did,
-          identity,
-          label: facts.label ?? (() => facts.pane),
-          name: claimed.name,
-        };
-      }).pipe(services)
-    );
-
-    yield* Ref.set(established, Option.some(own));
-    yield* Deferred.succeed(self, own);
-
-    if (facts.reads === false) {
-      return yield* Ref.set(
-        state,
-        ReaderState.SendOnly({
-          name: own.name,
-          reason:
-            "Non-interactive Pi: send-only, no reader and no lease. Set RATKING_PRINT_NAME to read a name",
-        })
-      );
-    }
-
-    return yield* supervise(
-      Option.some(own.name),
-      consumeOnce(own, facts, deliver).pipe(
-        Effect.andThen(
-          Effect.fail(
-            new NotDelivered({
-              code: "Uncertain",
-              reason: "Reader stopped; restarting",
-            })
-          )
-        )
-      )
-    ).pipe(Effect.forever);
-  });
-
-  const run = (facts: SessionFacts, deliver: Deliver) =>
-    loop(facts, deliver).pipe(Effect.forkScoped, Effect.asVoid);
 
   const awaitSelf = Deferred.await(self).pipe(
     Effect.timeoutOrElse({
@@ -742,6 +681,200 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       )
     );
   });
+
+  const routing = (
+    own: Self,
+    deliver: Deliver
+  ): Effect.Effect<RelayRoute, NotDelivered, Scope.Scope> =>
+    Effect.gen(function* routeReader() {
+      const config = settings.relay;
+
+      if (config === undefined || config.name !== own.name) {
+        return {
+          message: (inbound: Inbound, settled: boolean) =>
+            deliver(inbound, settled),
+          record: (inbound: InboundRecord) => deliver(inbound, false),
+        } satisfies RelayRoute;
+      }
+
+      const scope = yield* Effect.scope;
+
+      const file = path.join(
+        settings.state,
+        "relay",
+        `${provisionLabel(own.name)}.json`
+      );
+
+      const persistenceError = (error: { readonly _tag: string }) =>
+        new NotDelivered({
+          code: "NotAttempted",
+          reason: `Relay journal: ${reasonOf(error)}`,
+        });
+
+      const relay = yield* openRelay(config, {
+        inject: deliver,
+        load: fs.exists(file).pipe(
+          Effect.flatMap((exists) =>
+            exists
+              ? fs
+                  .readFileString(file)
+                  .pipe(
+                    Effect.flatMap(
+                      Schema.decodeEffect(Schema.fromJsonString(RelayJournal))
+                    )
+                  )
+              : Effect.succeed([])
+          ),
+          Effect.mapError(persistenceError)
+        ),
+        now: Clock.currentTimeMillis,
+        save: (entries) =>
+          Schema.encodeEffect(Schema.fromJsonString(RelayJournal))(
+            entries
+          ).pipe(
+            Effect.flatMap((json) => writePrivateJson(file, json)),
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+            Effect.mapError(persistenceError)
+          ),
+      });
+
+      const recoverRelay = Clock.currentTimeMillis.pipe(
+        Effect.flatMap(relay.recover)
+      );
+
+      yield* recoverRelay;
+      yield* recoverRelay.pipe(
+        Effect.tapError(() =>
+          Effect.logWarning("Rat King relay recovery failed")
+        ),
+        Effect.ignore,
+        Effect.repeat(Schedule.spaced("1 second")),
+        Effect.forkIn(scope)
+      );
+
+      return {
+        message: (inbound, settled, encrypted) =>
+          Effect.gen(function* routeMessage() {
+            const record = yield* relay.receive(
+              inbound,
+              settled,
+              encrypted,
+              yield* Clock.currentTimeMillis
+            );
+
+            if (Option.isSome(record)) {
+              yield* transmit(
+                config.to,
+                record.value,
+                { encrypt: encrypted },
+                () => Effect.void
+              ).pipe(
+                Effect.catch((error) =>
+                  Effect.logWarning(
+                    "Rat King relay forward failed",
+                    error.code
+                  ).pipe(Effect.andThen(relay.failed(inbound.id)))
+                ),
+                Effect.tapError(() =>
+                  Effect.logWarning("Rat King relay fallback journal failed")
+                ),
+                Effect.ignore,
+                Effect.forkIn(scope)
+              );
+            }
+          }),
+        record: (inbound) =>
+          Effect.gen(function* routeRecord() {
+            const handled = Schema.decodeUnknownOption(RelayHandled)(
+              inbound.record
+            );
+
+            yield* config.mode === "front" &&
+            inbound.verified &&
+            inbound.from === config.to &&
+            Option.isSome(handled)
+              ? relay.handled(handled.value.id)
+              : deliver(inbound, false);
+          }),
+      } satisfies RelayRoute;
+    });
+
+  const loop = Effect.fn("RatKing.run")(function* loop(
+    facts: SessionFacts,
+    deliver: Deliver
+  ) {
+    const claimed = yield* supervise(
+      Option.none(),
+      claimName(facts).pipe(services)
+    );
+
+    if (settings.refuse.includes(claimed.name)) {
+      const reason = `${claimed.name} is held by another reader (refuse list in the Rat King config); no reader started`;
+
+      yield* Ref.set(
+        state,
+        ReaderState.Refused({ name: claimed.name, reason })
+      );
+
+      return yield* Deferred.fail(
+        self,
+        new NotDelivered({ code: "Refused", reason })
+      ).pipe(Effect.asVoid);
+    }
+
+    const own = yield* supervise(
+      Option.some(claimed.name),
+      Effect.gen(function* establish() {
+        yield* Ref.set(state, ReaderState.Minting({ name: claimed.name }));
+
+        const identity = yield* ensureIdentity(claimed.name);
+
+        return {
+          did: identity.did,
+          identity,
+          label: facts.label ?? (() => facts.pane),
+          name: claimed.name,
+        };
+      }).pipe(services)
+    );
+
+    yield* Ref.set(established, Option.some(own));
+    yield* Deferred.succeed(self, own);
+
+    if (facts.reads === false) {
+      return yield* Ref.set(
+        state,
+        ReaderState.SendOnly({
+          name: own.name,
+          reason:
+            "Non-interactive Pi: send-only, no reader and no lease. Set RATKING_PRINT_NAME to read a name",
+        })
+      );
+    }
+
+    const route = yield* supervise(
+      Option.some(own.name),
+      routing(own, deliver)
+    );
+
+    return yield* supervise(
+      Option.some(own.name),
+      consumeOnce(own, facts, route).pipe(
+        Effect.andThen(
+          Effect.fail(
+            new NotDelivered({
+              code: "Uncertain",
+              reason: "Reader stopped; restarting",
+            })
+          )
+        )
+      )
+    ).pipe(Effect.forever);
+  });
+
+  const run = (facts: SessionFacts, deliver: Deliver) =>
+    loop(facts, deliver).pipe(Effect.forkScoped, Effect.asVoid);
 
   const awaitLive = Ref.get(state).pipe(
     Effect.flatMap((reader) =>

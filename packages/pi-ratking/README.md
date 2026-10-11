@@ -55,6 +55,28 @@ A message that cannot be opened (unknown sender, bad signature, undecryptable or
 
 A decrypted JSON object with a string `$type` that is not a Rat King message payload is delivered on `ratking/record` only, never injected into the model. Records use the same sender verification, checkpoint and ack path as messages. Other decrypted bodies still follow the raw-text message path.
 
+## Staff relay
+
+Opt in at reader start with this `pi.json` field:
+
+```json
+"relay": { "name": "switchboard", "to": "switchboard/ea", "mode": "copy", "fallbackMinutes": 10 }
+```
+
+Only the reader whose own name equals `relay.name` routes mail. The desk keeps its identity and key. Staff has its own identity. `copy` injects each text message normally and forwards it asynchronously. A verified message from `relay.to` bypasses forwarding. Data and lexicon records keep their existing event-only paths.
+
+The forwarded signed record is `{ $type: "sh.mschf.ratking.relay#message", id, from, did, verified, kind, body, replyTo, summary, label, cc, encrypted }`. Nullable text fields use `null` when absent. `id` is the original message id, not the relay envelope id. The original encryption state controls the relay envelope: plaintext stays plaintext; encrypted stays encrypted. Forwarding uses the same sealed-envelope bounded retry as ordinary sends. Failure logs without dropping the original.
+
+`front` saves originals in `state/relay/<name-label>.json` before mailbox ack and suppresses their injection. Verified staff confirms with `{ $type: "sh.mschf.ratking.relay#handled", id: "<original id>" }`, sent as a record to the desk. A failed forward or expired deadline injects the original with `[staff did not handle]`. A one-second sweep handles deadlines; startup recovers overdue pending mail before consumption. Only a verified staff envelope can settle pending mail. Journal files and their directory are private (0600/0700). Malformed journals fail closed and retry, never reset themselves.
+
+### EA integration
+
+Listen for `ratking/record`, verify the envelope's `verified` flag and expected desk name/DID, then decode `RelayRecord`. `relayedInbound(record)` projects the original sender, body and reply link as an `Inbound` for the EA's input. Its verification flag is the desk's attestation, not a second original-sender signature. Never accept an arbitrary sender's record as desk mail.
+
+Use the RatKing service's `send(record.from, answer, { replyTo: { messageId: record.id, senderDid: record.did }, encrypt: record.encrypted, summary })` for the answer. The reply goes to the original sender and links the original id. Do not use the relay envelope id or reply to the desk accidentally. After handling, emit `ratking/send` with `{ requestId, to: "switchboard", record: { $type: "sh.mschf.ratking.relay#handled", id: record.id }, encrypt: record.encrypted }`. EA model injection and reply orchestration belong to its integration; the reader itself emits records only.
+
+The model test covers generated inbound, handled, failed-forward, clock and restart commands. Removing startup recovery falsifies the property on an overdue original. Completed-command restarts are covered. An abrupt crash between Pi injection and its journal checkpoint can replay that injection: Pi has no transactional/idempotent injection port. Terminal journal entries remain to deduplicate recovered originals; journal compaction is not implemented. Keep `front` off until that crash boundary is accepted or the harness gains an idempotent injection receipt.
+
 ## Tool
 
 The tool takes pi-intercom's parameters. `send`, `ask`, `reply`, `pending`, `list` and `status` work. `ask` waits for the reply whose `replyTo` names the ask and whose signed sender is the asked DID; other messages are injected normally. `handover`, `cancel`, `cwd` targeting and `openProjectPaneIfMissing` are refused with a clear error. A send the mailbox did not take returns `NOT DELIVERED: <code>`, with no fallback.

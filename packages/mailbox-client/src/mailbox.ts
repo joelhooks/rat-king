@@ -112,6 +112,7 @@ export interface OpenedMessage {
   readonly replyTo?: Defs.MessageRefValue;
   readonly urgent?: true;
   readonly verified: true;
+  readonly encrypted?: boolean;
   readonly cc?: {
     readonly senderDid: string;
     readonly messageId: string;
@@ -332,6 +333,7 @@ export const layer = (
 
           const result: MutableOpenedMessage = {
             body,
+            encrypted: envelope.suite !== plaintextSuite,
             senderDid: payload.aad.senderDid,
             tid: payload.aad.messageId,
             verified: true,
