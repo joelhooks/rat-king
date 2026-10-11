@@ -8,15 +8,21 @@ struct TrafficPreviewHarness: View {
         let notices = PreviewNotices()
         return TrafficConnection(authenticate: {}, notice: { try await notices.next() }, close: {})
     }, list: { cursor in
-        let events: [Value] = cursor == 0 ? (1...4).map { seq in
-            .map(["seq": .int(Int64(seq)), "recipientSeq": .int(Int64(seq)),
-                "time": .string("2026-01-01T12:00:0\(seq).000Z"),
-                "senderDid": .string("did:web:sample-sender.example.invalid"),
-                "recipientDid": .string("did:web:sample-recipient.example.invalid"),
-                "messageId": .string("3m5abcde23456"), "ciphertextSize": .int(1024),
-                "state": .string(TrafficDetail.stages[seq - 1])])
-        } : []
-        return try TrafficPage(.map(["cursor": .string("4"), "events": .array(events)]))
+        let count = ProcessInfo.processInfo.arguments.contains("--traffic-next-test") ? 5 : 4
+        var events: [Value] = []
+        if cursor == 0 {
+            for seq in 1...count {
+                let messageId = seq == 5 ? "3m5abcde23457" : "3m5abcde23456"
+                let state = TrafficDetail.stages[(seq - 1) % 4]
+                let fields: [String: Value] = ["seq": .int(Int64(seq)), "recipientSeq": .int(Int64(seq)),
+                    "time": .string("2026-01-01T12:00:0\(seq).000Z"),
+                    "senderDid": .string("did:web:sample-sender.example.invalid"),
+                    "recipientDid": .string("did:web:sample-recipient.example.invalid"),
+                    "messageId": .string(messageId), "ciphertextSize": .int(1024), "state": .string(state)]
+                events.append(.map(fields))
+            }
+        }
+        return try TrafficPage(.map(["cursor": .string(String(count)), "events": .array(events)]))
     })
     private var copies: [CarbonCopy] {
         guard ProcessInfo.processInfo.arguments.contains("--traffic-copy-test") else { return [] }
@@ -35,7 +41,7 @@ struct TrafficPreviewHarness: View {
 private actor PreviewNotices {
     private var ready = false
     func next() async throws -> Int64 {
-        if !ready { ready = true; return 4 }
+        if !ready { ready = true; return ProcessInfo.processInfo.arguments.contains("--traffic-next-test") ? 5 : 4 }
         try await Task.sleep(for: .seconds(3600)); return 4
     }
 }

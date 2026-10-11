@@ -2,12 +2,12 @@ import SwiftUI
 
 struct DeskInboxView: View {
     let store: InboxStore
-    let reply: (String) -> Void
     @State private var archived = false
     @State private var snoozing: InboxThread?
     @State private var path: [String] = []
     var body: some View {
         NavigationStack(path: $path) {
+            ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
                     HStack {
@@ -16,7 +16,14 @@ struct DeskInboxView: View {
                         Button(archived ? "[inbox]" : "[archived]") { archived.toggle() }.foregroundStyle(TUITheme.dim)
                     }.padding(.vertical, 8)
                     TerminalHints(text: archived ? "tap → thread · swipe right → restore" : "tap → thread · ← archive · snooze →")
-                    let threads = store.threads.filter { $0.visible(at: store.now, archivedView: archived) }
+                    Color.clear.frame(height: 1).id("top")
+                    if store.presentation.loading {
+                        Text("loading \(store.presentation.progress)…").foregroundStyle(TUITheme.warn).accessibilityIdentifier("inbox-loading")
+                    } else {
+                    if !store.presentation.pending.isEmpty {
+                        Button("[\(store.presentation.pending.count) new ↑]") { store.revealNew(); proxy.scrollTo("top", anchor: .top) }.foregroundStyle(TUITheme.accent)
+                    }
+                    let threads = visibleThreads
                     if threads.isEmpty { Text(archived ? "No archived threads." : "Waiting for encrypted mail. Keep the app open to sync.").foregroundStyle(TUITheme.dim) }
                     ForEach(Array(Set(threads.map(\.project))).sorted(), id: \.self) { project in
                         Text(project.uppercased()).foregroundStyle(TUITheme.dim).font(TUITheme.microFont).padding(.top, 4)
@@ -31,14 +38,26 @@ struct DeskInboxView: View {
                                         Text("›").foregroundStyle(TUITheme.accent)
                                         Text(thread.summary).foregroundStyle(TUITheme.fg).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                                     }
-                                    Text(thread.state.rawValue.uppercased() + " / \(thread.mailIds.count) MAIL").foregroundStyle(TUITheme.dim).font(TUITheme.microFont)
+                                    let unread = store.messages.filter { thread.mailIds.contains($0.id) && $0.outgoingTo == nil && $0.receipt == "delivered" }.count
+                                    Text(thread.state.rawValue.uppercased() + " / \(thread.mailIds.count) MAIL" + (unread > 0 ? " / \(unread) UNREAD" : " / NO UNREAD")).foregroundStyle(unread > 0 ? TUITheme.teal : TUITheme.dim).font(TUITheme.microFont)
                                 }
                             }
                         }
                     }
+                    }
                 }.padding(8)
-            }.background(TUITheme.bg).toolbar(.hidden, for: .navigationBar)
-            .navigationDestination(for: String.self) { threadId in DeskThreadView(store: store, threadId: threadId, reply: reply) }
+            }.refreshable { store.refresh() }
+            }
+            .background(TUITheme.bg).toolbar(.hidden, for: .navigationBar)
+            .navigationDestination(for: String.self) { threadId in
+                DeskThreadView(store: store, threadId: threadId, archiveNext: {
+                    guard let thread = store.threads.first(where: { $0.id == threadId }) else { return }
+                    let next = nextInboxID(after: threadId, in: visibleThreads.map(\.id))
+                    await store.archive(thread)
+                    guard store.threads.first(where: { $0.id == threadId })?.archived == true else { return }
+                    if let next { path = [next] } else { path = [] }
+                }).id(threadId)
+            }
             .overlay {
                 if let thread = snoozing {
                     ZStack {
@@ -58,9 +77,13 @@ struct DeskInboxView: View {
             }
         }.tint(TUITheme.accent)
     }
+    private var visibleThreads: [InboxThread] {
+        let threads = store.presentedThreads.filter { $0.visible(at: store.now, archivedView: archived) }
+        return Array(Set(threads.map(\.project))).sorted().flatMap { project in threads.filter { $0.project == project } }
+    }
 }
 struct DeskThreadView: View {
-    let store: InboxStore; let threadId: String; let reply: (String) -> Void
+    let store: InboxStore; let threadId: String; let archiveNext: () async -> Void
     @State private var values: [String: String] = [:]
     @State private var rows: [String: [String]] = [:]
     @State private var note = ""
@@ -71,7 +94,11 @@ struct DeskThreadView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Button("[BACK]") { dismiss() }.foregroundStyle(TUITheme.accent)
                 if let thread {
-                    Text(thread.project + " / " + thread.state.rawValue.uppercased()).foregroundStyle(TUITheme.dim)
+                    HStack {
+                        Text(thread.project + " / " + thread.state.rawValue.uppercased()).foregroundStyle(TUITheme.dim)
+                        Spacer()
+                        Button("[ARCHIVE + NEXT]") { Task { await archiveNext() } }.disabled(!canArchiveThread(thread, connection: store.state)).foregroundStyle(TUITheme.accent).accessibilityIdentifier("archive-next")
+                    }
                     Text("FROM " + thread.sender).foregroundStyle(TUITheme.teal).textSelection(.enabled)
                     if let card = thread.card {
                         Text(card.title).font(TUITheme.titleFont).foregroundStyle(TUITheme.accent)
@@ -110,19 +137,21 @@ struct DeskThreadView: View {
                                 .disabled(store.state != .live || store.sending || store.hasPendingSend).foregroundStyle(TUITheme.accent)
                             if store.hasPendingSend { Text("A sealed send is pending. Retry it from Compose before answering another item.").foregroundStyle(TUITheme.warn) }
                         }
-                    } else {
-                        Button("[REPLY]") { reply(thread.sender); dismiss() }.foregroundStyle(TUITheme.accent)
+                    }
+                    if let target = store.messages.last(where: { thread.mailIds.contains($0.id) && $0.outgoingTo == nil }) {
+                        ReplyComposer(store: store, target: target).id(target.id)
                     }
                     ForEach(Array(thread.lines.enumerated()), id: \.offset) { _, line in TerminalMessage(text: line) }
                     ForEach(store.messages.filter { thread.mailIds.contains($0.id) }) { item in
                         HStack {
                             Text(item.receipt.uppercased()).foregroundStyle(TUITheme.dim)
-                            if item.receipt == "delivered" { Button("[ACK READ]") { Task { await store.acknowledge(item) } }.disabled(store.state != .live).foregroundStyle(TUITheme.accent) }
+                            if item.outgoingTo == nil && item.receipt == "delivered" { Button("[ACK READ]") { Task { await store.acknowledge(item) } }.disabled(store.state != .live).foregroundStyle(TUITheme.accent) }
                         }
                     }
                 }
             }.padding(8)
-        }.background(TUITheme.bg).toolbar(.hidden, for: .navigationBar)
+        }.background(TUITheme.bg).toolbar(.visible, for: .navigationBar)
+        .toolbarBackground(TUITheme.bg, for: .navigationBar)
         .task {
             guard let card = thread?.card else { return }
             values = Dictionary(uniqueKeysWithValues: card.choices.map { ($0.id, $0.suggest) })

@@ -48,7 +48,7 @@ final class TrafficTests: XCTestCase {
             XCTAssertEqual(TrafficEntry.shortName("did:web:" + name + ".example.invalid"), name + ".example.invalid")
         }
     }
-    func testDetailProjectionAgainstGeneratedJournalCommands() throws {
+    func testOneMessageRowLatestStatusAndCompactDetailAgainstGeneratedJournalCommands() throws {
         var seed: UInt64 = 563
         for _ in 0..<100 {
             var journal = TrafficJournal(), model: [TrafficEntry] = []
@@ -58,19 +58,30 @@ final class TrafficTests: XCTestCase {
                 var wire = try trafficWire(Int64(seq)).object()
                 let messageId = (seed >> 32) % 3 == 0 ? "3m5abcde23456" : "3m5abcde23457"
                 wire["messageId"] = .string(messageId)
+                wire["senderDid"] = .string("did:web:sender-\((seed >> 38) % 2).example.invalid")
+                wire["recipientDid"] = .string("did:web:recipient-\((seed >> 42) % 2).example.invalid")
+                if seq % 5 == 1 { wire["body"] = .string("Synthetic body \(seq)") }
                 wire["time"] = .string("2026-01-01T12:00:\(String(format: "%02d", 80 - seq > 59 ? 59 : 80 - seq)).000Z")
                 let entry = try TrafficEntry(.map(wire))
                 try journal.append(trafficPage([.map(wire)], cursor: Int64(seq))); model.append(entry)
                 if selected == nil || (seed >> 40) % 11 == 0 { selected = entry }
                 let anchor = try XCTUnwrap(selected)
                 let detail = TrafficDetail(selected: anchor, entries: journal.entries)
-                let expected = model.filter { $0.messageId == anchor.messageId }
+                let expected = model.filter { $0.messageKey == anchor.messageKey }
                 XCTAssertEqual(detail.selected, anchor)
                 XCTAssertEqual(detail.events, expected) // arrival sequence, not skewed clocks
                 for state in TrafficDetail.stages {
                     XCTAssertEqual(detail.observations(for: state), expected.filter { $0.state == state })
                 }
                 XCTAssertEqual(detail.otherEvents, expected.filter { !TrafficDetail.stages.contains($0.state) })
+                let keys = model.map(\.messageKey).reduce(into: [String]()) { keys, key in if !keys.contains(key) { keys.append(key) } }.reversed()
+                XCTAssertEqual(journal.messages.map(\.messageKey), Array(keys))
+                for row in journal.messages {
+                    let latest = try XCTUnwrap(model.last(where: { $0.messageKey == row.messageKey }))
+                    XCTAssertEqual(row.state, latest.state); XCTAssertEqual(row.seq, latest.seq)
+                    XCTAssertEqual(row.recipientSeq, latest.recipientSeq)
+                    XCTAssertEqual(row.body, model.filter { $0.messageKey == row.messageKey }.compactMap(\.body).last)
+                }
                 XCTAssertEqual(journal.entries, model) // display never mutates the source
             }
         }
@@ -99,6 +110,44 @@ final class TrafficTests: XCTestCase {
         XCTAssertEqual(store.journal.cursor, 207); XCTAssertEqual(store.journal.entries.count, 207)
         let resumedTrace = await service.trace; XCTAssertTrue(resumedTrace.contains("list:207"))
         store.stop(); await service.lateNotice()
+    }
+    @MainActor func testLoadThenShowBuffersLiveArrivalsAndReconnectHidesRows() async throws {
+        let paged = expectation(description: "catch-up blocked after first page")
+        let live = expectation(description: "initial list complete")
+        let new = expectation(description: "live arrival processed")
+        let service = LoadThenShowService(paged: paged, live: live, new: new)
+        let store = TrafficStore(transport: TrafficTransport(open: {
+            TrafficConnection(authenticate: {}, notice: { try await service.notice() }, close: {})
+        }, list: { try await service.list($0) }))
+        store.start(); await fulfillment(of: [paged], timeout: 5)
+        XCTAssertTrue(store.presentation.loading); XCTAssertGreaterThan(store.presentation.progress, 0)
+        XCTAssertTrue(store.rows.isEmpty) // production list projects exactly these rows
+        await service.finishSnapshot(); await fulfillment(of: [live], timeout: 5)
+        XCTAssertFalse(store.presentation.loading); XCTAssertEqual(store.rows.count, 2)
+        let before = store.rows.map(\.messageKey)
+        await service.arrive(); await fulfillment(of: [new], timeout: 5)
+        XCTAssertEqual(store.rows.map(\.messageKey), before); XCTAssertEqual(store.presentation.pending.count, 1)
+        store.revealNew(); XCTAssertEqual(store.rows.count, 3); XCTAssertTrue(store.presentation.pending.isEmpty)
+        store.refresh(); XCTAssertTrue(store.presentation.loading); XCTAssertTrue(store.rows.isEmpty)
+        store.stop(); await service.close()
+        // The desk uses the same gate with individual mail IDs, including a
+        // follow-up in an existing thread. Exercise arbitrary loading/update/reveal commands.
+        var seed: UInt64 = 53
+        for _ in 0..<100 {
+            var gate = InboxPresentation<Int>(), complete = false, visible: [Int] = []
+            var ids: [Int] = []
+            for id in 0..<100 {
+                seed = seed &* 6364136223846793005 &+ 1; ids.insert(id, at: 0)
+                if seed % 7 == 0 { gate.begin(); complete = false; visible = [] }
+                gate.loaded(ids.count); gate.update(ids)
+                XCTAssertEqual(gate.visible, visible)
+                if !complete { XCTAssertTrue(gate.visible.isEmpty) }
+                if seed % 3 == 0 {
+                    gate.reveal(ids); complete = true; visible = ids
+                    XCTAssertTrue(gate.pending.isEmpty)
+                } else if complete { XCTAssertEqual(gate.pending, ids.filter { !visible.contains($0) }) }
+            }
+        }
     }
     func testCallSignLeadsTheSenderLineAndAMissingOneFallsBackToTheName() throws {
         var wire = try trafficWire(1).object()
@@ -135,4 +184,31 @@ private actor TrafficModelService {
     func close(_ id: String) { /* Keep the synthetic old receive pending to test fencing. */ }
     func lateNotice() { let old = pending; pending = nil; old?.resume(returning: 208) }
     func resumeExpectation(_ expectation: XCTestExpectation) { reached = expectation }
+}
+
+private actor LoadThenShowService {
+    let paged: XCTestExpectation; let live: XCTestExpectation; let new: XCTestExpectation
+    private var reads = 0
+    private var page: CheckedContinuation<Void, Never>?
+    private var noticeWait: CheckedContinuation<Int64, any Error>?
+    init(paged: XCTestExpectation, live: XCTestExpectation, new: XCTestExpectation) { self.paged = paged; self.live = live; self.new = new }
+    func notice() async throws -> Int64 {
+        reads += 1
+        if reads == 1 { return 101 }
+        if reads == 2 { live.fulfill() } else if reads == 3 { new.fulfill() }
+        return try await withCheckedThrowingContinuation { noticeWait = $0 }
+    }
+    func list(_ cursor: Int64) async throws -> TrafficPage {
+        if cursor == 0 { return try trafficPage((1...100).map { trafficWire(Int64($0)) }, cursor: 100) }
+        if cursor == 100 {
+            await withCheckedContinuation { page = $0; paged.fulfill() }
+            var wire = try trafficWire(101).object(); wire["messageId"] = .string("3m5abcde23457")
+            return try trafficPage([.map(wire)], cursor: 101)
+        }
+        var wire = try trafficWire(102).object(); wire["messageId"] = .string("3m5abcde2345a")
+        return try trafficPage([.map(wire)], cursor: 102)
+    }
+    func finishSnapshot() { let value = page; page = nil; value?.resume() }
+    func arrive() { let value = noticeWait; noticeWait = nil; value?.resume(returning: 102) }
+    func close() { let value = noticeWait; noticeWait = nil; value?.resume(throwing: CancellationError()) }
 }

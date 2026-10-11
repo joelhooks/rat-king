@@ -52,18 +52,18 @@ struct TerminalView: View {
                 case 0: inbox
                 case 1: compose
                 case 3:
-                    if let traffic = store.traffic { TrafficView(store: traffic, copies: store.copies) } else { Text("Phone identity required for traffic.").foregroundStyle(TUITheme.warn) }
+                    if let traffic = store.traffic { TrafficView(store: traffic, inbox: store, copies: store.copies) } else { Text("Phone identity required for traffic.").foregroundStyle(TUITheme.warn) }
                 default: identity
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
             ThinDivider()
             ViewThatFits(in: .horizontal) {
                 HStack {
-                    Text(tab == 3 ? "OBSERVER / SEALED CC" : "E2EE / SECURE ENCLAVE")
+                    Text(tab == 3 ? "OBSERVER / SEALED CC" : "SIGNED / SECURE ENCLAVE")
                     Spacer()
-                    Text(tab == 3 ? "\(store.traffic?.journal.entries.count ?? 0) EVENTS" : "\(store.messages.count) MAIL")
+                    Text(tab == 3 ? "\(store.traffic?.journal.messages.count ?? 0) MESSAGES" : "\(store.messages.count) MAIL")
                 }
-                Text(tab == 3 ? "\(store.traffic?.journal.entries.count ?? 0) EVENTS / METADATA" : "\(store.messages.count) MAIL / E2EE")
+                Text(tab == 3 ? "\(store.traffic?.journal.messages.count ?? 0) MESSAGES / METADATA" : "\(store.messages.count) MAIL / SIGNED")
             }.font(TUITheme.microFont).foregroundStyle(TUITheme.dim).padding(12)
         }
         .font(TUITheme.monoFont).foregroundStyle(TUITheme.fg).background(TUITheme.bg)
@@ -82,7 +82,7 @@ struct TerminalView: View {
         }
     }
     private var inbox: some View {
-        DeskInboxView(store: store) { sender in recipient = sender; tab = 1 }
+        DeskInboxView(store: store)
     }
     private var compose: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -92,9 +92,10 @@ struct TerminalView: View {
                 ForEach(store.peers.keys.sorted(), id: \.self) { Text($0).tag($0) }
             }.tint(TUITheme.teal)
             TextEditor(text: $draft).font(TUITheme.monoFont).scrollContentBackground(.hidden).padding(8).background(TUITheme.panel)
-            if store.hasPendingSend { Text("Encrypted send pending. Retry sends the SAME envelope, not the current draft.").foregroundStyle(TUITheme.warn) }
+            if store.hasPendingSend { Text("Saved send pending. Retry sends the SAME envelope, not the current draft.").foregroundStyle(TUITheme.warn) }
             if let receipt = store.lastSend { Text("LAST SEND: " + receipt.uppercased()).foregroundStyle(TUITheme.ok) }
-            Button(store.hasPendingSend ? "[RETRY PENDING SEND]" : "[SEAL + SEND]") {
+            Text("Signed plaintext. Not encrypted.").foregroundStyle(TUITheme.warn)
+            Button(store.hasPendingSend ? "[RETRY PENDING SEND]" : "[SIGN + SEND]") {
                 Task { await store.send(to: recipient, text: draft); if !store.hasPendingSend, store.lastError == nil { draft = "" } }
             }.disabled(store.state != .live || store.sending).foregroundStyle(TUITheme.accent)
         }.padding(12)
@@ -113,6 +114,16 @@ struct TerminalView: View {
                 TerminalPanel(title: "TRUSTED PEERS / \(store.peers.count)") {
                     Button("[import peer DID]") { importing = true }.foregroundStyle(TUITheme.accent)
                     ForEach(store.peers.keys.sorted(), id: \.self) { Text("› " + $0).foregroundStyle(TUITheme.dim).textSelection(.enabled) }
+                    ForEach(store.peerChanges.keys.sorted(), id: \.self) { did in
+                        Text("! DOCUMENT CHANGED: " + did).foregroundStyle(TUITheme.err)
+                        if let candidate = store.peerChanges[did], let bytes = try? candidate.value.jsonData() {
+                            Text("PROPOSED " + String(decoding: bytes, as: UTF8.self)).font(TUITheme.microFont).textSelection(.enabled)
+                        }
+                        if let previous = store.peers[did], let bytes = try? previous.value.jsonData() {
+                            Text("PINNED " + String(decoding: bytes, as: UTF8.self)).font(TUITheme.microFont).textSelection(.enabled)
+                        }
+                        Button("[accept changed document]") { store.acceptPeerChange(did); store.refresh() }.foregroundStyle(TUITheme.warn)
+                    }
                 }
                 Text("Live mail runs while this app is in the foreground. Reopening catches up from the mailbox. Background push is not enabled.").foregroundStyle(TUITheme.dim)
                 Text("BUILD \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") / \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?")").foregroundStyle(TUITheme.dim)
