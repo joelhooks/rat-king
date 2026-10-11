@@ -26,6 +26,8 @@ struct MailItem: Identifiable {
     let text: String
     var receipt: String
     let replyTo: Value?
+    let outgoingTo: String?
+    var threadPeer: String { outgoingTo ?? sender }
     func record() throws -> DeskRecord? {
         guard let bytes = text.data(using: .utf8), let value = try? Value.json(bytes) else { return nil }
         return try DeskRecord.decode(value)
@@ -33,11 +35,12 @@ struct MailItem: Identifiable {
     var wire: Value {
         var fields: [String: Value] = ["id": .string(id), "message": message, "sender": .string(sender), "text": .string(text), "receipt": .string(receipt)]
         if let replyTo { fields["replyTo"] = replyTo }
+        if let outgoingTo { fields["outgoingTo"] = .string(outgoingTo) }
         return .map(fields)
     }
-    init(id: String, message: Value, sender: String, text: String, receipt: String, replyTo: Value? = nil) { self.id = id; self.message = message; self.sender = sender; self.text = text; self.receipt = receipt; self.replyTo = replyTo }
+    init(id: String, message: Value, sender: String, text: String, receipt: String, replyTo: Value? = nil, outgoingTo: String? = nil) { self.id = id; self.message = message; self.sender = sender; self.text = text; self.receipt = receipt; self.replyTo = replyTo; self.outgoingTo = outgoingTo }
     init(_ value: Value) throws {
-        self.init(id: try value.required("id").text, message: try value.required("message"), sender: try value.required("sender").text, text: try value.required("text").text, receipt: try value.required("receipt").text, replyTo: value["replyTo"])
+        self.init(id: try value.required("id").text, message: try value.required("message"), sender: try value.required("sender").text, text: try value.required("text").text, receipt: try value.required("receipt").text, replyTo: value["replyTo"], outgoingTo: try value["outgoingTo"]?.text)
         _ = try record()
         if let replyTo { _ = try replyTo.required("senderDid").text; _ = try replyTo.required("messageId").text }
     }
@@ -49,7 +52,11 @@ final class InboxStore {
     private(set) var traffic: TrafficStore?
     private(set) var messages: [MailItem] = []
     private(set) var copies: [CarbonCopy] = []
-    private(set) var peers: [String: DIDDocument] = [:]
+    private var pins = PeerPins()
+    var peers: [String: DIDDocument] { pins.documents }
+    var peerChanges: [String: DIDDocument] { pins.changes }
+    private(set) var presentation = InboxPresentation<String>()
+    private var presentationPreferences: [String: ThreadPreferences] = [:]
     private(set) var lastError: String?
     private(set) var sending = false
     private(set) var hasPendingSend = false
@@ -69,6 +76,16 @@ final class InboxStore {
     private(set) var now = Date()
     private var snoozeTimer: Task<Void, Never>?
     var threads: [InboxThread] { (try? inboxThreads(messages, preferences: preferences)) ?? [] }
+    var presentedThreads: [InboxThread] {
+        let shown = Set(presentation.visible)
+        return ((try? inboxThreads(messages.filter { shown.contains($0.id) }, preferences: presentationPreferences)) ?? []).reversed()
+    }
+    func revealNew() { presentationPreferences = preferences; presentation.reveal(messages.reversed().map(\.id)) }
+    func refresh() { stop(); start() }
+    func acceptPeerChange(_ did: String) {
+        guard let document = peerChanges[did] else { return }
+        importPeers((try? document.value.jsonData()) ?? Data())
+    }
 
     init() {
         do {
@@ -77,7 +94,7 @@ final class InboxStore {
             let id = try PhoneIdentity(did: configuration.did)
             identity = id; let mailbox = Mailbox(configuration: configuration, identity: id); client = mailbox
             traffic = TrafficStore(transport: mailbox.trafficTransport())
-            if let data = try readLocal("peers.json") { try installPeers(data, save: false) }
+            if let data = try readLocal("peers.json") { try installPeers(data, save: false, explicit: true) }
             if let url = Bundle.main.url(forResource: "PeerDocuments.private", withExtension: "json") { try installPeers(Data(contentsOf: url), save: false) }
             if let data = try readLocal("outbox.json") { pending = try Value.json(data); hasPendingSend = true }
             if let data = try readLocal("inbox.json") {
@@ -106,26 +123,32 @@ final class InboxStore {
         try ProtectedLocalStore(directory: directory()).read(name)
     }
     private func writeLocal(_ name: String, _ bytes: Data) throws { try ProtectedLocalStore(directory: directory()).write(name, bytes: bytes) }
-    func importPeers(_ bytes: Data) { do { try installPeers(bytes, save: true); lastError = nil } catch { lastError = error.localizedDescription } }
-    private func installPeers(_ bytes: Data, save: Bool) throws {
+    func importPeers(_ bytes: Data) { do { try installPeers(bytes, save: true, explicit: true); lastError = nil } catch { lastError = error.localizedDescription } }
+    private func installPeers(_ bytes: Data, save: Bool, explicit: Bool = false) throws {
         guard bytes.count <= 200_000 else { throw ProtocolError.invalid("Peer document file too large") }
         let value = try Value.json(bytes)
         let docs: [Value]; if case let .array(a) = value { docs = a } else { docs = [value] }
-        var updated = peers
+        var updated = pins
         for doc in docs {
-            let document = try DIDDocument(doc)
-            _ = try document.encryptionKey()
-            for id in try doc.required("authentication").list() { _ = try document.signingKey(id.text) }
-            updated[try document.did] = document
+            if explicit { try updated.accept(doc) }
+            else if let did = try? DIDDocument(doc).did, updated.documents[did] == nil { try updated.observe(doc) }
         }
-        if save { try writeLocal("peers.json", Value.array(updated.values.map(\.value)).jsonData()) }
-        peers = updated
+        if save { try writeLocal("peers.json", Value.array(updated.documents.values.map(\.value)).jsonData()) }
+        pins = updated
+    }
+    private func refreshPeer(_ did: String, client: Mailbox, token: UInt64) async throws {
+        let response = try await client.call("mailbox.getPeerDocument", params: ["did": did]); try current(token)
+        var updated = pins
+        do { try updated.observe(response.required("document"), expected: did) }
+        catch { pins = updated; throw error }
+        try writeLocal("peers.json", Value.array(updated.documents.values.map(\.value)).jsonData())
+        pins = updated
     }
     private func move(_ event: ConnectionEvent) { state = nextState(state, event) }
     private func current(_ token: UInt64) throws { try Task.checkCancellation(); guard generation == token else { throw CancellationError() } }
     func start() {
         guard run == nil, let client else { return }
-        now = Date(); armSnoozeTimer()
+        now = Date(); armSnoozeTimer(); presentation.begin()
         generation &+= 1; let token = generation
         run = Task { [weak self] in await self?.connect(client, token: token) }
     }
@@ -142,7 +165,7 @@ final class InboxStore {
         var delay = 1
         while !Task.isCancelled, generation == token {
             do {
-                move(.start)
+                presentation.begin(); move(.start)
                 let acquired: Lease
                 if let previous = lease, previous.expiresAt > Date() {
                     acquired = try await client.renew(previous)
@@ -154,7 +177,9 @@ final class InboxStore {
                 try await client.authenticate(ws)
                 // Ready barrier comes before the first list; JWT is never in URL.
                 _ = try await client.notice(ws); try current(token); move(.socketReady)
-                try await catchUp(client, lease: lease, token: token); try current(token); move(.caughtUp)
+                for did in peers.keys.sorted() { try await refreshPeer(did, client: client, token: token) }
+                try await catchUp(client, lease: lease, token: token); try current(token)
+                presentationPreferences = preferences; presentation.finish(messages.reversed().map(\.id)); move(.caughtUp)
                 lastError = nil; delay = 1
                 try await withThrowingTaskGroup(of: Void.self) { group in
                     group.addTask { [weak self] in
@@ -192,6 +217,9 @@ final class InboxStore {
                         lastError = "LEASE LOOKUP: " + error.localizedDescription
                     }
                 } else { lastError = state.rawValue.uppercased() + ": " + error.localizedDescription }
+                if let rpc = error as? XRPCError, rpc.status == 403 {
+                    move(.background); run = nil; return
+                }
                 move(.lost)
                 if let error = error as? XRPCError, error.code == "LeaseMismatch" { lease = nil }
                 do { try await Task.sleep(for: .seconds(delay)) } catch { return }; delay = min(delay * 2, 30)
@@ -204,7 +232,8 @@ final class InboxStore {
     }
     private func update(_ client: Mailbox, token: UInt64) async throws {
         try current(token); guard let lease else { throw ProtocolError.invalid("Missing lease") }
-        move(.notice); try await catchUp(client, lease: lease, token: token); try current(token); move(.caughtUp)
+        move(.notice); try await catchUp(client, lease: lease, token: token); try current(token)
+        presentation.update(messages.reversed().map(\.id)); move(.caughtUp)
     }
     private func catchUp(_ client: Mailbox, lease: Lease, token: UInt64) async throws {
         let after = through; var cursor: String?; var watermark: Int64?
@@ -214,7 +243,10 @@ final class InboxStore {
             let page = try await client.call("mailbox.list", params: params); try current(token)
             let high = try page.required("throughSeq").number
             guard high >= after, watermark == nil || watermark == high else { throw ProtocolError.invalid("Snapshot watermark changed") }; watermark = high
-            for event in try page.required("events").list() { try await process(event, client: client, lease: lease, token: token) }
+            for event in try page.required("events").list() {
+                try await process(event, client: client, lease: lease, token: token)
+                presentation.loaded(presentation.progress + 1)
+            }
             cursor = try page["cursor"]?.text
         } while cursor != nil
         try current(token); through = watermark ?? through
@@ -241,8 +273,20 @@ final class InboxStore {
         guard messages.allSatisfy({ $0.id != id }) else { return }
         let aad = try envelope.required("aad")
         guard aad["senderDid"] == .string(sender), aad["messageId"] == .string(tid) else { throw ProtocolError.invalid("Receipt/envelope mismatch") }
-        let payload = try Envelope.open(envelope, did: client.identity.did, keyId: client.identity.encryptionId, key: client.identity.encryption) { did, id in
-            guard let peer = peers[did] else { throw ProtocolError.invalid("Import the sender's public DID document before reading") }; return try peer.signingKey(id)
+        let unknown = peers[sender] == nil
+        if unknown { try await refreshPeer(sender, client: client, token: token) }
+        func open() throws -> Value {
+            guard peerChanges[sender] == nil else { throw ProtocolError.invalid("Peer document changed. Accept in Identity before verifying.") }
+            return try Envelope.open(envelope, did: client.identity.did, keyId: client.identity.encryptionId, key: client.identity.encryption) { did, id in
+                guard let peer = peers[did] else { throw ProtocolError.invalid("Sender document unavailable") }; return try peer.signingKey(id)
+            }
+        }
+        let payload: Value
+        do { payload = try open() }
+        catch {
+            guard !unknown else { throw error }
+            try await refreshPeer(sender, client: client, token: token)
+            payload = try open()
         }
         let routed = try OpenedPhoneMessage.route(payload, message: message,
             time: receipt["time"].flatMap { try? $0.text } ?? ISO8601DateFormatter.fractional.string(from: Date()), receipt: status)
@@ -302,14 +346,14 @@ final class InboxStore {
     }
     private func savePreferences(_ prefs: ThreadPreferences, for id: String) throws {
         let previous = preferences[id]; preferences[id] = prefs
-        do { try saveInbox() } catch { preferences[id] = previous; throw error }
+        do { try saveInbox(); presentationPreferences[id] = prefs } catch { preferences[id] = previous; throw error }
     }
     private func saveInbox() throws {
         try writeLocal("inbox.json", Value.map(["messages": .array(messages.map(\.wire)), "copies": .array(copies.map(\.wire)), "preferences": .map(preferences.mapValues(\.wire))]).jsonData())
     }
     func archive(_ thread: InboxThread) async {
         guard state == .live else { return }
-        for item in messages.filter({ thread.mailIds.contains($0.id) && $0.receipt == "delivered" }) {
+        for item in messages.filter({ thread.mailIds.contains($0.id) && $0.outgoingTo == nil && $0.receipt == "delivered" }) {
             await acknowledge(item)
             guard messages.first(where: { $0.id == item.id })?.receipt == "acked" else { return }
         }
@@ -363,7 +407,11 @@ final class InboxStore {
         for _ in 0..<13 { result.insert(alphabet[Int(value & 31)], at: result.startIndex); value >>= 5 }; return result
     }
     func send(to did: String, text: String) async {
-        await sendBytes(to: did, bytes: Data(text.utf8))
+        await sendBytes(to: did, bytes: Data(text.utf8), plaintext: true)
+    }
+    func reply(to item: MailItem, text: String) async {
+        guard item.outgoingTo == nil else { return }
+        await sendBytes(to: item.sender, bytes: Data(text.utf8), replyTo: item.message, plaintext: true)
     }
     func answer(_ thread: InboxThread, values: [String: String], rows: [String: [String]], note: String) async {
         guard !hasPendingSend, let currentThread = threads.first(where: { $0.id == thread.id }), currentThread.state == .open, let card = currentThread.card, let tid = currentThread.cardTid else { return }
@@ -372,17 +420,25 @@ final class InboxStore {
             await sendBytes(to: thread.sender, bytes: try record.jsonData(), threadId: thread.id)
         } catch { lastError = error.localizedDescription }
     }
-    private func sendBytes(to did: String, bytes: Data, threadId: String? = nil) async {
+    private func sendBytes(to did: String, bytes: Data, threadId: String? = nil, replyTo: Value? = nil, plaintext: Bool = false) async {
         guard state == .live, !sending, let client, let lease else { return }
         sending = true; defer { sending = false }; let token = generation
         do {
             if pending == nil {
-                guard bytes.count <= 60_000, !bytes.isEmpty, let peer = peers[did] else { throw ProtocolError.invalid("Select an imported peer and enter a message (up to 60 KB)") }
-                let (id, key) = try peer.encryptionKey()
-                let payload: Value = .map(["version": .int(1), "suite": Envelope.suite, "aad": .map(["senderDid": .string(client.identity.did), "recipientDid": .string(did), "recipientKeyId": .string(id), "messageId": .string(tid())]), "body": .bytes(bytes)])
+                guard bytes.count <= 60_000, !bytes.isEmpty, did.hasPrefix("did:") else { throw ProtocolError.invalid("Select a peer and enter a message (up to 60 KB)") }
+                try await refreshPeer(did, client: client, token: token)
+                guard let peer = peers[did], peerChanges[did] == nil else { throw ProtocolError.invalid("Peer document needs acceptance in Identity") }
+                let (id, key) = try peer.encryptionKey(), messageId = tid()
+                var fields: [String: Value] = ["version": .int(1), "suite": plaintext ? Envelope.plaintextSuite : Envelope.suite, "aad": .map(["senderDid": .string(client.identity.did), "recipientDid": .string(did), "recipientKeyId": .string(id), "messageId": .string(messageId)]), "body": .bytes(bytes)]
+                if let replyTo { fields["replyTo"] = replyTo }
+                let payload = Value.map(fields)
                 let sealed = try Envelope.seal(payload: payload, signingKeyId: client.identity.signingId, sign: client.identity.sign, recipient: key)
                 var saved: [String: Value] = ["envelope": sealed]
                 if let threadId { saved["threadId"] = .string(threadId); saved["answer"] = try Value.json(bytes) }
+                if let replyTo {
+                    let ref: Value = .map(["senderDid": .string(client.identity.did), "messageId": .string(messageId)])
+                    saved["reply"] = MailItem(id: client.identity.did + "/" + messageId, message: ref, sender: client.identity.did, text: String(decoding: bytes, as: UTF8.self), receipt: "accepted", replyTo: replyTo, outgoingTo: did).wire
+                }
                 let entry = Value.map(saved)
                 try writeLocal("outbox.json", entry.jsonData()); pending = entry; hasPendingSend = true
             }
@@ -397,6 +453,16 @@ final class InboxStore {
                 let aad = try (pending["envelope"] ?? pending).required("aad")
                 prefs.outgoingRef = .map(["senderDid": try aad.required("senderDid"), "messageId": try aad.required("messageId")])
                 try savePreferences(prefs, for: target)
+            }
+            if let reply = pending["reply"] {
+                var item = try MailItem(reply); item.receipt = accepted
+                try appendInboxMessage(item, messages: &messages, preferences: &preferences); try saveInbox()
+                let address = try inboxThreadAddress(item, messages: messages, preferences: preferences)
+                let threadKey = try inboxThreadKey(sender: item.threadPeer, project: address.project, itemId: address.itemId)
+                let center = UNUserNotificationCenter.current()
+                center.removePendingNotificationRequests(withIdentifiers: [threadKey]); center.removeDeliveredNotifications(withIdentifiers: [threadKey])
+                now = Date(); armSnoozeTimer()
+                presentation.showLocal(item.id)
             }
             try FileManager.default.removeItem(at: directory().appendingPathComponent("outbox.json"))
             self.pending = nil; hasPendingSend = false; lastSend = try receipt.required("state").text; lastError = nil

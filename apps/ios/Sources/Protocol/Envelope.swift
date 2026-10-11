@@ -26,6 +26,8 @@ enum ES256 {
 
 enum Envelope {
     static let suite: Value = .map(["kemId": .int(16), "kdfId": .int(1), "aeadId": .int(1)])
+    static let plaintextSuite: Value = .map(["kemId": .int(0), "kdfId": .int(0), "aeadId": .int(0)])
+    static func plaintext(_ e: Value) -> Bool { e["suite"] == plaintextSuite }
     static let cipher = HPKE.Ciphersuite(kem: .P256_HKDF_SHA256, kdf: .HKDF_SHA256, aead: .AES_GCM_128)
     static let info = Data("sh.mschf.ratking.hpke.v1".utf8)
     static let signatureDomain = Data("sh.mschf.ratking.signature.v1\0".utf8)
@@ -37,7 +39,7 @@ enum Envelope {
         .map(["version": try e.required("version"), "suite": try e.required("suite"), "aad": try e.required("aad")])
     }
     static func supported(_ e: Value) throws {
-        guard try e.required("version") == .int(1), try e.required("suite") == suite else { throw ProtocolError.invalid("Unsupported envelope") }
+        guard try e.required("version") == .int(1), [suite, plaintextSuite].contains(try e.required("suite")) else { throw ProtocolError.invalid("Unsupported envelope") }
         let aad = try e.required("aad")
         for name in ["senderDid", "recipientDid"] { guard try aad.required(name).text.hasPrefix("did:web:") else { throw ProtocolError.invalid("Unsupported DID") } }
         _ = try aad.required("messageId").text
@@ -51,6 +53,11 @@ enum Envelope {
         _ = try payload.required("body").data
         let bytes = signatureDomain + CBOR.encode(payload)
         let signed: Value = .map(["canonicalSigningBytes": .bytes(bytes), "appSignature": .map(["algorithm": .string("ES256"), "keyId": .string(signingKeyId), "signature": .bytes(try ES256.normalize(sign(bytes)))])])
+        if plaintext(payload) {
+            var result = try metadata(payload).object()
+            result["enc"] = .bytes(Data([0])); result["ciphertext"] = .bytes(CBOR.encode(signed))
+            return .map(result)
+        }
         var senderContext = try HPKE.Sender(recipientKey: recipient, ciphersuite: cipher, info: info)
         var result = try metadata(payload).object()
         result["enc"] = .bytes(senderContext.encapsulatedKey)
@@ -63,8 +70,15 @@ enum Envelope {
         try supported(e)
         let aad = try e.required("aad")
         guard try aad.required("recipientDid").text == did, try aad.required("recipientKeyId").text == keyId else { throw ProtocolError.invalid("Wrong recipient") }
-        var recipient = try HPKE.Recipient(privateKey: key, ciphersuite: cipher, info: info, encapsulatedKey: e.required("enc").data)
-        let signed = try CBOR.decode(recipient.open(e.required("ciphertext").data, authenticating: aadDomain + CBOR.encode(header(e))))
+        let signedBytes: Data
+        if plaintext(e) {
+            guard try e.required("enc").data == Data([0]) else { throw ProtocolError.invalid("Invalid plaintext encapsulation") }
+            signedBytes = try e.required("ciphertext").data
+        } else {
+            var recipient = try HPKE.Recipient(privateKey: key, ciphersuite: cipher, info: info, encapsulatedKey: e.required("enc").data)
+            signedBytes = try recipient.open(e.required("ciphertext").data, authenticating: aadDomain + CBOR.encode(header(e)))
+        }
+        let signed = try CBOR.decode(signedBytes)
         let bytes = try signed.required("canonicalSigningBytes").data
         guard bytes.starts(with: signatureDomain) else { throw ProtocolError.invalid("Wrong signature domain") }
         let payload = try CBOR.decode(Data(bytes.dropFirst(signatureDomain.count)))

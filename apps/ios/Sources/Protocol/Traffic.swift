@@ -16,6 +16,7 @@ struct TrafficEntry: Identifiable, Equatable, Sendable {
     let messageId: String; let ciphertextSize: Int64; let state: String
     let body: String?
     var id: Int64 { seq }
+    var messageKey: String { senderDid + "/" + recipientDid + "/" + messageId }
     var message: MessageText? { body.map(MessageText.init) }
     var route: String { Self.shortName(senderDid) + " → " + Self.shortName(recipientDid) }
     init(_ value: Value) throws {
@@ -32,6 +33,13 @@ struct TrafficEntry: Identifiable, Equatable, Sendable {
               [senderDid, recipientDid, state].allSatisfy({ !$0.isEmpty && $0.count <= 2048 && !$0.contains(where: { $0.isNewline || $0.isWhitespace }) }),
               messageId.count == 13, messageId.allSatisfy({ "234567abcdefghijklmnopqrstuvwxyz".contains($0) }) else { throw ProtocolError.invalid("Invalid traffic metadata") }
         time = date
+    }
+    private init(seq: Int64, recipientSeq: Int64, time: Date, senderDid: String, recipientDid: String, messageId: String, ciphertextSize: Int64, state: String, body: String?) {
+        self.seq = seq; self.recipientSeq = recipientSeq; self.time = time; self.senderDid = senderDid; self.recipientDid = recipientDid
+        self.messageId = messageId; self.ciphertextSize = ciphertextSize; self.state = state; self.body = body
+    }
+    func withBody(_ body: String?) -> Self {
+        Self(seq: seq, recipientSeq: recipientSeq, time: time, senderDid: senderDid, recipientDid: recipientDid, messageId: messageId, ciphertextSize: ciphertextSize, state: state, body: body)
     }
     static func shortName(_ did: String) -> String {
         var name = did.hasPrefix("did:web:") ? String(did.dropFirst(8)) : did
@@ -52,6 +60,16 @@ struct TrafficPage: Sendable {
 struct TrafficJournal {
     private(set) var cursor: Int64 = 0
     private(set) var entries: [TrafficEntry] = []
+    // One row per routed message, with latest observation as its status. A later
+    // receipt changes the status, not the original message's position or body.
+    var messages: [TrafficEntry] {
+        var groups: [String: [TrafficEntry]] = [:]
+        for entry in entries { groups[entry.messageKey, default: []].append(entry) }
+        return groups.values.sorted { $0[0].seq > $1[0].seq }.compactMap { group in
+            guard let latest = group.last else { return nil }
+            return latest.withBody(group.compactMap(\.body).last)
+        }
+    }
     mutating func append(_ page: TrafficPage) throws {
         var previous = cursor
         for entry in page.entries {
@@ -72,6 +90,7 @@ struct TrafficDetail: Sendable {
         self.selected = selected
         events = entries.filter { $0.messageId == selected.messageId && $0.senderDid == selected.senderDid && $0.recipientDid == selected.recipientDid }.sorted { $0.seq < $1.seq }
     }
+    var latest: TrafficEntry { (events.last ?? selected).withBody(events.compactMap(\.body).last ?? selected.body) }
     func observations(for state: String) -> [TrafficEntry] { events.filter { $0.state == state } }
     var otherEvents: [TrafficEntry] { events.filter { !Self.stages.contains($0.state) } }
 }

@@ -20,6 +20,17 @@ func nextTrafficState(_ state: TrafficState, _ event: TrafficEvent) -> TrafficSt
     private(set) var state: TrafficState = .paused
     private(set) var lastError: String?
     private(set) var journal = TrafficJournal()
+    private(set) var presentation = InboxPresentation<String>()
+    private(set) var archived: Set<String> = []
+    var availableRows: [TrafficEntry] { journal.messages.filter { !archived.contains($0.messageKey) } }
+    var rows: [TrafficEntry] {
+        let entries = Dictionary(uniqueKeysWithValues: availableRows.map { ($0.messageKey, $0) })
+        return presentation.visible.compactMap { entries[$0] }
+    }
+    func revealNew() { presentation.reveal(availableRows.map(\.messageKey)) }
+    func archive(_ key: String) { archived.insert(key); presentation.update(availableRows.map(\.messageKey)) }
+    func restoreAll() { archived = []; revealNew() }
+    func refresh() { stop(); start() }
     private let transport: TrafficTransport
     private let wait: @Sendable (Int) async throws -> Void
     private var run: Task<Void, Never>?
@@ -30,6 +41,7 @@ func nextTrafficState(_ state: TrafficState, _ event: TrafficEvent) -> TrafficSt
     private func move(_ event: TrafficEvent) { state = nextTrafficState(state, event) }
     func start() {
         guard run == nil else { return }
+        presentation.begin()
         generation &+= 1; let token = generation
         run = Task { [weak self] in await self?.connect(token) }
     }
@@ -40,6 +52,7 @@ func nextTrafficState(_ state: TrafficState, _ event: TrafficEvent) -> TrafficSt
         repeat {
             let page = try await transport.list(journal.cursor); try current(token)
             try journal.append(page)
+            presentation.loaded(journal.messages.count)
             if journal.cursor >= watermark { return }
             guard !page.entries.isEmpty else { throw ProtocolError.invalid("Traffic watermark not reached") }
         } while true
@@ -48,15 +61,17 @@ func nextTrafficState(_ state: TrafficState, _ event: TrafficEvent) -> TrafficSt
         var delay = 1
         while generation == token, !Task.isCancelled {
             do {
-                move(.start)
+                presentation.begin(); move(.start)
                 let opened = try transport.open(); connection = opened
                 try await opened.authenticate(); try current(token)
                 let watermark = try await opened.notice(); try current(token); move(.ready)
-                try await catchUp(to: watermark, token: token); move(.caughtUp); lastError = nil; delay = 1
+                try await catchUp(to: watermark, token: token); try current(token)
+                presentation.finish(availableRows.map(\.messageKey)); move(.caughtUp); lastError = nil; delay = 1
                 while true {
                     let next = try await opened.notice(); try current(token)
                     if next <= journal.cursor { continue }
-                    move(.notice); try await catchUp(to: next, token: token); move(.caughtUp)
+                    move(.notice); try await catchUp(to: next, token: token); try current(token)
+                    presentation.update(availableRows.map(\.messageKey)); move(.caughtUp)
                 }
             } catch {
                 guard generation == token, !Task.isCancelled else { return }

@@ -8,7 +8,9 @@ The terminal theme, FontBook and Geist Pixel fonts come from the reference app. 
 
 Install Xcode and XcodeGen (`brew install xcodegen`). Copy `Config/Local.xcconfig.example` to `Config/Local.xcconfig`. The real team, existing bundle identifier, phone DID, mailbox audience and HTTPS mailbox URL go only in that ignored file. Do not put a token in the URL.
 
-Optionally bundle an array of peer public DID documents in the ignored `Sources/Resources/PeerDocuments.private.json`. Otherwise import a document from Files on the Identity tab. Imported public documents are the key authority; the pilot does not expose a DID lookup route. Peer replacement is an explicit import, not trust-on-first-use over the mailbox.
+Peers come from `mailbox.getPeerDocument` over the phone's authenticated HTTPS connection. The registered public documents are the fleet trust root. After sign-in the phone refreshes its known peers; it looks up an unknown sender before verification and refreshes every reply target before signing. A failed verification gets one refresh and one retry. The first document for a DID is pinned in the protected, backup-excluded peer store. A changed document blocks verification and new sends until Joel reviews the pinned and proposed documents in Identity and accepts the replacement. Forbidden lookup responses stop sync and show the XRPC error; the phone does not change server permissions.
+
+The ignored `Sources/Resources/PeerDocuments.private.json` is an optional first-use seed, never a requirement or an override of an existing pin. Import from Files remains an explicit replacement. Neither lookup nor import gives the phone an operator credential.
 
 From the repo root:
 
@@ -29,10 +31,10 @@ After the desk authorizes the exact upload, set `RK_UPLOAD_AUTHORIZED=1` and run
 
 1. Open the app on a physical iPhone with the mailbox reachable. Share the public DID document from Identity. Save the exact JSON for the desk.
 2. The desk runs `mailbox register --did <phone-did> --document <public-json>` using its existing operator configuration. The phone never receives those credentials. Registration refuses private material and a mismatched DID. Exact retries use the server's idempotent registration route.
-3. Import the agent's public DID document, or bundle it locally before archiving.
+3. The phone looks up the agent's registered public DID document when needed. A bundled seed or manual import is optional.
 4. Keep the app open. It acquires its own five-minute `runtime.lease#other` binding with `kind: ios`, renews every two minutes, authenticates the WebSocket in its first frame, waits for the ready notice, then lists the recipient log.
 5. An agent sends the phone an encrypted message. The phone decrypts and verifies it locally, marks injection with `mailbox.deliver`, and shows the body. Tap **ACK READ** after reading; admission and decryption alone are not acknowledgment.
-6. Reply in Compose. The phone signs inside the Secure Enclave and seals to the imported peer key. The agent must open the reply and compare the content. Capture both message refs and the final receipts privately.
+6. Reply inside the message/thread detail. The phone refreshes the original sender's document, signs inside the Secure Enclave and sets `replyTo` to the original message ref. Replies and Compose use signed plaintext by default, with an explicit not-encrypted label. Desk answers retain encrypted sealing. The agent must verify the reply and compare the content. Capture both message refs and the final receipts privately.
 
 The phone resolves only its own lease, so it does not need `LEASE_RESOLVERS` membership. The desk owns any server allowlist or pilot configuration changes.
 
@@ -41,7 +43,7 @@ The phone resolves only its own lease, so it does not need `LEASE_RESOLVERS` mem
 - Live delivery is foreground-only. There is no APNs/background push promise. Going inactive cancels the owned socket/task. If an older install still holds the phone's lease, the app resolves only its own DID, shows `waiting for previous session (m:ss)` and retries at that lease's expiry. It does not borrow the old session's fence or release a lease it does not own.
 - `InboxStore.swift` has one switch-based lifecycle projection and generation-token fencing for stale tasks. The desk approved this native projection instead of embedding a JS runtime.
 - A list snapshot keeps `afterSeq` fixed across pages and checks the watermark. It advances the in-memory checkpoint only after processing all pages. Process restarts replay from zero and deduplicate against the local inbox. Decrypted threads and visibility preferences stay in an atomic, complete-file-protected Application Support store excluded from backup. Bodies never enter logs or notifications.
-- Pending sends save the sealed envelope before admission. Desk answers also save their local thread key and answer projection under complete file protection, so retry marks the original thread sent and retains its selections. Retry uses the same message ID and sealed bytes with fresh JWT and lease fence. A pending send is retried explicitly; editing the draft does not replace it.
+- Pending sends save the signed envelope (encrypted or plaintext) before admission. Desk answers also save their local thread key and answer projection under complete file protection, so retry marks the original thread sent and retains its selections. Retry uses the same message ID and sealed bytes with fresh JWT and lease fence. A pending send is retried explicitly; editing the draft does not replace it.
 - Keychain stores Secure Enclave-wrapped key references with `WhenUnlockedThisDeviceOnly`, not exportable scalars. On first upgrade, the app copies the unique prior DID-scoped references into a stable device slot. Changing the DID reuses those same keys and rewrites only the public document's controller/key IDs. Old slots stay intact for rollback. Read failures, conflicting references or multiple distinct prior identities fail closed, never generate replacement keys.
 - Local stores are scoped by phone DID and mailbox audience. A transport change starts a separate inbox, peers and outbox. Old files remain untouched; pending envelopes and acknowledgments from the previous network are not replayed into the new one.
 - Canonical encoding preserves unknown integer/string/map/array/byte/bool/null fields. Unsupported floating-point values and CID tags fail closed. All fixture extension fields participate in AAD/signature bytes.
@@ -49,7 +51,11 @@ The phone resolves only its own lease, so it does not need `LEASE_RESOLVERS` mem
 
 ## Desk inbox
 
-The inbox groups desk threads by project and plain chat by sender DID. A desk item owns one thread; only updates from that same sender and project can close it. Unknown record types remain chat. Malformed known desk records fail closed.
+The inbox groups desk threads by project and plain chat by sender DID. It hides rows behind a counted loading state until initial/reconnect catch-up finishes. Live incoming messages, including follow-ups in an existing thread, wait behind a `N new` control; tapping it reveals the complete projection and scrolls to the top. Receipt-only updates do not count as new mail. Pull to refresh restarts foreground sync. Offline errors and the connection state remain visible; replies and acknowledgment require a live lease.
+
+Details keep the native navigation bar so the system edge swipe goes back. Archive + Next archives and acknowledges the current thread, then replaces the detail with the next thread in the visible list. At the end it returns to the list. Failed acknowledgment keeps the current detail open. Delivered incoming messages are labelled unread until explicit ACK READ or archive; opening a detail alone does not acknowledge. Replies use the latest incoming message ref in that thread, remain retryable in the existing outbox and appear as `YOU:` after admission. Archived/restored visibility still does not reverse acknowledgment.
+
+A desk item owns one thread; only updates from that same sender and project can close it. Unknown record types remain chat. Malformed known desk records fail closed.
 
 Options show the suggested pick, its outcome, row toggles and a note. Sending seals `desk.answer` to the item's sender, with the original message TID in `inReplyTo`. Admission marks it sent; `desk.update` marks it resolved or superseded. A sent answer is not proof that the desk acted.
 
@@ -63,13 +69,15 @@ TS and Swift share invented fixtures in `packages/lexicon/test/fixtures`. Swift 
 
 ## Traffic
 
-The Traffic tab is an observer-only metadata journal, independent of the inbox lease. The desk grants the phone DID observer access; the app receives no operator credentials. Rows show observation time/date, abbreviated sender → recipient, message ID, ciphertext byte count and delivery state, newest first. Each journal event keeps its global and recipient sequence; repeated states for the same message remain separate events. Bodies and envelopes never enter this projection.
+The Traffic tab is an observer-only metadata journal, independent of the inbox lease. The desk grants the phone DID observer access; the app receives no operator credentials. Rows show observation time/date, abbreviated sender → recipient, message ID, ciphertext byte count and delivery state, newest first. Each journal event keeps its global and recipient sequence internally. The list groups sender, recipient and message ID into one row, ordered by first observation, with the latest observed status. Repeated receipts update that row instead of adding rows. Signed plaintext text supplied by the mailbox can appear once on the row/detail; encrypted envelopes do not enter the journal. A later receipt without text retains previously observed plaintext.
 
 Selecting Traffic while foregrounded opens `mailbox.subscribeTraffic` without URL parameters or a lease. Its first frame carries a fresh method-bound JWT; the first notice is the ready barrier. `mailbox.listTraffic` then catches up in pages of 100. Only a completely validated page advances the cursor; notice watermarks do not. Socket expiry/loss closes that socket and reconnects with a new JWT and bounded backoff. One generation-fenced task owns the stream, so cancelled requests cannot alter a later session.
 
 Leaving the tab or backgrounding pauses the stream. The in-memory journal and cursor survive tab, foreground and socket reconnects. A process restart replays from zero; no metadata cache is written to disk. Capture begins at server deployment with no earlier backfill. The LIVE/PAUSED indicator reflects this stream, not the inbox lease; RECONNECT explicitly restarts it. A forbidden list response pauses instead of retrying indefinitely.
 
-Tap any Traffic event to inspect its full sender and recipient DIDs, message ID and ciphertext size. The detail groups all captured events with that message ID into accepted → queued → delivered → acked stages, showing every observed UTC timestamp and both sequence numbers. Missing stages say `not observed`, not pending or successful. Repeated observations remain visible; failed, expired and future states appear separately. Selection stays anchored to the tapped event while new traffic arrives. These are journal observation times, not inferred transport times.
+Tap a Traffic message to inspect its full sender and recipient DIDs, message ID and ciphertext size. Detail shows the message once, its latest status and one compact observation table with UTC timestamps and both sequence numbers. No missing stage is inferred as pending or successful. Selection stays anchored to the routed message while receipts arrive. These are journal observation times, not inferred transport times.
+
+Initial open and reconnect hide the list behind counted catch-up progress. After catch-up, new messages wait behind a `N new` control; tapping reveals them and scrolls up. Status-only changes preserve the current order. Pull to refresh and `r` reconnect restart sync. Edge swipe uses the system navigation bar. Archive + Next hides observer metadata locally and opens the next visible message, without acknowledging another recipient's mail. Restore Archived Traffic restores all those rows. Traffic archives, journal and cursor are memory-only and reset at process restart. Traffic details can reply to the original sender with the same phone-signed pending-send path; they never deliver or acknowledge the original message.
 
 The message-text section shows independently sealed CC copies received by this phone. The v1 client signs the encrypted `sh.mschf.ratking.mailbox.cc` marker, primary sender/message ID/recipient and `replyTo` link. Swift opens and verifies that envelope with the imported sender key before routing it. Copies never enter Mail, desk threads or answer handling. They persist separately in the same protected, backup-excluded inbox store; replay deduplicates the copy's own sender/message ID. Delivery and automatic acknowledgment address only the copy and mean received by this phone, never primary delivery or operator action.
 
@@ -81,8 +89,8 @@ A copy attaches only when its signed primary sender and message ID agree with it
 
 The native views adapt these [Pi TUI patterns](https://pi-tui.ratstack.sh/patterns.md); they do not embed the Pi runtime:
 
-- [Detail Lens](https://pi-tui.ratstack.sh/patterns/detail-lens.md): Traffic metadata and stage sections project one read-only journal snapshot.
-- [Identity Anchor](https://pi-tui.ratstack.sh/patterns/identity-anchor.md): Traffic navigation stores the event sequence, not a row offset; later events do not change the selected message.
+- [Detail Lens](https://pi-tui.ratstack.sh/patterns/detail-lens.md): Traffic metadata and compact observation table project one read-only journal snapshot.
+- [Identity Anchor](https://pi-tui.ratstack.sh/patterns/identity-anchor.md): Traffic navigation stores sender/recipient/message ID, not a row offset; later receipts do not change the selected message.
 - [Tab Deck](https://pi-tui.ratstack.sh/patterns/tab-deck.md): numbered Mail, Compose, Identity and Traffic strip; hardware keyboard Command+1–4 selects tabs without capturing draft numerals.
 - [Status Ribbon](https://pi-tui.ratstack.sh/patterns/status-ribbon.md): compact transport/security and count footer with a narrow-width fallback.
 - [Shared Shell](https://pi-tui.ratstack.sh/patterns/shared-shell.md): straight borders, section titles and common spacing around the snooze dialog, Identity sections and Traffic detail.
@@ -91,7 +99,7 @@ The native views adapt these [Pi TUI patterns](https://pi-tui.ratstack.sh/patter
 
 Hints describe actual touch gestures. Traffic also binds `r` to reconnect and Escape to back. The swipe recognizer, arbitration and four real-touch tests are unchanged. Terminal-column and ANSI-style checks do not apply to SwiftUI; native width/theme review is separate from the reference catalog's 40/60/80/120-column checks. The launch-only Traffic preview uses invented metadata and compiles out of Release.
 
-Tests compare generated append/replay/malformed-page commands against a small journal model. A fake observer service drives the real lifecycle through auth/ready, multiple catch-up pages, socket rollover, pause, late notices and foreground resume. These tests do not prove a deployed observer grant or a physical-phone stream.
+Tests compare generated append/replay/malformed-page commands and grouped rows against a small journal model. A gated fake transport proves no rows appear before catch-up completes, live arrivals wait for reveal and reconnect hides old rows. Generated presentation commands exercise the shared desk/Traffic gate. Real-touch tests cover native edge swipe back and archive-and-next through the production Traffic detail. A fake observer service drives the real lifecycle through auth/ready, multiple catch-up pages, socket rollover, pause, late notices and foreground resume. These tests do not prove a deployed observer grant or a physical-phone stream.
 
 ## Evidence and remaining proof
 

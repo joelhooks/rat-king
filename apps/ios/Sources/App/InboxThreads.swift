@@ -63,9 +63,9 @@ func inboxThreadAddress(_ mail: MailItem, messages: [MailItem] = [], preferences
                 for (key, prefs) in preferences {
                     guard let ref = prefs.outgoingRef, ref["senderDid"] == .string(sender), ref["messageId"] == .string(tid), let answer = prefs.answer else { continue }
                     let project = try answer.required("project").text, itemId = try answer.required("itemId").text
-                    if try inboxThreadKey(sender: candidate.sender, project: project, itemId: itemId) == key { return (project, itemId) }
+                    if try inboxThreadKey(sender: candidate.threadPeer, project: project, itemId: itemId) == key { return (project, itemId) }
                 }
-                if sender == candidate.sender, let original = messages.first(where: { $0.id == sender + "/" + tid && $0.sender == candidate.sender }) {
+                if let original = messages.first(where: { $0.id == sender + "/" + tid && $0.threadPeer == candidate.threadPeer }) {
                     return try resolve(original, seen: seen.union([candidate.id]))
                 }
             }
@@ -78,7 +78,7 @@ func inboxThreadAddress(_ mail: MailItem, messages: [MailItem] = [], preferences
 func appendInboxMessage(_ mail: MailItem, messages: inout [MailItem], preferences: inout [String: ThreadPreferences]) throws -> Bool {
     guard !messages.contains(where: { $0.id == mail.id }) else { return false }
     let address = try inboxThreadAddress(mail, messages: messages, preferences: preferences)
-    let key = try inboxThreadKey(sender: mail.sender, project: address.project, itemId: address.itemId)
+    let key = try inboxThreadKey(sender: mail.threadPeer, project: address.project, itemId: address.itemId)
     messages.append(mail)
     if var prefs = preferences[key] { prefs.received(); preferences[key] = prefs }
     return true
@@ -89,8 +89,8 @@ func inboxThreads(_ messages: [MailItem], preferences: [String: ThreadPreference
         let record = try mail.record()
         let (project, itemId) = try inboxThreadAddress(mail, messages: messages, preferences: preferences)
         // JSON array keys are unambiguous even if a project/item contains '/'.
-        let id = try inboxThreadKey(sender: mail.sender, project: project, itemId: itemId)
-        if !threads.contains(where: { $0.id == id }) { threads.append(InboxThread(id: id, sender: mail.sender, project: project, itemId: itemId)) }
+        let id = try inboxThreadKey(sender: mail.threadPeer, project: project, itemId: itemId)
+        if !threads.contains(where: { $0.id == id }) { threads.append(InboxThread(id: id, sender: mail.threadPeer, project: project, itemId: itemId)) }
         guard let index = threads.firstIndex(where: { $0.id == id }) else { continue }
         threads[index].mailIds.append(mail.id)
         switch record {
@@ -108,7 +108,9 @@ func inboxThreads(_ messages: [MailItem], preferences: [String: ThreadPreference
             let line = "Reply: " + options.joined(separator: ", ")
             let note = try value["note"]?.text
             threads[index].lines.append(line + (note.map { "\n" + $0 } ?? "")); threads[index].latestSummary = InboxThread.firstLine(note ?? line)
-        default: threads[index].lines.append(mail.text); threads[index].latestSummary = InboxThread.firstLine(mail.text)
+        default:
+            let line = (mail.outgoingTo == nil ? "" : "YOU: ") + mail.text
+            threads[index].lines.append(line); threads[index].latestSummary = InboxThread.firstLine(line)
         }
     }
     // Apply supersession again so it does not depend on mailbox arrival order.
