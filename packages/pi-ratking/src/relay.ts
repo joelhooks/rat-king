@@ -164,7 +164,7 @@ export const openRelay = <E>(config: RelaySettingValue, ports: RelayPorts<E>) =>
           const inbound = relayedInbound(entry.record);
           yield* ports.inject(
             { ...inbound, body: `[staff did not handle]\n${inbound.body}` },
-            entry.settled
+            false
           );
         }
 

@@ -18,6 +18,7 @@ const Step = Schema.Struct({
   ]),
   id: Schema.Int.check(Schema.isBetween({ maximum: 5, minimum: 0 })),
   minutes: Schema.Int.check(Schema.isBetween({ maximum: 12, minimum: 0 })),
+  settled: Schema.Boolean,
   staff: Schema.Boolean,
   verified: Schema.Boolean,
 });
@@ -48,8 +49,12 @@ it.effect.prop(
         openRelay(
           { fallbackMinutes: 10, mode, name: "desk", to: "desk/ea" },
           {
-            inject: (inbound) =>
+            inject: (inbound, settled) =>
               Effect.sync(() => {
+                if (inbound.body.startsWith("[staff did not handle]")) {
+                  expect(settled).toBe(false);
+                }
+
                 count(injected, inbound.id);
               }),
             load: Effect.sync(() => saved),
@@ -101,7 +106,7 @@ it.effect.prop(
                   summary: Option.none(),
                   verified: step.verified,
                 },
-                false,
+                step.settled,
                 step.verified,
                 now
               );
@@ -169,7 +174,7 @@ it.effect.prop(
             real: {},
           }),
           [
-            command({ ...seed, event: "inbound", staff: false }),
+            command({ ...seed, event: "inbound", settled: true, staff: false }),
             command({ ...seed, event: "advance", minutes: 10 + seed.minutes }),
             command({ ...seed, event: "restart" }),
             ...steps.map(command),
