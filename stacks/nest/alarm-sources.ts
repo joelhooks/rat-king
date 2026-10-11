@@ -251,7 +251,13 @@ const cacheReading = (
     return ok;
   }
 
-  const worst = current
+  const worst = [
+    ...new Map(
+      current
+        .toSorted((a, b) => a.fullRewrites - b.fullRewrites)
+        .map((breach) => [`${breach.host}/${breach.session}`, breach] as const)
+    ).values(),
+  ]
     .toSorted((a, b) => b.fullRewrites - a.fullRewrites)
     .slice(0, 3)
     .map(

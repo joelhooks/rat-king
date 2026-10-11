@@ -124,6 +124,7 @@ it.effect.prop(
 );
 
 const Breaches = Schema.Struct({
+  duplicate: Schema.Boolean,
   hoursAgo: Schema.Array(
     Schema.Int.check(Schema.isBetween({ maximum: 30, minimum: 0 }))
   ),
@@ -137,13 +138,23 @@ it.effect.prop(
     Effect.sync(() => {
       const now = Date.parse("2026-10-11T04:30:00Z");
 
-      const cacheBreaches = input.hoursAgo.map((ago, index) => ({
-        fullRewrites: 10 + index,
+      const spread = input.hoursAgo.map((ago, index) => ({
+        fullRewrites: 20 - (index % 4),
         host: "host-a.invalid",
         hour: DateTime.formatIso(DateTime.makeUnsafe(now - ago * 3_600_000)),
         name: null,
-        session: `session-${index}`,
+        session: `session-${index % 4}`,
       }));
+
+      const repeated = [0, 1].map((ago) => ({
+        fullRewrites: 99 - ago,
+        host: "host-a.invalid",
+        hour: DateTime.formatIso(DateTime.makeUnsafe(now - ago * 3_600_000)),
+        name: null,
+        session: "session-9",
+      }));
+
+      const cacheBreaches = input.duplicate ? [...spread, ...repeated] : spread;
 
       const facts: typeof AlarmFacts.Type = {
         cacheBreaches: input.known ? cacheBreaches : null,
@@ -165,7 +176,10 @@ it.effect.prop(
         "cache.rewrites"
       ];
 
-      const recent = input.hoursAgo.filter((ago) => ago < 2).length;
+      const recent = new Set([
+        ...input.hoursAgo.flatMap((ago, index) => (ago < 2 ? [index % 4] : [])),
+        ...(input.duplicate ? [9] : []),
+      ]).size;
 
       if (!input.known) {
         expect(reading.status).toBe("unknown");
@@ -177,6 +191,10 @@ it.effect.prop(
 
       if (reading.status === "firing") {
         expect(reading.severity).toBe(recent >= 3 ? "critical" : "warn");
+
+        const named = reading.evidence.match(/session-\d+/gu) ?? [];
+
+        expect(new Set(named).size).toBe(named.length);
       }
     })
 );
