@@ -31,6 +31,7 @@ export type KindValue = typeof Kind.Type;
 
 export const Payload = Schema.Struct({
   body: Schema.String,
+  cc: Schema.optionalKey(Schema.Array(AgentName)),
   from: AgentName,
   kind: Schema.optionalKey(Kind),
   label: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(256))),
@@ -38,6 +39,8 @@ export const Payload = Schema.Struct({
   summary: Schema.optionalKey(
     Schema.String.check(Schema.isMaxLength(SUMMARY_MAX))
   ),
+  thread: Schema.optionalKey(Schema.String),
+  to: Schema.optionalKey(AgentName),
 });
 
 export type PayloadValue = typeof Payload.Type;
@@ -64,6 +67,9 @@ export interface Inbound {
   readonly replyTo: Option.Option<string>;
   readonly summary: Option.Option<string>;
   readonly cc: boolean;
+  readonly ccNames?: readonly string[];
+  readonly to?: string;
+  readonly thread?: string;
 }
 
 export const replyHint = (tool: string, inbound: Inbound) =>
@@ -93,6 +99,9 @@ export const renderInbound = (tool: string, inbound: Inbound) => {
 
   return [
     `**${label} from ${sender}** · id ${inbound.id}${thread}`,
+    ...((inbound.ccNames?.length ?? 0) > 0
+      ? [`cc: ${(inbound.ccNames ?? []).join(", ")}`]
+      : []),
     "",
     ...Option.match(inbound.summary, {
       onNone: () => [],

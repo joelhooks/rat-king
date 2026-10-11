@@ -16,6 +16,7 @@ import {
   Data,
   Effect,
   Layer,
+  Match,
   Predicate,
   Result,
   Schema,
@@ -156,12 +157,22 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
 
   const seal = Effect.fn("Mailbox.seal")(function* seal(
     to: string,
-    body: string,
+    body: string | ((messageId: string) => string),
     opts?: SendOptions
   ) {
     const now = yield* Clock.currentTimeMillis;
 
     const messageId = randomTid(now);
+
+    const text = yield* Effect.try({
+      catch: () =>
+        new MailboxClientError({ reason: "Invalid message body factory" }),
+      try: () =>
+        Match.value(body).pipe(
+          Match.when(Match.string, (value) => value),
+          Match.orElse((factory) => factory(messageId))
+        ),
+    });
 
     const raw = {
       aad: {
@@ -170,7 +181,7 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
         recipientKeyId: `${to}#encryption`,
         senderDid: identity.did,
       },
-      body: new TextEncoder().encode(body),
+      body: new TextEncoder().encode(text),
       suite: opts?.encrypt === false ? plaintextSuite : suite,
       version: 1,
     };

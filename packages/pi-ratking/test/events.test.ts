@@ -110,6 +110,7 @@ const fakePi = () => {
 const Case = Schema.Struct({
   body: Schema.String,
   known: Schema.Boolean,
+  relayed: Schema.Boolean,
   requestId: Schema.String,
 });
 
@@ -193,11 +194,21 @@ it.live.prop(
         Deferred.doneUnsafe(answered, Schema.decodeUnknownEffect(Result)(data));
       });
 
-      pi.events.emit(SEND_EVENT, {
+      const request = {
         body: sample.body,
         requestId: sample.requestId,
         to: sample.known ? "peer" : "nobody",
-      });
+      };
+
+      if (sample.relayed) {
+        Object.assign(request, {
+          replyTo: "3m7x2ka4xv22a",
+          replyToDid: PEER,
+          thread: "3m7x2ka4xv22a",
+        });
+      }
+
+      pi.events.emit(SEND_EVENT, request);
 
       const result = yield* Deferred.await(answered);
 
@@ -207,6 +218,7 @@ it.live.prop(
 
       if (sample.known) {
         expect(result).toMatchObject({ status: "delivered", to: "peer" });
+
         expect(submitted.map((each) => each.envelope.aad.recipientDid)).toEqual(
           [PEER]
         );

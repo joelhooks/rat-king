@@ -9,6 +9,7 @@ export const RelayRecord = Schema.Struct({
   $type: Schema.Literal("sh.mschf.ratking.relay#message"),
   body: Schema.String,
   cc: Schema.Boolean,
+  ccNames: Schema.optionalKey(Schema.Array(Schema.String)),
   did: Schema.String,
   encrypted: Schema.Boolean,
   from: Schema.String,
@@ -17,6 +18,8 @@ export const RelayRecord = Schema.Struct({
   label: Schema.NullOr(Schema.String),
   replyTo: Schema.NullOr(Schema.String),
   summary: Schema.NullOr(Schema.String),
+  thread: Schema.optionalKey(Schema.String),
+  to: Schema.optionalKey(Schema.String),
   verified: Schema.Boolean,
 });
 
@@ -28,33 +31,65 @@ export const RelayHandled = Schema.Struct({
 export const relayRecord = (
   inbound: Inbound,
   encrypted: boolean
-): typeof RelayRecord.Type => ({
-  $type: "sh.mschf.ratking.relay#message",
-  body: inbound.body,
-  cc: inbound.cc,
-  did: inbound.did,
-  encrypted,
-  from: inbound.from,
-  id: inbound.id,
-  kind: inbound.kind,
-  label: Option.getOrNull(inbound.label),
-  replyTo: Option.getOrNull(inbound.replyTo),
-  summary: Option.getOrNull(inbound.summary),
-  verified: inbound.verified,
-});
+): typeof RelayRecord.Type => {
+  const record: typeof RelayRecord.Type = {
+    $type: "sh.mschf.ratking.relay#message",
+    body: inbound.body,
+    cc: inbound.cc,
+    did: inbound.did,
+    encrypted,
+    from: inbound.from,
+    id: inbound.id,
+    kind: inbound.kind,
+    label: Option.getOrNull(inbound.label),
+    replyTo: Option.getOrNull(inbound.replyTo),
+    summary: Option.getOrNull(inbound.summary),
+    verified: inbound.verified,
+  };
 
-export const relayedInbound = (record: typeof RelayRecord.Type): Inbound => ({
-  body: record.body,
-  cc: record.cc,
-  did: record.did,
-  from: record.from,
-  id: record.id,
-  kind: record.kind,
-  label: Option.fromNullishOr(record.label),
-  replyTo: Option.fromNullishOr(record.replyTo),
-  summary: Option.fromNullishOr(record.summary),
-  verified: record.verified,
-});
+  if (inbound.ccNames !== undefined) {
+    Object.assign(record, { ccNames: inbound.ccNames });
+  }
+
+  if (inbound.thread !== undefined) {
+    Object.assign(record, { thread: inbound.thread });
+  }
+
+  if (inbound.to !== undefined) {
+    Object.assign(record, { to: inbound.to });
+  }
+
+  return record;
+};
+
+export const relayedInbound = (record: typeof RelayRecord.Type): Inbound => {
+  const inbound: Inbound = {
+    body: record.body,
+    cc: record.cc,
+    did: record.did,
+    from: record.from,
+    id: record.id,
+    kind: record.kind,
+    label: Option.fromNullishOr(record.label),
+    replyTo: Option.fromNullishOr(record.replyTo),
+    summary: Option.fromNullishOr(record.summary),
+    verified: record.verified,
+  };
+
+  if (record.ccNames !== undefined) {
+    Object.assign(inbound, { ccNames: record.ccNames });
+  }
+
+  if (record.thread !== undefined) {
+    Object.assign(inbound, { thread: record.thread });
+  }
+
+  if (record.to !== undefined) {
+    Object.assign(inbound, { to: record.to });
+  }
+
+  return inbound;
+};
 
 export const relayLifecycle = createMachine({
   context: {},

@@ -48,7 +48,7 @@ import {
 import {
   decodePayload,
   decodeRecord,
-  encodePayload,
+  PayloadJson,
   RecordJson,
   SUMMARY_MAX,
 } from "./payload.ts";
@@ -63,7 +63,7 @@ import { quarantined, recover } from "./quarantine.ts";
 import type { Quarantined } from "./quarantine.ts";
 import { openRelay, RelayHandled, RelayJournal } from "./relay.ts";
 import { SecretStore } from "./secrets.ts";
-import { Threads, threadsLayer } from "./threads.ts";
+import { replyRecipients, Threads, threadsLayer } from "./threads.ts";
 import type { Received, Reply } from "./threads.ts";
 
 export const NotDeliveredCode = Schema.Literals([
@@ -75,6 +75,7 @@ export const NotDeliveredCode = Schema.Literals([
   "Rejected",
   "Uncertain",
   "Refused",
+  "Partial",
 ]);
 
 export class NotDelivered extends Schema.TaggedError<NotDelivered>()(
@@ -130,6 +131,8 @@ export interface SendOptions {
   readonly kind?: KindValue;
   readonly replyTo?: { readonly messageId: string; readonly senderDid: string };
   readonly summary?: string;
+  readonly cc?: readonly string[];
+  readonly thread?: string;
 }
 
 interface RelayRoute {
@@ -171,7 +174,7 @@ export class RatKing extends Context.Service<
       to: string,
       body: string,
       timeout: Duration.Input,
-      options?: Pick<SendOptions, "encrypt">
+      options?: Pick<SendOptions, "encrypt" | "cc" | "summary">
     ) => Effect.Effect<
       { readonly delivered: Delivered; readonly reply: Reply },
       NotDelivered | AskFailed
@@ -179,7 +182,9 @@ export class RatKing extends Context.Service<
     readonly reply: (
       id: string,
       body: string | LexiconRecordValue,
-      options?: Pick<SendOptions, "encrypt" | "kind">
+      options?: Pick<SendOptions, "encrypt" | "kind" | "summary"> & {
+        readonly replyAll?: boolean;
+      }
     ) => Effect.Effect<Delivered, NotDelivered | AskFailed>;
     readonly pending: Effect.Effect<readonly Received[]>;
     readonly list: Effect.Effect<readonly Listed[]>;
@@ -332,7 +337,9 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               onNone: () => message.body,
               onSome: (value) => value.body,
             }),
-            cc: message.cc !== undefined,
+            cc:
+              message.cc !== undefined ||
+              Option.exists(payload, (value) => (value.cc?.length ?? 0) > 0),
             did: message.senderDid,
             from: claimed,
             id: message.tid,
@@ -348,6 +355,20 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             summary: Option.flatMapNullishOr(payload, (value) => value.summary),
             verified,
           };
+
+          if (Option.isSome(payload)) {
+            if (payload.value.cc !== undefined) {
+              Object.assign(inbound, { ccNames: payload.value.cc });
+            }
+
+            if (payload.value.to !== undefined) {
+              Object.assign(inbound, { to: payload.value.to });
+            }
+
+            if (payload.value.thread !== undefined) {
+              Object.assign(inbound, { thread: payload.value.thread });
+            }
+          }
 
           const record = Option.isNone(payload)
             ? yield* decodeRecord(message.body)
@@ -366,9 +387,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           } else {
             const settled = yield* threads.settle(inbound);
 
-            if (!settled) {
-              yield* threads.remember(inbound);
-            }
+            yield* threads.remember(inbound);
 
             yield* route.message(inbound, settled, message.encrypted ?? true);
           }
@@ -540,25 +559,92 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
   ) {
     const own = yield* awaitSelf;
 
-    const target = yield* directory
-      .resolve(to)
-      .pipe(
-        Effect.catchTag("UnknownName", (error) =>
-          lookup(own.identity, to).pipe(
-            Effect.mapError(() =>
-              refused("UnknownName")(`${error.name}: ${error.reason}`)
+    const names = [
+      ...new Set(
+        [to, ...(options.cc ?? [])].map((name) =>
+          canonicalName(settings.reserved, name)
+        )
+      ),
+    ];
+
+    const targets: Resolved[] = [];
+
+    for (const name of names) {
+      const target = yield* directory
+        .resolve(name)
+        .pipe(
+          Effect.catchTag("UnknownName", (error) =>
+            lookup(own.identity, name).pipe(
+              Effect.mapError(() =>
+                refused("UnknownName")(`${error.name}: ${error.reason}`)
+              )
             )
           )
+        );
+
+      if (target.did === own.did) {
+        if (name === names[0]) {
+          return yield* refused("Self")("Cannot message this Pi's own name");
+        }
+
+        continue;
+      }
+
+      if (!targets.some((known) => known.did === target.did)) {
+        targets.push(target);
+      }
+    }
+
+    const [primary] = targets;
+
+    if (primary === undefined) {
+      return yield* refused("NotAttempted")("No recipient");
+    }
+
+    const accepted: Delivered[] = [];
+
+    return yield* Effect.gen(function* sealAndSend() {
+      const client = yield* prepare({
+        endpoint: settings.endpoint,
+        own: yield* ownIdentity(own.identity),
+        peers: targets.map((target) => target.document),
+        serviceDid: settings.serviceDid,
+      });
+
+      const textBody = Match.value(body).pipe(
+        Match.when(Match.string, (text) => Option.some(text)),
+        Match.orElse(() => Option.none<string>())
+      );
+
+      const encrypt =
+        options.encrypt ?? (Option.isSome(textBody) ? settings.encrypt : true);
+
+      const replyTo =
+        options.replyTo === undefined
+          ? undefined
+          : yield* Schema.decodeUnknownEffect(Schema.toType(Defs.MessageRef))(
+              options.replyTo
+            );
+
+      let json = yield* Match.value(body).pipe(
+        Match.when(Match.string, () => Effect.succeed(Option.none<string>())),
+        Match.orElse((record) =>
+          Schema.encodeEffect(RecordJson)(record).pipe(Effect.map(Option.some))
         )
       );
 
-    if (target.did === own.did) {
-      return yield* refused("Self")("Cannot message this Pi's own name");
-    }
+      const encodeForId = (id: string) => {
+        if (Option.isSome(json)) {
+          return json.value;
+        }
 
-    const encodeMessage = (messageBody: string) =>
-      Effect.gen(function* messagePayload() {
-        const payload: PayloadValue = { body: messageBody, from: own.name };
+        const payload: PayloadValue = {
+          body: Option.getOrElse(textBody, () => ""),
+          cc: targets.slice(1).map((target) => target.name),
+          from: own.name,
+          thread: options.thread ?? id,
+          to: primary.name,
+        };
 
         const label = (own.label?.() ?? Option.none<string>()).pipe(
           Option.map((text) => text.trim().slice(0, 256)),
@@ -583,102 +669,111 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           Object.assign(payload, { summary });
         }
 
-        return yield* encodePayload(payload);
-      });
+        const text = Schema.encodeSync(PayloadJson)(payload);
+        json = Option.some(text);
 
-    const json = yield* Match.value(body).pipe(
-      Match.when(Match.string, encodeMessage),
-      Match.orElse(Schema.encodeEffect(RecordJson)),
-      Effect.mapError(() => refused("NotAttempted")("Invalid payload"))
-    );
+        return text;
+      };
 
-    return yield* Effect.gen(function* sealAndSend() {
-      const handle = yield* ownIdentity(own.identity);
+      const envelopes: Defs.EncryptedEnvelopeValue[] = [];
 
-      const client = yield* prepare({
-        endpoint: settings.endpoint,
-        own: handle,
-        peers: [target.document],
-        serviceDid: settings.serviceDid,
-      });
-
-      const replyTo =
-        options.replyTo === undefined
-          ? undefined
-          : yield* Schema.decodeUnknownEffect(Schema.toType(Defs.MessageRef))(
-              options.replyTo
-            );
-
-      const encrypt =
-        options.encrypt ??
-        Match.value(body).pipe(
-          Match.when(Match.string, () => settings.encrypt),
-          Match.orElse(() => true)
-        );
-
-      const envelope = yield* client.seal(
-        target.did,
-        json,
-        replyTo === undefined ? { encrypt } : { encrypt, replyTo }
-      );
-
-      const extra = yield* before(envelope.aad.messageId, target.did);
-
-      const attempt = (count: number): Effect.Effect<SendOutcome> =>
-        Ref.get(fence).pipe(
-          Effect.flatMap((held) =>
-            Option.match(held, {
-              onNone: () => client.send(envelope),
-              onSome: (current) => client.send(envelope, { fence: current }),
-            })
-          ),
-          Effect.flatMap((outcome) =>
-            (SendOutcomes.$is("Uncertain")(outcome) ||
-              (SendOutcomes.$is("Rejected")(outcome) &&
-                outcome.error.error === "LeaseMismatch")) &&
-            count < 3
-              ? Effect.sleep(Duration.seconds(count)).pipe(
-                  Effect.andThen(attempt(count + 1))
-                )
-              : Effect.succeed(outcome)
+      for (const target of targets) {
+        envelopes.push(
+          yield* client.seal(
+            target.did,
+            encodeForId,
+            replyTo === undefined ? { encrypt } : { encrypt, replyTo }
           )
         );
+      }
 
-      const outcome = yield* attempt(1);
+      const [first] = envelopes;
 
-      const delivered = yield* SendOutcomes.$match(outcome, {
-        Accepted: ({ receipt }) =>
-          Effect.succeed({
-            did: target.did,
-            id: envelope.aad.messageId,
-            seq: receipt.seq,
-            to: target.name,
-          }),
-        NotAttempted: ({ reason }) =>
-          Effect.fail(refused("NotAttempted")(reason)),
-        Rejected: ({ error }) =>
-          Effect.fail(
-            refused("Rejected")(
-              `${error.error ?? "Rejected"} (${error.status ?? "4xx"}): ${error.reason}`
+      if (first === undefined) {
+        return yield* refused("NotAttempted")("No envelope");
+      }
+
+      const extra = yield* before(first.aad.messageId, primary.did);
+
+      for (const envelope of envelopes) {
+        const target = targets.find(
+          (entry) => entry.did === envelope.aad.recipientDid
+        );
+
+        if (target === undefined) {
+          return yield* refused("NotAttempted")("Missing sealed recipient");
+        }
+
+        const attempt = (count: number): Effect.Effect<SendOutcome> =>
+          Ref.get(fence).pipe(
+            Effect.flatMap((held) =>
+              Option.match(held, {
+                onNone: () => client.send(envelope),
+                onSome: (current) => client.send(envelope, { fence: current }),
+              })
+            ),
+            Effect.flatMap((outcome) =>
+              (SendOutcomes.$is("Uncertain")(outcome) ||
+                (SendOutcomes.$is("Rejected")(outcome) &&
+                  outcome.error.error === "LeaseMismatch")) &&
+              count < 3
+                ? Effect.sleep(Duration.seconds(count)).pipe(
+                    Effect.andThen(attempt(count + 1))
+                  )
+                : Effect.succeed(outcome)
             )
-          ),
-        Uncertain: ({ error }) =>
-          Effect.fail(
-            refused("Uncertain")(
-              `Admission not confirmed after 3 tries: ${error.reason}`
-            )
-          ),
-      });
+          );
+
+        const outcome = yield* attempt(1);
+
+        const delivered = yield* SendOutcomes.$match(outcome, {
+          Accepted: ({ receipt }) =>
+            Effect.succeed({
+              did: target.did,
+              id: envelope.aad.messageId,
+              seq: receipt.seq,
+              to: target.name,
+            }),
+          NotAttempted: ({ reason }) =>
+            Effect.fail(refused("NotAttempted")(reason)),
+          Rejected: ({ error }) =>
+            Effect.fail(
+              refused("Rejected")(
+                `${error.error ?? "Rejected"} (${error.status ?? "4xx"}): ${error.reason}`
+              )
+            ),
+          Uncertain: ({ error }) =>
+            Effect.fail(
+              refused("Uncertain")(
+                `Admission not confirmed after 3 tries: ${error.reason}`
+              )
+            ),
+        });
+
+        accepted.push(delivered);
+      }
+
+      const [delivered] = accepted;
+
+      if (delivered === undefined) {
+        return yield* refused("NotAttempted")("No delivery");
+      }
 
       return { delivered, extra };
     }).pipe(
       Effect.scoped,
       Effect.provideService(HttpClient.HttpClient, http),
-      Effect.mapError((error) =>
-        Schema.is(NotDelivered)(error)
+      Effect.mapError((error) => {
+        if (accepted.length > 0) {
+          return refused("Partial")(
+            `Accepted by ${accepted.map((entry) => `${entry.to} (id ${entry.id})`).join(", ")}; remaining delivery failed: ${reasonOf(error)}. Do not resend to accepted recipients.`
+          );
+        }
+
+        return Schema.is(NotDelivered)(error)
           ? error
-          : refused("NotAttempted")(reasonOf(error))
-      )
+          : refused("NotAttempted")(reasonOf(error));
+      })
     );
   });
 
@@ -1001,13 +1096,29 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         );
       }
 
+      const own = yield* awaitSelf;
+
+      const recipients = replyRecipients(
+        { ...record.value, from: sender.value },
+        own.name,
+        options?.replyAll ?? true
+      );
+
+      const [target] = recipients;
+
+      if (target === undefined) {
+        return yield* refused("Self")("No other thread participant");
+      }
+
       const { delivered } = yield* transmit(
-        sender.value,
+        target,
         body,
         {
           ...options,
+          cc: recipients.slice(1),
           kind: options?.kind === "data" ? "data" : "reply",
           replyTo: { messageId: id, senderDid: record.value.did },
+          thread: record.value.thread ?? id,
         },
         () => Effect.void
       );

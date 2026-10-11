@@ -27,12 +27,14 @@ export const Attachment = Schema.Struct({
 export const ToolParams = Schema.Struct({
   action: Action,
   attachments: Schema.optionalKey(Schema.Array(Attachment)),
+  cc: Schema.optionalKey(Schema.Array(Schema.String)),
   cwd: Schema.optionalKey(Schema.String),
   encrypt: Schema.optionalKey(Schema.Boolean),
   focus: Schema.optionalKey(Schema.Boolean),
   message: Schema.optionalKey(Schema.String),
   messageId: Schema.optionalKey(Schema.String),
   openProjectPaneIfMissing: Schema.optionalKey(Schema.Boolean),
+  replyAll: Schema.optionalKey(Schema.Boolean),
   replyTo: Schema.optionalKey(Schema.String),
   retryOf: Schema.optionalKey(Schema.String),
   summary: Schema.optionalKey(Schema.String),
@@ -61,7 +63,9 @@ const loud = (text: string, details: ToolText["details"] = {}): ToolText => ({
 });
 
 export const notDeliveredText = (error: NotDelivered) =>
-  `NOT DELIVERED: ${error.code}. ${error.reason}. No intercom fallback; nothing reached the recipient.`;
+  error.code === "Partial"
+    ? `PARTIAL DELIVERY: ${error.reason}`
+    : `NOT DELIVERED: ${error.code}. ${error.reason}. No intercom fallback; nothing reached the recipient.`;
 
 export const description = (tool: string) =>
   `Rat King messaging: signed mail between named agents on any machine. Every message goes to a name's durable mailbox; whoever holds that name's lease reads it. A failed send is an error, never a silent fallback.
@@ -69,6 +73,8 @@ export const description = (tool: string) =>
 Messages are signed plaintext by default, readable by operators and observers such as Joel's phone feed. Pass encrypt: true on send, ask or reply to end-to-end encrypt anything containing secrets, credentials, customer data or private transcripts.
 
 Address agents by Rat King name (for example switchboard, or project/row).
+
+send and ask accept cc: ["name", ...]. reply defaults to reply-all; replyAll: false answers only the sender.
 
 Give every send, ask and reply a summary: one line (at most 280 characters) that leads with the point or the ask. Phones and compact views show it first; the message holds the detail.
 
@@ -248,7 +254,10 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
           );
         }
 
-        const delivered = yield* ratking.reply(target, message, encryption);
+        const delivered = yield* ratking.reply(target, message, {
+          ...encryption,
+          replyAll: params.replyAll ?? true,
+        });
 
         return ok(
           `Reply delivered to ${delivered.to} over Rat King (id ${delivered.id}, seq ${delivered.seq}).`,
@@ -260,7 +269,11 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
       Effect.gen(function* send() {
         const to = yield* needTo(params);
         const message = yield* needMessage(params);
-        const delivered = yield* ratking.send(to, message, encryption);
+
+        const delivered = yield* ratking.send(to, message, {
+          ...encryption,
+          cc: params.cc ?? [],
+        });
 
         return ok(
           `Delivered to ${delivered.to} over Rat King (id ${delivered.id}, seq ${delivered.seq}).`,
@@ -277,7 +290,7 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
           to,
           message,
           askTimeout,
-          encryption
+          { ...encryption, cc: params.cc ?? [] }
         );
 
         return ok(

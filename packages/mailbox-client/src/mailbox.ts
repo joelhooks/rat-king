@@ -1,5 +1,6 @@
 import {
   open as openEnvelope,
+  plaintext,
   plaintextSuite,
   seal,
   suite,
@@ -333,7 +334,7 @@ export const layer = (
 
           const result: MutableOpenedMessage = {
             body,
-            encrypted: envelope.suite !== plaintextSuite,
+            encrypted: !plaintext(envelope),
             senderDid: payload.aad.senderDid,
             tid: payload.aad.messageId,
             verified: true,

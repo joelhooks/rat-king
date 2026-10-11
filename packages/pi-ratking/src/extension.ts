@@ -28,7 +28,7 @@ import { issuerLayer } from "./issuer.ts";
 import { messageView } from "./message-view.ts";
 import { LexiconRecord, renderInbound } from "./payload.ts";
 import type { Inbound } from "./payload.ts";
-import { RatKing, ratKingLayer } from "./ratking.ts";
+import { NotDelivered, RatKing, ratKingLayer } from "./ratking.ts";
 import type { Deliver, SendOptions } from "./ratking.ts";
 import { secretStoreLayer } from "./secrets.ts";
 import {
@@ -71,10 +71,15 @@ export const injects = (inbound: { readonly kind: string }, settled: boolean) =>
   !settled && inbound.kind !== "data";
 
 const sendFields = {
+  cc: Schema.optionalKey(Schema.Array(Schema.String)),
   encrypt: Schema.optionalKey(Schema.Boolean),
   kind: Schema.optionalKey(Schema.Literals(["message", "ask", "data"])),
+  replyAll: Schema.optionalKey(Schema.Boolean),
   replyTo: Schema.optionalKey(Schema.String),
+  replyToDid: Schema.optionalKey(Schema.String),
   requestId: Schema.String,
+  summary: Schema.optionalKey(Schema.String),
+  thread: Schema.optionalKey(Schema.String),
   to: Schema.optionalKey(Schema.String),
 };
 
@@ -150,6 +155,7 @@ export const collectFacts = (
 const inboundDetails = (inbound: Inbound, settled: boolean) => ({
   body: inbound.body,
   cc: inbound.cc,
+  ccNames: inbound.ccNames,
   did: inbound.did,
   from: inbound.from,
   id: inbound.id,
@@ -158,6 +164,8 @@ const inboundDetails = (inbound: Inbound, settled: boolean) => ({
   replyTo: Option.getOrUndefined(inbound.replyTo),
   settled,
   summary: Option.getOrUndefined(inbound.summary),
+  thread: inbound.thread,
+  to: inbound.to,
   verified: inbound.verified,
 });
 
@@ -241,16 +249,39 @@ const forwardSend = (request: typeof SendRequest.Type) =>
 
     const body = request.record ?? request.body;
 
-    const options: Pick<SendOptions, "encrypt" | "kind"> = {
+    const options: SendOptions & { readonly replyAll: boolean } = {
+      cc: request.cc ?? [],
       kind: request.kind ?? "message",
+      replyAll: request.replyAll ?? true,
     };
 
     if (request.encrypt !== undefined) {
       Object.assign(options, { encrypt: request.encrypt });
     }
 
+    if (request.thread !== undefined) {
+      Object.assign(options, { thread: request.thread });
+    }
+
+    if (request.summary !== undefined) {
+      Object.assign(options, { summary: request.summary });
+    }
+
+    if (request.replyToDid !== undefined) {
+      if (request.replyTo === undefined) {
+        return yield* new NotDelivered({
+          code: "NotAttempted",
+          reason: "replyToDid requires replyTo",
+        });
+      }
+
+      Object.assign(options, {
+        replyTo: { messageId: request.replyTo, senderDid: request.replyToDid },
+      });
+    }
+
     const delivered =
-      request.replyTo === undefined
+      request.replyTo === undefined || request.replyToDid !== undefined
         ? yield* ratking.send(request.to ?? "", body, options)
         : yield* ratking.reply(request.replyTo, body, options);
 
@@ -312,6 +343,13 @@ const parameters = Type.Object({
       })
     )
   ),
+  cc: Type.Optional(
+    Type.Array(
+      Type.String({
+        description: "Additional recipient names for send and ask.",
+      })
+    )
+  ),
   cwd: Type.Optional(
     Type.String({ description: "Not supported: Rat King addresses by name." })
   ),
@@ -330,6 +368,12 @@ const parameters = Type.Object({
   ),
   openProjectPaneIfMissing: Type.Optional(
     Type.Boolean({ description: "Not available on Rat King." })
+  ),
+  replyAll: Type.Optional(
+    Type.Boolean({
+      description:
+        "Reply to all thread participants by default; false answers only the sender.",
+    })
   ),
   replyTo: Type.Optional(
     Type.String({
