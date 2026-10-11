@@ -433,12 +433,17 @@ final class InboxStore {
         let alphabet = Array("234567abcdefghijklmnopqrstuvwxyz"); var result = ""
         for _ in 0..<13 { result.insert(alphabet[Int(value & 31)], at: result.startIndex); value >>= 5 }; return result
     }
-    func send(to did: String, text: String) async {
-        await sendBytes(to: did, bytes: Data(text.utf8), plaintext: true)
+    // New messages and replies carry a one-line summary inside the signed payload.
+    func send(to did: String, text: String, summary: String = "") async {
+        await sendBytes(to: did, bytes: outgoing(text, summary: summary), plaintext: true)
     }
-    func reply(to item: MailItem, text: String) async {
+    func reply(to item: MailItem, text: String, summary: String = "") async {
         guard item.outgoingTo == nil else { return }
-        await sendBytes(to: item.sender, bytes: Data(text.utf8), replyTo: item.message, plaintext: true)
+        await sendBytes(to: item.sender, bytes: outgoing(text, summary: summary), replyTo: item.message, plaintext: true)
+    }
+    private func outgoing(_ text: String, summary: String) -> Data {
+        guard !text.isEmpty, let did = client?.identity.did else { return Data(text.utf8) }
+        return Data(MessageText.outgoing(body: text, summary: summary, senderDid: did).utf8)
     }
     func answer(_ thread: InboxThread, values: [String: String], rows: [String: [String]], note: String) async {
         guard !hasPendingSend, let currentThread = threads.first(where: { $0.id == thread.id }), currentThread.state == .open, let card = currentThread.card, let tid = currentThread.cardTid else { return }

@@ -1,14 +1,49 @@
 import Foundation
 
-// pi-ratking payload: body, self-asserted `from` name, optional callsign label
-// and the answered message ID. Anything else is plain text.
+// pi-ratking payload: body, self-asserted `from` name, optional callsign label,
+// optional one-line summary and the answered message ID. Anything else is plain
+// text. This is a read-only view; the stored raw text keeps every unknown field.
 struct MessageText: Equatable, Sendable {
-    let text: String; let label: String?; let from: String?; let replyTo: String?
+    static let summaryLimit = 280
+    let text: String; let label: String?; let from: String?; let replyTo: String?; let summary: String?
     init(_ raw: String) {
         guard let object = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
-              let body = object["body"] as? String, let from = object["from"] as? String else { text = raw; label = nil; from = nil; replyTo = nil; return }
+              let body = object["body"] as? String, let from = object["from"] as? String else { text = raw; label = nil; from = nil; replyTo = nil; summary = nil; return }
         text = body; self.from = from; replyTo = object["replyTo"] as? String
         label = (object["label"] as? String).flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 }
+        summary = (object["summary"] as? String).map(Self.oneLine).flatMap { $0.isEmpty ? nil : $0 }
+    }
+    // Rows and previews lead with the summary, else the body's first line.
+    var preview: String { summary ?? InboxThread.firstLine(text) }
+    static func oneLine(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isNewline || $0 == "\t" }).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+    }
+    // The typed summary, else the body's first sentence; one line, at most 280 UTF-16 units
+    // (pi-ratking's SUMMARY_MAX counts JS string length).
+    static func summary(typed: String, body: String) -> String {
+        var line = oneLine(typed)
+        if line.isEmpty {
+            let first = oneLine(String(body.split(whereSeparator: \.isNewline).first { !$0.trimmingCharacters(in: .whitespaces).isEmpty } ?? ""))
+            let end = first.indices.first { index in
+                ".!?".contains(first[index]) && (first.index(after: index) == first.endIndex || first[first.index(after: index)] == " ")
+            }
+            line = end.map { String(first[...$0]) } ?? first
+        }
+        guard line.utf16.count > summaryLimit else { return line }
+        var clipped = ""
+        for character in line { guard clipped.utf16.count + character.utf16.count <= summaryLimit - 1 else { break }; clipped.append(character) }
+        return clipped + "…"
+    }
+    // Signed pi-ratking payload from this phone, so every reader sees the summary first.
+    // `from` is the fleet name its DID was provisioned from; without one the body stays plain text.
+    static func outgoing(body: String, summary typed: String, senderDid: String) -> String {
+        let name = AgentIdentity(did: senderDid).name
+        guard (try? /(?:[a-z0-9]+(?:-[a-z0-9]+)*\/)?[a-z][a-z0-9_-]{0,31}/.wholeMatch(in: name)) != nil else { return body }
+        var object: [String: String] = ["body": body, "from": name]
+        let line = summary(typed: typed, body: body)
+        if !line.isEmpty { object["summary"] = line }
+        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys, .withoutEscapingSlashes]) else { return body }
+        return String(decoding: data, as: UTF8.self)
     }
 }
 

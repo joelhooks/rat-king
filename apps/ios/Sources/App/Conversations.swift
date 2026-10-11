@@ -38,7 +38,10 @@ struct ConversationEntry: Identifiable, Equatable {
     // The answered entry when it is in this conversation; depth counts the chain.
     var parentId: String?; var depth = 0
     let kind: Kind; let mailId: String?
-    var label: String?
+    var label: String?; var summary: String?
+    // Answers another message, in this conversation or not.
+    var isReply = false
+    var preview: String { summary ?? InboxThread.firstLine(text) }
     var date: Date? { tidDate(messageId) }
 }
 struct Conversation: Identifiable, Equatable {
@@ -50,7 +53,7 @@ struct Conversation: Identifiable, Equatable {
     var id: String { agent.did }
     var latest: ConversationEntry? { entries.last }
     var facts: ListFacts {
-        ListFacts(unread: unread > 0, needsAnswer: needsAnswer, archived: archived, projects: projects, text: agent.searchFields + entries.map(\.text))
+        ListFacts(unread: unread > 0, needsAnswer: needsAnswer, archived: archived, projects: projects, text: agent.searchFields + entries.map(\.text) + entries.compactMap(\.summary))
     }
 }
 
@@ -61,6 +64,7 @@ func conversationList(phone: String?, messages: [MailItem], threads: [InboxThrea
     var seen = Set<String>()
     func add(_ peer: String, _ entry: ConversationEntry, replyTo: String? = nil, replyToId: String? = nil) {
         guard peer != phone, seen.insert(entry.id).inserted else { return }
+        var entry = entry; entry.isReply = replyTo != nil || replyToId != nil
         raw[peer, default: []].append((entry, replyTo, replyToId))
     }
     for mail in messages {
@@ -78,7 +82,7 @@ func conversationList(phone: String?, messages: [MailItem], threads: [InboxThrea
             add(mail.threadPeer, ConversationEntry(id: mail.id, messageId: messageId, outgoing: outgoing, text: (try? deskAnswerLine(value)) ?? "Reply", receipt: mail.receipt, kind: .message, mailId: mail.id), replyToId: replyToId)
         default:
             let parsed = MessageText(mail.text)
-            add(mail.threadPeer, ConversationEntry(id: mail.id, messageId: messageId, outgoing: outgoing, text: parsed.text, receipt: mail.receipt, kind: .message, mailId: mail.id, label: parsed.label), replyTo: parsed.replyTo, replyToId: replyToId)
+            add(mail.threadPeer, ConversationEntry(id: mail.id, messageId: messageId, outgoing: outgoing, text: parsed.text, receipt: mail.receipt, kind: .message, mailId: mail.id, label: parsed.label, summary: parsed.summary), replyTo: parsed.replyTo, replyToId: replyToId)
         }
     }
     // Desk answers are sealed and saved as preferences, not Mail items.
@@ -94,7 +98,7 @@ func conversationList(phone: String?, messages: [MailItem], threads: [InboxThrea
             guard let peer else { continue }
             let parsed = row.message
             add(peer, ConversationEntry(id: row.senderDid + "/" + row.messageId, messageId: row.messageId, outgoing: row.senderDid == phone,
-                text: parsed?.text ?? "sealed · \(row.ciphertextSize) B", receipt: row.state, kind: parsed == nil ? .sealed : .message, mailId: nil, label: parsed?.label), replyTo: parsed?.replyTo)
+                text: parsed?.text ?? "sealed · \(row.ciphertextSize) B", receipt: row.state, kind: parsed == nil ? .sealed : .message, mailId: nil, label: parsed?.label, summary: parsed?.summary), replyTo: parsed?.replyTo)
         }
     }
     var result: [Conversation] = []
@@ -191,7 +195,7 @@ func trafficFacts(_ entry: TrafficEntry, seen: Bool, archived: Bool) -> ListFact
     var desk = false
     if let body = entry.body, let value = try? Value.json(Data(body.utf8)), case let .item(_, card)? = try? DeskRecord.decode(value) { desk = ["decision", "approval"].contains(card.kind) }
     return ListFacts(unread: !seen, needsAnswer: desk, archived: archived, projects: [sender.project, recipient.project].compactMap { $0 },
-        text: sender.searchFields + recipient.searchFields + [entry.message?.text ?? ""])
+        text: sender.searchFields + recipient.searchFields + [entry.message?.text ?? "", entry.message?.summary ?? ""])
 }
 // Latest signed callsign per sender, from Mail and Traffic.
 func callsigns(messages: [MailItem], traffic: [TrafficEntry]) -> [String: String] {

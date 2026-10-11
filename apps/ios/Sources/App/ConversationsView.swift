@@ -78,7 +78,7 @@ struct ConversationRow: View {
                 if let date = conversation.latest?.date { Text(shortTime(date)).font(TUITheme.microFont).foregroundStyle(TUITheme.dim) }
             }
             if let latest = conversation.latest {
-                Text((latest.outgoing ? "YOU: " : "") + InboxThread.firstLine(latest.text)).foregroundStyle(TUITheme.dim).lineLimit(1)
+                Text((latest.outgoing ? "YOU: " : "") + latest.preview).foregroundStyle(TUITheme.dim).lineLimit(1)
             }
             let status = [conversation.agent.project, conversation.latest?.receipt.uppercased(), conversation.unread > 0 ? "\(conversation.unread) UNREAD" : nil, conversation.needsAnswer ? "NEEDS ANSWER" : nil].compactMap { $0 }
             Text(status.joined(separator: " / ")).font(TUITheme.microFont).foregroundStyle(conversation.unread > 0 || conversation.needsAnswer ? TUITheme.teal : TUITheme.dim).lineLimit(1)
@@ -203,36 +203,46 @@ struct ConversationEntryView: View {
     let acknowledge: (() -> Void)?
     let canAcknowledge: Bool
     var body: some View {
-        TerminalPanel(title: title) {
-            if let parent {
-                Text(quote(parent)).font(TUITheme.microFont).foregroundStyle(TUITheme.dim).lineLimit(1)
-            }
+        Group {
             switch entry.kind {
-            case let .desk(threadId):
-                let desk = thread(threadId)
-                Text(deskLabel(desk)).font(TUITheme.microFont).foregroundStyle(TUITheme.warn)
-                Text(entry.text).foregroundStyle(TUITheme.fg)
-                if let why = desk?.card?.why { Text(why).foregroundStyle(TUITheme.dim) }
-                if !threadId.isEmpty { Button("[open desk item]") { openDesk(threadId) }.foregroundStyle(TUITheme.accent) }
-            case .sealed:
-                Text(entry.text).foregroundStyle(TUITheme.dim)
+            case .desk, .sealed:
+                TerminalPanel(title: ([who] + markers).joined(separator: " · ")) {
+                    if let parent { Text(quote(parent)).font(TUITheme.microFont).foregroundStyle(TUITheme.dim).lineLimit(1) }
+                    if case let .desk(threadId) = entry.kind {
+                        let desk = thread(threadId)
+                        Text(deskLabel(desk)).font(TUITheme.microFont).foregroundStyle(TUITheme.warn)
+                        Text(entry.text).foregroundStyle(TUITheme.fg)
+                        if let why = desk?.card?.why { Text(why).foregroundStyle(TUITheme.dim) }
+                        if !threadId.isEmpty { Button("[open desk item]") { openDesk(threadId) }.foregroundStyle(TUITheme.accent) }
+                    } else {
+                        Text(entry.text).foregroundStyle(TUITheme.dim)
+                    }
+                    actions
+                }
             default:
-                Text(entry.text).foregroundStyle(TUITheme.fg).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-            }
-            if !entry.outgoing, reply != nil || acknowledge != nil {
-                HStack(spacing: 12) {
-                    if let reply { Button("[reply]") { reply() }.foregroundStyle(TUITheme.accent) }
-                    if let acknowledge, entry.receipt == "delivered" { Button("[ACK READ]") { acknowledge() }.disabled(!canAcknowledge).foregroundStyle(TUITheme.accent) }
-                }.font(TUITheme.microFont)
+                // Message Fold: sender and markers, then summary or body, at most four lines.
+                VStack(alignment: .leading, spacing: 10) {
+                    MessageFoldView(sender: who, markers: markers, summary: entry.summary, text: entry.text, quote: parent.map(quote))
+                    actions
+                }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
+                    .background(TUITheme.panel).overlay(Rectangle().stroke(TUITheme.grid, lineWidth: 1))
             }
         }
         .padding(.leading, CGFloat(min(entry.depth, 3)) * 12)
         .overlay(alignment: .leading) { if entry.depth > 0 { Rectangle().fill(TUITheme.grid).frame(width: 1) } }
     }
-    private var title: String {
-        let who = entry.outgoing ? "YOU" : entry.label ?? agent.name
-        let when = entry.date.map { $0.formatted(date: Calendar.current.isDateInToday($0) ? .omitted : .numeric, time: .shortened) } ?? ""
-        return [who, when, entry.receipt.uppercased()].filter { !$0.isEmpty }.joined(separator: " · ")
+    @ViewBuilder private var actions: some View {
+        if !entry.outgoing, reply != nil || acknowledge != nil {
+            HStack(spacing: 12) {
+                if let reply { Button("[reply]") { reply() }.foregroundStyle(TUITheme.accent) }
+                if let acknowledge, entry.receipt == "delivered" { Button("[ACK READ]") { acknowledge() }.disabled(!canAcknowledge).foregroundStyle(TUITheme.accent) }
+            }.font(TUITheme.microFont)
+        }
+    }
+    private var who: String { entry.outgoing ? "YOU" : entry.label ?? agent.name }
+    // Markers never truncate: reply, time and receipt.
+    private var markers: [String] {
+        return [entry.isReply ? "↩" : nil, entry.date.map { shortTime($0) }, entry.receipt.uppercased()].compactMap { $0 }.filter { !$0.isEmpty }
     }
     private func quote(_ parent: ConversationEntry) -> String {
         let who = parent.outgoing ? "YOU" : parent.label ?? agent.name
@@ -250,6 +260,7 @@ struct ConversationComposer: View {
     let autofocus: Bool
     let clearTarget: () -> Void
     @State private var text = ""
+    @State private var summary = ""
     @FocusState private var focused: Bool
     @Environment(\.scenePhase) private var scenePhase
     var body: some View {
@@ -262,6 +273,7 @@ struct ConversationComposer: View {
                     Button("[x new]") { clearTarget() }.font(TUITheme.microFont).foregroundStyle(TUITheme.accent)
                 }
             }
+            SummaryField(summary: $summary, message: text)
             HStack(alignment: .bottom, spacing: 8) {
                 TextField("", text: $text, prompt: Text("message " + name).foregroundStyle(TUITheme.dim), axis: .vertical)
                     .lineLimit(1...5).focused($focused).padding(8).background(TUITheme.panel)
@@ -270,9 +282,9 @@ struct ConversationComposer: View {
                 Button(store.hasPendingSend ? "[RETRY]" : "[SEND]") {
                     Task {
                         if store.hasPendingSend { await store.send(to: "", text: "") }
-                        else if let target { await store.reply(to: target, text: text) }
-                        else { await store.send(to: peer, text: text) }
-                        if !store.hasPendingSend, store.lastError == nil { text = "" }
+                        else if let target { await store.reply(to: target, text: text, summary: summary) }
+                        else { await store.send(to: peer, text: text, summary: summary) }
+                        if !store.hasPendingSend, store.lastError == nil { text = ""; summary = "" }
                     }
                 }.disabled(store.state != .live || store.sending || (!store.hasPendingSend && text.isEmpty)).foregroundStyle(TUITheme.accent).padding(.vertical, 8)
             }
@@ -285,6 +297,24 @@ struct ConversationComposer: View {
             guard autofocus else { return }
             try? await Task.sleep(for: .milliseconds(450)); focused = true
         }
-        .onChange(of: scenePhase) { _, phase in if phase != .active { text = "" } }
+        .onChange(of: scenePhase) { _, phase in if phase != .active { text = ""; summary = "" } }
+    }
+}
+
+// One-line summary for every send. Left empty, the body's first sentence goes out.
+struct SummaryField: View {
+    @Binding var summary: String
+    let message: String
+    var body: some View {
+        let fallback = MessageText.summary(typed: "", body: message)
+        TextField("", text: $summary, prompt: Text(fallback.isEmpty ? "summary (optional, one line)" : "summary: " + fallback).foregroundStyle(TUITheme.dim))
+            .lineLimit(1).submitLabel(.next).font(TUITheme.microFont)
+            .padding(6).background(TUITheme.panel).overlay(Rectangle().stroke(TUITheme.grid, lineWidth: 1))
+            .onChange(of: summary) { _, value in
+                var line = value.replacingOccurrences(of: "\r", with: "").replacingOccurrences(of: "\n", with: " ").replacingOccurrences(of: "\t", with: " ")
+                if line.utf16.count > MessageText.summaryLimit { line = MessageText.summary(typed: line, body: "") }
+                if line != value { summary = line }
+            }
+            .accessibilityIdentifier("summary-field").accessibilityHint("Optional. Empty sends the first sentence.")
     }
 }

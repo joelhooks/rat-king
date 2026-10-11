@@ -77,7 +77,7 @@ private struct TrafficRow: View {
                 Text(entry.state.uppercased()).foregroundStyle(TUITheme.receipt(entry.state)).font(TUITheme.microFont)
             }
             if entry.message?.label != nil { Text(entry.route).font(TUITheme.microFont).foregroundStyle(TUITheme.dim) }
-            if let text = entry.message?.text { Text(text).foregroundStyle(TUITheme.fg).lineLimit(3) }
+            if let message = entry.message { Text(message.preview).foregroundStyle(TUITheme.fg).lineLimit(1) }
             Text(entry.messageId + " · \(entry.ciphertextSize) B").foregroundStyle(TUITheme.teal)
             Text(entry.time.formatted(date: .numeric, time: .standard) + " · #\(entry.seq)").font(TUITheme.microFont).foregroundStyle(TUITheme.dim)
         }.frame(maxWidth: .infinity, alignment: .leading).padding(12)
@@ -117,8 +117,10 @@ struct TrafficDetailView: View {
                     }
                 }
                 TerminalPanel(title: detail.latest.message != nil ? "MESSAGE TEXT / SIGNED PLAINTEXT" : copies.isEmpty ? "MESSAGE TEXT / NOT COPIED" : "MESSAGE TEXT / CC COPY") {
-                    if let text = detail.latest.message?.text {
-                        Text(text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    if let message = detail.latest.message {
+                        MessageFoldView(sender: message.label ?? detail.selected.route,
+                            markers: [message.replyTo != nil ? "↩" : nil, detail.latest.state.uppercased()].compactMap { $0 },
+                            summary: message.summary, text: message.text)
                         Text("Signature verified by the mailbox at admission.").foregroundStyle(TUITheme.dim)
                     } else if copies.isEmpty {
                         Text("content not copied to this phone").foregroundStyle(TUITheme.dim)
@@ -130,7 +132,7 @@ struct TrafficDetailView: View {
                 if let inbox, detail.selected.senderDid != inbox.identity?.did {
                     let ref: Value = .map(["senderDid": .string(detail.selected.senderDid), "messageId": .string(detail.selected.messageId)])
                     ForEach(inbox.messages.filter { $0.outgoingTo == detail.selected.senderDid && $0.replyTo == ref }) { reply in
-                        TerminalPanel(title: "YOU / " + reply.receipt.uppercased()) { TerminalMessage(text: reply.text) }
+                        TerminalPanel(title: "YOU / " + reply.receipt.uppercased()) { TerminalMessage(text: MessageText(reply.text).text) }
                     }
                     ReplyComposer(store: inbox, target: MailItem(id: detail.selected.senderDid + "/" + detail.selected.messageId, message: ref, sender: detail.selected.senderDid, text: detail.latest.body ?? "", receipt: detail.latest.state)).id(detail.selected.messageKey)
                 }
