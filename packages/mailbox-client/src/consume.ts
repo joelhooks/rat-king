@@ -157,10 +157,7 @@ export const consume = <E, R>(
             })
             .pipe(
               Effect.tapError((error) =>
-                Effect.logWarning(
-                  "Mailbox lease release not confirmed",
-                  error.error
-                )
+                Effect.logWarning("Mailbox lease release not confirmed", error)
               ),
               Effect.ignore
             );

@@ -12,9 +12,11 @@ import {
   Effect,
   Exit,
   Layer,
+  Logger,
   ManagedRuntime,
   Match,
   Option,
+  Path,
   Schema,
 } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -93,7 +95,20 @@ const SendRequest = Schema.Union([
 
 const platform = Layer.merge(NodeServices.layer, FetchHttpClient.layer);
 
+const fileLog = Logger.layer([
+  Effect.gen(function* fileLogger() {
+    const settings = yield* Settings;
+    const path = yield* Path.Path;
+
+    return yield* Logger.toFile(
+      Logger.formatJson,
+      path.join(settings.state, "pi-ratking.log")
+    ).pipe(Effect.orElseSucceed(() => Logger.make(() => null)));
+  }),
+]);
+
 export const appLayer = ratKingLayer.pipe(
+  Layer.provideMerge(fileLog),
   Layer.provideMerge(issuerLayer),
   Layer.provideMerge(secretStoreLayer),
   Layer.provideMerge(directoryLayer),
