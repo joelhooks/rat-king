@@ -4,6 +4,7 @@ import { expect } from "vitest";
 
 import type { AlarmFacts } from "../../../stacks/nest/alarm-sources.ts";
 import {
+  RESTART_MEMORY_MS,
   emptySources,
   observeAlarms,
 } from "../../../stacks/nest/alarm-sources.ts";
@@ -89,6 +90,16 @@ it.effect.prop(
       expect(third.readings["celld.restarted"].status).toBe(
         input.explained ? "ok" : "firing"
       );
+
+      const hourLater = later + RESTART_MEMORY_MS;
+
+      const fourth = observeAlarms(
+        third.sources,
+        { ...facts, deploy: null, entered: later, health: 200, receipts },
+        hourLater
+      );
+
+      expect(fourth.readings["celld.restarted"].status).toBe("ok");
 
       const expectedReader = {
         inactive: "ok",

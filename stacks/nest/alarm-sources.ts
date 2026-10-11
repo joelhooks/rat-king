@@ -69,6 +69,8 @@ const firing = (
   evidence: string
 ): AlarmReadingValue => ({ evidence, severity, status: "firing" });
 
+export const RESTART_MEMORY_MS = 3_600_000;
+
 export const deployWindow = (facts: typeof AlarmFacts.Type, now: number) =>
   facts.deploy?.phase === "restarting" &&
   now >= facts.deploy.started * 1000 &&
@@ -87,7 +89,9 @@ const trackSources = (
         receipt.end * 1000 >= instant
     );
 
-  const unexplained = prior.unexplained.filter((instant) => !explains(instant));
+  const unexplained = prior.unexplained.filter(
+    (instant) => !explains(instant) && now - instant < RESTART_MEMORY_MS
+  );
 
   if (
     facts.entered !== null &&
