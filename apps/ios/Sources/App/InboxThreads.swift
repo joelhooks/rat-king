@@ -104,12 +104,10 @@ func inboxThreads(_ messages: [MailItem], preferences: [String: ThreadPreference
             if let text { threads[index].lines.append(text) }
             threads[index].latestSummary = InboxThread.firstLine(text ?? state)
         case let .answer(value):
-            let options = try value.required("values").object().sorted { $0.key < $1.key }.map { try $0.key + ": " + $0.value.text }
-            let line = "Reply: " + options.joined(separator: ", ")
-            let note = try value["note"]?.text
-            threads[index].lines.append(line + (note.map { "\n" + $0 } ?? "")); threads[index].latestSummary = InboxThread.firstLine(note ?? line)
+            let line = try deskAnswerLine(value), note = try value["note"]?.text
+            threads[index].lines.append(line); threads[index].latestSummary = InboxThread.firstLine(note ?? line)
         default:
-            let line = (mail.outgoingTo == nil ? "" : "YOU: ") + mail.text
+            let line = (mail.outgoingTo == nil ? "" : "YOU: ") + MessageText(mail.text).text
             threads[index].lines.append(line); threads[index].latestSummary = InboxThread.firstLine(line)
         }
     }
@@ -128,6 +126,11 @@ func inboxThreads(_ messages: [MailItem], preferences: [String: ThreadPreference
         }
     }
     return threads
+}
+func deskAnswerLine(_ value: Value) throws -> String {
+    let options = try value.required("values").object().sorted { $0.key < $1.key }.map { try $0.key + ": " + $0.value.text }
+    let note = try value["note"]?.text
+    return "Reply: " + options.joined(separator: ", ") + (note.map { "\n" + $0 } ?? "")
 }
 enum SnoozeChoice: String, CaseIterable, Identifiable {
     case hour = "1 HOUR", tonight = "TONIGHT 18:00", tomorrow = "TOMORROW 09:00", week = "NEXT WEEK"

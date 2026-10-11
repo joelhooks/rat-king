@@ -34,7 +34,7 @@ After the desk authorizes the exact upload, set `RK_UPLOAD_AUTHORIZED=1` and run
 3. The phone looks up the agent's registered public DID document when needed. A bundled seed or manual import is optional.
 4. Keep the app open. It acquires its own five-minute `runtime.lease#other` binding with `kind: ios`, renews every two minutes, authenticates the WebSocket in its first frame, waits for the ready notice, then lists the recipient log.
 5. An agent sends the phone an encrypted message. The phone decrypts and verifies it locally, marks injection with `mailbox.deliver`, and shows the body. Tap **ACK READ** after reading; admission and decryption alone are not acknowledgment.
-6. Reply inside the message/thread detail. The phone refreshes the original sender's document, signs inside the Secure Enclave and sets `replyTo` to the original message ref. Replies and Compose use signed plaintext by default, with an explicit not-encrypted label. Desk answers retain encrypted sealing. The agent must verify the reply and compare the content. Capture both message refs and the final receipts privately.
+6. Reply inside a conversation or the message/thread detail. The phone refreshes the original sender's document, signs inside the Secure Enclave and sets `replyTo` to the original message ref. Replies and new messages use signed plaintext by default, with an explicit not-encrypted label. Desk answers retain encrypted sealing. The agent must verify the reply and compare the content. Capture both message refs and the final receipts privately.
 
 The phone resolves only its own lease, so it does not need `LEASE_RESOLVERS` membership. The desk owns any server allowlist or pilot configuration changes.
 
@@ -48,6 +48,16 @@ The phone resolves only its own lease, so it does not need `LEASE_RESOLVERS` mem
 - Local stores are scoped by phone DID and mailbox audience. A transport change starts a separate inbox, peers and outbox. Old files remain untouched; pending envelopes and acknowledgments from the previous network are not replayed into the new one.
 - Canonical encoding preserves unknown integer/string/map/array/byte/bool/null fields. Unsupported floating-point values and CID tags fail closed. All fixture extension fields participate in AAD/signature bytes.
 - Expired, acked or failed historical admissions are displayed without offering ACK until their later receipt establishes the current state. Unknown event kinds stop catch-up rather than silently skip.
+
+## Conversations
+
+Chats is the first tab. It lists one conversation per peer, newest first: agent name, callsign, project, last message preview, time, unread count, latest status and whether a desk decision or approval needs an answer. The name and project come from the fleet DID (`<project>.<row>.<kind>`). The callsign is the latest `label` the agent signed into a pi-ratking payload.
+
+A conversation is projected from what the phone already stores, with no server change and no extra file: Mail in both directions, sealed desk answers saved with their thread and the memory-only Traffic rows between this phone and that peer. A message present in both Mail and Traffic shows once. Entries run in TID order. Each reply quotes and indents under the message it answers, using the envelope `replyTo` or the payload's answered ID. Desk items keep their own threads. A desk card also appears in its sender's conversation and opens that thread. The reply box sits at the bottom. It answers the latest incoming message, a message picked with `[reply]`, or nothing after `[x new]`. Every send is signed plaintext from this phone through the pending-send path. New messages and replies keep a local outgoing copy after admission so that they appear in the conversation. Archiving a conversation archives and acknowledges its threads.
+
+`[+ new message]` opens a searchable picker of known agents, with name, callsign and project, and shows recently messaged agents first. The list is the pinned peers plus every conversation peer, never a typed DID. Picking an agent opens its conversation with the composer focused. The send path refreshes the peer document (`getPeerDocument`) before signing, as before.
+
+Chats, Mail and Traffic each have a filter bar: all, unread, needs answer, archived, plus a project menu and a search field. Search is local and in memory. It matches agent name, callsign, project and message text, and every term must match, ignoring case and accents. Nothing is indexed or written. Filters survive tab switches and reset at process restart. In Traffic, unread means not yet opened on this phone (memory-only), and needs answer means a plaintext desk decision or approval.
 
 ## Desk inbox
 
@@ -91,7 +101,7 @@ The native views adapt these [Pi TUI patterns](https://pi-tui.ratstack.sh/patter
 
 - [Detail Lens](https://pi-tui.ratstack.sh/patterns/detail-lens.md): Traffic metadata and compact observation table project one read-only journal snapshot.
 - [Identity Anchor](https://pi-tui.ratstack.sh/patterns/identity-anchor.md): Traffic navigation stores sender/recipient/message ID, not a row offset; later receipts do not change the selected message.
-- [Tab Deck](https://pi-tui.ratstack.sh/patterns/tab-deck.md): numbered Mail, Compose, Identity and Traffic strip; hardware keyboard Command+1–4 selects tabs without capturing draft numerals.
+- [Tab Deck](https://pi-tui.ratstack.sh/patterns/tab-deck.md): numbered Chats, Mail, Identity and Traffic strip; hardware keyboard Command+1–4 selects tabs without capturing draft numerals.
 - [Status Ribbon](https://pi-tui.ratstack.sh/patterns/status-ribbon.md): compact transport/security and count footer with a narrow-width fallback.
 - [Shared Shell](https://pi-tui.ratstack.sh/patterns/shared-shell.md): straight borders, section titles and common spacing around the snooze dialog, Identity sections and Traffic detail.
 - [Message Fold](https://pi-tui.ratstack.sh/patterns/message-fold.md): long thread bodies have a four-line preview and explicit full-message control. Option selection has a marked border and `[x]` indicator.

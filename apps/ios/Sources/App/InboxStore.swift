@@ -80,6 +80,25 @@ final class InboxStore {
         let shown = Set(presentation.visible)
         return ((try? inboxThreads(messages.filter { shown.contains($0.id) }, preferences: presentationPreferences)) ?? []).reversed()
     }
+    var phoneDid: String? {
+        #if DEBUG
+        identity?.did ?? previewPhone
+        #else
+        identity?.did
+        #endif
+    }
+    var conversations: [Conversation] {
+        conversationList(phone: phoneDid, messages: messages, threads: threads, preferences: preferences, traffic: traffic?.journal.messages ?? [])
+    }
+    var agents: AgentDirectory {
+        #if DEBUG
+        let known = Array(peers.keys) + previewPeers
+        #else
+        let known = Array(peers.keys)
+        #endif
+        return AgentDirectory(phone: phoneDid, known: known, conversations: conversations)
+    }
+    var callsignsBySender: [String: String] { callsigns(messages: messages, traffic: traffic?.journal.messages ?? []) }
     func revealNew() { presentationPreferences = preferences; presentation.reveal(messages.reversed().map(\.id)) }
     func refresh() { stop(); start() }
     func acceptPeerChange(_ did: String) {
@@ -87,6 +106,14 @@ final class InboxStore {
         importPeers((try? document.value.jsonData()) ?? Data())
     }
 
+    #if DEBUG
+    private var previewPhone: String?
+    private var previewPeers: [String] = []
+    // Launch-only UI harness: synthetic mail and peers, no identity, mailbox or local files.
+    init(preview phone: String, peers: [String], messages: [MailItem]) {
+        previewPhone = phone; previewPeers = peers; self.messages = messages; presentation.finish(messages.reversed().map(\.id))
+    }
+    #endif
     init() {
         do {
             let configuration = try ClientConfiguration.load()
@@ -435,7 +462,8 @@ final class InboxStore {
                 let sealed = try Envelope.seal(payload: payload, signingKeyId: client.identity.signingId, sign: client.identity.sign, recipient: key)
                 var saved: [String: Value] = ["envelope": sealed]
                 if let threadId { saved["threadId"] = .string(threadId); saved["answer"] = try Value.json(bytes) }
-                if let replyTo {
+                // Replies and new messages keep a local copy so the conversation shows them.
+                if threadId == nil {
                     let ref: Value = .map(["senderDid": .string(client.identity.did), "messageId": .string(messageId)])
                     saved["reply"] = MailItem(id: client.identity.did + "/" + messageId, message: ref, sender: client.identity.did, text: String(decoding: bytes, as: UTF8.self), receipt: "accepted", replyTo: replyTo, outgoingTo: did).wire
                 }

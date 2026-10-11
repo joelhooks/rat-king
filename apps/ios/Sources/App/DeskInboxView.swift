@@ -2,7 +2,8 @@ import SwiftUI
 
 struct DeskInboxView: View {
     let store: InboxStore
-    @State private var archived = false
+    @Binding var filter: ListFilter
+    private var archived: Bool { filter.scope == .archived }
     @State private var snoozing: InboxThread?
     @State private var path: [String] = []
     var body: some View {
@@ -13,9 +14,9 @@ struct DeskInboxView: View {
                     HStack {
                         Text(archived ? "[ARCHIVED]" : "[INBOX]").foregroundStyle(TUITheme.accent)
                         Spacer()
-                        Button(archived ? "[inbox]" : "[archived]") { archived.toggle() }.foregroundStyle(TUITheme.dim)
                     }.padding(.vertical, 8)
                     TerminalHints(text: archived ? "tap → thread · swipe right → restore" : "tap → thread · ← archive · snooze →")
+                    TerminalFilterBar(filter: $filter, projects: store.presentedThreads.flatMap { threadFacts($0, unread: 0, callsign: nil).projects })
                     Color.clear.frame(height: 1).id("top")
                     if store.presentation.loading {
                         Text("loading \(store.presentation.progress)…").foregroundStyle(TUITheme.warn).accessibilityIdentifier("inbox-loading")
@@ -24,7 +25,7 @@ struct DeskInboxView: View {
                         Button("[\(store.presentation.pending.count) new ↑]") { store.revealNew(); proxy.scrollTo("top", anchor: .top) }.foregroundStyle(TUITheme.accent)
                     }
                     let threads = visibleThreads
-                    if threads.isEmpty { Text(archived ? "No archived threads." : "Waiting for encrypted mail. Keep the app open to sync.").foregroundStyle(TUITheme.dim) }
+                    if threads.isEmpty { Text(archived ? "No archived threads." : filter == ListFilter() ? "Waiting for encrypted mail. Keep the app open to sync." : "Nothing matches this filter.").foregroundStyle(TUITheme.dim) }
                     ForEach(Array(Set(threads.map(\.project))).sorted(), id: \.self) { project in
                         Text(project.uppercased()).foregroundStyle(TUITheme.dim).font(TUITheme.microFont).padding(.top, 4)
                         ForEach(threads.filter { $0.project == project }) { thread in
@@ -78,7 +79,11 @@ struct DeskInboxView: View {
         }.tint(TUITheme.accent)
     }
     private var visibleThreads: [InboxThread] {
-        let threads = store.presentedThreads.filter { $0.visible(at: store.now, archivedView: archived) }
+        let names = store.callsignsBySender
+        let unread = Dictionary(store.messages.filter { $0.outgoingTo == nil && $0.receipt == "delivered" }.map { ($0.id, 1) }, uniquingKeysWith: +)
+        let threads = store.presentedThreads.filter {
+            $0.visible(at: store.now, archivedView: archived) && filter.admits(threadFacts($0, unread: $0.mailIds.reduce(0) { $0 + (unread[$1] ?? 0) }, callsign: names[$0.sender]))
+        }
         return Array(Set(threads.map(\.project))).sorted().flatMap { project in threads.filter { $0.project == project } }
     }
 }
@@ -135,7 +140,7 @@ struct DeskThreadView: View {
                             TextEditor(text: $note).font(TUITheme.monoFont).scrollContentBackground(.hidden).frame(minHeight: 64).padding(6).background(TUITheme.panel)
                             Button("[SEAL + SEND ANSWER]") { Task { await store.answer(thread, values: values, rows: rows, note: note) } }
                                 .disabled(store.state != .live || store.sending || store.hasPendingSend).foregroundStyle(TUITheme.accent)
-                            if store.hasPendingSend { Text("A sealed send is pending. Retry it from Compose before answering another item.").foregroundStyle(TUITheme.warn) }
+                            if store.hasPendingSend { Text("A sealed send is pending. Retry it from Chats before answering another item.").foregroundStyle(TUITheme.warn) }
                         }
                     }
                     if let target = store.messages.last(where: { thread.mailIds.contains($0.id) && $0.outgoingTo == nil }) {

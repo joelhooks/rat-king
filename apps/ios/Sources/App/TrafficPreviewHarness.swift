@@ -4,6 +4,7 @@ import SwiftUI
 // Synthetic, launch-only UI proof. No identity, mailbox or saved data.
 struct TrafficPreviewHarness: View {
     @State private var store = TrafficStore(transport: TrafficPreviewHarness.transport)
+    @State private var filter = ListFilter()
     static let transport = TrafficTransport(open: {
         let notices = PreviewNotices()
         return TrafficConnection(authenticate: {}, notice: { try await notices.next() }, close: {})
@@ -33,7 +34,7 @@ struct TrafficPreviewHarness: View {
         return [copy]
     }
     var body: some View {
-        TrafficView(store: store, copies: copies)
+        TrafficView(store: store, copies: copies, filter: $filter)
             .preferredColorScheme(ProcessInfo.processInfo.arguments.contains("Dark") ? .dark : .light)
             .task { store.start() }.onDisappear { store.stop() }
     }
