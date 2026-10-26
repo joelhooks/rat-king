@@ -26,6 +26,7 @@ import { commsCounts, digest } from "./digest.ts";
 import { drainCommand } from "./drain.ts";
 import { DigestJson, summarize } from "./health.ts";
 import { mintHost } from "./mint-host.ts";
+import { restoreDrill } from "./restore.ts";
 import { sealCommand, sealedSendCommand } from "./seal.ts";
 import { sendCommand } from "./send.ts";
 import { launchdPlist, shipCommand } from "./ship-command.ts";
@@ -60,6 +61,7 @@ const program = Effect.gen(function* launcher() {
       "mailbox",
       "restore",
       "restore-snapshot",
+      "restore-drill",
       "listeners",
       "destroy-plan",
       "destroy",
@@ -164,6 +166,7 @@ const program = Effect.gen(function* launcher() {
       )
     ),
     Match.when("mint-host", () => mintHost(config)),
+    Match.when("restore-drill", () => restoreDrill(config)),
     Match.when(Match.is("provision", "mailbox"), () =>
       Effect.gen(function* mailboxCommand() {
         const mailbox = yield* Effect.tryPromise({
