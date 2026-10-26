@@ -79,6 +79,7 @@ with tempfile.TemporaryDirectory() as tmp:
     manifest['sha256']['mailbox.tar.gz'] = '0'*64
     (snapshot/'manifest.json').write_text(json.dumps(manifest))
     m['orchestrate'].__globals__['backup_idle'] = lambda: None
+    m['orchestrate'].__globals__['live_volume_max'] = lambda: 2048
     for p in [share/names[-1]/'manifest.json']: p.unlink()
     scratch = base/'scratch'; scratch.mkdir()
     inventory = base/'instance.json'
@@ -92,6 +93,31 @@ with tempfile.TemporaryDirectory() as tmp:
     assert failed['status'] == 'fail' and failed['teardown']['rootAbsent']
     assert failed['teardown']['unitAbsent'] and failed['teardown']['processesAbsent']
     assert set(base.iterdir()) == before and not list(scratch.iterdir())
+    # Simulate startup failure after diagnostics exist; the real finally must
+    # copy them into the durable receipt before deleting the entire root.
+    diagnostics = {'children': [{'name': 'celld', 'argv': ['celld', '--listen', '127.0.0.1:1'],
+                                'envNames': ['HOME'], 'stdout': '[redacted]',
+                                'stderr': '[diagnostic: connection refused]'}]}
+    proof_errors = [{'errorKind': 'Error', 'code': 'HTTP_FAILURE', 'phase': 'primary', 'status': 503, 'step': 'reload', 'lastOk': 'auth-fixture'}]
+    proof_progress = {'step': 'restore-auth', 'lastOk': 'restore-auth'}
+    def startup_failure(source, owned_root):
+        log = owned_root/'tail.log'
+        log.write_text(('x'*400 + '\n')*400)
+        tail = m['bounded_tail'](log)
+        assert len(tail.encode()) <= 65536 and len(tail.splitlines()) <= 200
+        (owned_root/'diagnostics.json').write_text(json.dumps(diagnostics))
+        (owned_root/'proof-errors.json').write_text(json.dumps(proof_errors))
+        (owned_root/'proof-progress.json').write_text(json.dumps(proof_progress))
+        raise RuntimeError('Injected startup failure')
+    m['orchestrate'].__globals__['restore_archive'] = startup_failure
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert m['orchestrate']({'backupRoot': str(share), 'scratchParent': str(scratch), 'inventory': str(inventory)}, target) == 1
+    retained = json.loads(target.read_text().splitlines()[-1])
+    assert retained['diagnostics'] == diagnostics
+    assert retained['proofErrors'] == proof_errors
+    assert retained['proofProgress'] == proof_progress
+    assert retained['teardown']['rootAbsent'] and not list(scratch.iterdir())
+    assert target.stat().st_mode & 0o777 == 0o600
 print('DRILL_PROPERTIES_PASSED')
 `;
 

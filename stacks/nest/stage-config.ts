@@ -94,7 +94,9 @@ export const StageConfig = Schema.Struct({
         Schema.isPattern(/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/u)
       ),
       celld: Text,
+      knownDid: Text,
       knownName: Text,
+      messageDid: Text,
       node: Text,
       receipts: Text,
       scratchParent: Text,

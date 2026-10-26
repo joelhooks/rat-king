@@ -1,5 +1,6 @@
 """Restore an archive in an owned, network-isolated namespace. Never import production env."""
 import argparse
+import contextlib
 import datetime
 import fcntl
 import hashlib
@@ -178,6 +179,61 @@ def wait_http(processes, port, path, timeout=120):
             time.sleep(0.25)
 
 
+def wait_s3(processes, port, timeout=120):
+    deadline = time.monotonic() + timeout
+    while True:
+        require(all(p.poll() is None for p in processes), 'Scratch service exited')
+        try:
+            with OPENER.open('http://127.0.0.1:' + str(port) + '/', timeout=3):
+                return
+        except urllib.error.HTTPError as error:
+            if error.code < 500:
+                return  # An unauthenticated 403 proves the S3 listener is serving.
+        except OSError:
+            pass
+        require(time.monotonic() < deadline, 'Scratch S3 readiness deadline')
+        time.sleep(0.25)
+
+
+def bounded_tail(path):
+    if not path.exists():
+        return ''
+    with path.open('rb') as source:
+        source.seek(max(0, path.stat().st_size - 65536))
+        return '\n'.join(source.read(65536).decode('utf-8', errors='replace').splitlines()[-200:])
+
+
+def retain_diagnostics(config, root, children):
+    raw = {'inventory': config['inventory'], 'children': []}
+    for child in children:
+        raw['children'].append({**child, **{
+            stream: bounded_tail(root/(child['name'] + '.' + stream + '.log'))
+            for stream in ('stdout', 'stderr')}})
+    source = root/'diagnostics-raw.json'
+    source.write_text(json.dumps(raw))
+    try:
+        result = subprocess.run([config['node'], str(pathlib.Path(__file__).with_name('restore-drill-diagnostics.mjs')),
+                                 str(source), str(root/'diagnostics.json')],
+                                capture_output=True, timeout=30, env={'PATH': os.environ['PATH'], 'HOME': str(root)})
+        require(result.returncode == 0, 'Diagnostic sanitizer failed')
+    except Exception:
+        (root/'diagnostics.json').write_text(json.dumps({'error': 'Diagnostic sanitizer failed', 'children': [
+            {'name': child['name'], 'argv': child['argv'], 'envNames': sorted(child['env']),
+             'stdout': '[redacted]', 'stderr': '[redacted]'} for child in children]}))
+        raise RuntimeError('Diagnostic sanitizer failed; raw output suppressed') from None
+
+
+def retain_worker_diagnostics(config, root, children):
+    # Retention must not replace an already propagating proof failure. The
+    # parent can recover the tails after the worker releases its resources.
+    primary_error = sys.exception()
+    try:
+        retain_diagnostics(config, root, children)
+    except Exception:
+        if primary_error is None:
+            raise
+
+
 def allocate_ports():
     reservations = []
     try:
@@ -191,37 +247,115 @@ def allocate_ports():
             sock.close()
 
 
-def inspect_mailboxes(root, internal, known_did=None):
-    mailboxes = []
-    newest = None
-    lease = None
+def parse_volume_max(exec_start):
+    values = re.findall(r'(?:^|\s)-volume\.max(?:=|\s+)([^\s;}]+)', exec_start)
+    require(len(values) == 1 and re.fullmatch(r'[1-9][0-9]*', values[0]) is not None,
+            'Cannot parse live SeaweedFS volume.max; one explicit positive limit required')
+    return int(values[0])
+
+
+def live_volume_max():
+    result = subprocess.run(['systemctl', '--user', 'show', 'rat-king-seaweedfs.service',
+                             '-p', 'ExecStart', '--value'], capture_output=True, text=True, timeout=15)
+    require(result.returncode == 0, 'Cannot read live SeaweedFS unit argv')
+    return parse_volume_max(result.stdout)
+
+
+def require_volume_slots(restored_count, maximum):
+    require(type(restored_count) is int and restored_count >= 0 and type(maximum) is int and maximum > 0,
+            'Invalid restored volume count or limit')
+    needed = restored_count + 16
+    require(needed <= maximum, f'restore needs {needed} volume slots, max {maximum}')
+
+
+def restored_volume_count(directory):
+    return len({path.with_suffix('') for pattern in ('*.dat', '*.idx') for path in directory.rglob(pattern)
+                if path.is_file()})
+
+
+def mailbox_db(folder):
+    paths = list(folder.glob('ltx/e*/db.sqlite'))
+    require(paths, 'Selected mailbox has no restored SQLite database')
+    return max(paths, key=lambda p: int(p.parent.name[1:]))
+
+
+def select_mailboxes(root, proof_dids):
+    require(len(proof_dids) == 2 and len(set(proof_dids)) == 2, 'Two distinct proof DIDs required')
+    selected = {}
     for folder in sorted((root/'celld').glob('Mailbox:*')):
-        # Route activation restores the current epoch from the copied bucket.
-        http_json(internal, '/cell/' + folder.name)
-        paths = list(folder.glob('ltx/e*/db.sqlite'))
-        require(paths, 'Mailbox has no restored SQLite database')
-        path = max(paths, key=lambda p: int(p.parent.name[1:]))
-        with sqlite3.connect('file:' + str(path) + '?mode=ro', uri=True) as db:
+        if not list(folder.glob('ltx/e*/db.sqlite')):
+            continue
+        with contextlib.closing(sqlite3.connect('file:' + str(mailbox_db(folder)) + '?mode=ro', uri=True)) as db:
             db.execute('PRAGMA query_only=ON')
             tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            if not {'messages', 'metadata', 'events', 'lease'} <= tables:
+            if '_cf_METADATA' not in tables:
                 continue
-            recipient = db.execute("SELECT value FROM metadata WHERE key='recipient'").fetchone()
-            require(recipient, 'Mailbox recipient missing')
-            did = recipient[0]
-            count = db.execute('SELECT count(*) FROM events').fetchone()[0]
-            messages = db.execute('SELECT count(*) FROM messages').fetchone()[0]
-            mailboxes.append({'did': did, 'events': count, 'messages': messages})
-            row = db.execute('SELECT tid,sender FROM messages ORDER BY tid DESC LIMIT 1').fetchone()
-            if row and (newest is None or row[0] > newest['messageId']):
-                newest = {'messageId': row[0], 'senderDid': row[1], 'recipientDid': did}
-            if did == known_did:
-                row = db.execute('SELECT value FROM lease WHERE singleton=1').fetchone()
-                require(row, 'Known-name lease record missing')
-                value = json.loads(row[0])
-                require(value.get('leaseId') and type(value.get('generation')) is int and value.get('expiresAt'),
-                        'Incomplete restored lease record')
-                lease = {k: value[k] for k in ('did', 'leaseId', 'generation', 'expiresAt')}
+            # Celld owns actor identity. Application schema/recipient metadata
+            # may need reconstruction and cannot identify a cold cached actor.
+            for (did,) in db.execute('SELECT actor_name FROM _cf_METADATA'):
+                if did in proof_dids:
+                    require(did not in selected, 'Duplicate cached scope for proof DID')
+                    selected[did] = folder
+    require(set(selected) == set(proof_dids), 'Named proof mailbox missing from restored cache')
+    return selected
+
+
+def deactivate_mailboxes(root, internal, scopes):
+    results = []
+    for scope in scopes:
+        try:
+            response = http_json(internal, '/evict/' + scope, {})
+            ok = isinstance(response, dict) and response.get('ok') is True
+            results.append({'scope': scope, 'deactivated': ok,
+                            'code': 'EVICTED' if ok else 'NOT_CONFIRMED'})
+        except urllib.error.HTTPError as error:
+            results.append({'scope': scope, 'deactivated': False,
+                            'code': 'HTTP_REJECTED', 'status': error.code})
+        except (TimeoutError, urllib.error.URLError, OSError):
+            results.append({'scope': scope, 'deactivated': False, 'code': 'TRANSPORT_ERROR'})
+        except Exception:
+            results.append({'scope': scope, 'deactivated': False, 'code': 'EVICTION_ERROR'})
+    history = root/'deactivations.json'
+    previous = json.loads(history.read_text()) if history.exists() else []
+    history.write_text(json.dumps(previous + results))
+    return all(result['deactivated'] for result in results)
+
+
+def inspect_mailboxes(root, internal, proof_dids, known_did=None, activate=True):
+    # Identify exactly the named actors using read-only SQLite, before any HTTP.
+    selected = select_mailboxes(root, proof_dids)
+    mailboxes, newest, lease = [], None, None
+    for did in proof_dids:
+        folder = selected[did]
+        try:
+            if activate:
+                response = http_json(internal, '/cell/' + folder.name)
+                require(response.get('route') == 'local', 'Selected mailbox did not activate locally')
+            with contextlib.closing(sqlite3.connect('file:' + str(mailbox_db(folder)) + '?mode=ro', uri=True)) as db:
+                db.execute('PRAGMA query_only=ON')
+                tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+                require({'messages', 'metadata', 'events', 'lease'} <= tables, 'Selected mailbox schema incomplete after activation')
+                recipient = db.execute("SELECT value FROM metadata WHERE key='recipient'").fetchone()
+                require(recipient and recipient[0] == did, 'Activated mailbox identity changed')
+                count = db.execute('SELECT count(*) FROM events').fetchone()[0]
+                messages = db.execute('SELECT count(*) FROM messages').fetchone()[0]
+                mailboxes.append({'did': did, 'events': count, 'messages': messages, 'scope': folder.name})
+                if did == proof_dids[0]:
+                    row = db.execute('SELECT tid,sender FROM messages ORDER BY tid DESC LIMIT 1').fetchone()
+                    require(row, 'Named message mailbox has no saved message')
+                    newest = {'messageId': row[0], 'senderDid': row[1], 'recipientDid': did}
+                if did == known_did:
+                    row = db.execute('SELECT value FROM lease WHERE singleton=1').fetchone()
+                    require(row, 'Known-name lease record missing')
+                    value = json.loads(row[0])
+                    require(value.get('leaseId') and type(value.get('generation')) is int and value.get('expiresAt'),
+                            'Incomplete restored lease record')
+                    lease = {k: value[k] for k in ('did', 'leaseId', 'generation', 'expiresAt')}
+        finally:
+            if activate:
+                deactivated = deactivate_mailboxes(root, internal, [folder.name])
+                if sys.exception() is None:
+                    require(deactivated, 'Selected mailbox deactivation unproven')
     require(mailboxes and newest, 'No restored mailbox/message proof')
     if known_did is not None:
         require(lease and lease['did'] == known_did, 'Known-name lease proof missing')
@@ -241,54 +375,72 @@ def worker(config, root):
            '-s3.port.iceberg=0', '-s3.port.lance=0', '-dir=' + str(root/'seaweedfs'),
            '-s3.config=' + str(credentials), '-filer.localSocket=' + str(root/'filer.sock'),
            '-master.telemetry=false', '-metricsPort=0', '-debug=false', '-volume.pprof=false',
-           '-master.volumeSizeLimitMB=64', '-volume.max=512', '-volume.preStopSeconds=0']
+           '-master.volumeSizeLimitMB=64', '-volume.max=' + str(config['volumeMax']), '-volume.preStopSeconds=0']
     for flag, port in zip(('filer.port', 'filer.port.grpc', 'master.port', 'master.port.grpc',
                            's3.port', 's3.port.grpc', 'volume.port', 'volume.port.grpc'), ports[2:]):
         cmd.append('-' + flag + '=' + str(port))
     processes = []
     logs = []
+    children = []
+
+    def launch(name, argv, directory, environment):
+        output = (root/(name + '.stdout.log')).open('w')
+        error = (root/(name + '.stderr.log')).open('w')
+        logs.extend([output, error])
+        children.append({'name': name, 'argv': argv, 'env': dict(environment)})
+        (root/'diagnostic-children.json').write_text(json.dumps(children))
+        processes.append(subprocess.Popen(argv, cwd=directory, env=environment, stdout=output, stderr=error))
+
     try:
-        log = (root/'weed.log').open('w'); logs.append(log)
-        processes.append(subprocess.Popen(cmd, cwd=root/'seaweedfs', env=env, stdout=log, stderr=subprocess.STDOUT))
+        launch('weed', cmd, root/'seaweedfs', env)
         # Filer responds without S3 credentials; the application waits for actual bucket readiness.
         wait_http(processes, filer, '/?pretty=y')
+        wait_s3(processes, s3)
         env.update(AWS_ACCESS_KEY_ID=access, AWS_SECRET_ACCESS_KEY=secret, AWS_REGION='us-east-1',
                    S3_ENDPOINT='http://127.0.0.1:' + str(s3), CELLD_BUCKET='s3://' + config['bucket'],
                    CELLD_OTEL='0', CELLD_TEST_DATA_DIR=str(root/'celld'), CELLD_WATCH=str(root/'celld'),
                    CELLD_SHUTDOWN_TOTAL_MS='8000', CELLD_READY_FLEET_GATE_MS='0', CELLD_TOKIO_THREADS='4',
                    CELLD_PLACEMENT_WEIGHT='1', CELLD_REBALANCE_INTERVAL_MS='0')
-        log = (root/'celld.log').open('w'); logs.append(log)
-        processes.append(subprocess.Popen([config['celld'], '--listen', '127.0.0.1:' + str(public),
-                                           '--internal-listen', '127.0.0.1:' + str(internal)],
-                                          cwd=root/'celld', env=env, stdout=log, stderr=subprocess.STDOUT))
+        launch('celld', [config['celld'], '--listen', '127.0.0.1:' + str(public),
+                          '--internal-listen', '127.0.0.1:' + str(internal)], root/'celld', env)
         (root/'pids.json').write_text(json.dumps([p.pid for p in processes]))
         version = wait_http(processes, public, '/.well-known/rat-king/version')
         require(http_json(public, '/.well-known/celld/health').get('ok') is True, 'Health proof missing')
         # Activate and inspect restored actors without modifying mailbox records.
-        inventory = inspect_mailboxes(root, internal)
+        proof_dids = [config['messageDid'], config['knownDid']]
+        inventory = inspect_mailboxes(root, internal, proof_dids)
         (root/'inventory.json').write_text(json.dumps(inventory))
-        subprocess.run([config['node'], str(pathlib.Path(__file__).with_name('restore-drill-proof.mjs')),
-                        str(root), str(public), str(internal), str(filer), config['bucket'], config['knownName']],
-                       check=True, timeout=1200, env={'PATH': os.environ['PATH'], 'HOME': str(root)})
-        result = json.loads((root/'api-proof.json').read_text())
-        require(result.get('message') and result.get('mailboxCounts') and result.get('knownDid'), 'API proofs missing')
-        lease_inventory = inspect_mailboxes(root, internal, result['knownDid'])
-        result.update(health=version, lease=lease_inventory['lease'], ports=ports,
-                      namespace=os.readlink('/proc/self/ns/net'))
-        (root/'proof.json').write_text(json.dumps(result))
+        try:
+            subprocess.run([config['node'], str(pathlib.Path(__file__).with_name('restore-drill-proof.mjs')),
+                            str(root), str(public), str(internal), str(filer), config['bucket'], config['knownName']],
+                           check=True, timeout=1200, env={'PATH': os.environ['PATH'], 'HOME': str(root)})
+            result = json.loads((root/'api-proof.json').read_text())
+            require(result.get('message') and result.get('mailboxCounts') and result.get('knownDid'), 'API proofs missing')
+            require(result['knownDid'] == config['knownDid'], 'Known-name DID differs from configured proof actor')
+            lease_inventory = inspect_mailboxes(root, internal, proof_dids, result['knownDid'], activate=False)
+            result.update(health=version, lease=lease_inventory['lease'], ports=ports,
+                          namespace=os.readlink('/proc/self/ns/net'))
+            (root/'proof.json').write_text(json.dumps(result))
+        finally:
+            deactivated = deactivate_mailboxes(root, internal, [mailbox['scope'] for mailbox in inventory['mailboxes']])
+            if sys.exception() is None:
+                require(deactivated, 'API proof mailbox deactivation unproven')
     finally:
-        stopped = []
-        for p in reversed(processes):
-            if p.poll() is None:
-                p.terminate()
-            try:
-                p.wait(timeout=25)
-            except subprocess.TimeoutExpired:
-                p.kill(); p.wait(timeout=10)
-            stopped.append({'pid': p.pid, 'returncode': p.returncode})
-        for log in logs:
-            log.close()
-        (root/'children-stopped.json').write_text(json.dumps(stopped))
+        try:
+            retain_worker_diagnostics(config, root, children)
+        finally:
+            stopped = []
+            for p in reversed(processes):
+                if p.poll() is None:
+                    p.terminate()
+                try:
+                    p.wait(timeout=25)
+                except subprocess.TimeoutExpired:
+                    p.kill(); p.wait(timeout=10)
+                stopped.append({'pid': p.pid, 'returncode': p.returncode})
+            for log in logs:
+                log.close()
+            (root/'children-stopped.json').write_text(json.dumps(stopped))
 
 
 def orchestrate(config, receipt_path):
@@ -311,6 +463,7 @@ def orchestrate(config, receipt_path):
                     'Scratch parent overlaps backup or production data')
             require(receipt_path != protected and protected not in receipt_path.parents,
                     'Receipt overlaps backup or production data')
+        config = {**config, 'volumeMax': live_volume_max()}
         source = select_archive(share)
         receipt['archiveId'] = source.name
         root, identity = create_root(parent, run_id)
@@ -320,6 +473,9 @@ def orchestrate(config, receipt_path):
         receipt['disk'] = restored.pop('disk')
         receipt['proofs'].update(restored)
         receipt['timings']['restoreSeconds'] = round(time.monotonic() - start, 3)
+        volume_count = restored_volume_count(root/'seaweedfs')
+        receipt['volumeCapacity'] = {'restoredVolumes': volume_count, 'maximum': config['volumeMax'], 'headroom': 16}
+        require_volume_slots(volume_count, config['volumeMax'])
         backup_idle()
         (root/'config.json').write_text(json.dumps(config))
         receipt['unit'] = unit
@@ -355,6 +511,19 @@ def orchestrate(config, receipt_path):
                     receipt['workerError'] = json.loads((root/'worker-error.json').read_text())
             else:
                 receipt['teardown'].update(unitAbsent=True, processesAbsent=True)
+            if root is not None and not (root/'diagnostics.json').is_file() and (root/'diagnostic-children.json').is_file():
+                try:
+                    retain_diagnostics(config, root, json.loads((root/'diagnostic-children.json').read_text()))
+                except RuntimeError:
+                    receipt['error'] = receipt['error'] or 'Diagnostic sanitizer failed'
+            if root is not None and (root/'diagnostics.json').is_file():
+                receipt['diagnostics'] = json.loads((root/'diagnostics.json').read_text())
+            if root is not None and (root/'deactivations.json').is_file():
+                receipt['deactivations'] = json.loads((root/'deactivations.json').read_text())
+            if root is not None and (root/'proof-errors.json').is_file():
+                receipt['proofErrors'] = json.loads((root/'proof-errors.json').read_text())
+            if root is not None and (root/'proof-progress.json').is_file():
+                receipt['proofProgress'] = json.loads((root/'proof-progress.json').read_text())
             require(receipt['teardown'].get('processesAbsent') and receipt['teardown'].get('unitAbsent'),
                     'Service teardown unproven; retaining scratch root')
             if root is not None:
