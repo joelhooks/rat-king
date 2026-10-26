@@ -22,7 +22,7 @@ import urllib.request
 import uuid
 
 BACKUP_NAME = re.compile(r'[0-9]{8}T[0-9]{6}\.[0-9]{6}Z-[0-9a-f]{32}')
-REQUIRED_PROOFS = ('sha256', 'inventories', 'health', 'message', 'lease', 'mailboxCounts')
+REQUIRED_PROOFS = ('sha256', 'inventories', 'health', 'message', 'lease', 'mailboxCounts', 'mailboxKeyProofs')
 OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
@@ -94,6 +94,10 @@ def append_receipt(path, receipt):
         stream.write(json.dumps(receipt, sort_keys=True) + '\n')
         stream.flush()
         os.fsync(stream.fileno())
+
+
+def require_linux_isolation():
+    require(sys.platform == 'linux', 'Linux systemd isolation required')
 
 
 def backup_idle():
@@ -339,7 +343,10 @@ def inspect_mailboxes(root, internal, proof_dids, known_did=None, activate=True)
                 require(recipient and recipient[0] == did, 'Activated mailbox identity changed')
                 count = db.execute('SELECT count(*) FROM events').fetchone()[0]
                 messages = db.execute('SELECT count(*) FROM messages').fetchone()[0]
-                mailboxes.append({'did': did, 'events': count, 'messages': messages, 'scope': folder.name})
+                message_keys = [{'recipientDid': did, 'senderDid': sender, 'messageId': tid}
+                                for sender, tid in db.execute('SELECT sender,tid FROM messages ORDER BY sender,tid')]
+                mailboxes.append({'did': did, 'events': count, 'messages': messages,
+                                  'messageKeys': message_keys, 'scope': folder.name})
                 if did == proof_dids[0]:
                     row = db.execute('SELECT tid,sender FROM messages ORDER BY tid DESC LIMIT 1').fetchone()
                     require(row, 'Named message mailbox has no saved message')
@@ -415,7 +422,7 @@ def worker(config, root):
                             str(root), str(public), str(internal), str(filer), config['bucket'], config['knownName']],
                            check=True, timeout=1200, env={'PATH': os.environ['PATH'], 'HOME': str(root)})
             result = json.loads((root/'api-proof.json').read_text())
-            require(result.get('message') and result.get('mailboxCounts') and result.get('knownDid'), 'API proofs missing')
+            require(result.get('message') and result.get('mailboxCounts') and result.get('mailboxKeyProofs') and result.get('knownDid'), 'API proofs missing')
             require(result['knownDid'] == config['knownDid'], 'Known-name DID differs from configured proof actor')
             lease_inventory = inspect_mailboxes(root, internal, proof_dids, result['knownDid'], activate=False)
             result.update(health=version, lease=lease_inventory['lease'], ports=ports,
@@ -453,7 +460,7 @@ def orchestrate(config, receipt_path):
     identity = None
     try:
         backup_idle()
-        require(sys.platform == 'linux', 'Linux systemd isolation required')
+        require_linux_isolation()
         parent = canonical(config['scratchParent'])
         share = canonical(config['backupRoot'])
         inventory = json.loads(canonical(config['inventory']).read_text())
@@ -488,7 +495,7 @@ def orchestrate(config, receipt_path):
         outcome = subprocess.run(command, capture_output=True, text=True, timeout=2500)
         require(outcome.returncode == 0, 'Isolated drill worker failed (see retained receipt; no production changes)')
         proof = json.loads((root/'proof.json').read_text())
-        receipt['proofs'].update({k: proof[k] for k in ('health', 'message', 'lease', 'mailboxCounts')})
+        receipt['proofs'].update({k: proof[k] for k in ('health', 'message', 'lease', 'mailboxCounts', 'mailboxKeyProofs')})
         receipt['timings']['proofSeconds'] = round(time.monotonic() - start - receipt['timings']['restoreSeconds'], 3)
         receipt['isolation'] = {k: proof[k] for k in ('ports', 'namespace')}
     except BaseException as error:

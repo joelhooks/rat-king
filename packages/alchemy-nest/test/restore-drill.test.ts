@@ -5,6 +5,45 @@ import { expect } from "vitest";
 
 import { localExec } from "../src/local-exec.ts";
 
+const platformFixture = String.raw`
+import runpy,sys
+m=runpy.run_path(sys.argv[1],run_name='fixture')
+sys.platform=sys.argv[2]
+try:
+    m['require_linux_isolation']()
+except RuntimeError as error:
+    assert sys.platform != 'linux'
+    assert str(error) == 'Linux systemd isolation required'
+else:
+    assert sys.platform == 'linux', 'Non-Linux isolation was accepted'
+print('PLATFORM_GUARD_PASSED')
+`;
+
+it.effect.prop(
+  "the real isolation guard accepts Linux and rejects non-Linux platforms before systemd work",
+  {
+    platform: Arbitrary.schema(
+      Schema.Literals(["linux", "darwin", "win32", "freebsd14", "aix"])
+    ),
+  },
+  ({ platform }) =>
+    Effect.gen(function* platformGuard() {
+      const shell = yield* localExec;
+
+      const result = yield* shell.exec([
+        "python3",
+        "-c",
+        platformFixture,
+        new URL("../../../stacks/nest/restore-drill.py", import.meta.url)
+          .pathname,
+        platform,
+      ]);
+
+      expect(result.code, result.stdout).toBe(0);
+      expect(result.stdout.trim()).toBe("PLATFORM_GUARD_PASSED");
+    }).pipe(Effect.provide(NodeServices.layer))
+);
+
 const fixture = String.raw`
 import contextlib, hashlib, io, json, pathlib, runpy, sys, tarfile, tempfile
 m = runpy.run_path(sys.argv[1], run_name='fixture')
@@ -79,6 +118,7 @@ with tempfile.TemporaryDirectory() as tmp:
     manifest['sha256']['mailbox.tar.gz'] = '0'*64
     (snapshot/'manifest.json').write_text(json.dumps(manifest))
     m['orchestrate'].__globals__['backup_idle'] = lambda: None
+    m['orchestrate'].__globals__['require_linux_isolation'] = lambda: None
     m['orchestrate'].__globals__['live_volume_max'] = lambda: 2048
     for p in [share/names[-1]/'manifest.json']: p.unlink()
     scratch = base/'scratch'; scratch.mkdir()
@@ -98,7 +138,8 @@ with tempfile.TemporaryDirectory() as tmp:
     diagnostics = {'children': [{'name': 'celld', 'argv': ['celld', '--listen', '127.0.0.1:1'],
                                 'envNames': ['HOME'], 'stdout': '[redacted]',
                                 'stderr': '[diagnostic: connection refused]'}]}
-    proof_errors = [{'errorKind': 'Error', 'code': 'HTTP_FAILURE', 'phase': 'primary', 'status': 503, 'step': 'reload', 'lastOk': 'auth-fixture'}]
+    proof_errors = [{'errorKind': 'Error', 'code': 'HTTP_FAILURE', 'phase': 'primary', 'status': 503, 'step': 'reload', 'lastOk': 'auth-fixture'},
+                    {'code': 'ASSERTION_FAILED', 'assertionCode': 'MESSAGE_COUNT_MISMATCH', 'expected': 17, 'actual': 16, 'mailboxIndex': 0, 'phase': 'primary', 'step': 'compare-counts', 'lastOk': 'fetch-events'}]
     proof_progress = {'step': 'restore-auth', 'lastOk': 'restore-auth'}
     def startup_failure(source, owned_root):
         log = owned_root/'tail.log'

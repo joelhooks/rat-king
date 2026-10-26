@@ -1,12 +1,17 @@
 // @effect-diagnostics asyncFunction:off -- Promise ports for the standalone isolated proof subprocess.
 import { Cause, Effect, Exit, Option, Schema } from "effect";
 
-import { AssertionCode } from "./restore-drill-proof-assertion.ts";
+import {
+  AssertionCode,
+  AssertionCounts,
+} from "./restore-drill-proof-assertion.ts";
+import type { AssertionCountsValue } from "./restore-drill-proof-assertion.ts";
 import type { ProtocolCode } from "./restore-drill-proof-http.ts";
 import { protocolErrorCode } from "./restore-drill-proof-http.ts";
 
 export {
   AssertionCode,
+  AssertionCounts,
   ProofAssertionFailure,
 } from "./restore-drill-proof-assertion.ts";
 
@@ -46,7 +51,7 @@ export interface ProofProgress {
   readonly step: typeof ProofStep.Type;
 }
 
-export interface ProofFailure extends ProofProgress {
+export interface ProofFailure extends ProofProgress, AssertionCountsValue {
   readonly assertionCode?: typeof AssertionCode.Type | undefined;
   readonly causeKind: "Fail" | "Die" | "Interrupt" | "Empty" | "Thrown";
   readonly code: string;
@@ -190,6 +195,13 @@ export const proofFailureMetadata = (
     ? detail.assertionCode
     : undefined;
 
+  const comparison =
+    tag === "ProofAssertionFailure"
+      ? Option.getOrUndefined(
+          Schema.decodeUnknownOption(AssertionCounts)(squashed)
+        )
+      : undefined;
+
   const names = new Set([
     "Error",
     "TypeError",
@@ -207,6 +219,7 @@ export const proofFailureMetadata = (
 
   return {
     ...progress,
+    ...comparison,
     assertionCode,
     causeKind: category,
     code,

@@ -12,6 +12,17 @@ import {
   base64url,
   serviceToken,
 } from "../../packages/mailbox-client/src/auth.ts";
+import type { MailboxKeyProof } from "./restore-drill-mailbox-projection.ts";
+import {
+  admissionKeyIdentity,
+  messageKeyIdentity,
+  MessageKey,
+  requireMailboxKeys,
+} from "./restore-drill-mailbox-projection.ts";
+import {
+  MailboxCounts,
+  requireMailboxCounts,
+} from "./restore-drill-proof-assertion.ts";
 import {
   createProofProgress,
   ProofAssertionFailure,
@@ -36,8 +47,6 @@ type MailboxPageParams = NamePageParams & { recipientDid: string };
 
 const Text = Schema.NonEmptyString;
 
-const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
-
 const Message = Schema.Struct({
   messageId: Text,
   recipientDid: Text,
@@ -46,7 +55,11 @@ const Message = Schema.Struct({
 
 const Inventory = Schema.Struct({
   mailboxes: Schema.Array(
-    Schema.Struct({ did: Text, events: Count, messages: Count })
+    Schema.Struct({
+      ...MailboxCounts.fields,
+      did: Text,
+      messageKeys: Schema.Array(MessageKey),
+    })
   ),
   newest: Message,
 });
@@ -409,6 +422,7 @@ await withProofCleanup(
     });
     let message: (typeof Message.Type & { readonly seq: number }) | undefined;
     const counts: { readonly events: number; readonly messages: number }[] = [];
+    const mailboxKeyProofs: (typeof MailboxKeyProof.Type)[] = [];
 
     const fetchMailbox = async (
       mailbox: (typeof Inventory.Type.mailboxes)[number]
@@ -416,7 +430,8 @@ await withProofCleanup(
       await progress.run("fetch-events", async () => {
         let cursor: string | undefined;
         let count = 0;
-        let messages = 0;
+        let admissionEvents = 0;
+        const keys = new Set<string>();
         const cursors = new Set<string>();
 
         do {
@@ -438,12 +453,13 @@ await withProofCleanup(
 
           for (const event of result.events) {
             if (Schema.is(MessageEvent)(event)) {
-              messages += 1;
+              admissionEvents += 1;
+              keys.add(admissionKeyIdentity(event.receipt));
 
               if (
                 mailbox.did === inventory.newest.recipientDid &&
-                event.envelope.aad.messageId === inventory.newest.messageId &&
-                event.envelope.aad.senderDid === inventory.newest.senderDid
+                admissionKeyIdentity(event.receipt) ===
+                  messageKeyIdentity(inventory.newest)
               ) {
                 message = { ...inventory.newest, seq: event.seq };
               }
@@ -458,21 +474,29 @@ await withProofCleanup(
           }
         } while (cursor !== undefined);
 
-        return { events: count, messages };
+        return { admissionEvents, events: count, keys, messages: keys.size };
       });
 
-    for (const mailbox of inventory.mailboxes) {
+    for (const [mailboxIndex, mailbox] of inventory.mailboxes.entries()) {
       // oxlint-disable-next-line no-await-in-loop -- Inspect only the selected mailboxes sequentially.
       const counted = await fetchMailbox(mailbox);
 
       // oxlint-disable-next-line no-await-in-loop -- Compare one selected mailbox before fetching the next.
       await progress.run("compare-counts", () => {
-        requireProof(counted.events === mailbox.events, "EVENT_COUNT_MISMATCH");
-        requireProof(
-          counted.messages === mailbox.messages,
-          "MESSAGE_COUNT_MISMATCH"
+        const keyProof = requireMailboxKeys(
+          mailbox.messageKeys,
+          counted.keys,
+          mailboxIndex
         );
+
+        requireMailboxCounts(mailbox, counted, mailboxIndex);
         counts.push(counted);
+        mailboxKeyProofs.push({
+          ...keyProof,
+          admissionEvents: counted.admissionEvents,
+          duplicateAdmissionEvents: counted.admissionEvents - counted.messages,
+          mailboxIndex,
+        });
       });
     }
 
@@ -491,6 +515,7 @@ await withProofCleanup(
               messages: counts.reduce((n, c) => n + c.messages, 0),
               tolerance: 0,
             },
+            mailboxKeyProofs,
             message,
           }),
           { mode: 0o600 }

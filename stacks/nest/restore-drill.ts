@@ -3,6 +3,7 @@ import { createMachine, transition } from "xstate";
 
 import { refuse } from "../../packages/alchemy-nest/src/files.ts";
 import { localExec } from "../../packages/alchemy-nest/src/local-exec.ts";
+import { MailboxKeyProof } from "./restore-drill-mailbox-projection.ts";
 import type { StageConfigValue } from "./stage-config.ts";
 
 const Text = Schema.NonEmptyString;
@@ -51,6 +52,10 @@ export const PassingDrillReceipt = Schema.Struct({
       messages: Count.check(Schema.isGreaterThan(0)),
       tolerance: Schema.Literal(0),
     }),
+    mailboxKeyProofs: Schema.Array(MailboxKeyProof).check(
+      Schema.isMinLength(2),
+      Schema.isMaxLength(2)
+    ),
     message: Schema.Struct({
       messageId: Text,
       recipientDid: Text,
