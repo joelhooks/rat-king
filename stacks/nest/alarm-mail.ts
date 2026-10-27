@@ -1,40 +1,14 @@
-import { Data, Effect, Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import { SendOutcomes } from "../../packages/mailbox-client/src/index.ts";
+import { encodePayload } from "../../packages/ratking-client/src/payload.ts";
 import type { AlarmKeyValue } from "./alarm-config.ts";
+import { terminalRefusal } from "./alarm-refusal.ts";
 import type { Delivery } from "./alarm.ts";
 import { ShipSettings } from "./ship-config.ts";
 import { prepareShipNotification } from "./ship-notify.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
-
-export class AlarmRefused extends Data.TaggedError("AlarmRefused")<{
-  readonly code: "Retired" | "UnknownName";
-  readonly successor?: string;
-}> {}
-
-const successorOf = (reason: string) =>
-  /current row is (?<successor>\S+)$/u.exec(reason)?.groups?.successor;
-
-export const terminalRefusal = (error: {
-  readonly error?: string;
-  readonly reason: string;
-  readonly status?: number;
-}) => {
-  if (error.error === "Retired" || error.status === 410) {
-    const successor = successorOf(error.reason);
-
-    return new AlarmRefused(
-      successor === undefined
-        ? { code: "Retired" }
-        : { code: "Retired", successor }
-    );
-  }
-
-  return error.error === "UnknownName"
-    ? new AlarmRefused({ code: "UnknownName" })
-    : undefined;
-};
 
 export const prepareAlarmMail = Effect.fn("Alarm.prepareMail")(
   function* prepareAlarmMail(
@@ -89,24 +63,52 @@ export const prepareAlarmDeliveries = Effect.fn("Alarm.prepareDeliveries")(
     names: readonly string[],
     text: string
   ) {
-    const prepared = yield* prepareAlarmMail(config, names, text);
+    const prepared = yield* prepareAlarmMail(config, names, text, true);
+
+    const resolved = names.filter((name) =>
+      prepared.targets.some((item) => item.name === name)
+    );
+
+    if (resolved.length === 0) {
+      return yield* new FleetError({
+        reason: "Alarm recipient could not be resolved",
+      });
+    }
+
+    const dropped = names.length - resolved.length;
+
+    const body =
+      dropped === 0
+        ? prepared.body
+        : yield* encodePayload({
+            body: `${text} Evidence: ${dropped} retired or unknown recipient(s) dropped.`,
+            from: "operator",
+            kind: "message",
+          }).pipe(
+            Effect.mapError(
+              () =>
+                new FleetError({
+                  reason: "Alarm notification payload invalid",
+                })
+            )
+          );
+
     const deliveries: (typeof Delivery.Type)[] = [];
 
-    for (const name of names) {
+    for (const name of resolved) {
       const target = prepared.targets.find((item) => item.name === name);
 
       if (target === undefined) {
-        return yield* new FleetError({
-          reason: "Alarm recipient could not be resolved",
-        });
+        continue;
       }
 
       deliveries.push({
-        envelope: yield* prepared.client.seal(target.did, prepared.body, {
+        envelope: yield* prepared.client.seal(target.did, body, {
           encrypt: false,
         }),
         key,
         recipient: name,
+        text,
       });
     }
 
@@ -141,3 +143,5 @@ export const sendAlarmDelivery = Effect.fn("Alarm.sendDelivery")(
   },
   Effect.scoped
 );
+
+export { AlarmRefused, terminalRefusal } from "./alarm-refusal.ts";

@@ -8,6 +8,7 @@ import type {
   AlarmStateValue,
 } from "./alarm-config.ts";
 import { advanceAlarm, emptyAlarm } from "./alarm-machine.ts";
+import type { AlarmRefused } from "./alarm-refusal.ts";
 import { SourceState, emptySources, observeAlarms } from "./alarm-sources.ts";
 import type { AlarmFacts } from "./alarm-sources.ts";
 import { stalledWakes, newWakeTargets } from "./alarm-wakes.ts";
@@ -17,6 +18,7 @@ export const Delivery = Schema.Struct({
   envelope: Defs.EncryptedEnvelope,
   key: AlarmKey,
   recipient: Schema.String,
+  text: Schema.optionalKey(Schema.String),
 });
 
 const Notice = Schema.Struct({
@@ -60,7 +62,7 @@ export interface AlarmPorts<R> {
   ) => Effect.Effect<readonly (typeof Delivery.Type)[], FleetError, R>;
   readonly send: (
     delivery: typeof Delivery.Type
-  ) => Effect.Effect<void, FleetError, R>;
+  ) => Effect.Effect<void, FleetError | AlarmRefused, R>;
   readonly page: (text: string) => Effect.Effect<void, FleetError, R>;
   readonly unavailable: Effect.Effect<void, never, R>;
 }
@@ -234,6 +236,69 @@ const renotifyAfter = (
     ? 0
     : (settings.renotifyMinutes ?? 120) * 60_000;
 
+const sendPending = Effect.fn("Alarm.sendPending")(function* sendPending<R>(
+  start: AlarmJournalValue,
+  ports: AlarmPorts<R>
+) {
+  let current = start;
+  const blocked = new Set<string>();
+  const rerouted = new Set<string>();
+  const added: (typeof Delivery.Type)[] = [];
+  const settled = new Set<typeof Delivery.Type>();
+
+  for (const delivery of current.pending) {
+    if (blocked.has(delivery.recipient)) {
+      continue;
+    }
+
+    const result = yield* ports.send(delivery).pipe(
+      Effect.as("sent" as const),
+      Effect.catchTag("AlarmRefused", (refusal) => Effect.succeed(refusal)),
+      Effect.catch(() => Effect.succeed("failed" as const))
+    );
+
+    if (result === "failed") {
+      blocked.add(delivery.recipient);
+      yield* ports.unavailable;
+      continue;
+    }
+
+    settled.add(delivery);
+    current = {
+      ...start,
+      pending: start.pending.filter((item) => !settled.has(item)),
+    };
+
+    if (
+      result !== "sent" &&
+      result.successor !== undefined &&
+      delivery.text !== undefined &&
+      !rerouted.has(result.successor)
+    ) {
+      rerouted.add(result.successor);
+
+      const prepared = yield* ports
+        .prepare(delivery.key, [result.successor], delivery.text)
+        .pipe(Effect.option);
+
+      if (Option.isSome(prepared)) {
+        added.push(...prepared.value);
+      } else {
+        yield* ports.unavailable;
+      }
+    }
+
+    yield* ports.save(current);
+  }
+
+  if (added.length > 0) {
+    current = { ...current, pending: [...current.pending, ...added] };
+    yield* ports.save(current);
+  }
+
+  return current;
+});
+
 export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
   prior: AlarmJournalValue,
   facts: typeof AlarmFacts.Type,
@@ -359,26 +424,7 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
     yield* ports.save(current);
   }
 
-  const blocked = new Set<string>();
-
-  for (const delivery of current.pending) {
-    if (blocked.has(delivery.recipient)) {
-      continue;
-    }
-
-    const accepted = yield* ports.send(delivery).pipe(Effect.isSuccess);
-
-    if (accepted) {
-      current = {
-        ...current,
-        pending: current.pending.filter((item) => item !== delivery),
-      };
-      yield* ports.save(current);
-    } else {
-      blocked.add(delivery.recipient);
-      yield* ports.unavailable;
-    }
-  }
+  current = yield* sendPending(current, ports);
 
   return current;
 });
