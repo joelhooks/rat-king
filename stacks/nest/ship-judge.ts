@@ -24,7 +24,13 @@ import type {
   Finding,
 } from "./one-way.ts";
 import { FleetError as JudgeError } from "./stage-config.ts";
-import { decodeTrafficLine, fileLines, usageWindow } from "./usage.ts";
+import {
+  decodeTrafficLine,
+  deliveredRecipients,
+  fileLines,
+  ReaderlessShare,
+  usageWindow,
+} from "./usage.ts";
 import type { WindowBounds } from "./usage.ts";
 
 export const ShipLimits = {
@@ -61,6 +67,8 @@ export const HealthMissing = observation("HealthMissing");
 
 export const ThinEvidence = observation("ThinEvidence");
 
+export const ReaderlessRefused = observation("ReaderlessRefused");
+
 export const SingleRecipient = Schema.TaggedStruct("SingleRecipient", {
   count: Count,
   did: Schema.String,
@@ -75,6 +83,7 @@ export const ShipReason = Schema.Union([
   HealthMissing,
   ThinEvidence,
   SingleRecipient,
+  ReaderlessRefused,
 ]);
 
 export type Reason = typeof ShipReason.Type;
@@ -100,6 +109,8 @@ export const ShipWindow = Schema.Struct({
   delivered: Count,
   deliveryLatency: Latency,
   end: Schema.String,
+  readerless: Schema.optional(Count),
+  readerlessRefused: Schema.optional(Schema.Boolean),
   replays: Count,
   sent: Count,
   start: Schema.String,
@@ -114,6 +125,7 @@ export type WindowFacts = typeof ShipWindow.Type;
 const verdictFields = {
   after: ShipWindow,
   baseline: ShipWindow,
+  readerless: Count,
   reasons: Schema.Array(ShipReason),
   sha: Sha,
 };
@@ -288,7 +300,20 @@ export const judgeShip = (input: {
   const fields = {
     after,
     baseline,
-    reasons: [...unknownCauses, ...failures],
+    readerless: after.readerless ?? 0,
+    reasons: [
+      ...unknownCauses,
+      ...failures,
+      ...(after.readerlessRefused === true ||
+      baseline.readerlessRefused === true
+        ? [
+            ReaderlessRefused.make({
+              limit: ReaderlessShare,
+              value: "exclusion refused; raw counts judged",
+            }),
+          ]
+        : []),
+    ],
     sha,
   };
 
@@ -796,15 +821,16 @@ const judgeVerdict = Effect.fn("ShipJudge.verdict")(function* judgeVerdict(
     Schema.Literals(["true", "false"])
   )(flags.get("--restarted") ?? "false");
 
-  const window = (bounds: WindowBounds) =>
-    usageWindow(
-      bounds,
-      fileLines(fs, input).pipe(Stream.mapEffect(decodeTrafficLine))
-    );
+  const traffic = () =>
+    fileLines(fs, input).pipe(Stream.mapEffect(decodeTrafficLine));
+
+  const liveBefore = yield* deliveredRecipients(windows.baseline, traffic());
+  const baseline = yield* usageWindow(windows.baseline, traffic());
+  const after = yield* usageWindow(windows.after, traffic(), liveBefore);
 
   return judgeShip({
-    after: yield* window(windows.after),
-    baseline: yield* window(windows.baseline),
+    after,
+    baseline,
     health,
     prior,
     restarted: restarted === "true",
