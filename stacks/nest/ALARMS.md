@@ -24,6 +24,8 @@ Critical incidents reserve a Joel page slot before attempting the configured gat
 - `launchd`: label, Node executable, checkout `source`, PATH and output/error log paths.
 - `readerHeartbeats`: one entry per host, with a display `host`, the Pi state's `readers` directory as `dir`, and an `ssh` destination for every host but the alarm's own. The worker reads each host's heartbeats with one bounded call per check (10 seconds, `BatchMode=yes`). Pid liveness is checked on that host. If the list is omitted, reader monitoring is unknown, not healthy. If a host's directory is missing, that host has no readers. The older `readers` list with `aliveCommand` is ignored. It is accepted only so existing configs keep loading, so delete it when you add `readerHeartbeats`.
 
+Optional `alarm.wakeTargets: [{ name, owner, unackedMinutes?, page? }]` monitors named recipients without Pi heartbeats. Names resolve through the same directory path as heartbeat targets and are queried once; configured owners and thresholds win on duplicate names. The positive threshold defaults to 3 minutes and applies with a live, missing or expired lease. Overdue mail fires `wake.unacked` and routes to the configured owner. Paging through the existing operator gateway and budgets is opt-in per target with `page: true`; omitted or false disables paging, except for `switchboard`, which still pages. Evidence names the recipient, waiting seconds and lease state. Heartbeat-only targets retain the live-lease rule.
+
 Use a fresh copy of the live stage config. Do not promote an older proposal that loses approval fields or notification recipients.
 
 ## Sources

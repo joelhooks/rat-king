@@ -7,6 +7,7 @@ import { expect } from "vitest";
 
 import { AlarmSettings } from "../../../stacks/nest/alarm-config.ts";
 import type { AlarmFacts } from "../../../stacks/nest/alarm-sources.ts";
+import { mergeWakeTargets } from "../../../stacks/nest/alarm-wakes.ts";
 import {
   AlarmJournal,
   alarmCycle,
@@ -21,11 +22,15 @@ const Step = Schema.Literals(["wake", "ack", "missing", "expired", "absent"]);
 
 const Inputs = Schema.Struct({
   ackExpired: Schema.Boolean,
+  configured: Schema.Boolean,
   steps: Schema.Array(Step).check(
     Schema.isMinLength(1),
     Schema.isMaxLength(30)
   ),
   switchboard: Schema.Boolean,
+  unackedMinutes: Schema.Int.check(
+    Schema.isBetween({ maximum: 60, minimum: 1 })
+  ),
 });
 
 const settings = Schema.decodeUnknownSync(AlarmSettings)({
@@ -65,7 +70,8 @@ interface Real {
 
 const command = (
   step: typeof Step.Type,
-  switchboard: boolean
+  page: boolean,
+  configured: boolean
 ): fc.AsyncCommand<Model, Real> => ({
   check: () => true,
   run: async (model, real) => {
@@ -73,9 +79,9 @@ const command = (
 
     await real.step(step);
 
-    if (step === "wake") {
+    if (step === "wake" || (configured && step === "expired")) {
       model.firing = true;
-      model.paged ||= switchboard;
+      model.paged ||= page;
     }
 
     if (step === "ack") {
@@ -96,109 +102,130 @@ const command = (
 });
 
 it.effect.prop(
-  "wake alarm routes warn and clear to the owner, pages only switchboard via the existing page port, and never clears on missing or expired-lease evidence",
+  "wake alarm routes to owners without paging by default, pages opted-in targets and switchboard, and preserves incidents across missing evidence and restarts",
   [Inputs],
   ([input]) =>
     Effect.gen(function* model() {
-      const run = Effect.runPromiseWith(yield* Effect.context());
-      let journal = emptyJournal;
-      let now = 1_000_000;
-      const notices: Real["notices"] = [];
-      const pages: string[] = [];
+      for (const page of [undefined, false, true]) {
+        const run = Effect.runPromiseWith(yield* Effect.context());
 
-      const ports: AlarmPorts<never> = {
-        page: (text) =>
-          Effect.sync(() => {
-            pages.push(text);
-          }),
-        prepare: (key, recipients, text) =>
-          Effect.sync(() => {
-            if (key === "wake.unacked") {
-              notices.push({ recipients, text });
-            }
+        const target = {
+          name: input.switchboard ? "switchboard" : "mischief/worker",
+          owner: "owner-invalid",
+        };
 
-            return [];
-          }),
-        save: () => Effect.void,
-        send: () => Effect.void,
-        unavailable: Effect.void,
-      };
+        const policy = { ...target, unackedMinutes: input.unackedMinutes };
 
-      const real: Real = {
-        notices,
-        pages,
-        state: () => journal,
-        step: async (step) => {
-          now += 1000;
+        const configured = page === undefined ? policy : { ...policy, page };
 
-          const health = {
-            complete: true,
-            lastAck: null,
-            lease: {
-              expiresAt:
-                step === "expired" || (step === "ack" && input.ackExpired)
-                  ? now
-                  : now + 60_000,
-              generation: 1,
-              holder: "fixture",
-              pane: null,
-            },
-            oldestWake:
-              step === "ack"
-                ? null
-                : {
-                    at: now - 181_000,
-                    id: "3m7x2ka4xv22a",
-                    sender: "sender-invalid",
-                  },
-            quietUnacked: 0,
-          };
+        const targets =
+          mergeWakeTargets([target], input.configured ? [configured] : []) ??
+          [];
 
-          const facts: typeof AlarmFacts.Type = {
-            cacheBreaches: [],
-            deploy: null,
-            deployKnown: true,
-            digest: "ok",
-            doctor: true,
-            entered: null,
-            health: 200,
-            measurementFailed: false,
-            quarantinedHour: 0,
-            readers: null,
-            receipts: [],
-            receiptsKnown: true,
-            slots: { free: 100, max: 100 },
-            wakes: Match.value(step).pipe(
-              Match.when("missing", () => null),
-              Match.when("absent", () => []),
-              Match.orElse(() => [
-                {
-                  health,
-                  name: input.switchboard ? "switchboard" : "sample/worker",
-                  owner: "owner-invalid",
-                },
-              ])
-            ),
-          };
+        let journal = emptyJournal;
+        let now = 1_000_000;
+        const notices: Real["notices"] = [];
+        const pages: string[] = [];
 
-          journal = await run(
-            alarmCycle(journal, facts, now, settings, ports).pipe(
-              Effect.flatMap(
-                Schema.encodeEffect(Schema.fromJsonString(AlarmJournal))
+        const ports: AlarmPorts<never> = {
+          page: (text) =>
+            Effect.sync(() => {
+              pages.push(text);
+            }),
+          prepare: (key, recipients, text) =>
+            Effect.sync(() => {
+              if (key === "wake.unacked") {
+                notices.push({ recipients, text });
+              }
+
+              return [];
+            }),
+          save: () => Effect.void,
+          send: () => Effect.void,
+          unavailable: Effect.void,
+        };
+
+        const real: Real = {
+          notices,
+          pages,
+          state: () => journal,
+          step: async (step) => {
+            now += 1000;
+
+            const health = {
+              complete: true,
+              lastAck: null,
+              lease: {
+                expiresAt:
+                  step === "expired" || (step === "ack" && input.ackExpired)
+                    ? now
+                    : now + 60_000,
+                generation: 1,
+                holder: "fixture",
+                pane: null,
+              },
+              oldestWake:
+                step === "ack"
+                  ? null
+                  : {
+                      at:
+                        now -
+                        (input.configured ? input.unackedMinutes : 3) * 60_000 -
+                        1000,
+                      id: "3m7x2ka4xv22a",
+                      sender: "sender-invalid",
+                    },
+              quietUnacked: 0,
+            };
+
+            const facts: typeof AlarmFacts.Type = {
+              cacheBreaches: [],
+              deploy: null,
+              deployKnown: true,
+              digest: "ok",
+              doctor: true,
+              entered: null,
+              health: 200,
+              measurementFailed: false,
+              quarantinedHour: 0,
+              readers: null,
+              receipts: [],
+              receiptsKnown: true,
+              slots: { free: 100, max: 100 },
+              wakes: Match.value(step).pipe(
+                Match.when("missing", () => null),
+                Match.when("absent", () => []),
+                Match.orElse(() =>
+                  targets.map((entry) => ({ ...entry, health }))
+                )
               ),
-              Effect.flatMap(
-                Schema.decodeEffect(Schema.fromJsonString(AlarmJournal))
+            };
+
+            journal = await run(
+              alarmCycle(journal, facts, now, settings, ports).pipe(
+                Effect.flatMap(
+                  Schema.encodeEffect(Schema.fromJsonString(AlarmJournal))
+                ),
+                Effect.flatMap(
+                  Schema.decodeEffect(Schema.fromJsonString(AlarmJournal))
+                )
+              )
+            );
+          },
+        };
+
+        yield* Effect.promise(() =>
+          fc.asyncModelRun(
+            () => ({ model: { firing: false, paged: false }, real }),
+            ["wake" as const, ...input.steps].map((step) =>
+              command(
+                step,
+                input.switchboard || (input.configured && page === true),
+                input.configured
               )
             )
-          );
-        },
-      };
-
-      yield* Effect.promise(() =>
-        fc.asyncModelRun(
-          () => ({ model: { firing: false, paged: false }, real }),
-          input.steps.map((step) => command(step, input.switchboard))
-        )
-      );
+          )
+        );
+      }
     })
 );

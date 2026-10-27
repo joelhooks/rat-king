@@ -1,0 +1,166 @@
+import { it } from "@effect/vitest";
+import { Schema } from "effect";
+import { expect } from "vitest";
+
+import { AlarmSettings } from "../../../stacks/nest/alarm-config.ts";
+import {
+  mergeWakeTargets,
+  wakeReading,
+} from "../../../stacks/nest/alarm-wakes.ts";
+
+const target = {
+  name: "mischief/worker",
+  owner: "pi-durable/desk",
+};
+
+const Minutes = Schema.Int.check(Schema.isBetween({ maximum: 60, minimum: 1 }));
+
+it.prop(
+  "configured targets fire strictly past their threshold for live, expired and missing leases; heartbeat-only expiry stays unknown",
+  [Minutes],
+  ([minutes]) => {
+    const now = 10_000_000;
+
+    for (const threshold of [undefined, minutes, 15]) {
+      const targets =
+        mergeWakeTargets(undefined, [
+          threshold === undefined
+            ? target
+            : { ...target, unackedMinutes: threshold },
+        ]) ?? [];
+
+      const limit = (threshold ?? 3) * 60_000;
+
+      for (const expiresAt of [null, now - 1, now, now + 1]) {
+        for (const age of [limit - 1, limit, limit + 1]) {
+          const health = {
+            complete: true,
+            lastAck: null,
+            lease:
+              expiresAt === null
+                ? null
+                : { expiresAt, generation: 1, holder: "fixture", pane: null },
+            oldestWake: {
+              at: now - age,
+              id: "private-message-invalid",
+              sender: "private-sender-invalid",
+            },
+            quietUnacked: 0,
+          };
+
+          const reading = wakeReading(
+            targets.map((entry) => ({ ...entry, health })),
+            now
+          );
+
+          expect(reading.status).toBe(age > limit ? "firing" : "ok");
+
+          if (reading.status === "firing") {
+            expect(reading.recipients).toEqual([target.owner]);
+            expect(reading.evidence).toContain(target.name);
+            expect(reading.evidence).toContain(`${Math.floor(age / 1000)}s`);
+            expect(reading.evidence).toContain(
+              expiresAt === null || expiresAt <= now
+                ? "reader gone"
+                : "live lease"
+            );
+
+            if (expiresAt === null) {
+              expect(reading.evidence).toContain("lease missing");
+            } else {
+              expect(reading.evidence).toContain(
+                expiresAt <= now ? "lease expired" : "live lease"
+              );
+            }
+
+            expect(reading.evidence).not.toContain(health.oldestWake.id);
+            expect(reading.evidence).not.toContain(health.oldestWake.sender);
+          }
+
+          expect(
+            wakeReading(
+              targets.map((entry) => ({
+                ...entry,
+                health: { ...health, oldestWake: null },
+              })),
+              now
+            ).status
+          ).toBe("ok");
+          const liveStatus = age > 180_000 ? "firing" : "ok";
+
+          expect(wakeReading([{ ...target, health }], now).status).toBe(
+            expiresAt === null || expiresAt <= now ? "unknown" : liveStatus
+          );
+        }
+      }
+    }
+  }
+);
+
+it.prop(
+  "configured names override duplicate heartbeat owners, paging and thresholds without duplicating queries",
+  [
+    Schema.Struct({
+      page: Schema.optionalKey(Schema.Boolean),
+      unackedMinutes: Minutes,
+    }),
+  ],
+  ([input]) => {
+    const configured = { ...target, ...input };
+
+    for (const readers of [
+      undefined,
+      [],
+      [target],
+      [
+        { ...target, owner: "heartbeat/desk", page: true, unackedMinutes: 1 },
+        target,
+      ],
+    ]) {
+      const merged = mergeWakeTargets(readers, [configured]);
+
+      expect(merged).toEqual([{ ...configured, configured: true }]);
+    }
+
+    expect(mergeWakeTargets()).toBeUndefined();
+    expect(mergeWakeTargets([target])).toEqual([target]);
+  }
+);
+
+it.prop(
+  "alarm wake target decoding accepts positive thresholds and rejects unknown fields and non-positive thresholds",
+  [Minutes],
+  ([unackedMinutes]) => {
+    const decode = Schema.decodeUnknownSync(
+      Schema.Struct({ wakeTargets: AlarmSettings.fields.wakeTargets }),
+      { onExcessProperty: "error" }
+    );
+
+    const configured = { ...target, unackedMinutes };
+
+    expect(decode({ wakeTargets: [configured] }).wakeTargets).toEqual([
+      configured,
+    ]);
+    expect(decode({ wakeTargets: [target] }).wakeTargets).toEqual([target]);
+
+    for (const page of [false, true]) {
+      expect(
+        decode({ wakeTargets: [{ ...configured, page }] }).wakeTargets
+      ).toEqual([{ ...configured, page }]);
+    }
+
+    expect(() =>
+      decode({ wakeTargets: [{ ...configured, unknown: true }] })
+    ).toThrow();
+
+    expect(() =>
+      decode({ wakeTargets: [{ ...configured, page: "true" }] })
+    ).toThrow();
+
+    for (const invalid of [0, -unackedMinutes, Number.POSITIVE_INFINITY]) {
+      expect(() =>
+        decode({ wakeTargets: [{ ...configured, unackedMinutes: invalid }] })
+      ).toThrow();
+    }
+  }
+);

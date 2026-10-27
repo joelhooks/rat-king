@@ -191,7 +191,7 @@ const needsPage = (
   severity === "critical" ||
   (key === "wake.unacked" &&
     stalledWakes(facts.wakes ?? [], now).some(
-      (item) => item.name === "switchboard"
+      (item) => item.name === "switchboard" || item.page === true
     ));
 
 const wakeRecoveryRecipients = (

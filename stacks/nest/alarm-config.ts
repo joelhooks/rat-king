@@ -26,6 +26,15 @@ const IgnoredAliveProbe = Schema.Struct({
   name: AgentName,
 });
 
+export const ConfiguredWakeTarget = Schema.Struct({
+  name: AgentName,
+  owner: AgentName,
+  page: Schema.optionalKey(Schema.Boolean),
+  unackedMinutes: Schema.optionalKey(
+    Schema.Finite.check(Schema.isGreaterThan(0))
+  ),
+});
+
 export const AlarmSettings = Schema.Struct({
   broadcast: AgentName,
   cacheHealth: Schema.optionalKey(Schema.NonEmptyString),
@@ -85,6 +94,7 @@ export const AlarmSettings = Schema.Struct({
     })
   ),
   turnRecords: Schema.optionalKey(Schema.Boolean),
+  wakeTargets: Schema.optionalKey(Schema.Array(ConfiguredWakeTarget)),
 });
 
 export type AlarmSettingsValue = typeof AlarmSettings.Type;
