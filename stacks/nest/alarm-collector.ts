@@ -217,6 +217,8 @@ const backupWindowOf = (digest: HealthDigest | null) => {
   return { end: DateTime.toEpochMillis(run.endedAt), start };
 };
 
+const collectorPorts = { comms: collectComms, doctor: configDoctor };
+
 export const collectAlarmFacts = Effect.fn("Alarm.collect")(
   function* collectAlarmFacts<E, R, E2, R2, R3 = never, E4 = never, R4 = never>(
     config: StageConfigValue,
@@ -233,7 +235,11 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
       readonly WindowReceiptValue[],
       E4,
       R4
-    > = Effect.succeed([])
+    > = Effect.succeed([]),
+    ports: {
+      readonly comms: typeof collectComms;
+      readonly doctor: typeof configDoctor;
+    } = collectorPorts
   ) {
     if (config.alarm === undefined || config.ship === undefined) {
       return yield* new FleetError({
@@ -289,13 +295,13 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
             }),
             Effect.option
           ),
-        doctor: probe(configDoctor(config)),
+        doctor: probe(ports.doctor(config)),
         health: probe(health),
         instances: collectInstanceHealth(config.alarm.instances),
         quarantine: Effect.all(
           [
-            collectComms(config.comms.local, now - 3_600_000, true),
-            collectComms(config.comms.remote, now - 3_600_000, true),
+            ports.comms(config.comms.local, now - 3_600_000, true),
+            ports.comms(config.comms.remote, now - 3_600_000, true),
           ],
           { concurrency: "unbounded" }
         ).pipe(
@@ -360,7 +366,9 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
     return yield* Schema.decodeUnknownEffect(AlarmFacts)({
       backup: backupWindowOf(healthy),
       cacheBreaches: Option.getOrNull(observations.cache),
-      churnLimit: ship.restart?.churnLimit,
+      ...(ship.restart.churnLimit === undefined
+        ? undefined
+        : { churnLimit: ship.restart.churnLimit }),
       deploy: Option.getOrNull(observations.deploy),
       deployKnown: Option.isSome(observations.deploy),
       digest: Option.getOrNull(observations.digest)?.status ?? null,

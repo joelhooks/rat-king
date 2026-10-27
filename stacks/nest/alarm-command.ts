@@ -7,6 +7,13 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import type { SecretStore } from "../../apps/mailbox/cli/secrets.ts";
 import { secretStoreLayer } from "../../apps/mailbox/cli/secrets.ts";
 import { collectAlarmFacts } from "./alarm-collector.ts";
+import type { AlarmHeartbeat } from "./alarm-heartbeat.ts";
+import {
+  alarmFailure,
+  nextAlarmHeartbeat,
+  readAlarmHeartbeat,
+  writeAlarmHeartbeat,
+} from "./alarm-heartbeat.ts";
 import { prepareAlarmDeliveries, sendAlarmDelivery } from "./alarm-mail.ts";
 import type { DeployMarker, WindowReceipt } from "./alarm-sources.ts";
 import { observeAlarms } from "./alarm-sources.ts";
@@ -131,6 +138,7 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
     );
 
     const drifted = yield* runnerDrift(config.ship?.checkpoint);
+    let heartbeat = yield* readAlarmHeartbeat(directory);
 
     for (;;) {
       yield* rotateLogs(
@@ -147,6 +155,8 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
       }
 
       const started = yield* Clock.currentTimeMillis;
+      let outcome: (typeof AlarmHeartbeat.Type)["outcome"] = "ok";
+
       yield* Effect.gen(function* cycle() {
         const prior = yield* readAlarmJournal(directory);
 
@@ -215,7 +225,9 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
                 () => new FleetError({ reason: "Alarm delivery failed" })
               )
             ),
-          unavailable,
+          unavailable: Effect.sync(() => {
+            outcome = "Alarm notifications unavailable";
+          }).pipe(Effect.andThen(unavailable)),
         };
 
         yield* alarmCycle(
@@ -227,8 +239,21 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
         );
       }).pipe(
         Effect.timeout("55 seconds"),
+        Effect.catch((error) => {
+          outcome = alarmFailure(error);
+
+          return unavailable;
+        })
+      );
+      heartbeat = nextAlarmHeartbeat(
+        heartbeat,
+        yield* Clock.currentTimeMillis,
+        outcome
+      );
+      yield* writeAlarmHeartbeat(directory, heartbeat).pipe(
         Effect.catch(() => unavailable)
       );
+
       const elapsed = (yield* Clock.currentTimeMillis) - started;
       yield* Effect.sleep(Math.max(0, 60_000 - elapsed));
     }
