@@ -78,6 +78,53 @@ const wakeOf = Effect.fn("Mailbox.wakeOf")(function* wakeOf(
   return Option.some({ quiet: !woke && value.kind !== "data", woke });
 });
 
+interface Waking {
+  readonly receipt: Defs.ReceiptValue;
+  readonly time: number;
+}
+
+const wakeJson = (item: Waking | undefined) =>
+  item?.receipt.recordedAt === undefined
+    ? undefined
+    : {
+        id: item.receipt.message.messageId,
+        recordedAt: item.receipt.recordedAt,
+        sender: item.receipt.message.senderDid,
+        woke: true as const,
+      };
+
+const earliest = (items: readonly Waking[]) => {
+  let first: Waking | undefined;
+
+  for (const item of items) {
+    if (first === undefined || item.time < first.time) {
+      first = item;
+    }
+  }
+
+  return first;
+};
+
+const wakeFields = (wakes: readonly Waking[], ackedAt: number) => {
+  const since = wakes.filter(
+    (item) => !Number.isFinite(ackedAt) || item.time > ackedAt
+  );
+
+  const oldest = wakeJson(earliest(wakes));
+  const oldestSinceAck = wakeJson(earliest(since));
+  let fields: Partial<typeof closedOutput.Encoded> = {};
+
+  if (oldest !== undefined) {
+    fields = { ...fields, oldestWake: oldest, wakesSinceAck: since.length };
+  }
+
+  if (oldestSinceAck !== undefined) {
+    fields = { ...fields, oldestWakeSinceAck: oldestSinceAck };
+  }
+
+  return fields;
+};
+
 const leaseOf = (lease: typeof Lease.Type): typeof Health.Lease.Encoded => {
   const harness = Option.getOrUndefined(
     Schema.decodeUnknownOption(Harness)(lease)
@@ -128,7 +175,15 @@ export const nameHealth = Effect.fn("Mailbox.nameHealth")(
     );
 
     let complete = rows.unacked.length <= 10_000;
-    let oldest: Defs.ReceiptValue | undefined;
+    const wakes: Waking[] = [];
+    const [ackRow] = rows.ack;
+
+    const ack =
+      ackRow === undefined
+        ? undefined
+        : yield* Schema.decodeUnknownEffect(Row)(ackRow);
+
+    const ackedAt = Date.parse(ack?.value ?? "");
     let quietUnacked = 0;
     let legacyRemaining = 128;
 
@@ -152,21 +207,15 @@ export const nameHealth = Effect.fn("Mailbox.nameHealth")(
         complete = false;
       }
 
-      if (
-        woke === true &&
-        Number.isFinite(time) &&
-        (oldest === undefined || time < Date.parse(oldest.recordedAt ?? ""))
-      ) {
-        oldest = receipt;
+      if (woke === true && Number.isFinite(time)) {
+        wakes.push({ receipt, time });
       }
     }
 
     const [leaseRow] = rows.lease;
-    const [ackRow] = rows.ack;
     let result: typeof closedOutput.Encoded = { complete, quietUnacked };
 
-    if (ackRow !== undefined) {
-      const ack = yield* Schema.decodeUnknownEffect(Row)(ackRow);
+    if (ack !== undefined) {
       result = { ...result, lastAck: ack.value };
     }
 
@@ -180,17 +229,7 @@ export const nameHealth = Effect.fn("Mailbox.nameHealth")(
       result = { ...result, lease: leaseOf(lease) };
     }
 
-    if (oldest?.recordedAt !== undefined) {
-      result = {
-        ...result,
-        oldestWake: {
-          id: oldest.message.messageId,
-          recordedAt: oldest.recordedAt,
-          sender: oldest.message.senderDid,
-          woke: true,
-        },
-      };
-    }
+    result = { ...result, ...wakeFields(wakes, ackedAt) };
 
     return yield* Schema.decodeEffect(closedOutput)(result);
   },

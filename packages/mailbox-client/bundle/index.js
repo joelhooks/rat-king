@@ -5176,9 +5176,16 @@ var Output16 = Schema52.StructWithRest(
     ),
     lease: Schema52.optionalKey(Lease),
     oldestWake: Schema52.optionalKey(Wake),
+    oldestWakeSinceAck: Schema52.optionalKey(Wake),
     quietUnacked: Schema52.Int.check(
       Schema52.isGreaterThanOrEqualTo(0),
       Schema52.isLessThanOrEqualTo(9007199254740991)
+    ),
+    wakesSinceAck: Schema52.optionalKey(
+      Schema52.Int.check(
+        Schema52.isGreaterThanOrEqualTo(0),
+        Schema52.isLessThanOrEqualTo(9007199254740991)
+      )
     )
   }),
   [Schema52.Record(Schema52.String, Data)]
@@ -5236,6 +5243,7 @@ var MailboxHealth = Schema53.Struct({
     })
   ),
   oldestWake: Schema53.NullOr(Wake2),
+  oldestWakeSinceAck: Schema53.optionalKey(Schema53.NullOr(Wake2)),
   quietUnacked: Schema53.Int.check(Schema53.isGreaterThanOrEqualTo(0))
 });
 var readMailboxHealth = Effect32.fn("Mailbox.readHealth")(
@@ -5257,7 +5265,7 @@ var readMailboxHealth = Effect32.fn("Mailbox.readHealth")(
     const value = yield* Schema53.decodeUnknownEffect(Output16)(
       response.body
     );
-    return yield* Schema53.decodeEffect(MailboxHealth)({
+    const facts = {
       complete: value.complete,
       lastAck: value.lastAck === void 0 ? null : Date.parse(value.lastAck),
       lease: value.lease === void 0 ? null : {
@@ -5272,6 +5280,18 @@ var readMailboxHealth = Effect32.fn("Mailbox.readHealth")(
         sender: value.oldestWake.sender
       },
       quietUnacked: value.quietUnacked
+    };
+    if (value.wakesSinceAck === void 0) {
+      return yield* Schema53.decodeEffect(MailboxHealth)(facts);
+    }
+    const since = value.oldestWakeSinceAck;
+    return yield* Schema53.decodeEffect(MailboxHealth)({
+      ...facts,
+      oldestWakeSinceAck: since === void 0 ? null : {
+        at: Date.parse(since.recordedAt),
+        id: since.id,
+        sender: since.sender
+      }
     });
   },
   (effect) => effect.pipe(timeout("10 seconds"), Effect32.mapError(clientError))

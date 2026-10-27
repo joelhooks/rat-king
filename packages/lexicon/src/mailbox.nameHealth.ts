@@ -64,9 +64,16 @@ export const Output = Schema.StructWithRest(
     ),
     lease: Schema.optionalKey(Lease),
     oldestWake: Schema.optionalKey(Wake),
+    oldestWakeSinceAck: Schema.optionalKey(Wake),
     quietUnacked: Schema.Int.check(
       Schema.isGreaterThanOrEqualTo(0),
       Schema.isLessThanOrEqualTo(9_007_199_254_740_991)
+    ),
+    wakesSinceAck: Schema.optionalKey(
+      Schema.Int.check(
+        Schema.isGreaterThanOrEqualTo(0),
+        Schema.isLessThanOrEqualTo(9_007_199_254_740_991)
+      )
     ),
   }),
   [Schema.Record(Schema.String, Runtime.Data)]
