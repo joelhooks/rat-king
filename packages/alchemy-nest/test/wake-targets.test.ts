@@ -29,7 +29,7 @@ it.prop(
             : { ...target, unackedMinutes: threshold },
         ]) ?? [];
 
-      const limit = (threshold ?? 3) * 60_000;
+      const limit = (threshold ?? 15) * 60_000;
 
       for (const expiresAt of [null, now - 1, now, now + 1]) {
         for (const age of [limit - 1, limit, limit + 1]) {
@@ -86,7 +86,7 @@ it.prop(
               now
             ).status
           ).toBe("ok");
-          const liveStatus = age > 180_000 ? "firing" : "ok";
+          const liveStatus = age > 900_000 ? "firing" : "ok";
 
           expect(wakeReading([{ ...target, health }], now).status).toBe(
             expiresAt === null || expiresAt <= now ? "unknown" : liveStatus
@@ -217,14 +217,14 @@ it("a reader that acked and then died with newer mail waiting fires", () => {
       : target;
 
     const reading = wakeReading(
-      [{ ...entry, health: sinceAck(7_200_000, 3_600_000, 600_000) }],
+      [{ ...entry, health: sinceAck(7_200_000, 3_600_000, 1_200_000) }],
       now
     );
 
     expect(reading.status).toBe("firing");
 
     if (reading.status === "firing") {
-      expect(reading.evidence).toContain("mail waiting 600s");
+      expect(reading.evidence).toContain("mail waiting 1200s");
     }
   }
 });
@@ -233,9 +233,72 @@ it("a reader that never acked fires on overdue mail", () => {
   const now = 10_000_000;
 
   const reading = wakeReading(
-    [{ ...target, configured: true, health: sinceAck(600_000, null, 600_000) }],
+    [
+      {
+        ...target,
+        configured: true,
+        health: sinceAck(1_200_000, null, 1_200_000),
+      },
+    ],
     now
   );
 
   expect(reading.status).toBe("firing");
+});
+
+const unackedFor = (minutes: number) => ({
+  complete: true,
+  lastAck: null,
+  lease: {
+    expiresAt: 10_000_000 + 60_000,
+    generation: 1,
+    holder: "fixture",
+    pane: null,
+  },
+  oldestWake: {
+    at: 10_000_000 - minutes * 60_000,
+    id: "id-invalid",
+    sender: "s-invalid",
+  },
+  quietUnacked: 0,
+});
+
+it("an unconfigured live reader fires only past 15 minutes by default", () => {
+  const now = 10_000_000;
+
+  expect(wakeReading([{ ...target, health: unackedFor(4) }], now).status).toBe(
+    "ok"
+  );
+  expect(wakeReading([{ ...target, health: unackedFor(16) }], now).status).toBe(
+    "firing"
+  );
+});
+
+it("alarm.wakeUnackedMinutes sets the default threshold", () => {
+  const now = 10_000_000;
+
+  const sighting = {
+    ...target,
+    defaultUnackedMinutes: 5,
+    health: unackedFor(6),
+  };
+
+  expect(wakeReading([sighting], now).status).toBe("firing");
+  expect(
+    wakeReading([{ ...sighting, health: unackedFor(4) }], now).status
+  ).toBe("ok");
+});
+
+it("a configured target's unackedMinutes beats the default", () => {
+  const now = 10_000_000;
+
+  const sighting = {
+    ...target,
+    configured: true as const,
+    defaultUnackedMinutes: 30,
+    health: unackedFor(2),
+    unackedMinutes: 1,
+  };
+
+  expect(wakeReading([sighting], now).status).toBe("firing");
 });

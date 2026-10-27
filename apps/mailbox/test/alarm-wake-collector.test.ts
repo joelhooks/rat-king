@@ -23,7 +23,7 @@ it.effect.prop(
     ShipSettings,
     AlarmSettings,
     Schema.Int.check(
-      Schema.isBetween({ maximum: 1_000_000, minimum: 181_000 })
+      Schema.isBetween({ maximum: 1_000_000, minimum: 901_000 })
     ),
   ],
   ([base, ship, alarm, now]) =>

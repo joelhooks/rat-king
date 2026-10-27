@@ -170,7 +170,8 @@ it.effect.prop(
                   : {
                       at:
                         now -
-                        (input.configured ? input.unackedMinutes : 3) * 60_000 -
+                        (input.configured ? input.unackedMinutes : 15) *
+                          60_000 -
                         1000,
                       id: "3m7x2ka4xv22a",
                       sender: "sender-invalid",

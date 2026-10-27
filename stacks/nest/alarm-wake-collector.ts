@@ -50,7 +50,11 @@ export const collectWakeHealth = Effect.fn("Alarm.collectWakeHealth")(
                   .health(target.did, target.name)
                   .pipe(Effect.orElseSucceed(() => null));
 
-          return { ...reader, health };
+          const defaultUnackedMinutes = config.alarm?.wakeUnackedMinutes;
+
+          return defaultUnackedMinutes === undefined
+            ? { ...reader, health }
+            : { ...reader, defaultUnackedMinutes, health };
         }),
       { concurrency: 4 }
     );
