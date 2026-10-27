@@ -31,7 +31,11 @@ import type {
   JudgeHealth,
   WindowFacts,
 } from "../../../stacks/nest/ship-judge.ts";
-import { usageDigest, usageWindow } from "../../../stacks/nest/usage.ts";
+import {
+  deliveredRecipients,
+  usageDigest,
+  usageWindow,
+} from "../../../stacks/nest/usage.ts";
 import type { TrafficEvent } from "../../../stacks/nest/usage.ts";
 
 const Small = (maximum: number) =>
@@ -105,6 +109,9 @@ it.effect.prop(
 const readerlessRecipient = (index: number) =>
   `did:web:fixture.readerless${index}.pi.fleet.invalid`;
 
+const liveRecipient = (index: number) =>
+  `did:web:fixture.live${index % 48}.pi.fleet.invalid`;
+
 const burst = (
   from: number,
   delivered: number,
@@ -115,8 +122,8 @@ const burst = (
     const id = `d-${from}-${index}`;
 
     return [
-      event(id, "accepted", from + index * 10),
-      event(id, "delivered", from + index * 10 + 5),
+      event(id, "accepted", from + index * 10, liveRecipient(index)),
+      event(id, "delivered", from + index * 10 + 5, liveRecipient(index)),
     ];
   }).flat(),
   ...recipients.map((recipient, index) =>
@@ -127,8 +134,22 @@ const burst = (
   ),
 ];
 
-const windowOf = (events: readonly TrafficEvent[], start: number) =>
-  usageWindow({ end: start + 600_000, start }, Stream.fromIterable(events));
+const windowOf = (
+  events: readonly TrafficEvent[],
+  start: number,
+  liveBefore: ReadonlySet<string> = new Set()
+) =>
+  usageWindow(
+    { end: start + 600_000, start },
+    Stream.fromIterable(events),
+    liveBefore
+  );
+
+const liveIn = (events: readonly TrafficEvent[], start: number) =>
+  deliveredRecipients(
+    { end: start + 600_000, start },
+    Stream.fromIterable(events)
+  );
 
 it.effect(
   "mail accepted only for recipients that never receive anything is excluded and counted",
@@ -167,18 +188,13 @@ it.effect(
   () =>
     Effect.gen(function* liveReaderStillFails() {
       const start = Date.parse("2026-10-27T16:50:00Z");
-      const live = [recipientDid(0), recipientDid(1)];
+      const live = [liveRecipient(0), liveRecipient(1)];
 
       const stuck = Array.from({ length: 12 }, (_, index) =>
         event(`u-${index}`, "accepted", start + 5000 + index, live[index % 2])
       );
 
-      const events = [
-        ...burst(start, 96, []),
-        event("w", "accepted", start + 1, recipientDid(1)),
-        event("w", "delivered", start + 2, recipientDid(1)),
-        ...stuck,
-      ];
+      const events = [...burst(start, 96, []), ...stuck];
 
       const after = yield* windowOf(events, start);
 
@@ -197,6 +213,81 @@ it.effect(
       });
 
       expect(verdict._tag).toBe("Fail");
+    })
+);
+
+it.effect(
+  "a deploy that stops all delivery to recipients delivered to in the baseline fails",
+  () =>
+    Effect.gen(function* outageNotExcluded() {
+      const start = Date.parse("2026-10-27T16:50:00Z");
+      const before = burst(start - 600_000, 96, []);
+      const live = yield* liveIn(before, start - 600_000);
+
+      const outage = Array.from({ length: 100 }, (_, index) =>
+        event(
+          `o-${index}`,
+          "accepted",
+          start + index,
+          liveRecipient(index % 20)
+        )
+      );
+
+      const after = yield* windowOf(outage, start, live);
+      const baseline = yield* windowOf(before, start - 600_000);
+
+      expect(after).toMatchObject({ readerless: 0, sent: 100 });
+
+      const verdict = judgeShip({
+        after,
+        baseline,
+        health: { listeners: { count: 2, expected: 2 }, status: "ok" },
+        sha: "a".repeat(40),
+      });
+
+      expect(verdict._tag).toBe("Fail");
+    })
+);
+
+it.effect(
+  "when most recipients look reader-less the exclusion is refused and raw counts are judged",
+  () =>
+    Effect.gen(function* exclusionRefused() {
+      const start = Date.parse("2026-10-27T16:50:00Z");
+
+      const outage = Array.from({ length: 100 }, (_, index) =>
+        event(
+          `o-${index}`,
+          "accepted",
+          start + index,
+          readerlessRecipient(index % 20)
+        )
+      );
+
+      const after = yield* windowOf(outage, start);
+
+      const baseline = yield* windowOf(
+        burst(start - 600_000, 96, []),
+        start - 600_000
+      );
+
+      expect(after).toMatchObject({
+        readerless: 0,
+        readerlessRefused: true,
+        sent: 100,
+      });
+
+      const verdict = judgeShip({
+        after,
+        baseline,
+        health: { listeners: { count: 2, expected: 2 }, status: "ok" },
+        sha: "a".repeat(40),
+      });
+
+      expect(verdict._tag).toBe("Fail");
+      expect(verdict.reasons.map((reason) => reason._tag)).toContain(
+        "ReaderlessRefused"
+      );
     })
 );
 

@@ -162,10 +162,44 @@ export interface WindowBounds {
   readonly start: number;
 }
 
+export const ReaderlessShare = 0.2;
+
+interface ReaderlessExclusion {
+  readonly liveBefore: ReadonlySet<string>;
+}
+
+const excludeReaderless = (input: {
+  readonly delivered: number;
+  readonly deliveredTo: ReadonlySet<string>;
+  readonly exclusion: ReaderlessExclusion | undefined;
+  readonly sent: number;
+  readonly sentTo: ReadonlyMap<string, number>;
+}) => {
+  const { exclusion, sentTo } = input;
+
+  if (exclusion === undefined) {
+    return { readerless: new Set<string>(), refused: false };
+  }
+
+  const candidates = [...sentTo.keys()].filter(
+    (recipient) =>
+      !input.deliveredTo.has(recipient) && !exclusion.liveBefore.has(recipient)
+  );
+
+  if (
+    candidates.length > ReaderlessShare * sentTo.size ||
+    (input.delivered === 0 && input.sent > 0)
+  ) {
+    return { readerless: new Set<string>(), refused: candidates.length > 0 };
+  }
+
+  return { readerless: new Set(candidates), refused: false };
+};
+
 const foldTraffic = Effect.fn("Usage.foldTraffic")(function* foldTraffic<E, R>(
   { start, end }: WindowBounds,
   events: Stream.Stream<TrafficEvent, E, R>,
-  excludeReaderless = false
+  exclusion?: ReaderlessExclusion
 ) {
   const pairs = new Map<string, Pair>();
   const senders = new Map<string, number>();
@@ -224,16 +258,19 @@ const foldTraffic = Effect.fn("Usage.foldTraffic")(function* foldTraffic<E, R>(
       }
     })
   );
-  const readerless = new Set<string>();
 
-  if (excludeReaderless) {
-    for (const [recipient, count] of sentTo) {
-      if (!deliveredTo.has(recipient)) {
-        readerless.add(recipient);
-        sent -= count;
-      }
-    }
-  }
+  const { readerless, refused } = excludeReaderless({
+    delivered,
+    deliveredTo,
+    exclusion,
+    sent,
+    sentTo,
+  });
+
+  sent -= [...readerless].reduce(
+    (total, recipient) => total + (sentTo.get(recipient) ?? 0),
+    0
+  );
 
   let undelivered = 0;
   let replays = 0;
@@ -283,11 +320,13 @@ const foldTraffic = Effect.fn("Usage.foldTraffic")(function* foldTraffic<E, R>(
     },
     acked,
     delivered,
+    deliveredTo,
     deliveryLatency: {
       p50: percentile(deliveries, 0.5),
       p95: percentile(deliveries, 0.95),
     },
     readerless: readerless.size,
+    readerlessRefused: refused,
     replays,
     senders,
     sent,
@@ -299,18 +338,23 @@ const foldTraffic = Effect.fn("Usage.foldTraffic")(function* foldTraffic<E, R>(
 export const usageWindow = Effect.fn("Usage.window")(function* usageWindow<
   E,
   R,
->(bounds: WindowBounds, events: Stream.Stream<TrafficEvent, E, R>) {
+>(
+  bounds: WindowBounds,
+  events: Stream.Stream<TrafficEvent, E, R>,
+  liveBefore: ReadonlySet<string> = new Set()
+) {
   const {
     ackLatency,
     acked,
     delivered,
     deliveryLatency,
     readerless,
+    readerlessRefused,
     replays,
     sent,
     stranded,
     undelivered,
-  } = yield* foldTraffic(bounds, events, true);
+  } = yield* foldTraffic(bounds, events, { liveBefore });
 
   return {
     ackLatency,
@@ -319,6 +363,7 @@ export const usageWindow = Effect.fn("Usage.window")(function* usageWindow<
     deliveryLatency,
     end: DateTime.formatIso(DateTime.makeUnsafe(bounds.end)),
     readerless,
+    readerlessRefused,
     replays,
     sent,
     start: DateTime.formatIso(DateTime.makeUnsafe(bounds.start)),
@@ -330,6 +375,15 @@ export const usageWindow = Effect.fn("Usage.window")(function* usageWindow<
       ),
   };
 });
+
+export const deliveredRecipients = Effect.fn("Usage.deliveredRecipients")(
+  function* deliveredRecipients<E, R>(
+    bounds: WindowBounds,
+    events: Stream.Stream<TrafficEvent, E, R>
+  ) {
+    return (yield* foldTraffic(bounds, events)).deliveredTo;
+  }
+);
 
 export const usageDigest = Effect.fn("Usage.digest")(function* usageDigest<
   E,
