@@ -6,6 +6,8 @@ import type { Interface } from "../../packages/alchemy-nest/src/host-shell.ts";
 import { backupScript } from "./backup-script.ts";
 import { nodeService, startMailbox, storeService } from "./backup.ts";
 
+export { restoreDrill } from "./restore-drill.ts";
+
 export interface RestoreRequest {
   readonly backupRoot: string;
   readonly source: string;

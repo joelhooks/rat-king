@@ -88,6 +88,21 @@ export const StageConfig = Schema.Struct({
       ssh: Text,
     })
   ),
+  restoreDrill: Schema.optionalKey(
+    Schema.Struct({
+      bucket: Text.check(
+        Schema.isPattern(/^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/u)
+      ),
+      celld: Text,
+      knownDid: Text,
+      knownName: Text,
+      messageDid: Text,
+      node: Text,
+      receipts: Text,
+      scratchParent: Text,
+      weed: Text,
+    })
+  ),
   runtime: RuntimeConfig,
   ship: Schema.optionalKey(ShipSettings),
   shipAttempt: Schema.optionalKey(ShipAttempt),
