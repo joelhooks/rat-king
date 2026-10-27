@@ -16,4 +16,4 @@ Keep inventory, credentials, local Brain, harness state and Alchemy state outsid
 
 First publication needs Joel's gate 1 approval. Until then, leave the candidate uncommitted, with no remote. Later irreversible actions and changes to approval boundaries need their own approval.
 
-The desk owns releases. Joel approves publication and deployment authority. Follow `skills/ship/references/project.md`; off capabilities are unavailable, not permission to improvise.
+The desk owns releases. Joel approves publication and deployment authority. Follow `skills/ship/references/project.md`.
