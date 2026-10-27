@@ -114,25 +114,25 @@ export const nameHealth = Effect.fn("Mailbox.nameHealth")(
             "SELECT json_extract(value,'$.current.recordedAt') AS value FROM messages WHERE json_extract(value,'$.current.state')='acked' AND json_type(value,'$.current.recordedAt')='text' ORDER BY json_extract(value,'$.current.recordedAt') DESC LIMIT 1"
           ),
         ],
-        delivered: Array.from(
+        lease: [...sql.exec("SELECT value FROM lease WHERE singleton=1")],
+        unacked: Array.from(
           sql.exec(
-            "SELECT json_extract(value,'$.current') AS value FROM messages WHERE json_extract(value,'$.current.state')='delivered' ORDER BY json_extract(value,'$.current.recordedAt') ASC LIMIT 10001"
+            "SELECT json_extract(value,'$.current') AS value FROM messages WHERE json_extract(value,'$.current.state') IN ('accepted','queued','delivered') ORDER BY json_extract(value,'$.current.state'),json_extract(value,'$.admission.seq') ASC LIMIT 10001"
           ),
           (row) =>
             Schema.decodeUnknownSync(Schema.fromJsonString(Defs.Receipt))(
               Schema.decodeUnknownSync(Row)(row).value
             )
         ),
-        lease: [...sql.exec("SELECT value FROM lease WHERE singleton=1")],
       }))
     );
 
-    let complete = rows.delivered.length <= 10_000;
+    let complete = rows.unacked.length <= 10_000;
     let oldest: Defs.ReceiptValue | undefined;
     let quietUnacked = 0;
     let legacyRemaining = 128;
 
-    for (const receipt of rows.delivered.slice(0, 10_000)) {
+    for (const receipt of rows.unacked.slice(0, 10_000)) {
       const intent = Option.getOrUndefined(
         yield* wakeOf(sql, receipt, params.name, legacyRemaining > 0)
       );
