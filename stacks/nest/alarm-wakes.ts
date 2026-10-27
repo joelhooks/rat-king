@@ -1,10 +1,6 @@
 import { Schema } from "effect";
 
-import {
-  healthVerdict,
-  MailboxHealth,
-  WAKE_UNACKED_MS,
-} from "../../packages/mailbox-client/src/health.ts";
+import { MailboxHealth } from "../../packages/mailbox-client/src/health.ts";
 import { ConfiguredWakeTarget } from "./alarm-config.ts";
 import type { AlarmReadingValue } from "./alarm-config.ts";
 
@@ -36,13 +32,18 @@ export const mergeWakeTargets = (
 
 export const WakeSighting = Schema.Struct({
   ...WakeTarget.fields,
+  defaultUnackedMinutes: Schema.optionalKey(
+    Schema.Int.check(Schema.isGreaterThan(0))
+  ),
   health: Schema.NullOr(MailboxHealth),
 });
 
+export const DEFAULT_WAKE_UNACKED_MINUTES = 15;
+
 const wakeLimit = (item: typeof WakeSighting.Type) =>
-  item.configured === true && item.unackedMinutes !== undefined
-    ? item.unackedMinutes * 60_000
-    : WAKE_UNACKED_MS;
+  (item.configured === true && item.unackedMinutes !== undefined
+    ? item.unackedMinutes
+    : (item.defaultUnackedMinutes ?? DEFAULT_WAKE_UNACKED_MINUTES)) * 60_000;
 
 const waiting = (health: NonNullable<typeof WakeSighting.Type.health>) =>
   health.oldestWakeSinceAck === undefined
@@ -96,14 +97,9 @@ export const stalledWakes = (
       !progressing(item, now) &&
       (item.configured === true
         ? overdue(item, now)
-        : healthVerdict(
-            {
-              ...item.health,
-              oldestWake: waiting(item.health),
-              reader: "unknown",
-            },
-            now
-          ) === "agent not taking turns")
+        : item.health.lease !== null &&
+          item.health.lease.expiresAt > now &&
+          overdue(item, now))
   );
 
 export const newWakeTargets = (

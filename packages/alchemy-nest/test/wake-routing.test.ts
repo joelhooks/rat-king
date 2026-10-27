@@ -63,7 +63,7 @@ const facts = (owners: readonly string[]): typeof AlarmFacts.Type => ({
   receiptsKnown: true,
   slots: { free: 100, max: 100 },
   wakes: owners.map((owner) => ({
-    health: health(600_000, null),
+    health: health(1_200_000, null),
     name: `reader-for-${owner}`,
     owner,
   })),
@@ -202,14 +202,14 @@ it.prop(
     const lastAck = acked ? now - sinceAck * 60_000 : null;
 
     const progressing =
-      lastAck !== null && lastAck >= now - age && now - lastAck <= 180_000;
+      lastAck !== null && lastAck >= now - age && now - lastAck <= 900_000;
 
     const reading = wakeReading(
       [{ health: health(age, lastAck), name: "reader", owner: "owner" }],
       now
     );
 
-    const firing = age > 180_000 && !progressing;
+    const firing = age > 900_000 && !progressing;
 
     expect(reading.status).toBe(firing ? "firing" : "ok");
 
@@ -225,8 +225,12 @@ it.effect(
     Effect.sync(() => {
       const reading = wakeReading(
         [
-          { health: health(600_000, now - 30_000), name: "acker", owner: "a" },
-          { health: health(600_000, null), name: "dead", owner: "b" },
+          {
+            health: health(1_200_000, now - 30_000),
+            name: "acker",
+            owner: "a",
+          },
+          { health: health(1_200_000, null), name: "dead", owner: "b" },
         ],
         now
       );

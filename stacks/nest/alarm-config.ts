@@ -95,6 +95,9 @@ export const AlarmSettings = Schema.Struct({
   ),
   turnRecords: Schema.optionalKey(Schema.Boolean),
   wakeTargets: Schema.optionalKey(Schema.Array(ConfiguredWakeTarget)),
+  wakeUnackedMinutes: Schema.optionalKey(
+    Schema.Int.check(Schema.isGreaterThan(0))
+  ),
 });
 
 export type AlarmSettingsValue = typeof AlarmSettings.Type;
