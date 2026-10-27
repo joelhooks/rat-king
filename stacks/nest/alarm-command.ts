@@ -221,8 +221,11 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           send: (delivery) =>
             sendAlarmDelivery(config, delivery).pipe(
               Effect.timeout("8 seconds"),
-              Effect.mapError(
-                () => new FleetError({ reason: "Alarm delivery failed" })
+              Effect.catchTag("TimeoutError", () =>
+                Effect.fail(new FleetError({ reason: "Alarm delivery failed" }))
+              ),
+              Effect.catchTag("FleetError", () =>
+                Effect.fail(new FleetError({ reason: "Alarm delivery failed" }))
               )
             ),
           unavailable: Effect.sync(() => {

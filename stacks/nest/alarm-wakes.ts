@@ -39,6 +39,34 @@ export const WakeSighting = Schema.Struct({
   health: Schema.NullOr(MailboxHealth),
 });
 
+const wakeLimit = (item: typeof WakeSighting.Type) =>
+  item.configured === true && item.unackedMinutes !== undefined
+    ? item.unackedMinutes * 60_000
+    : WAKE_UNACKED_MS;
+
+const overdue = (item: typeof WakeSighting.Type, now: number) => {
+  const oldest = item.health?.oldestWake ?? null;
+
+  return oldest !== null && now - oldest.at > wakeLimit(item);
+};
+
+const progressing = (item: typeof WakeSighting.Type, now: number) => {
+  const lastAck = item.health?.lastAck ?? null;
+  const oldest = item.health?.oldestWake ?? null;
+
+  return (
+    lastAck !== null &&
+    oldest !== null &&
+    lastAck >= oldest.at &&
+    now - lastAck <= wakeLimit(item)
+  );
+};
+
+export const staleSingleWakes = (
+  seen: readonly (typeof WakeSighting.Type)[],
+  now: number
+) => seen.filter((item) => overdue(item, now) && progressing(item, now));
+
 export const stalledWakes = (
   seen: readonly (typeof WakeSighting.Type)[],
   now: number
@@ -46,12 +74,9 @@ export const stalledWakes = (
   seen.filter(
     (item) =>
       item.health !== null &&
+      !progressing(item, now) &&
       (item.configured === true
-        ? item.health.oldestWake !== null &&
-          now - item.health.oldestWake.at >
-            (item.unackedMinutes === undefined
-              ? WAKE_UNACKED_MS
-              : item.unackedMinutes * 60_000)
+        ? overdue(item, now)
         : healthVerdict({ ...item.health, reader: "unknown" }, now) ===
           "agent not taking turns")
   );
@@ -92,11 +117,12 @@ export const wakeReading = (
   }
 
   const stalled = stalledWakes(seen, now);
+  const singles = staleSingleWakes(seen, now).length;
 
   if (stalled.length > 0) {
     return {
-      evidence: stalled
-        .map((item) => {
+      evidence: [
+        ...stalled.map((item) => {
           const lease = item.health?.lease;
 
           const age = Math.floor(
@@ -110,8 +136,11 @@ export const wakeReading = (
           return lease.expiresAt <= now
             ? `${item.name}: reader gone, mail waiting ${age}s, lease expired`
             : `${item.name}: mail waiting ${age}s, live lease`;
-        })
-        .join("; "),
+        }),
+        ...(singles === 0
+          ? []
+          : [`info: ${singles} stale single message(s) on acking readers`]),
+      ].join("; "),
       recipients: [
         ...new Set(
           stalled.flatMap((item) => (item.owner === null ? [] : [item.owner]))
