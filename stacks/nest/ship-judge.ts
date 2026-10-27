@@ -100,6 +100,7 @@ export const ShipWindow = Schema.Struct({
   delivered: Count,
   deliveryLatency: Latency,
   end: Schema.String,
+  readerless: Schema.optional(Count),
   replays: Count,
   sent: Count,
   start: Schema.String,
@@ -114,6 +115,7 @@ export type WindowFacts = typeof ShipWindow.Type;
 const verdictFields = {
   after: ShipWindow,
   baseline: ShipWindow,
+  readerless: Count,
   reasons: Schema.Array(ShipReason),
   sha: Sha,
 };
@@ -288,6 +290,7 @@ export const judgeShip = (input: {
   const fields = {
     after,
     baseline,
+    readerless: after.readerless ?? 0,
     reasons: [...unknownCauses, ...failures],
     sha,
   };

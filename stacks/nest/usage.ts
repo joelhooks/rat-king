@@ -164,10 +164,13 @@ export interface WindowBounds {
 
 const foldTraffic = Effect.fn("Usage.foldTraffic")(function* foldTraffic<E, R>(
   { start, end }: WindowBounds,
-  events: Stream.Stream<TrafficEvent, E, R>
+  events: Stream.Stream<TrafficEvent, E, R>,
+  excludeReaderless = false
 ) {
   const pairs = new Map<string, Pair>();
   const senders = new Map<string, number>();
+  const sentTo = new Map<string, number>();
+  const deliveredTo = new Set<string>();
   let sent = 0;
   let delivered = 0;
   let acked = 0;
@@ -201,6 +204,10 @@ const foldTraffic = Effect.fn("Usage.foldTraffic")(function* foldTraffic<E, R>(
         if (today) {
           pair.acceptedToday = true;
           sent += 1;
+          sentTo.set(
+            event.recipientDid,
+            (sentTo.get(event.recipientDid) ?? 0) + 1
+          );
           senders.set(event.senderDid, (senders.get(event.senderDid) ?? 0) + 1);
         }
       } else if (event.state === "delivered") {
@@ -209,6 +216,7 @@ const foldTraffic = Effect.fn("Usage.foldTraffic")(function* foldTraffic<E, R>(
         if (today) {
           delivered += 1;
           pair.deliveriesToday += 1;
+          deliveredTo.add(event.recipientDid);
         }
       } else if (event.state === "acked" && today) {
         acked += 1;
@@ -216,6 +224,17 @@ const foldTraffic = Effect.fn("Usage.foldTraffic")(function* foldTraffic<E, R>(
       }
     })
   );
+  const readerless = new Set<string>();
+
+  if (excludeReaderless) {
+    for (const [recipient, count] of sentTo) {
+      if (!deliveredTo.has(recipient)) {
+        readerless.add(recipient);
+        sent -= count;
+      }
+    }
+  }
+
   let undelivered = 0;
   let replays = 0;
   const stranded = new Map<string, number>();
@@ -223,6 +242,10 @@ const foldTraffic = Effect.fn("Usage.foldTraffic")(function* foldTraffic<E, R>(
   const deliveries: number[] = [];
 
   for (const pair of pairs.values()) {
+    if (readerless.has(pair.recipient)) {
+      continue;
+    }
+
     if (pair.acceptedToday && pair.delivered === undefined) {
       undelivered += 1;
       stranded.set(pair.recipient, (stranded.get(pair.recipient) ?? 0) + 1);
@@ -264,6 +287,7 @@ const foldTraffic = Effect.fn("Usage.foldTraffic")(function* foldTraffic<E, R>(
       p50: percentile(deliveries, 0.5),
       p95: percentile(deliveries, 0.95),
     },
+    readerless: readerless.size,
     replays,
     senders,
     sent,
@@ -281,11 +305,12 @@ export const usageWindow = Effect.fn("Usage.window")(function* usageWindow<
     acked,
     delivered,
     deliveryLatency,
+    readerless,
     replays,
     sent,
     stranded,
     undelivered,
-  } = yield* foldTraffic(bounds, events);
+  } = yield* foldTraffic(bounds, events, true);
 
   return {
     ackLatency,
@@ -293,6 +318,7 @@ export const usageWindow = Effect.fn("Usage.window")(function* usageWindow<
     delivered,
     deliveryLatency,
     end: DateTime.formatIso(DateTime.makeUnsafe(bounds.end)),
+    readerless,
     replays,
     sent,
     start: DateTime.formatIso(DateTime.makeUnsafe(bounds.start)),

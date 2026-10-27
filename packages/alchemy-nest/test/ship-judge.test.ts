@@ -18,6 +18,7 @@ import {
   gitIn,
   judgeShip,
   OneWay,
+  Pass,
   Revertible,
   revertibility,
   shipJudgeCommand,
@@ -81,6 +82,8 @@ it.effect.prop(
           : []),
       ]);
 
+      events.push(event("live", "delivered", start + 1));
+
       const window = yield* usageWindow(
         { end: start + 86_400_000, start },
         Stream.fromIterable(events)
@@ -96,6 +99,104 @@ it.effect.prop(
         sent: digest.sent,
         undelivered: digest.undelivered,
       });
+    })
+);
+
+const readerlessRecipient = (index: number) =>
+  `did:web:fixture.readerless${index}.pi.fleet.invalid`;
+
+const burst = (
+  from: number,
+  delivered: number,
+  recipients: readonly string[],
+  extraReaders: readonly string[] = []
+) => [
+  ...Array.from({ length: delivered }, (_, index) => {
+    const id = `d-${from}-${index}`;
+
+    return [
+      event(id, "accepted", from + index * 10),
+      event(id, "delivered", from + index * 10 + 5),
+    ];
+  }).flat(),
+  ...recipients.map((recipient, index) =>
+    event(`r-${from}-${index}`, "accepted", from + 3000 + index, recipient)
+  ),
+  ...extraReaders.map((recipient, index) =>
+    event(`s-${from}-${index}`, "accepted", from + 4000 + index, recipient)
+  ),
+];
+
+const windowOf = (events: readonly TrafficEvent[], start: number) =>
+  usageWindow({ end: start + 600_000, start }, Stream.fromIterable(events));
+
+it.effect(
+  "mail accepted only for recipients that never receive anything is excluded and counted",
+  () =>
+    Effect.gen(function* readerlessExcluded() {
+      const start = Date.parse("2026-10-27T16:50:00Z");
+      const sha = "a".repeat(40);
+
+      const dead = Array.from({ length: 7 }, (_, index) =>
+        readerlessRecipient(index)
+      );
+
+      const baseline = yield* windowOf(
+        burst(start - 600_000, 96, []),
+        start - 600_000
+      );
+
+      const after = yield* windowOf(burst(start, 96, dead), start);
+
+      expect(after).toMatchObject({ readerless: 7, sent: 96, undelivered: 0 });
+
+      const verdict = judgeShip({
+        after,
+        baseline,
+        health: { listeners: { count: 2, expected: 2 }, status: "ok" },
+        sha,
+      });
+
+      expect(verdict).toMatchObject({ readerless: 7 });
+      expect(Schema.is(Pass)(verdict)).toBe(true);
+    })
+);
+
+it.effect(
+  "undelivered mail to a recipient that has deliveries in the window still fails",
+  () =>
+    Effect.gen(function* liveReaderStillFails() {
+      const start = Date.parse("2026-10-27T16:50:00Z");
+      const live = [recipientDid(0), recipientDid(1)];
+
+      const stuck = Array.from({ length: 12 }, (_, index) =>
+        event(`u-${index}`, "accepted", start + 5000 + index, live[index % 2])
+      );
+
+      const events = [
+        ...burst(start, 96, []),
+        event("w", "accepted", start + 1, recipientDid(1)),
+        event("w", "delivered", start + 2, recipientDid(1)),
+        ...stuck,
+      ];
+
+      const after = yield* windowOf(events, start);
+
+      const baseline = yield* windowOf(
+        burst(start - 600_000, 96, []),
+        start - 600_000
+      );
+
+      expect(after.readerless).toBe(0);
+
+      const verdict = judgeShip({
+        after,
+        baseline,
+        health: { listeners: { count: 2, expected: 2 }, status: "ok" },
+        sha: "a".repeat(40),
+      });
+
+      expect(verdict._tag).toBe("Fail");
     })
 );
 
