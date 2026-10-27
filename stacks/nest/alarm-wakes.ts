@@ -3,13 +3,36 @@ import { Schema } from "effect";
 import {
   healthVerdict,
   MailboxHealth,
+  WAKE_UNACKED_MS,
 } from "../../packages/mailbox-client/src/health.ts";
+import { ConfiguredWakeTarget } from "./alarm-config.ts";
 import type { AlarmReadingValue } from "./alarm-config.ts";
 
 export const WakeTarget = Schema.Struct({
+  configured: Schema.optionalKey(Schema.Literal(true)),
   name: Schema.String,
   owner: Schema.NullOr(Schema.String),
+  page: ConfiguredWakeTarget.fields.page,
+  unackedMinutes: ConfiguredWakeTarget.fields.unackedMinutes,
 });
+
+export const mergeWakeTargets = (
+  readers?: readonly (typeof WakeTarget.Type)[],
+  configured: readonly (typeof ConfiguredWakeTarget.Type)[] = []
+): readonly (typeof WakeTarget.Type)[] | undefined =>
+  readers === undefined && configured.length === 0
+    ? undefined
+    : [
+        ...new Map(
+          [
+            ...(readers ?? []),
+            ...configured.map((target) => ({
+              ...target,
+              configured: true as const,
+            })),
+          ].map((target) => [target.name, target])
+        ).values(),
+      ];
 
 export const WakeSighting = Schema.Struct({
   ...WakeTarget.fields,
@@ -23,8 +46,14 @@ export const stalledWakes = (
   seen.filter(
     (item) =>
       item.health !== null &&
-      healthVerdict({ ...item.health, reader: "unknown" }, now) ===
-        "agent not taking turns"
+      (item.configured === true
+        ? item.health.oldestWake !== null &&
+          now - item.health.oldestWake.at >
+            (item.unackedMinutes === undefined
+              ? WAKE_UNACKED_MS
+              : item.unackedMinutes * 60_000)
+        : healthVerdict({ ...item.health, reader: "unknown" }, now) ===
+          "agent not taking turns")
   );
 
 export const newWakeTargets = (
@@ -67,10 +96,21 @@ export const wakeReading = (
   if (stalled.length > 0) {
     return {
       evidence: stalled
-        .map(
-          (item) =>
-            `${item.name}: ${item.health?.oldestWake?.id} from ${item.health?.oldestWake?.sender}, delivered ${Math.floor((now - (item.health?.oldestWake?.at ?? now)) / 1000)}s ago, live lease`
-        )
+        .map((item) => {
+          const lease = item.health?.lease;
+
+          const age = Math.floor(
+            (now - (item.health?.oldestWake?.at ?? now)) / 1000
+          );
+
+          if (lease === null || lease === undefined) {
+            return `${item.name}: reader gone, mail waiting ${age}s, lease missing`;
+          }
+
+          return lease.expiresAt <= now
+            ? `${item.name}: reader gone, mail waiting ${age}s, lease expired`
+            : `${item.name}: mail waiting ${age}s, live lease`;
+        })
         .join("; "),
       recipients: [
         ...new Set(
@@ -90,7 +130,8 @@ export const wakeReading = (
     (item) =>
       item.health === null ||
       !item.health.complete ||
-      (item.health.oldestWake !== null &&
+      (item.configured !== true &&
+        item.health.oldestWake !== null &&
         (item.health.lease === null || item.health.lease.expiresAt <= now))
   )
     ? { status: "unknown" }
