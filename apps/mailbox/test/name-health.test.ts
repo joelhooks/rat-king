@@ -1,4 +1,5 @@
 import { it } from "@effect/vitest";
+import * as Defs from "@rat-king/lexicon/defs";
 import { MailboxHandlers } from "@rat-king/lexicon/mailbox-handlers";
 import * as Health from "@rat-king/lexicon/mailbox.nameHealth";
 import * as Acquire from "@rat-king/lexicon/runtime.acquireLease";
@@ -30,6 +31,132 @@ const Inputs = Schema.Struct({
 });
 
 const operator = "did:web:operator.example.invalid";
+
+for (const state of [
+  "accepted",
+  "queued",
+  "delivered",
+  "acked",
+  "expired",
+  "failed",
+]) {
+  it.effect.prop(
+    `${state} mail contributes to health only while unacknowledged, without a reader`,
+    [Inputs],
+    ([input]) =>
+      Effect.gen(function* proof() {
+        const sample = yield* sealed();
+        const storage = yield* testStore;
+        const intent = wakeIntent(input.kind, input.primary, input.quiet);
+
+        const receipt = yield* Schema.decodeUnknownEffect(Defs.Receipt)({
+          message: {
+            messageId: sample.envelope.aad.messageId,
+            senderDid,
+          },
+          recipientDid,
+          recordedAt: "2026-10-11T00:00:00.000Z",
+          seq: 1,
+          state,
+        });
+
+        if (input.declared) {
+          Object.assign(receipt, intent);
+        }
+
+        const envelope = yield* Schema.encodeEffect(Defs.EncryptedEnvelope)(
+          sample.envelope
+        );
+
+        storage.sql.exec(
+          "INSERT INTO messages (sender,tid,value) VALUES (?,?,?)",
+          senderDid,
+          receipt.message.messageId,
+          JSON.stringify({
+            admission: { ...receipt, state: "accepted" },
+            current: receipt,
+            envelope,
+          })
+        );
+
+        const params = yield* Schema.decodeUnknownEffect(Health.Params)({
+          name: "recipient",
+          recipientDid,
+        });
+
+        const health = yield* nameHealth(storage.sql, params, operator, [
+          operator,
+        ]);
+
+        const pending = ["accepted", "queued", "delivered"].includes(state);
+
+        expect(health.lease).toBeUndefined();
+        expect(health.complete).toBe(!pending || input.declared);
+        expect(health.quietUnacked).toBe(
+          pending && input.declared && !intent.woke && input.kind !== "data"
+            ? 1
+            : 0
+        );
+        expect(health.oldestWake).toEqual(
+          pending && input.declared && intent.woke
+            ? {
+                id: receipt.message.messageId,
+                recordedAt: receipt.recordedAt,
+                sender: senderDid,
+                woke: true,
+              }
+            : undefined
+        );
+      }).pipe(Effect.scoped)
+  );
+}
+
+it.effect.prop(
+  "unacknowledged health keeps its 10000-row bound and reports truncation",
+  [
+    Schema.Int.check(Schema.isBetween({ maximum: 10_001, minimum: 9999 })),
+    Schema.Literals(["accepted", "queued", "delivered"]),
+  ],
+  ([count, state]) =>
+    Effect.gen(function* proof() {
+      const sample = yield* sealed();
+      const storage = yield* testStore;
+
+      const receipt = yield* Schema.decodeUnknownEffect(Defs.Receipt)({
+        message: {
+          messageId: sample.envelope.aad.messageId,
+          senderDid,
+        },
+        recipientDid,
+        recordedAt: "2026-10-11T00:00:00.000Z",
+        seq: 1,
+        state,
+        wakeReason: "quiet",
+        woke: false,
+      });
+
+      storage.sql.exec(
+        "WITH RECURSIVE rows(n) AS (SELECT 1 UNION ALL SELECT n+1 FROM rows WHERE n<?) INSERT INTO messages (sender,tid,value) SELECT ?,CAST(n AS TEXT),json_set(?,'$.admission.seq',n,'$.current.seq',n) FROM rows",
+        count,
+        senderDid,
+        JSON.stringify({ admission: receipt, current: receipt })
+      );
+
+      const params = yield* Schema.decodeUnknownEffect(Health.Params)({
+        name: "recipient",
+        recipientDid,
+      });
+
+      const health = yield* nameHealth(storage.sql, params, operator, [
+        operator,
+      ]);
+
+      expect(health.complete).toBe(count <= 10_000);
+      expect(health.quietUnacked).toBe(Math.min(count, 10_000));
+      expect(health.oldestWake).toBeUndefined();
+    }).pipe(Effect.scoped),
+  { arbitrary: { runs: 6 } }
+);
 
 it.effect.prop(
   "encrypted routing intent survives admission and delivery; ack clears metadata without exposing content",
