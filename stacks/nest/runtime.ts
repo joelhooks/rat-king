@@ -26,6 +26,7 @@ import { listenerProbe } from "../../packages/alchemy-nest/src/probes.ts";
 import { stopUnits } from "../../packages/alchemy-nest/src/startup-contract.ts";
 import { deleteDeclaredUnit } from "../../packages/alchemy-nest/src/systemd.ts";
 import { removeStoreSockets } from "../../packages/alchemy-nest/src/unit-cleanup.ts";
+import { withAlarmHeartbeat } from "./alarm-heartbeat.ts";
 import { DeployMarker } from "./alarm-sources.ts";
 import type { WindowReceipt } from "./alarm-sources.ts";
 import { readWindowReceipts } from "./alarm-windows.ts";
@@ -45,6 +46,7 @@ import {
 import { stageShipUnits } from "./ship-unit-stage.ts";
 import { connection, nestStack, nest } from "./stack.ts";
 import { StageConfig, FleetError } from "./stage-config.ts";
+import type { StageConfigValue } from "./stage-config.ts";
 
 export const claudeMtimeScript = String.raw`
 import glob, json, os, sys
@@ -560,7 +562,7 @@ export const readAlarmWindowReceipts = (markerPath: string) =>
     Effect.orElseSucceed((): readonly (typeof WindowReceipt.Type)[] => [])
   );
 
-export const healthDigest = (previous?: string) =>
+export const healthDigest = (previous?: string, config?: StageConfigValue) =>
   Effect.gen(function* collectNestHealth() {
     const stage = yield* stageName;
 
@@ -589,7 +591,11 @@ export const healthDigest = (previous?: string) =>
       ),
     });
 
-    return { ...facts, ...assess(facts, prior) };
+    const digest = { ...facts, ...assess(facts, prior) };
+
+    return config === undefined
+      ? digest
+      : yield* withAlarmHeartbeat(config, digest);
   }).pipe(
     Effect.provide(
       Layer.mergeAll(

@@ -40,7 +40,8 @@ export const prepareAlarmMail = Effect.fn("Alarm.prepareMail")(
   function* prepareAlarmMail(
     config: StageConfigValue,
     names: readonly string[],
-    text: string
+    text: string,
+    skipUnknown?: boolean
   ) {
     if (config.alarm === undefined || config.ship === undefined) {
       return yield* new FleetError({
@@ -62,7 +63,11 @@ export const prepareAlarmMail = Effect.fn("Alarm.prepareMail")(
       )
     );
 
-    const prepared = yield* prepareShipNotification({ ...config, ship }, text);
+    const prepared = yield* prepareShipNotification(
+      { ...config, ship },
+      text,
+      skipUnknown
+    );
 
     if (
       prepared.targets.find((target) => target.name === "operator")?.did !==

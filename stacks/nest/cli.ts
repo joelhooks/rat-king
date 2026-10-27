@@ -217,7 +217,9 @@ const program = Effect.gen(function* launcher() {
 
         if (operation === "digest") {
           return yield* Console.log(
-            yield* digest(config, runtime.healthDigest)
+            yield* digest(config, (prior) =>
+              runtime.healthDigest(prior, config)
+            )
           );
         }
 
@@ -225,7 +227,8 @@ const program = Effect.gen(function* launcher() {
           const facts = yield* runtime.healthDigest(
             previous === undefined
               ? undefined
-              : yield* fs.readFileString(previous)
+              : yield* fs.readFileString(previous),
+            config
           );
 
           yield* Console.log(yield* Schema.encodeEffect(DigestJson)(facts));

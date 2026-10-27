@@ -66,7 +66,11 @@ const step = <A, E extends TaggedFailure, R>(
   );
 
 export const prepareShipNotification = Effect.fn("Ship.prepareNotification")(
-  function* prepareShipNotification(config: StageConfigValue, text: string) {
+  function* prepareShipNotification(
+    config: StageConfigValue,
+    text: string,
+    skipUnknown?: boolean
+  ) {
     const { ship } = config;
 
     if (ship === undefined) {
@@ -94,9 +98,21 @@ export const prepareShipNotification = Effect.fn("Ship.prepareNotification")(
       Effect.gen(function* resolveTargets() {
         const directory = yield* Directory;
 
-        return yield* Effect.all(
-          ship.notify.to.map((name) => directory.resolve(name))
+        const resolved = yield* Effect.all(
+          ship.notify.to.map((name) =>
+            directory
+              .resolve(name)
+              .pipe(
+                Effect.catchTag("UnknownName", (error) =>
+                  skipUnknown === true
+                    ? Effect.succeed(null)
+                    : Effect.fail(error)
+                )
+              )
+          )
         );
+
+        return resolved.filter((target) => target !== null);
       }).pipe(
         Effect.provide(directoryLayer),
         Effect.provideService(Settings, {

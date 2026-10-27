@@ -31,7 +31,8 @@ export const collectWakeHealth = Effect.fn("Alarm.collectWakeHealth")(
     const prepared = yield* prepareAlarmMail(
       config,
       unique.map((reader) => reader.name),
-      ""
+      "",
+      true
     );
 
     return yield* Effect.forEach(
