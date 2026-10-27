@@ -14,7 +14,9 @@
         "quietUnacked": { "type": "integer", "minimum": 0 },
         "lastAck": { "type": "string", "format": "datetime" },
         "lease": { "type": "ref", "ref": "#lease" },
-        "oldestWake": { "type": "ref", "ref": "#wake" }
+        "oldestWake": { "type": "ref", "ref": "#wake" },
+        "oldestWakeSinceAck": { "type": "ref", "ref": "#wake" },
+        "wakesSinceAck": { "type": "integer", "minimum": 0 }
       } } },
       "errors": [{"name":"AuthRequired"}, {"name":"Forbidden"}, {"name":"MailboxUnavailable"}]
     },

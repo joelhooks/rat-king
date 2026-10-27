@@ -25,6 +25,7 @@ export const MailboxHealth = Schema.Struct({
     })
   ),
   oldestWake: Schema.NullOr(Wake),
+  oldestWakeSinceAck: Schema.optionalKey(Schema.NullOr(Wake)),
   quietUnacked: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
 });
 
@@ -89,7 +90,7 @@ export const readMailboxHealth = Effect.fn("Mailbox.readHealth")(
       response.body
     );
 
-    return yield* Schema.decodeEffect(MailboxHealth)({
+    const facts: typeof MailboxHealth.Encoded = {
       complete: value.complete,
       lastAck: value.lastAck === undefined ? null : Date.parse(value.lastAck),
       lease:
@@ -110,6 +111,24 @@ export const readMailboxHealth = Effect.fn("Mailbox.readHealth")(
               sender: value.oldestWake.sender,
             },
       quietUnacked: value.quietUnacked,
+    };
+
+    if (value.wakesSinceAck === undefined) {
+      return yield* Schema.decodeEffect(MailboxHealth)(facts);
+    }
+
+    const since = value.oldestWakeSinceAck;
+
+    return yield* Schema.decodeEffect(MailboxHealth)({
+      ...facts,
+      oldestWakeSinceAck:
+        since === undefined
+          ? null
+          : {
+              at: Date.parse(since.recordedAt),
+              id: since.id,
+              sender: since.sender,
+            },
     });
   },
   (effect) =>

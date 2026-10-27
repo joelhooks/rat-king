@@ -259,7 +259,14 @@ it.effect.prop(
       );
       expect(Object.keys(before).toSorted()).toEqual(
         input.declared && intent.woke
-          ? ["complete", "lease", "oldestWake", "quietUnacked"]
+          ? [
+              "complete",
+              "lease",
+              "oldestWake",
+              "oldestWakeSinceAck",
+              "quietUnacked",
+              "wakesSinceAck",
+            ]
           : ["complete", "lease", "quietUnacked"]
       );
       expect(Object.keys(before.lease ?? {}).toSorted()).toEqual([
@@ -284,7 +291,9 @@ it.effect.prop(
         "lastAck",
         "lease",
         "oldestWake",
+        "oldestWakeSinceAck",
         "quietUnacked",
+        "wakesSinceAck",
       ]);
 
       const denied = yield* nameHealth(storage.sql, params, recipientDid, [
@@ -305,4 +314,118 @@ it.effect.prop(
       expect(after.lastAck).toBe("2026-10-11T00:03:01.000Z");
       expect(after.lease).toEqual(before.lease);
     }).pipe(Effect.scoped)
+);
+
+it.effect.prop(
+  "the oldest wake since the last ack ignores earlier unacked mail in every pending state",
+  [
+    Schema.Literals(["accepted", "queued", "delivered"]),
+    Schema.Literals(["accepted", "queued", "delivered"]),
+    Schema.Boolean,
+  ],
+  ([before, after, acked]) =>
+    Effect.gen(function* proof() {
+      const sample = yield* sealed();
+      const storage = yield* testStore;
+
+      const insert = (id: string, state: string, recordedAt: string) =>
+        Effect.gen(function* put() {
+          const receipt = yield* Schema.decodeUnknownEffect(Defs.Receipt)({
+            message: { messageId: id, senderDid },
+            recipientDid,
+            recordedAt,
+            seq: 1,
+            state,
+            wakeReason: "primary",
+            woke: true,
+          });
+
+          storage.sql.exec(
+            "INSERT INTO messages (sender,tid,value) VALUES (?,?,?)",
+            senderDid,
+            id,
+            JSON.stringify({
+              admission: { ...receipt, state: "accepted" },
+              current: receipt,
+            })
+          );
+        });
+
+      yield* insert(
+        sample.envelope.aad.messageId,
+        before,
+        "2026-10-11T00:00:00.000Z"
+      );
+
+      if (acked) {
+        yield* insert("2222222222222", "acked", "2026-10-11T01:00:00.000Z");
+      }
+
+      yield* insert("3333333333333", after, "2026-10-11T02:00:00.000Z");
+
+      const params = yield* Schema.decodeUnknownEffect(Health.Params)({
+        name: "recipient",
+        recipientDid,
+      });
+
+      const health = yield* nameHealth(storage.sql, params, operator, [
+        operator,
+      ]);
+
+      expect(health.oldestWake?.recordedAt).toBe("2026-10-11T00:00:00.000Z");
+      expect(health.oldestWakeSinceAck?.recordedAt).toBe(
+        acked ? "2026-10-11T02:00:00.000Z" : "2026-10-11T00:00:00.000Z"
+      );
+      expect(health.wakesSinceAck).toBe(acked ? 1 : 2);
+    }).pipe(Effect.scoped),
+  { arbitrary: { runs: 9 } }
+);
+
+it.effect("a reader that acked everything has no wake since the ack", () =>
+  Effect.gen(function* proof() {
+    const sample = yield* sealed();
+    const storage = yield* testStore;
+
+    const insert = (id: string, state: string, recordedAt: string) =>
+      Effect.gen(function* put() {
+        const receipt = yield* Schema.decodeUnknownEffect(Defs.Receipt)({
+          message: { messageId: id, senderDid },
+          recipientDid,
+          recordedAt,
+          seq: 1,
+          state,
+          wakeReason: "primary",
+          woke: true,
+        });
+
+        storage.sql.exec(
+          "INSERT INTO messages (sender,tid,value) VALUES (?,?,?)",
+          senderDid,
+          id,
+          JSON.stringify({
+            admission: { ...receipt, state: "accepted" },
+            current: receipt,
+          })
+        );
+      });
+
+    yield* insert(
+      sample.envelope.aad.messageId,
+      "queued",
+      "2026-10-11T00:00:00.000Z"
+    );
+
+    yield* insert("2222222222222", "acked", "2026-10-11T01:00:00.000Z");
+
+    const params = yield* Schema.decodeUnknownEffect(Health.Params)({
+      name: "recipient",
+      recipientDid,
+    });
+
+    const health = yield* nameHealth(storage.sql, params, operator, [operator]);
+
+    expect(health.oldestWake?.recordedAt).toBe("2026-10-11T00:00:00.000Z");
+    expect(health.oldestWakeSinceAck).toBeUndefined();
+    expect(health.wakesSinceAck).toBe(0);
+  }).pipe(Effect.scoped)
 );

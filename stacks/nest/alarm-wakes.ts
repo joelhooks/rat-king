@@ -44,8 +44,13 @@ const wakeLimit = (item: typeof WakeSighting.Type) =>
     ? item.unackedMinutes * 60_000
     : WAKE_UNACKED_MS;
 
+const waiting = (health: NonNullable<typeof WakeSighting.Type.health>) =>
+  health.oldestWakeSinceAck === undefined
+    ? health.oldestWake
+    : health.oldestWakeSinceAck;
+
 const overdue = (item: typeof WakeSighting.Type, now: number) => {
-  const oldest = item.health?.oldestWake ?? null;
+  const oldest = item.health === null ? null : waiting(item.health);
 
   return oldest !== null && now - oldest.at > wakeLimit(item);
 };
@@ -55,6 +60,7 @@ const progressing = (item: typeof WakeSighting.Type, now: number) => {
   const oldest = item.health?.oldestWake ?? null;
 
   return (
+    item.health?.oldestWakeSinceAck === undefined &&
     lastAck !== null &&
     oldest !== null &&
     lastAck >= oldest.at &&
@@ -62,10 +68,23 @@ const progressing = (item: typeof WakeSighting.Type, now: number) => {
   );
 };
 
+const agedOut = (item: typeof WakeSighting.Type, now: number) => {
+  const oldest = item.health?.oldestWake ?? null;
+
+  return oldest !== null && now - oldest.at > wakeLimit(item);
+};
+
 export const staleSingleWakes = (
   seen: readonly (typeof WakeSighting.Type)[],
   now: number
-) => seen.filter((item) => overdue(item, now) && progressing(item, now));
+) =>
+  seen.filter(
+    (item) =>
+      agedOut(item, now) &&
+      (item.health?.oldestWakeSinceAck === undefined
+        ? progressing(item, now)
+        : !overdue(item, now))
+  );
 
 export const stalledWakes = (
   seen: readonly (typeof WakeSighting.Type)[],
@@ -77,8 +96,14 @@ export const stalledWakes = (
       !progressing(item, now) &&
       (item.configured === true
         ? overdue(item, now)
-        : healthVerdict({ ...item.health, reader: "unknown" }, now) ===
-          "agent not taking turns")
+        : healthVerdict(
+            {
+              ...item.health,
+              oldestWake: waiting(item.health),
+              reader: "unknown",
+            },
+            now
+          ) === "agent not taking turns")
   );
 
 export const newWakeTargets = (
@@ -126,7 +151,10 @@ export const wakeReading = (
           const lease = item.health?.lease;
 
           const age = Math.floor(
-            (now - (item.health?.oldestWake?.at ?? now)) / 1000
+            (now -
+              ((item.health === null ? null : waiting(item.health))?.at ??
+                now)) /
+              1000
           );
 
           if (lease === null || lease === undefined) {
