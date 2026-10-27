@@ -36,14 +36,7 @@ export declare const Output: Schema.StructWithRest<Schema.Struct<{
         readonly sender: Schema.brand<Schema.String, "Lexicon:did">;
         readonly woke: Schema.Boolean;
     }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
-    readonly oldestWakeSinceAck: Schema.optionalKey<Schema.StructWithRest<Schema.Struct<{
-        readonly id: Schema.brand<Schema.String, "Lexicon:tid">;
-        readonly recordedAt: Schema.brand<Schema.String, "Lexicon:datetime">;
-        readonly sender: Schema.brand<Schema.String, "Lexicon:did">;
-        readonly woke: Schema.Boolean;
-    }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
     readonly quietUnacked: Schema.Int;
-    readonly wakesSinceAck: Schema.optionalKey<Schema.Int>;
 }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
 export type OutputValue = typeof Output.Type;
 export declare const ParamsFromQuery: Schema.compose<Schema.StructWithRest<Schema.Struct<{
@@ -96,14 +89,7 @@ export declare const Method: {
             readonly sender: Schema.brand<Schema.String, "Lexicon:did">;
             readonly woke: Schema.Boolean;
         }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
-        readonly oldestWakeSinceAck: Schema.optionalKey<Schema.StructWithRest<Schema.Struct<{
-            readonly id: Schema.brand<Schema.String, "Lexicon:tid">;
-            readonly recordedAt: Schema.brand<Schema.String, "Lexicon:datetime">;
-            readonly sender: Schema.brand<Schema.String, "Lexicon:did">;
-            readonly woke: Schema.Boolean;
-        }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
         readonly quietUnacked: Schema.Int;
-        readonly wakesSinceAck: Schema.optionalKey<Schema.Int>;
     }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
     readonly outputEncoding: "application/json";
     readonly params: Schema.StructWithRest<Schema.Struct<{

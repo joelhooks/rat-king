@@ -20,11 +20,6 @@ export declare const MailboxHealth: Schema.Struct<{
         readonly id: Schema.String;
         readonly sender: Schema.String;
     }>>;
-    readonly oldestWakeSinceAck: Schema.optionalKey<Schema.NullOr<Schema.Struct<{
-        readonly at: Schema.Finite;
-        readonly id: Schema.String;
-        readonly sender: Schema.String;
-    }>>>;
     readonly quietUnacked: Schema.Int;
 }>;
 export type MailboxHealthValue = typeof MailboxHealth.Type;
@@ -45,11 +40,6 @@ export declare const readMailboxHealth: (transport: {
         readonly pane: string | null;
     } | null;
     readonly oldestWake: {
-        readonly at: number;
-        readonly id: string;
-        readonly sender: string;
-    } | null;
-    readonly oldestWakeSinceAck?: {
         readonly at: number;
         readonly id: string;
         readonly sender: string;

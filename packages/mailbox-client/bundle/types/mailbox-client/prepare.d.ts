@@ -156,11 +156,6 @@ export declare const prepare: (options: PrepareOptions) => Effect.Effect<{
             readonly id: string;
             readonly sender: string;
         } | null;
-        readonly oldestWakeSinceAck?: {
-            readonly at: number;
-            readonly id: string;
-            readonly sender: string;
-        } | null;
         readonly quietUnacked: number;
     }, MailboxClientError, never>;
     mailbox: {
