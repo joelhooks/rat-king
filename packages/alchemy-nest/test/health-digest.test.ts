@@ -90,7 +90,7 @@ it("a healthy host reports ok with no reasons", () => {
 });
 
 it.prop(
-  "shutdown headroom warnings appear in the health digest without declaring an outage",
+  "anonymous memory warnings appear in the health digest without declaring an outage",
   [StopMemory],
   ([stopMemory]) => {
     const reasons = stopMemoryWarnings(stopMemory);
@@ -272,8 +272,7 @@ const probes = {
     argv.includes(nodeService) && argv.includes("--property=ActiveState"),
   "services.seaweedfs": (argv: readonly string[]) =>
     argv.includes(storeService) && argv.includes("--property=ActiveState"),
-  stopMemory: (argv: readonly string[]) =>
-    argv.includes("--property=MemoryCurrent"),
+  stopMemory: (argv: readonly string[]) => argv.includes("memory"),
   "storage.dataDirs": (argv: readonly string[]) => argv[0] === "du",
   "storage.objects": (argv: readonly string[]) => argv.includes("volumes"),
   "storage.slots": (argv: readonly string[]) => argv.includes("diagnose"),
@@ -297,8 +296,23 @@ const reply = (argv: readonly string[]) => {
       .join("\n");
   }
 
-  if (argv.includes("--property=MemoryCurrent")) {
-    return "MemoryCurrent=1073741824\nMemoryMax=4831838208\nMemoryPeak=2147483648\n";
+  if (argv.includes("memory")) {
+    return JSON.stringify({
+      celld: {
+        anon: 536_870_912,
+        current: 1_073_741_824,
+        file: 536_870_912,
+        max: 8_589_934_592,
+        peak: 2_147_483_648,
+      },
+      seaweedfs: {
+        anon: 1_073_741_824,
+        current: 2_147_483_648,
+        file: 1_073_741_824,
+        max: 4_831_838_208,
+        peak: 4_294_967_296,
+      },
+    });
   }
 
   if (argv.includes("--property=ActiveState")) {
@@ -387,14 +401,18 @@ it.effect.prop(
           ? null
           : {
               celld: {
+                anon: 536_870_912,
                 current: 1_073_741_824,
-                max: 4_831_838_208,
+                file: 536_870_912,
+                max: 8_589_934_592,
                 peak: 2_147_483_648,
               },
-              slice: {
-                current: 1_073_741_824,
+              seaweedfs: {
+                anon: 1_073_741_824,
+                current: 2_147_483_648,
+                file: 1_073_741_824,
                 max: 4_831_838_208,
-                peak: 2_147_483_648,
+                peak: 4_294_967_296,
               },
             }
       );

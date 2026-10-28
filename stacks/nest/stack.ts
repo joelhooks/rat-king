@@ -63,6 +63,7 @@ import { fleetStoreCredentials } from "./credentials.ts";
 import { restoreOwnedData } from "./restore.ts";
 import type { RestoreRequest } from "./restore.ts";
 import { guardedShell } from "./ship-restart.ts";
+import { fleetMemoryLimits } from "./stop-memory.ts";
 
 const delegationVars = Config.Boolean("RAT_KING_DELEGATION").pipe(
   Config.withDefault(false),
@@ -311,7 +312,7 @@ export const nestStack = (restore?: RestoreRequest) =>
       const bucket = yield* ObjectStore.Bucket("store", {
         ...(yield* fleetStoreCredentials()),
         host: node,
-        memoryMax: "4608M",
+        memoryMax: fleetMemoryLimits.seaweedfs,
         name: yield* Config.String("RAT_KING_BUCKET").pipe(
           Config.withDefault("rat-king-cells")
         ),
@@ -326,7 +327,7 @@ export const nestStack = (restore?: RestoreRequest) =>
         binary: fleetCelldBinary(node.home),
         bucket,
         host: node,
-        memoryMax: "4608M",
+        memoryMax: fleetMemoryLimits.celld,
         prepared: staged,
         purgeOnDelete: !recoverState,
         tuning: { CELLD_LTX_LOCAL_L0_KEEP: "32" },

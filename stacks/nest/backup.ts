@@ -170,7 +170,7 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
               new HostError({
                 operation: "arm",
                 reason:
-                  "Backup stop refused: unit age or shutdown memory headroom was not proved; mailbox left running. Inspect BACKUP_STOP_MEMORY and unit accounting, restore headroom and retry.",
+                  "Backup could not arm early-stop recovery; mailbox left running. Inspect backup unit age and the restart marker before retrying.",
               })
           )
         );

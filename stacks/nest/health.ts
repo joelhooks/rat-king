@@ -322,12 +322,6 @@ export const unixInstant = (value: string | undefined) => {
 const count = (value: string | undefined) =>
   /^\d+$/u.test(value ?? "") ? Number(value) : null;
 
-const memoryBytes = (value: string | undefined) => {
-  const bytes = count(value);
-
-  return bytes !== null && Number.isSafeInteger(bytes) ? bytes : null;
-};
-
 export const backupAgeHours = (name: string, observedAt: DateTime.Utc) => {
   const match =
     /^(?<y>\d{4})(?<mo>\d{2})(?<d>\d{2})T(?<h>\d{2})(?<mi>\d{2})(?<s>\d{2})/u.exec(
@@ -605,15 +599,6 @@ export const collectHealth = Effect.fn("Nest.health")(function* collectHealth(
     })
   );
 
-  const memoryCharge = (unit: string) =>
-    show(unit, ["MemoryCurrent", "MemoryMax", "MemoryPeak"]).pipe(
-      Effect.map((props) => ({
-        current: memoryBytes(props.get("MemoryCurrent")),
-        max: memoryBytes(props.get("MemoryMax")),
-        peak: memoryBytes(props.get("MemoryPeak")),
-      }))
-    );
-
   const facts = yield* Effect.all(
     {
       celld: field("services.celld", unitState(nodeService)),
@@ -643,10 +628,9 @@ export const collectHealth = Effect.fn("Nest.health")(function* collectHealth(
       slots: field("storage.slots", slots),
       stopMemory: field(
         "stopMemory",
-        Effect.all({
-          celld: memoryCharge(nodeService),
-          slice: memoryCharge("rat-king.slice"),
-        })
+        stdout(["/usr/bin/python3", "-c", healthScript, "memory"]).pipe(
+          Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(StopMemory)))
+        )
       ),
     },
     { concurrency: 4 }

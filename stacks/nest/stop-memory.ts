@@ -1,35 +1,51 @@
 import { Schema } from "effect";
 
-export const stopReserveBytes = 2_684_354_560;
+export const anonWarningFraction = 0.6;
 
-export const stopWarningBytes = 3_221_225_472;
+export const fleetMemoryLimits = {
+  celld: "8G",
+  seaweedfs: "4608M",
+  slice: "14G",
+} as const;
 
 const Bytes = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
 export const MemoryCharge = Schema.Struct({
+  anon: Schema.optionalKey(Schema.NullOr(Bytes)),
   current: Schema.NullOr(Bytes),
+  file: Schema.optionalKey(Schema.NullOr(Bytes)),
   max: Schema.NullOr(Bytes),
   peak: Schema.NullOr(Bytes),
 });
 
 export const StopMemory = Schema.Struct({
   celld: MemoryCharge,
-  slice: MemoryCharge,
+  seaweedfs: Schema.optionalKey(MemoryCharge),
+  slice: Schema.optionalKey(MemoryCharge),
 });
 
 export const stopMemoryWarnings = (memory: typeof StopMemory.Type) =>
-  Object.entries(memory).flatMap(([name, charge]) => {
-    if (charge.current === null || charge.max === null) {
+  (["celld", "seaweedfs"] as const).flatMap((name) => {
+    const charge = memory[name];
+
+    if (charge === undefined) {
+      return [];
+    }
+
+    if (
+      charge.anon === undefined ||
+      charge.anon === null ||
+      charge.max === null ||
+      charge.max === 0
+    ) {
       return [
-        `${name} shutdown memory headroom unavailable; inspect unit memory accounting before backup`,
+        `${name} anonymous memory accounting unavailable; inspect cgroup memory.stat and unit cap`,
       ];
     }
 
-    const free = charge.max - charge.current;
-
-    return free < stopWarningBytes
+    return charge.anon / charge.max >= anonWarningFraction
       ? [
-          `${name} shutdown memory headroom ${free} bytes; backup needs ${stopReserveBytes}; inspect memory growth before the nightly stop`,
+          `${name} anonymous memory ${charge.anon} bytes is at least 60% of unit cap ${charge.max} bytes; inspect anonymous growth before the nightly backup`,
         ]
       : [];
   });

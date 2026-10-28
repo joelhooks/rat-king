@@ -24,7 +24,7 @@ const node = {
 };
 
 it.effect.prop(
-  "the fleet cap renders 8G without changing proof, pilot or other instance defaults",
+  "the fleet cap renders 14G without changing proof, pilot or other instance defaults",
   { stage: Arbitrary.schema(Schema.Literals(["fleet", "pilot", "proof"])) },
   ({ stage }) =>
     Effect.gen(function* sliceContract() {
@@ -43,7 +43,7 @@ it.effect.prop(
       expect(
         renderUnit(sliceUnit(node.home, config.memoryMax, config.cpuQuota))
       ).toContain(
-        `MemoryMax=${{ fleet: "8G", pilot: "1536M", proof: "4G" }[stage]}\n`
+        `MemoryMax=${{ fleet: "14G", pilot: "1536M", proof: "4G" }[stage]}\n`
       );
       expect(
         renderUnit(

@@ -5,7 +5,7 @@ import { expect } from "vitest";
 
 import { configuration } from "../../../stacks/nest/config.ts";
 
-it.effect("the fleet slice defaults to 8G when no cap is configured", () =>
+it.effect("the fleet slice defaults to 14G when no cap is configured", () =>
   Effect.gen(function* fleetDefault() {
     const config = yield* configuration({
       dataRoot: "/srv/example",
@@ -24,6 +24,6 @@ it.effect("the fleet slice defaults to 8G when no cap is configured", () =>
       )
     );
 
-    expect(config.memoryMax).toBe("8G");
+    expect(config.memoryMax).toBe("14G");
   }).pipe(Effect.provide(NodeServices.layer))
 );

@@ -1,5 +1,8 @@
+import { unitMemoryScript } from "./memory-script.ts";
+
 export const healthScript = String.raw`
-import json, os, pathlib, re, sys, urllib.request
+import json, os, pathlib, re, subprocess, sys, urllib.request
+${unitMemoryScript}
 BACKUP_NAME = r'[0-9]{8}T[0-9]{6}\.[0-9]{6}Z-[0-9a-f]{32}'
 ARCHIVES = {4: ['mailbox.tar.gz'], 3: ['objects.tar.gz', 'celld.tar.gz'], 2: ['objects.tar', 'celld.tar']}
 def regular(path):
@@ -36,6 +39,8 @@ if operation == 'volumes':
     print(json.dumps(volumes(sys.argv[2])))
 elif operation == 'share':
     print(json.dumps({'newest': newest(sys.argv[2])}))
+elif operation == 'memory':
+    print(json.dumps({'celld': unit_memory('rat-king-celld.service'), 'seaweedfs': unit_memory('rat-king-seaweedfs.service')}))
 else:
-    raise RuntimeError('expected volumes or share')
+    raise RuntimeError('expected volumes, share or memory')
 `;

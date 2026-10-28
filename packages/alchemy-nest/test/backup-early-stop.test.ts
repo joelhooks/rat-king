@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory() as tmp:
         except RuntimeError:
             assert not expected
         else: assert expected
-    assert len(calls) == (3 if 0 <= age < 1200 else 1), 'Guard contacted storage or stopped celld'
+    assert len(calls) == (4 if 0 <= age < 1200 else 1), 'Guard contacted storage or stopped celld'
     marker = data/'.mailbox-backup-restart-required'
     assert marker.exists() == (0 <= age < 1200)
     # An absent unit timestamp fails closed before arming.
