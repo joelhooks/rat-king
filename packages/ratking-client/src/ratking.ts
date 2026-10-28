@@ -76,6 +76,7 @@ import {
   readerRetryDelay,
   recoverHeld,
   successionRetryDelay,
+  UNIDENTIFIED,
 } from "./lease-recovery.ts";
 import {
   AgentName,
@@ -672,6 +673,8 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
   const attached = yield* Ref.make(false);
   const lastLease = yield* Ref.make(Option.none<LeaseFence>());
 
+  const heldSince = yield* Ref.make(Option.none<number>());
+
   const front = yield* Ref.make(Option.none<FrontLoops>());
   const seen = recentMap<string, true>(4096);
   const acknowledgments = new Map<string, MessageMeta["ack"]>();
@@ -1206,6 +1209,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                 })),
                 Ref.set(attempts, 0),
                 Ref.set(adopting, false),
+                Ref.set(heldSince, Option.none()),
                 Clock.currentTimeMillis.pipe(
                   Effect.flatMap((now) =>
                     Ref.update(health, (current) => ({
@@ -2107,7 +2111,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           live: Date.parse(lease.expiresAt) > now,
           session: Schema.is(Schema.String)(lease.harness.sessionId)
             ? lease.harness.sessionId
-            : "unknown",
+            : UNIDENTIFIED,
         }))
       );
     });
@@ -2431,10 +2435,25 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           (error) =>
             Schema.is(MailboxClientError)(error) && error.error === "LeaseHeld",
           () =>
-            facts.successor === true
-              ? awaitSuccession(own.name, startedAt)
-              : recoverHeld({
-                  park: waitForClaim(own.name),
+            Effect.all([Ref.get(heldSince), Clock.currentTimeMillis]).pipe(
+              Effect.tap(([since, now]) =>
+                Option.isSome(since)
+                  ? Effect.void
+                  : Ref.set(heldSince, Option.some(now))
+              ),
+              Effect.map(([since, now]) =>
+                Option.match(since, {
+                  onNone: () => 0,
+                  onSome: (first) => now - first,
+                })
+              ),
+              Effect.flatMap((heldFor) =>
+                recoverHeld({
+                  heldFor,
+                  park:
+                    facts.successor === true
+                      ? awaitSuccession(own.name, startedAt)
+                      : waitForClaim(own.name),
                   resolve: withClient(own, [], (client) =>
                     holderOf(client, own.did)
                   ).pipe(Effect.mapError(unreachable)),
@@ -2443,6 +2462,8 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                   ),
                   session: facts.session,
                 })
+              )
+            )
         )
       )
     ).pipe(Effect.forever);
