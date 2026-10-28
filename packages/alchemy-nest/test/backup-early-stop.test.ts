@@ -15,8 +15,9 @@ with tempfile.TemporaryDirectory() as tmp:
     calls = []
     def command(argv, **kwargs):
         calls.append(argv)
-        assert argv[2] == 'show' and '--property=ExecMainStartTimestampMonotonic' in argv
-        return subprocess.CompletedProcess(argv, 0, str(started)+'\n', '')
+        assert argv[2] == 'show'
+        text = str(started)+'\n' if '--property=ExecMainStartTimestampMonotonic' in argv else 'MemoryCurrent=0\nMemoryMax=8589934592\nMemoryPeak=0\n'
+        return subprocess.CompletedProcess(argv, 0, text, '')
     subprocess.run = command
     readings = iter([(started + age*1000000)*1000, (started + (1200 if cross else age)*1000000)*1000])
     time.monotonic_ns = lambda: next(readings)
@@ -27,7 +28,7 @@ with tempfile.TemporaryDirectory() as tmp:
         except RuntimeError:
             assert not expected
         else: assert expected
-    assert len(calls) == 1, 'Guard contacted storage or stopped celld'
+    assert len(calls) == (3 if 0 <= age < 1200 else 1), 'Guard contacted storage or stopped celld'
     marker = data/'.mailbox-backup-restart-required'
     assert marker.exists() == (0 <= age < 1200)
     # An absent unit timestamp fails closed before arming.

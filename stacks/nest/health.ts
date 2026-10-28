@@ -10,6 +10,7 @@ import {
 } from "../../packages/alchemy-nest/src/listeners.ts";
 import { nodeService, storeService } from "./backup.ts";
 import { healthScript } from "./health-script.ts";
+import { StopMemory, stopMemoryWarnings } from "./stop-memory.ts";
 
 export const backupService = "rat-king-mailbox-backup.service";
 
@@ -79,6 +80,7 @@ export const Facts = Schema.Struct({
     celld: Schema.NullOr(UnitState),
     seaweedfs: Schema.NullOr(UnitState),
   }),
+  stopMemory: Schema.optionalKey(Schema.NullOr(StopMemory)),
   storage: Schema.Struct({
     dataDirs: Schema.NullOr(Schema.Struct({ celld: Count, seaweedfs: Count })),
     objects: Schema.NullOr(
@@ -255,6 +257,13 @@ export const assess = (facts: HealthFacts, previous?: HealthDigest) => {
     backupFindings(facts),
     {
       failures: [],
+      warnings:
+        facts.stopMemory === null || facts.stopMemory === undefined
+          ? []
+          : stopMemoryWarnings(facts.stopMemory),
+    },
+    {
+      failures: [],
       warnings: Object.entries(facts.unavailable).map(
         ([field, reason]) => `${field} unavailable: ${reason}`
       ),
@@ -312,6 +321,12 @@ export const unixInstant = (value: string | undefined) => {
 
 const count = (value: string | undefined) =>
   /^\d+$/u.test(value ?? "") ? Number(value) : null;
+
+const memoryBytes = (value: string | undefined) => {
+  const bytes = count(value);
+
+  return bytes !== null && Number.isSafeInteger(bytes) ? bytes : null;
+};
 
 export const backupAgeHours = (name: string, observedAt: DateTime.Utc) => {
   const match =
@@ -590,6 +605,15 @@ export const collectHealth = Effect.fn("Nest.health")(function* collectHealth(
     })
   );
 
+  const memoryCharge = (unit: string) =>
+    show(unit, ["MemoryCurrent", "MemoryMax", "MemoryPeak"]).pipe(
+      Effect.map((props) => ({
+        current: memoryBytes(props.get("MemoryCurrent")),
+        max: memoryBytes(props.get("MemoryMax")),
+        peak: memoryBytes(props.get("MemoryPeak")),
+      }))
+    );
+
   const facts = yield* Effect.all(
     {
       celld: field("services.celld", unitState(nodeService)),
@@ -617,6 +641,13 @@ export const collectHealth = Effect.fn("Nest.health")(function* collectHealth(
       ),
       seaweedfs: field("services.seaweedfs", unitState(storeService)),
       slots: field("storage.slots", slots),
+      stopMemory: field(
+        "stopMemory",
+        Effect.all({
+          celld: memoryCharge(nodeService),
+          slice: memoryCharge("rat-king.slice"),
+        })
+      ),
     },
     { concurrency: 4 }
   );
@@ -632,6 +663,7 @@ export const collectHealth = Effect.fn("Nest.health")(function* collectHealth(
     observedAt,
     retention: facts.retention,
     services: { celld: facts.celld, seaweedfs: facts.seaweedfs },
+    stopMemory: facts.stopMemory,
     storage: {
       dataDirs: facts.dataDirs,
       objects: facts.objects,

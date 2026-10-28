@@ -18,6 +18,10 @@ import {
   retentionService,
 } from "../../../stacks/nest/health.ts";
 import type { HealthDigest, HealthFacts } from "../../../stacks/nest/health.ts";
+import {
+  StopMemory,
+  stopMemoryWarnings,
+} from "../../../stacks/nest/stop-memory.ts";
 import { declaredListeners } from "../src/listener-contract.ts";
 import { localExec } from "../src/local-exec.ts";
 
@@ -84,6 +88,19 @@ const digestOf = (facts: HealthFacts): HealthDigest => ({
 it("a healthy host reports ok with no reasons", () => {
   expect(assess(healthy)).toStrictEqual({ reasons: [], status: "ok" });
 });
+
+it.prop(
+  "shutdown headroom warnings appear in the health digest without declaring an outage",
+  [StopMemory],
+  ([stopMemory]) => {
+    const reasons = stopMemoryWarnings(stopMemory);
+
+    expect(assess({ ...healthy, stopMemory })).toStrictEqual({
+      reasons,
+      status: reasons.length > 0 ? "warn" : "ok",
+    });
+  }
+);
 
 it.prop(
   "a service that is not active fails the digest, whatever else is true",
@@ -255,6 +272,8 @@ const probes = {
     argv.includes(nodeService) && argv.includes("--property=ActiveState"),
   "services.seaweedfs": (argv: readonly string[]) =>
     argv.includes(storeService) && argv.includes("--property=ActiveState"),
+  stopMemory: (argv: readonly string[]) =>
+    argv.includes("--property=MemoryCurrent"),
   "storage.dataDirs": (argv: readonly string[]) => argv[0] === "du",
   "storage.objects": (argv: readonly string[]) => argv.includes("volumes"),
   "storage.slots": (argv: readonly string[]) => argv.includes("diagnose"),
@@ -276,6 +295,10 @@ const reply = (argv: readonly string[]) => {
           `LISTEN 0 4096 ${address}:${port} 0.0.0.0:* cgroup:${cgroup(unit)}`
       )
       .join("\n");
+  }
+
+  if (argv.includes("--property=MemoryCurrent")) {
+    return "MemoryCurrent=1073741824\nMemoryMax=4831838208\nMemoryPeak=2147483648\n";
   }
 
   if (argv.includes("--property=ActiveState")) {
@@ -359,6 +382,22 @@ it.effect.prop(
       const facts = yield* Fiber.join(fiber);
 
       expect(facts.unavailable).toStrictEqual({ [hung]: "timed out" });
+      expect(facts.stopMemory).toStrictEqual(
+        hung === "stopMemory"
+          ? null
+          : {
+              celld: {
+                current: 1_073_741_824,
+                max: 4_831_838_208,
+                peak: 2_147_483_648,
+              },
+              slice: {
+                current: 1_073_741_824,
+                max: 4_831_838_208,
+                peak: 2_147_483_648,
+              },
+            }
+      );
       expect(assess(facts).status).toBe(hung === "health" ? "fail" : "warn");
     })
 );

@@ -14,6 +14,7 @@ import {
 } from "./alarm-wakes.ts";
 import { Sha, ShipReceipt } from "./ship-config.ts";
 import { sanitizeCandidateStderr } from "./ship-diagnostics.ts";
+import { StopMemory, stopMemoryWarnings } from "./stop-memory.ts";
 
 const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
@@ -141,6 +142,7 @@ export const AlarmFacts = Schema.Struct({
     Schema.Union([Schema.Literal("off"), Schema.NullOr(SessionsBackupFact)])
   ),
   slots: Schema.NullOr(Schema.Struct({ free: Count, max: Count })),
+  stopMemory: Schema.optionalKey(Schema.NullOr(StopMemory)),
   wakes: Schema.optionalKey(Schema.NullOr(Schema.Array(WakeSighting))),
   windows: Schema.optionalKey(Schema.Array(WindowReceipt)),
 });
@@ -523,6 +525,15 @@ const digestReading = (
   facts: typeof AlarmFacts.Type,
   sources: typeof SourceState.Type
 ): AlarmReadingValue => {
+  const memory =
+    facts.stopMemory === null || facts.stopMemory === undefined
+      ? []
+      : stopMemoryWarnings(facts.stopMemory);
+
+  if (memory.length > 0) {
+    return firing("warn", memory.join("; "));
+  }
+
   if (
     facts.digest === "fail" ||
     (facts.measurementFailed && (sources.measurementMisses ?? 0) >= 2)

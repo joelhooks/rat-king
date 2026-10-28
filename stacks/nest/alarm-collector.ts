@@ -219,6 +219,9 @@ const backupWindowOf = (digest: HealthDigest | null) => {
 
 const collectorPorts = { comms: collectComms, doctor: configDoctor };
 
+const stopMemoryOf = (health: HealthDigest | null) =>
+  health?.stopMemory ?? null;
+
 export const collectAlarmFacts = Effect.fn("Alarm.collect")(
   function* collectAlarmFacts<E, R, E2, R2, R3 = never, E4 = never, R4 = never>(
     config: StageConfigValue,
@@ -394,6 +397,7 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
       receiptsKnown: Option.isSome(observations.receipts),
       sessionsBackup: observations.sessionsBackup,
       slots: healthy?.storage.slots ?? null,
+      stopMemory: stopMemoryOf(healthy),
       wakes,
       windows: Option.getOrElse(observations.windows, () => []),
     }).pipe(
