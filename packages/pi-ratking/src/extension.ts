@@ -404,6 +404,10 @@ export const collectFacts = (
 
     const owner = yield* resolveTurnOwner();
 
+    const restartGate = yield* Config.option(
+      Config.String("MUSTER_RESTART_GATE")
+    );
+
     const nameless =
       Option.isNone(env) &&
       !entries.some(
@@ -430,6 +434,10 @@ export const collectFacts = (
       parent: choice.parent,
       pid: process.pid,
       reads: interactive || Option.isSome(env),
+      restartGate: restartGate.pipe(
+        Option.filter((gate) => gate !== ""),
+        Option.getOrUndefined
+      ),
       session,
       source: choice.source,
       successor: successor && choice.source === "env",
@@ -1551,10 +1559,6 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       signal?: AbortSignal,
       cancelled?: () => A
     ) => {
-      if (degraded !== undefined) {
-        return fallback(degraded);
-      }
-
       if (Option.isNone(runtime)) {
         return fallback(
           retired
