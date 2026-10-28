@@ -36,7 +36,7 @@ def call(url, method='GET'):
     return {'Path': root, 'Entries': pages[index], 'ShouldDisplayLoadMore': index == 0,
             'LastFileName': '2026-01-01'}
 count = namespace['retention'](call, today)
-expected = set(path for age, path in zip(payload['ages'], paths) if age > 7)
+expected = set(path for age, path in zip(payload['ages'], paths) if age > 2)
 assert count == len(expected)
 assert set(url for url, method in calls if method == 'DELETE') == set(
     'http://127.0.0.1:18888' + path + '?recursive=true' for path in expected)

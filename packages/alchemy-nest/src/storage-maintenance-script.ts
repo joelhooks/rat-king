@@ -8,7 +8,7 @@ import urllib.request
 
 `;
 
-export const maintenanceImplementation = String.raw`DAYS = 7
+export const maintenanceImplementation = String.raw`DAYS = 2
 SLOT_FLOOR = 64
 SLOT_CRITICAL = 16
 WRITABLE_MINIMUM = 4

@@ -546,7 +546,7 @@ import urllib.request
 ROOT = '/topics/.system/log'
 MASTER = 'http://127.0.0.1:19333'
 FILER = 'http://127.0.0.1:18888'
-DAYS = 7
+DAYS = 2
 SLOT_FLOOR = 64
 SLOT_CRITICAL = 16
 WRITABLE_MINIMUM = 4
@@ -913,7 +913,7 @@ import urllib.request
 ROOT = '/topics/.system/log'
 MASTER = 'http://127.0.0.1:19333'
 FILER = 'http://127.0.0.1:18888'
-DAYS = 7
+DAYS = 2
 SLOT_FLOOR = 64
 SLOT_CRITICAL = 16
 WRITABLE_MINIMUM = 4
