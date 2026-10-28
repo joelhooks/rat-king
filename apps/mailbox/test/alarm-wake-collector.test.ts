@@ -10,7 +10,10 @@ import {
 } from "../../../packages/mailbox-client/test/identity.ts";
 import { AlarmSettings } from "../../../stacks/nest/alarm-config.ts";
 import { collectWakeHealth } from "../../../stacks/nest/alarm-wake-collector.ts";
-import { wakeReading } from "../../../stacks/nest/alarm-wakes.ts";
+import {
+  DEFAULT_WAKE_UNACKED_MINUTES,
+  wakeReading,
+} from "../../../stacks/nest/alarm-wakes.ts";
 import { ShipSettings } from "../../../stacks/nest/ship-config.ts";
 import { prepareShipNotification } from "../../../stacks/nest/ship-notify.ts";
 import { StageConfig } from "../../../stacks/nest/stage-config.ts";
@@ -86,6 +89,7 @@ it.effect.prop(
             { name: "target", owner: "owner" },
             { name: "unknown-configured", owner: "owner" },
           ],
+          wakeUnackedMinutes: DEFAULT_WAKE_UNACKED_MINUTES,
         },
         runtime: {
           ...base.runtime,
