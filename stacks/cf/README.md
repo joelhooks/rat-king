@@ -47,9 +47,13 @@ Installed Alchemy `2.0.0-beta.83` is authoritative, not the beta.79 documentatio
 
 `WorkerProps.script` bypasses bundling. `WorkerProvider` places that string directly in the uploaded `main.js` module. The projection passes the exact `prepareDeployment.bundle` string, without rebuilding. `bundle: false` preserves explicitly declared compatibility flags instead of appending Alchemy defaults.
 
-Every DO binding keeps its declaration name and exported class name. Alchemy drives Cloudflare migration tags itself, beginning at `alchemy:v1`; celld receives the declaration's `v1` migration. Both use the same class set: Mailbox, AuthTokens and Agent.
+Every DO binding keeps its declaration name and exported class name. Alchemy drives Cloudflare migration tags itself, beginning at `alchemy:v1`; celld receives the declaration's `v1` migration. Both use the same hosted class set: Mailbox, AuthTokens, Agent, Issuer and Desk. The shared declaration includes the Issuer and Desk migrations; the projection creates every declared DO binding.
 
 The Worker has `workersDev: { enabled: true, previewsEnabled: false }`. The projection cannot emit `domain` or `routes`. This is an ordinary Worker in a stage named preview, not Alchemy's `preview.of` or version-rollout mode.
+
+## Measurement harness
+
+See [MEASURE.md](MEASURE.md) for fresh test identities, the bounded measurement driver, analytics, baseline comparison and teardown commands. This runbook does not enable deployment or grant approval.
 
 ## Proven and not tested
 

@@ -1,4 +1,4 @@
 {
   "extends": "../nest/tsconfig.json",
-  "include": ["*.ts"]
+  "include": ["*.ts", "../../tools/cf-measure/*.ts"]
 }

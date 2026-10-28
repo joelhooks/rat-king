@@ -1,5 +1,8 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
-  test: { include: ["stacks/cf/*.test.ts"], testTimeout: 120_000 },
+  test: {
+    include: ["stacks/cf/*.test.ts", "tools/cf-measure/*.test.ts"],
+    testTimeout: 120_000,
+  },
 });
