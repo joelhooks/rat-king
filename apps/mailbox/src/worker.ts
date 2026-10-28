@@ -28,7 +28,7 @@ import * as Resolve from "@rat-king/lexicon/runtime.resolveLease";
 import type { Request as XrpcRequest } from "@rat-king/lexicon/transport";
 import { XrpcFailure } from "@rat-king/lexicon/xrpc-failure";
 import { DurableObject } from "cloudflare:workers";
-import { Clock, Effect, Layer, Option, Schema } from "effect";
+import { Cause, Clock, Effect, Layer, Option, Schema } from "effect";
 
 import { defaultStatus } from "../../../packages/mailbox-client/src/attention.ts";
 import { PayloadJson } from "../../../packages/mailbox-client/src/payload.ts";
@@ -1032,6 +1032,16 @@ export class Mailbox extends DurableObject<Bindings> {
   }
 
   override alarm() {
+    return Effect.runPromise(
+      Effect.promise(() => this.runAlarm()).pipe(
+        Effect.tapCause((cause) =>
+          Effect.logError("Mailbox alarm failed", Cause.pretty(cause))
+        )
+      )
+    );
+  }
+
+  private runAlarm() {
     if (this.ctx.id.name === trafficDid) {
       return this.feedSockets.alarm();
     }

@@ -94,9 +94,9 @@ it.effect.prop(
   ({ requests, messages }) =>
     Effect.gen(function* invocationTypes() {
       const total = yield* invocationRequests([
-        { dimensions: { type: "fetch" }, sum: { errors: 0, requests } },
+        { dimensions: { type: "http" }, sum: { errors: 0, requests } },
         {
-          dimensions: { type: "websocket_message" },
+          dimensions: { type: "hibernation" },
           sum: { errors: 0, requests: messages },
         },
       ]);
@@ -112,7 +112,7 @@ it.effect.prop(
 
 const account = {
   invocations: [
-    { dimensions: { type: "fetch" }, sum: { errors: 0, requests: 4 } },
+    { dimensions: { type: "http" }, sum: { errors: 0, requests: 4 } },
   ],
   periodic: [
     {
