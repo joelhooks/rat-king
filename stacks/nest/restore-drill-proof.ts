@@ -1,10 +1,13 @@
-// @effect-diagnostics asyncFunction:off -- Standalone Node subprocess in the isolated restore job.
+/* oxlint-disable typescript/promise-function-async -- Lazy WebCrypto adapters. */
 import { networkInterfaces } from "node:os";
 
 import { NodeServices } from "@effect/platform-node";
-import { Clock, Effect, FileSystem, Schema } from "effect";
+import { Clock, Crypto, Effect, Exit, FileSystem, Schema } from "effect";
+import type { Cause } from "effect";
 import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
+import type { HttpClientError } from "effect/http";
 
+import { cryptoOperation } from "../../packages/envelope/src/webcrypto.ts";
 import { MessageEvent } from "../../packages/lexicon/src/defs.ts";
 import { Output as Names } from "../../packages/lexicon/src/identity.listNames.ts";
 import { Output as Events } from "../../packages/lexicon/src/mailbox.list.ts";
@@ -28,14 +31,13 @@ import {
   ProofAssertionFailure,
   ProofHttpFailure,
   ProtocolErrorBody,
-  proofFailureMetadata,
   protocolErrorCode,
-  runProofEffect,
   withProofCleanup,
 } from "./restore-drill-proof-errors.ts";
 import type {
   AssertionCode,
   ProofFailure,
+  ProofProgress,
 } from "./restore-drill-proof-errors.ts";
 
 type NamePageParams = Record<string, string> & {
@@ -109,171 +111,196 @@ const knownName = argument(7);
 const requireProof = (
   condition: boolean,
   assertionCode: typeof AssertionCode.Type
-): void => {
-  if (!condition) {
-    throw new ProofAssertionFailure({ assertionCode });
-  }
-};
+) =>
+  condition
+    ? Effect.void
+    : Effect.fail(new ProofAssertionFailure({ assertionCode }));
 
-const writeMetadata = async (path: string, data: string): Promise<void> => {
-  await runProofEffect(
-    Effect.gen(function* metadataWriter() {
-      const fs = yield* FileSystem.FileSystem;
+class ProofStepFailure extends Schema.TaggedError<ProofStepFailure>()(
+  "ProofStepFailure",
+  {}
+) {}
 
-      yield* fs.writeFileString(path, data, { mode: 0o600 });
-    }).pipe(Effect.provide(NodeServices.layer))
-  );
-};
+const writeMetadata = Effect.fn("writeMetadata")(function* writeMetadata(
+  path: string,
+  data: string
+) {
+  const fs = yield* FileSystem.FileSystem;
 
-const progress = createProofProgress(async (state) => {
-  await runProofEffect(
-    Effect.logInfo(JSON.stringify({ proofProgress: state }))
-  );
-  await writeMetadata(`${root}/proof-progress.json`, JSON.stringify(state));
+  yield* fs.writeFileString(path, data, { mode: 0o600 });
 });
+
+const progress = createProofProgress(
+  Effect.fn("reportProgress")(function* reportProgress(state: ProofProgress) {
+    yield* Effect.logInfo(JSON.stringify({ proofProgress: state }));
+    yield* writeMetadata(`${root}/proof-progress.json`, JSON.stringify(state));
+  })
+);
+
+type RequestFailure =
+  | HttpClientError.HttpClientError
+  | ProofHttpFailure
+  | Schema.SchemaError
+  | Cause.TimeoutError;
 
 const proofFailures: ProofFailure[] = [];
 
 let fixture:
   | {
-      readonly restore: () => Promise<void>;
-      readonly reload: () => Promise<void>;
+      readonly restore: Effect.Effect<void, RequestFailure>;
+      readonly reload: Effect.Effect<void, RequestFailure>;
     }
   | undefined;
 
-await withProofCleanup(
-  async () => {
-    await progress.run("namespace", () => {
+const program = Effect.gen(function* restoreProof() {
+  yield* progress.run(
+    "namespace",
+    Effect.suspend(() =>
       requireProof(
         Object.keys(networkInterfaces()).every((name) => name === "lo"),
         "NAMESPACE_NOT_PRIVATE"
-      );
-    });
-
-    const fs = await runProofEffect(
-      FileSystem.FileSystem.pipe(Effect.provide(NodeServices.layer))
-    );
-
-    const inventory = await progress.run("inventory", async () =>
-      Schema.decodeUnknownSync(Schema.fromJsonString(Inventory))(
-        await runProofEffect(fs.readFileString(`${root}/inventory.json`))
       )
-    );
+    )
+  );
 
-    const client = await runProofEffect(
-      HttpClient.HttpClient.pipe(Effect.provide(FetchHttpClient.layer))
-    );
+  const fs = yield* FileSystem.FileSystem;
 
-    const read = async (
-      url: string,
-      init?: {
-        readonly method?: "POST";
-        readonly headers?: Record<string, string>;
-      }
-    ): Promise<typeof Schema.Json.Type> => {
-      const response = await runProofEffect(
-        (init?.method === "POST"
-          ? client.post(url)
-          : client.get(url, { headers: init?.headers })
-        ).pipe(Effect.timeout("60 seconds"))
+  const inventory = yield* progress.run(
+    "inventory",
+    fs
+      .readFileString(`${root}/inventory.json`)
+      .pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(Schema.fromJsonString(Inventory))
+        )
+      )
+  );
+
+  const client = yield* HttpClient.HttpClient;
+
+  const read = Effect.fn("read")(function* read(
+    url: string,
+    init?: {
+      readonly method?: "POST";
+      readonly headers?: Record<string, string>;
+    }
+  ) {
+    const response = yield* (
+      init?.method === "POST"
+        ? client.post(url)
+        : client.get(url, { headers: init?.headers })
+    ).pipe(Effect.timeout("60 seconds"));
+
+    if (response.status < 200 || response.status >= 300) {
+      const body = yield* response.json.pipe(
+        Effect.timeout("60 seconds"),
+        Effect.orElseSucceed(() => null)
       );
 
-      if (response.status < 200 || response.status >= 300) {
-        const body = await runProofEffect(
-          response.json.pipe(Effect.timeout("60 seconds"))
-        ).catch(() => null);
+      const error = Schema.is(ProtocolErrorBody)(body)
+        ? protocolErrorCode(body.error)
+        : undefined;
 
-        const error = Schema.is(ProtocolErrorBody)(body)
-          ? protocolErrorCode(body.error)
-          : undefined;
-
-        throw new ProofHttpFailure(
-          error === undefined
-            ? { status: response.status }
-            : { error, status: response.status }
-        );
-      }
-
-      return Schema.decodeUnknownSync(Schema.Json)(
-        await runProofEffect(response.json.pipe(Effect.timeout("60 seconds")))
+      return yield* new ProofHttpFailure(
+        error === undefined
+          ? { status: response.status }
+          : { error, status: response.status }
       );
-    };
+    }
 
-    const loaded = await progress.run("auth-manifest", async () => {
-      const pointer = Schema.decodeUnknownSync(Schema.Struct({ prefix: Text }))(
-        await read(`${filerBase}deploy/current.json`)
+    return yield* response.json.pipe(
+      Effect.timeout("60 seconds"),
+      Effect.flatMap(Schema.decodeUnknownEffect(Schema.Json))
+    );
+  });
+
+  const loaded = yield* progress.run(
+    "auth-manifest",
+    Effect.gen(function* loadManifest() {
+      const pointer = yield* read(`${filerBase}deploy/current.json`).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(Schema.Struct({ prefix: Text }))
+        )
       );
 
       const url = `${filerBase}${pointer.prefix}/manifest.json`;
-      const original = await read(url);
+      const original = yield* read(url);
 
       return {
-        manifest: Schema.decodeUnknownSync(Manifest)(original),
+        manifest: yield* Schema.decodeUnknownEffect(Manifest)(original),
         original,
         url,
       };
-    });
+    })
+  );
 
-    const { bindings } = loaded.manifest.raw_metadata;
+  const { bindings } = loaded.manifest.raw_metadata;
 
-    const binding = (name: string): string => {
-      const value = bindings.find((entry) => entry.name === name)?.text;
+  const binding = (name: string) => {
+    const value = bindings.find((entry) => entry.name === name)?.text;
 
-      if (value === undefined) {
-        throw new ProofAssertionFailure({ assertionCode: "MISSING_BINDING" });
-      }
+    return value === undefined
+      ? Effect.fail(
+          new ProofAssertionFailure({ assertionCode: "MISSING_BINDING" })
+        )
+      : Effect.succeed(value);
+  };
 
-      return value;
-    };
+  const put = Effect.fn("put")(function* put(value: typeof Schema.Json.Type) {
+    const response = yield* client
+      .put(loaded.url, { body: HttpBody.jsonUnsafe(value) })
+      .pipe(Effect.timeout("60 seconds"));
 
-    const put = async (value: typeof Schema.Json.Type): Promise<void> => {
-      const response = await runProofEffect(
-        client
-          .put(loaded.url, { body: HttpBody.jsonUnsafe(value) })
-          .pipe(Effect.timeout("60 seconds"))
-      );
+    if (response.status < 200 || response.status >= 300) {
+      return yield* new ProofHttpFailure({ status: response.status });
+    }
 
-      if (response.status < 200 || response.status >= 300) {
-        throw new ProofHttpFailure({ status: response.status });
-      }
+    return yield* response.arrayBuffer.pipe(
+      Effect.timeout("60 seconds"),
+      Effect.asVoid
+    );
+  });
 
-      await runProofEffect(
-        response.arrayBuffer.pipe(Effect.timeout("60 seconds"))
-      );
-    };
+  const reload = read(`${internalBase}/reload`, { method: "POST" }).pipe(
+    Effect.asVoid
+  );
 
-    const reload = async (): Promise<void> => {
-      await read(`${internalBase}/reload`, { method: "POST" });
-    };
+  fixture = {
+    reload,
+    restore: put(loaded.original),
+  };
+  const probeDid = "did:web:restore-drill.invalid";
 
-    fixture = {
-      reload,
-      restore: async () => {
-        await put(loaded.original);
-      },
-    };
-    const probeDid = "did:web:restore-drill.invalid";
-
-    const signingKey = await progress.run("auth-fixture", async () => {
-      const keys = await crypto.subtle.generateKey(
-        { name: "ECDSA", namedCurve: "P-256" },
-        true,
-        ["sign", "verify"]
+  const signingKey = yield* progress.run(
+    "auth-fixture",
+    Effect.gen(function* authFixture() {
+      const keys = yield* cryptoOperation(() =>
+        crypto.subtle.generateKey(
+          { name: "ECDSA", namedCurve: "P-256" },
+          true,
+          ["sign", "verify"]
+        )
       );
 
       if (!("publicKey" in keys)) {
-        throw new ProofAssertionFailure({ assertionCode: "EXPECTED_KEYPAIR" });
+        return yield* new ProofAssertionFailure({
+          assertionCode: "EXPECTED_KEYPAIR",
+        });
       }
 
-      const exported = await crypto.subtle.exportKey("jwk", keys.publicKey);
+      const exported = yield* cryptoOperation(() =>
+        crypto.subtle.exportKey("jwk", keys.publicKey)
+      );
 
-      const jwk = Schema.decodeUnknownSync(
+      const jwk = yield* Schema.decodeUnknownEffect(
         Schema.Struct({ crv: Text, kty: Text, x: Text, y: Text })
       )(exported);
 
-      const originalDocs = Schema.decodeUnknownSync(
-        Schema.fromJsonString(Documents)
-      )(binding("DID_DOCUMENTS"));
+      const originalDocs = yield* binding("DID_DOCUMENTS").pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(Schema.fromJsonString(Documents))
+        )
+      );
 
       const recipientDids = new Set([
         probeDid,
@@ -309,14 +336,18 @@ await withProofCleanup(
       ]);
 
       for (const name of ["OPERATOR_DIDS", "LEASE_RESOLVERS"]) {
-        const allowlist = Schema.decodeUnknownSync(
-          Schema.fromJsonString(Schema.Array(Text))
-        )(binding(name));
+        const allowlist = yield* binding(name).pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(
+              Schema.fromJsonString(Schema.Array(Text))
+            )
+          )
+        );
 
         replacements.set(name, JSON.stringify([...allowlist, probeDid]));
       }
 
-      await put({
+      yield* put({
         ...loaded.manifest,
         raw_metadata: {
           ...loaded.manifest.raw_metadata,
@@ -329,43 +360,44 @@ await withProofCleanup(
       });
 
       return keys.privateKey;
-    });
+    })
+  );
 
-    await progress.run("reload", reload);
+  yield* progress.run("reload", reload);
 
-    const xrpc = async (
-      method: string,
-      params: Record<string, string>,
-      issuer = probeDid
-    ): Promise<typeof Schema.Json.Type> => {
-      const now = Math.floor(
-        (await runProofEffect(Clock.currentTimeMillis)) / 1000
-      );
+  const xrpc = Effect.fn("xrpc")(function* xrpc(
+    method: string,
+    params: Record<string, string>,
+    issuer: string = probeDid
+  ) {
+    const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+    const random = yield* Crypto.Crypto;
+    const nonce = base64url(yield* random.randomBytes(16));
+    const nsid = `sh.mschf.ratking.${method}`;
+    const serviceDid = yield* binding("SERVICE_DID");
 
-      const nsid = `sh.mschf.ratking.${method}`;
+    const token = yield* serviceToken(
+      {
+        aud: `${serviceDid}#mailbox`,
+        exp: now + 60,
+        iat: now,
+        iss: issuer,
+        jti: nonce,
+        lxm: nsid,
+      },
+      signingKey,
+      "#restore-drill"
+    );
 
-      const token = await runProofEffect(
-        serviceToken(
-          {
-            aud: `${binding("SERVICE_DID")}#mailbox`,
-            exp: now + 60,
-            iat: now,
-            iss: issuer,
-            jti: base64url(crypto.getRandomValues(new Uint8Array(16))),
-            lxm: nsid,
-          },
-          signingKey,
-          "#restore-drill"
-        )
-      );
+    return yield* read(
+      `${publicBase}/xrpc/${nsid}?${new URLSearchParams(params).toString()}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+  });
 
-      return await read(
-        `${publicBase}/xrpc/${nsid}?${new URLSearchParams(params).toString()}`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-    };
-
-    const knownDid = await progress.run("resolve-name", async () => {
+  const knownDid = yield* progress.run(
+    "resolve-name",
+    Effect.gen(function* resolveName() {
       let nameCursor: string | undefined;
       let known: { readonly did: string } | undefined;
       const nameCursors = new Set<string>();
@@ -377,9 +409,8 @@ await withProofCleanup(
           params.cursor = nameCursor;
         }
 
-        const result = Schema.decodeUnknownSync(Names)(
-          // oxlint-disable-next-line no-await-in-loop -- Pagination requires the preceding response cursor.
-          await xrpc("identity.listNames", params)
+        const result = yield* xrpc("identity.listNames", params).pipe(
+          Effect.flatMap(Schema.decodeUnknownEffect(Names))
         );
 
         known = result.names.find((entry) => entry.name === knownName);
@@ -391,155 +422,172 @@ await withProofCleanup(
         ({ cursor: nameCursor } = result);
 
         if (nameCursor !== undefined) {
-          requireProof(!nameCursors.has(nameCursor), "NAME_CURSOR_REPEATED");
+          yield* requireProof(
+            !nameCursors.has(nameCursor),
+            "NAME_CURSOR_REPEATED"
+          );
           nameCursors.add(nameCursor);
         }
       } while (nameCursor !== undefined);
 
-      return (
-        known?.did ??
-        binding("ISSUER_DID_TEMPLATE").replace(
-          "{agent}",
-          knownName.replaceAll("/", ".")
-        )
+      if (known !== undefined) {
+        return known.did;
+      }
+
+      const template = yield* binding("ISSUER_DID_TEMPLATE");
+
+      return template.replace("{agent}", knownName.replaceAll("/", "."));
+    })
+  );
+
+  yield* progress.run(
+    "resolve-lease",
+    xrpc("runtime.resolveLease", { did: knownDid }).pipe(
+      Effect.asVoid,
+      Effect.catchTag("ProofHttpFailure", (failure) =>
+        failure.status === 404 ? Effect.void : Effect.fail(failure)
+      )
+    )
+  );
+  let message: (typeof Message.Type & { readonly seq: number }) | undefined;
+  const counts: { readonly events: number; readonly messages: number }[] = [];
+  const mailboxKeyProofs: (typeof MailboxKeyProof.Type)[] = [];
+
+  const fetchMailbox = Effect.fn("fetchMailbox")(function* fetchMailbox(
+    mailbox: (typeof Inventory.Type.mailboxes)[number]
+  ) {
+    let cursor: string | undefined;
+    let count = 0;
+    let admissionEvents = 0;
+    const keys = new Set<string>();
+    const cursors = new Set<string>();
+
+    do {
+      const params: MailboxPageParams = {
+        limit: "100",
+        recipientDid: mailbox.did,
+      };
+
+      if (cursor !== undefined) {
+        params.cursor = cursor;
+      }
+
+      const result = yield* xrpc("mailbox.list", params, mailbox.did).pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(Events))
       );
-    });
 
-    await progress.run("resolve-lease", async () => {
-      try {
-        await xrpc("runtime.resolveLease", { did: knownDid });
-      } catch (error) {
-        const failure = proofFailureMetadata(
-          "primary",
-          error,
-          progress.snapshot()
-        );
+      count += result.events.length;
 
-        if (failure.tag !== "ProofHttpFailure" || failure.status !== 404) {
-          throw error;
+      for (const event of result.events) {
+        if (Schema.is(MessageEvent)(event)) {
+          admissionEvents += 1;
+          keys.add(admissionKeyIdentity(event.receipt));
+
+          if (
+            mailbox.did === inventory.newest.recipientDid &&
+            admissionKeyIdentity(event.receipt) ===
+              messageKeyIdentity(inventory.newest)
+          ) {
+            message = { ...inventory.newest, seq: event.seq };
+          }
         }
       }
-    });
-    let message: (typeof Message.Type & { readonly seq: number }) | undefined;
-    const counts: { readonly events: number; readonly messages: number }[] = [];
-    const mailboxKeyProofs: (typeof MailboxKeyProof.Type)[] = [];
 
-    const fetchMailbox = async (
-      mailbox: (typeof Inventory.Type.mailboxes)[number]
-    ) =>
-      await progress.run("fetch-events", async () => {
-        let cursor: string | undefined;
-        let count = 0;
-        let admissionEvents = 0;
-        const keys = new Set<string>();
-        const cursors = new Set<string>();
+      ({ cursor } = result);
 
-        do {
-          const params: MailboxPageParams = {
-            limit: "100",
-            recipientDid: mailbox.did,
-          };
+      if (cursor !== undefined) {
+        yield* requireProof(!cursors.has(cursor), "MAILBOX_CURSOR_REPEATED");
+        cursors.add(cursor);
+      }
+    } while (cursor !== undefined);
 
-          if (cursor !== undefined) {
-            params.cursor = cursor;
-          }
+    return { admissionEvents, events: count, keys, messages: keys.size };
+  });
 
-          const result = Schema.decodeUnknownSync(Events)(
-            // oxlint-disable-next-line no-await-in-loop -- Pagination requires the preceding response cursor; bound scratch load.
-            await xrpc("mailbox.list", params, mailbox.did)
+  for (const [mailboxIndex, mailbox] of inventory.mailboxes.entries()) {
+    const counted = yield* progress.run("fetch-events", fetchMailbox(mailbox));
+
+    yield* progress.run(
+      "compare-counts",
+      Effect.try({
+        catch: (error) =>
+          Schema.is(ProofAssertionFailure)(error)
+            ? error
+            : new ProofStepFailure(),
+        try: () => {
+          const keyProof = requireMailboxKeys(
+            mailbox.messageKeys,
+            counted.keys,
+            mailboxIndex
           );
 
-          count += result.events.length;
-
-          for (const event of result.events) {
-            if (Schema.is(MessageEvent)(event)) {
-              admissionEvents += 1;
-              keys.add(admissionKeyIdentity(event.receipt));
-
-              if (
-                mailbox.did === inventory.newest.recipientDid &&
-                admissionKeyIdentity(event.receipt) ===
-                  messageKeyIdentity(inventory.newest)
-              ) {
-                message = { ...inventory.newest, seq: event.seq };
-              }
-            }
-          }
-
-          ({ cursor } = result);
-
-          if (cursor !== undefined) {
-            requireProof(!cursors.has(cursor), "MAILBOX_CURSOR_REPEATED");
-            cursors.add(cursor);
-          }
-        } while (cursor !== undefined);
-
-        return { admissionEvents, events: count, keys, messages: keys.size };
-      });
-
-    for (const [mailboxIndex, mailbox] of inventory.mailboxes.entries()) {
-      // oxlint-disable-next-line no-await-in-loop -- Inspect only the selected mailboxes sequentially.
-      const counted = await fetchMailbox(mailbox);
-
-      // oxlint-disable-next-line no-await-in-loop -- Compare one selected mailbox before fetching the next.
-      await progress.run("compare-counts", () => {
-        const keyProof = requireMailboxKeys(
-          mailbox.messageKeys,
-          counted.keys,
-          mailboxIndex
-        );
-
-        requireMailboxCounts(mailbox, counted, mailboxIndex);
-        counts.push(counted);
-        mailboxKeyProofs.push({
-          ...keyProof,
-          admissionEvents: counted.admissionEvents,
-          duplicateAdmissionEvents: counted.admissionEvents - counted.messages,
-          mailboxIndex,
-        });
-      });
-    }
-
-    await progress.run("message-readback", () => {
-      requireProof(message !== undefined, "NEWEST_MESSAGE_MISSING");
-    });
-    await progress.run("write-proof", async () => {
-      await runProofEffect(
-        fs.writeFileString(
-          `${root}/api-proof.json`,
-          JSON.stringify({
-            knownDid,
-            mailboxCounts: {
-              events: counts.reduce((n, c) => n + c.events, 0),
-              mailboxes: counts.length,
-              messages: counts.reduce((n, c) => n + c.messages, 0),
-              tolerance: 0,
-            },
-            mailboxKeyProofs,
-            message,
-          }),
-          { mode: 0o600 }
-        )
-      );
-    });
-  },
-  async () => {
-    const acquired = fixture;
-
-    if (acquired !== undefined) {
-      await progress.run("restore-auth", acquired.restore);
-      await progress.run("restore-reload", acquired.reload);
-    }
-  },
-  async (failure) => {
-    proofFailures.push(failure);
-    await runProofEffect(Effect.logError(JSON.stringify(failure)));
-    await writeMetadata(
-      `${root}/proof-errors.json`,
-      JSON.stringify(proofFailures)
+          requireMailboxCounts(mailbox, counted, mailboxIndex);
+          counts.push(counted);
+          mailboxKeyProofs.push({
+            ...keyProof,
+            admissionEvents: counted.admissionEvents,
+            duplicateAdmissionEvents:
+              counted.admissionEvents - counted.messages,
+            mailboxIndex,
+          });
+        },
+      })
     );
-  },
-  progress.snapshot
-).catch(() => {
-  process.exitCode = 1;
+  }
+
+  yield* progress.run(
+    "message-readback",
+    Effect.suspend(() =>
+      requireProof(message !== undefined, "NEWEST_MESSAGE_MISSING")
+    )
+  );
+  yield* progress.run(
+    "write-proof",
+    fs.writeFileString(
+      `${root}/api-proof.json`,
+      JSON.stringify({
+        knownDid,
+        mailboxCounts: {
+          events: counts.reduce((n, c) => n + c.events, 0),
+          mailboxes: counts.length,
+          messages: counts.reduce((n, c) => n + c.messages, 0),
+          tolerance: 0,
+        },
+        mailboxKeyProofs,
+        message,
+      }),
+      { mode: 0o600 }
+    )
+  );
 });
+
+const cleanup = Effect.suspend(() => {
+  const acquired = fixture;
+
+  return acquired === undefined
+    ? Effect.void
+    : progress
+        .run("restore-auth", acquired.restore)
+        .pipe(Effect.andThen(progress.run("restore-reload", acquired.reload)));
+});
+
+const report = Effect.fn("reportFailure")(function* reportFailure(
+  failure: ProofFailure
+) {
+  proofFailures.push(failure);
+  yield* Effect.logError(JSON.stringify(failure));
+  yield* writeMetadata(
+    `${root}/proof-errors.json`,
+    JSON.stringify(proofFailures)
+  );
+});
+
+const exit = await Effect.runPromiseExit(
+  withProofCleanup(program, cleanup, report, progress.snapshot).pipe(
+    Effect.provide([NodeServices.layer, FetchHttpClient.layer])
+  )
+);
+
+if (Exit.isFailure(exit)) {
+  process.exitCode = 1;
+}

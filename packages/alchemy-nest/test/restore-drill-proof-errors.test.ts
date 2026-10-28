@@ -1,4 +1,3 @@
-// @effect-diagnostics asyncFunction:off -- Fault-injected Promise ports for the standalone proof subprocess.
 import { it } from "@effect/vitest";
 import { Arbitrary, Effect, Schema } from "effect";
 import { expect } from "vitest";
@@ -25,35 +24,31 @@ it.effect.prop(
       const reports: ProofFailure[] = [];
       const events: string[] = [];
 
-      const outcome = yield* Effect.promise(
-        async () =>
-          await withProofCleanup(
-            async () => {
-              events.push("work");
+      const outcome = yield* withProofCleanup(
+        Effect.suspend(() => {
+          events.push("work");
 
-              return await (workFails
-                ? Promise.reject(primary)
-                : Promise.resolve(7));
-            },
-            async () => {
-              events.push("cleanup");
+          return workFails ? Effect.fail(primary) : Effect.succeed(7);
+        }),
+        Effect.suspend(() => {
+          events.push("cleanup");
 
-              await (cleanupFails
-                ? Promise.reject(secondary)
-                : Promise.resolve());
-            },
-            async (failure) => {
-              reports.push(failure);
-              events.push(`report-${failure.phase}`);
+          return cleanupFails ? Effect.fail(secondary) : Effect.void;
+        }),
+        (failure) =>
+          Effect.suspend(() => {
+            reports.push(failure);
+            events.push(`report-${failure.phase}`);
 
-              await (reportFails
-                ? Promise.reject(new Error("report unavailable"))
-                : Promise.resolve());
-            }
-          ).then(
-            (value) => ({ error: undefined, value }),
-            (error: unknown) => ({ error, value: undefined })
-          )
+            return reportFails
+              ? Effect.fail(new ProofHttpFailure({ status: 502 }))
+              : Effect.void;
+          })
+      ).pipe(
+        Effect.match({
+          onFailure: (error) => ({ error, value: undefined }),
+          onSuccess: (value) => ({ error: undefined, value }),
+        })
       );
 
       let expected: Error | undefined;

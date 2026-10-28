@@ -1,4 +1,4 @@
-// @effect-diagnostics asyncFunction:off -- fast-check commands drive the standalone Promise progress adapter.
+/* oxlint-disable typescript/promise-function-async, effect-tests/no-manual-effect-runtime-in-tests -- asyncModelRun bridges commands through the owning test context. */
 import { it } from "@effect/vitest";
 import { Arbitrary, Effect, Schema } from "effect";
 import { asyncModelRun } from "fast-check";
@@ -8,7 +8,6 @@ import { expect } from "vitest";
 import {
   createProofProgress,
   ProofAssertionFailure,
-  runProofEffect,
   withProofCleanup,
 } from "../../../stacks/nest/restore-drill-proof-errors.ts";
 import type {
@@ -40,12 +39,16 @@ it.effect.prop(
   },
   ({ at, steps }) =>
     Effect.gen(function* progressModel() {
+      const context = yield* Effect.context();
+      const run = Effect.runPromiseWith(context);
       const failedIndex = at % steps.length;
       const history: ProofProgress[] = [];
 
-      const tracker = createProofProgress(async (state) => {
-        await Promise.resolve(history.push({ ...state }));
-      });
+      const tracker = createProofProgress((state) =>
+        Effect.sync(() => {
+          history.push({ ...state });
+        })
+      );
 
       const model: ProgressModel = { lastOk: "none", step: "bootstrap" };
 
@@ -53,62 +56,61 @@ it.effect.prop(
         .slice(0, failedIndex + 1)
         .map((step, index) => ({
           check: () => true,
-          run: async (expected: ProgressModel, real: typeof tracker) => {
-            const before = history.length;
-            const failed = index === failedIndex;
+          run: (expected: ProgressModel, real: typeof tracker) =>
+            run(
+              Effect.gen(function* progressCommand() {
+                const before = history.length;
+                const failed = index === failedIndex;
 
-            const work = async () => {
-              expect(history.at(-1)).toEqual(real.snapshot());
-              await runProofEffect(
-                failed
-                  ? Effect.fail(
-                      new ProofAssertionFailure({
-                        assertionCode: "EVENT_COUNT_MISMATCH",
-                      })
-                    )
-                  : Effect.void
-              );
-            };
+                const work = Effect.suspend(() => {
+                  expect(history.at(-1)).toEqual(real.snapshot());
 
-            if (failed) {
-              const failures: ProofFailure[] = [];
+                  return failed
+                    ? Effect.fail(
+                        new ProofAssertionFailure({
+                          assertionCode: "EVENT_COUNT_MISMATCH",
+                        })
+                      )
+                    : Effect.void;
+                });
 
-              await withProofCleanup(
-                async () => {
-                  await real.run(step, work);
-                },
-                async () => {
-                  await real.run("restore-auth", () => null);
-                },
-                async (failure) => {
-                  await Promise.resolve(failures.push(failure));
-                },
-                real.snapshot
-              ).catch(() => null);
-              expect(failures).toHaveLength(1);
-              expect(failures[0]).toMatchObject({
-                assertionCode: "EVENT_COUNT_MISMATCH",
-                code: "EFFECT_FAIL",
-                lastOk: expected.lastOk,
-                phase: "primary",
-                step,
-              });
-              expected.lastOk = "restore-auth";
-              expected.step = "restore-auth";
-            } else {
-              await real.run(step, work);
-              expected.lastOk = step;
-              expected.step = step;
-            }
+                if (failed) {
+                  const failures: ProofFailure[] = [];
 
-            expect(real.snapshot()).toEqual(expected);
-            expect(history).toHaveLength(before + (failed ? 3 : 2));
-          },
+                  yield* withProofCleanup(
+                    real.run(step, work),
+                    real.run("restore-auth", Effect.void),
+                    (failure) =>
+                      Effect.sync(() => {
+                        failures.push(failure);
+                      }),
+                    real.snapshot
+                  ).pipe(Effect.ignore);
+                  expect(failures).toHaveLength(1);
+                  expect(failures[0]).toMatchObject({
+                    assertionCode: "EVENT_COUNT_MISMATCH",
+                    code: "EFFECT_FAIL",
+                    lastOk: expected.lastOk,
+                    phase: "primary",
+                    step,
+                  });
+                  expected.lastOk = "restore-auth";
+                  expected.step = "restore-auth";
+                } else {
+                  yield* real.run(step, work);
+                  expected.lastOk = step;
+                  expected.step = step;
+                }
+
+                expect(real.snapshot()).toEqual(expected);
+                expect(history).toHaveLength(before + (failed ? 3 : 2));
+              })
+            ),
           toString: () => `ProofStep:${step}`,
         }));
 
-      yield* Effect.promise(async () => {
-        await asyncModelRun(() => ({ model, real: tracker }), commands);
-      });
+      yield* Effect.promise(() =>
+        asyncModelRun(() => ({ model, real: tracker }), commands)
+      );
     })
 );

@@ -68,25 +68,27 @@ print('NAMED_SELECTION_PASSED')
 
 const budgetFixture = String.raw`
 import contextlib,gc,pathlib,resource,runpy,sqlite3,sys,tempfile
-m=runpy.run_path(sys.argv[1],run_name='fixture');count=int(sys.argv[2])
+m=runpy.run_path(sys.argv[1],run_name='fixture');counts=[int(c) for c in sys.argv[2].split(',')]
 dids=['did:web:reader.example.invalid','did:web:desk.example.invalid']
+hard=resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+budget=min(64,hard) if hard!=resource.RLIM_INFINITY else 64
+resource.setrlimit(resource.RLIMIT_NOFILE,(budget,hard));gc.disable()
+assert resource.getrlimit(resource.RLIMIT_NOFILE)[0]<=64
+fd_dir=pathlib.Path('/proc/self/fd')
 with tempfile.TemporaryDirectory() as tmp:
- root=pathlib.Path(tmp)
- for i in range(count):
-  p=root/'celld'/('Mailbox:'+str(i))/'ltx/e1/db.sqlite';p.parent.mkdir(parents=True)
-  with contextlib.closing(sqlite3.connect(p)) as db, db:
-   db.execute('CREATE TABLE _cf_METADATA(actor_name TEXT)')
-   db.execute('INSERT INTO _cf_METADATA VALUES (?)',(dids[i] if i<2 else 'did:web:foreign.example.invalid',))
- hard=resource.getrlimit(resource.RLIMIT_NOFILE)[1]
- budget=min(64,hard) if hard!=resource.RLIM_INFINITY else 64
- resource.setrlimit(resource.RLIMIT_NOFILE,(budget,hard));gc.disable()
- assert resource.getrlimit(resource.RLIMIT_NOFILE)[0]<=64
- fd_dir=pathlib.Path('/proc/self/fd')
- before=len(list(fd_dir.iterdir())) if fd_dir.exists() else None
- for iteration in range(4):
-  selected=m['select_mailboxes'](root,dids)
-  assert set(selected)==set(dids)
-  if before is not None:assert len(list(fd_dir.iterdir()))==before, 'SQLite read loop leaked handles'
+ root=pathlib.Path(tmp);built=0
+ for count in counts:
+  for i in range(built,count):
+   p=root/'celld'/('Mailbox:'+str(i))/'ltx/e1/db.sqlite';p.parent.mkdir(parents=True)
+   with contextlib.closing(sqlite3.connect(p)) as db, db:
+    db.execute('CREATE TABLE _cf_METADATA(actor_name TEXT)')
+    db.execute('INSERT INTO _cf_METADATA VALUES (?)',(dids[i] if i<2 else 'did:web:foreign.example.invalid',))
+  built=count
+  before=len(list(fd_dir.iterdir())) if fd_dir.exists() else None
+  for iteration in range(4):
+   selected=m['select_mailboxes'](root,dids)
+   assert set(selected)==set(dids)
+   if before is not None:assert len(list(fd_dir.iterdir()))==before, 'SQLite read loop leaked handles'
 print('HANDLE_BUDGET_PASSED')
 `;
 
@@ -138,14 +140,9 @@ it.effect.prop(
     }).pipe(Effect.provide(NodeServices.layer))
 );
 
-it.effect.prop(
+it.effect(
   "SQLite cache discovery closes every handle within a fixed open-files budget without garbage collection",
-  {
-    count: Arbitrary.schema(
-      Schema.Int.check(Schema.isBetween({ maximum: 144, minimum: 80 }))
-    ),
-  },
-  ({ count }) =>
+  () =>
     Effect.gen(function* handleBudget() {
       const shell = yield* localExec;
 
@@ -155,7 +152,7 @@ it.effect.prop(
         budgetFixture,
         new URL("../../../stacks/nest/restore-drill.py", import.meta.url)
           .pathname,
-        count.toString(),
+        "80,112,144",
       ]);
 
       expect(result.code, result.stdout).toBe(0);
