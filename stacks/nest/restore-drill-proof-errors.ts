@@ -1,5 +1,4 @@
-// @effect-diagnostics asyncFunction:off -- Promise ports for the standalone isolated proof subprocess.
-import { Cause, Effect, Exit, Option, Schema } from "effect";
+import { Cause, Effect, Option, Schema } from "effect";
 
 import {
   AssertionCode,
@@ -38,13 +37,6 @@ export const ProofStep = Schema.Literals([
   "restore-reload",
   "evict",
 ]);
-
-export class ProofEffectFailure extends Schema.TaggedError<ProofEffectFailure>()(
-  "ProofEffectFailure",
-  {
-    effectCause: Schema.Cause(Schema.Unknown, Schema.Unknown),
-  }
-) {}
 
 export interface ProofProgress {
   readonly lastOk: typeof ProofStep.Type | "none";
@@ -88,7 +80,6 @@ const Rejected = Schema.Struct({
 });
 
 const ForeignFault = Schema.Union([
-  ProofEffectFailure,
   Schema.Cause(Schema.Unknown, Schema.Unknown),
   Schema.ErrorInstance(),
   Rejected,
@@ -166,15 +157,8 @@ export const proofFailureMetadata = (
   const parsed = Schema.decodeUnknownOption(ForeignFault)(cause);
   const fault = Option.getOrUndefined(parsed);
 
-  const effectCause = Schema.is(ProofEffectFailure)(fault)
-    ? fault.effectCause
-    : fault;
-
-  const category = causeKind(effectCause);
-
-  const squashed = Cause.isCause(effectCause)
-    ? Cause.squash(effectCause)
-    : effectCause;
+  const category = causeKind(fault);
+  const squashed = Cause.isCause(fault) ? Cause.squash(fault) : fault;
 
   const rejected = Schema.is(Rejected)(squashed);
   let detail = emptyFields;
@@ -232,79 +216,48 @@ export const proofFailureMetadata = (
   };
 };
 
-export const runProofEffect = async <A, E>(
-  effect: Effect.Effect<A, E>
-): Promise<A> => {
-  const exit = await Effect.runPromiseExit(effect);
-
-  if (Exit.isFailure(exit)) {
-    throw new ProofEffectFailure({ effectCause: exit.cause });
-  }
-
-  return exit.value;
-};
-
-export const createProofProgress = (
-  report: (progress: ProofProgress) => Promise<void>
+export const createProofProgress = <E, R>(
+  report: (progress: ProofProgress) => Effect.Effect<void, E, R>
 ) => {
   let progress: ProofProgress = initialProgress;
 
+  const run = Effect.fn("proofProgress.run")(function* run<A, E2, R2>(
+    step: typeof ProofStep.Type,
+    work: Effect.Effect<A, E2, R2>
+  ) {
+    progress = { ...progress, step };
+    yield* report(progress);
+    const result = yield* work;
+
+    progress = { lastOk: step, step };
+    yield* report(progress);
+
+    return result;
+  });
+
   return {
-    run: async <A>(
-      step: typeof ProofStep.Type,
-      work: () => A | Promise<A>
-    ): Promise<A> => {
-      progress = { ...progress, step };
-      await report(progress);
-      const result = await work();
-
-      progress = { lastOk: step, step };
-      await report(progress);
-
-      return result;
-    },
+    run,
     snapshot: (): ProofProgress => ({ ...progress }),
   };
 };
 
-export const withProofCleanup = async <A>(
-  work: () => Promise<A>,
-  cleanup: () => Promise<void>,
-  report: (failure: ProofFailure) => Promise<void>,
+export const withProofCleanup = <A, E, R, E2, R2, E3, R3>(
+  work: Effect.Effect<A, E, R>,
+  cleanup: Effect.Effect<void, E2, R2>,
+  report: (failure: ProofFailure) => Effect.Effect<void, E3, R3>,
   progress: () => ProofProgress = () => initialProgress
-): Promise<A> => {
-  const notify = async (phase: ProofFailure["phase"], cause: unknown) => {
-    try {
-      await report(proofFailureMetadata(phase, cause, progress()));
+): Effect.Effect<A, E | E2, R | R2 | R3> => {
+  const notify = (phase: ProofFailure["phase"], cause: Cause.Cause<unknown>) =>
+    Effect.ignoreCause(report(proofFailureMetadata(phase, cause, progress())));
 
-      return true;
-    } catch {
-      return false;
-    }
-  };
+  const release = cleanup.pipe(
+    Effect.tapCause((cause) => notify("cleanup", cause))
+  );
 
-  const release = async () => {
-    try {
-      await cleanup();
-    } catch (error) {
-      await notify("cleanup", error);
-
-      throw error;
-    }
-  };
-
-  let result: A;
-
-  try {
-    result = await work();
-  } catch (error) {
-    await notify("primary", error);
-    await release().catch(() => null);
-
-    throw error;
-  }
-
-  await release();
-
-  return result;
+  return work.pipe(
+    Effect.tapCause((cause) =>
+      notify("primary", cause).pipe(Effect.andThen(Effect.ignoreCause(release)))
+    ),
+    Effect.tap(() => release)
+  );
 };

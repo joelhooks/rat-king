@@ -1,13 +1,9 @@
-// @effect-diagnostics asyncFunction:off -- Exercise the standalone Promise fault projection.
 import { it } from "@effect/vitest";
 import { Arbitrary, Data, Effect, Schema } from "effect";
 import { expect } from "vitest";
 
 import { requireMailboxCounts } from "../../../stacks/nest/restore-drill-proof-assertion.ts";
-import {
-  proofFailureMetadata,
-  runProofEffect,
-} from "../../../stacks/nest/restore-drill-proof-errors.ts";
+import { proofFailureMetadata } from "../../../stacks/nest/restore-drill-proof-errors.ts";
 
 const Count = Schema.Int.check(
   Schema.isBetween({ maximum: 100_000, minimum: 0 })
@@ -35,20 +31,17 @@ it.effect.prop(
         requireMailboxCounts(baseline, baseline, mailboxIndex);
       }).not.toThrow();
 
-      const metadata = yield* Effect.promise(
-        async () =>
-          await runProofEffect(
-            Effect.sync(() => {
-              requireMailboxCounts(baseline, changed, mailboxIndex);
-            })
-          ).then(
-            () => proofFailureMetadata("primary", null),
-            (error: unknown) =>
-              proofFailureMetadata("primary", error, {
-                lastOk: "fetch-events",
-                step: "compare-counts",
-              })
-          )
+      const metadata = yield* Effect.sync(() => {
+        requireMailboxCounts(baseline, changed, mailboxIndex);
+      }).pipe(
+        Effect.matchCause({
+          onFailure: (cause) =>
+            proofFailureMetadata("primary", cause, {
+              lastOk: "fetch-events",
+              step: "compare-counts",
+            }),
+          onSuccess: () => proofFailureMetadata("primary", null),
+        })
       );
 
       expect(metadata).toMatchObject({

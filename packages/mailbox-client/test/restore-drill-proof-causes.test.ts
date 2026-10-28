@@ -1,4 +1,3 @@
-// @effect-diagnostics asyncFunction:off -- Exercise the standalone Promise adapter with real client faults.
 import { it } from "@effect/vitest";
 import { Arbitrary, Data, Effect, Schema } from "effect";
 import { expect } from "vitest";
@@ -6,7 +5,6 @@ import { expect } from "vitest";
 import {
   ProofAssertionFailure,
   proofFailureMetadata,
-  runProofEffect,
 } from "../../../stacks/nest/restore-drill-proof-errors.ts";
 import { MailboxClientError } from "../src/error.ts";
 import { SendOutcomes } from "../src/prepare.ts";
@@ -23,7 +21,13 @@ it.effect.prop(
     Effect.gen(function* realCauses() {
       const sensitive = `PRIVATE_CAUSE_${nonce}`;
 
-      const faults = {
+      const faults: Record<
+        typeof branch,
+        Effect.Effect<
+          never,
+          ProofAssertionFailure | ReturnType<typeof SendOutcomes.Rejected>
+        >
+      > = {
         die: Effect.die(new Error(sensitive)),
         fail: Effect.fail(
           new ProofAssertionFailure({ assertionCode: "MESSAGE_COUNT_MISMATCH" })
@@ -58,19 +62,15 @@ it.effect.prop(
         },
       };
 
-      const actual = yield* Effect.promise(
-        async () =>
-          await runProofEffect<
-            never,
-            ProofAssertionFailure | ReturnType<typeof SendOutcomes.Rejected>
-          >(faults[branch]).then(
-            () => proofFailureMetadata("primary", null),
-            (error: unknown) =>
-              proofFailureMetadata("primary", error, {
-                lastOk: "reload",
-                step: "resolve-name",
-              })
-          )
+      const actual = yield* faults[branch].pipe(
+        Effect.matchCause({
+          onFailure: (cause) =>
+            proofFailureMetadata("primary", cause, {
+              lastOk: "reload",
+              step: "resolve-name",
+            }),
+          onSuccess: () => proofFailureMetadata("primary", null),
+        })
       );
 
       expect(actual).toMatchObject({
