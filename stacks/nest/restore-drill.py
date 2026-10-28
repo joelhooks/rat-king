@@ -104,8 +104,10 @@ def backup_idle():
     now = datetime.datetime.now(datetime.timezone.utc)
     require(not (now.hour == 10 and now.minute < 14), 'Nightly backup window; retry outside 10:00-10:14Z')
     result = subprocess.run(['systemctl', '--user', 'show', 'rat-king-mailbox-backup.service',
-                             '-p', 'ActiveState', '--value'], capture_output=True, text=True, check=True)
-    require(result.stdout.strip() in ('inactive', 'failed'), 'Mailbox backup running or state unknown')
+                             '-p', 'LoadState', '-p', 'ActiveState'], capture_output=True, text=True, timeout=15)
+    state = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+    require(result.returncode == 0 and state.get('LoadState') in ('loaded', 'not-found')
+            and state.get('ActiveState') in ('inactive', 'failed'), 'Mailbox backup running or state unknown')
 
 
 def restore_archive(source, root):
@@ -124,6 +126,7 @@ def restore_archive(source, root):
     required = expected_bytes + sum(t['bytes'] for t in manifest['trees'].values())
     free_before = shutil.disk_usage(root).free
     require(free_before >= required * 1.2 + 1024**3, 'Insufficient scratch disk space')
+    copy_start = time.monotonic()
     h = hashlib.sha256()
     size = 0
     archive_path = root/'mailbox.tar.gz'
@@ -133,6 +136,8 @@ def restore_archive(source, root):
             size += len(chunk)
             dst.write(chunk)
     require(size == expected_bytes and h.hexdigest() == expected_sha, 'Archive checksum/size mismatch')
+    copy_seconds = time.monotonic() - copy_start
+    extract_start = time.monotonic()
     counts = {name: dict(bytes=0, files=0, directories=0) for name in manifest['trees']}
     with tarfile.open(archive_path, 'r|gz') as archive:
         for member in archive:
@@ -161,6 +166,8 @@ def restore_archive(source, root):
         actual[name] = tree
     require(actual == counts, 'Extracted inventories mismatch')
     return {'sha256': expected_sha, 'inventories': actual,
+            'timings': {'copyChecksumSeconds': round(copy_seconds, 3),
+                        'extractInventorySeconds': round(time.monotonic() - extract_start, 3)},
             'disk': {'freeBeforeBytes': free_before, 'requiredBytes': int(required * 1.2 + 1024**3)}}
 
 
@@ -263,6 +270,43 @@ def live_volume_max():
                              '-p', 'ExecStart', '--value'], capture_output=True, text=True, timeout=15)
     require(result.returncode == 0, 'Cannot read live SeaweedFS unit argv')
     return parse_volume_max(result.stdout)
+
+
+def volume_max(config):
+    if 'volumeMax' not in config:
+        return live_volume_max()
+    maximum = config['volumeMax']
+    require(type(maximum) is int and maximum > 0, 'Explicit volumeMax must be a positive integer')
+    return maximum
+
+
+def unit_control(config):
+    scope = config.get('isolationScope', 'system')
+    require(scope in ('system', 'user'), 'Unknown isolation scope')
+    return ['systemctl', '--user'] if scope == 'user' else ['sudo', '-n', 'systemctl']
+
+
+def worker_command(config, unit, root):
+    control = unit_control(config)
+    isolation = (['systemd-run', '--user', '-p', 'PrivateUsers=yes', '-p', 'Slice=app.slice'] if '--user' in control else
+                 ['sudo', '-n', 'systemd-run', '--uid=' + str(os.getuid())])
+    return [*isolation, '--unit=' + unit, '--collect', '--wait',
+            '-p', 'PrivateNetwork=yes', '-p', 'PrivateTmp=yes',
+            '-p', 'RuntimeMaxSec=2400', '-p', 'TimeoutStopSec=45', '-p', 'KillMode=control-group',
+            '-p', 'MemoryMax=6G', '-p', 'TasksMax=1024', '-p', 'Nice=10',
+            sys.executable, '-u', str(pathlib.Path(__file__).resolve()), 'worker', str(root)]
+
+
+def unit_cgroup(config, unit):
+    if '--user' not in unit_control(config):
+        return pathlib.Path('/sys/fs/cgroup/system.slice')/unit
+    result = subprocess.run(['systemctl', '--user', 'show', 'init.scope', '-p', 'ControlGroup', '--value'],
+                            capture_output=True, text=True, timeout=15)
+    scope = result.stdout.strip()
+    require(result.returncode == 0 and scope.startswith('/') and scope.endswith('/init.scope'),
+            'Cannot locate user manager cgroup; teardown would be unproven')
+    manager = canonical('/sys/fs/cgroup' + scope).parent
+    return manager/'app.slice'/unit
 
 
 def require_volume_slots(restored_count, maximum):
@@ -458,6 +502,7 @@ def orchestrate(config, receipt_path):
     unit = 'restore-drill-' + run_id + '.service'
     launched = False
     identity = None
+    group = None
     try:
         backup_idle()
         require_linux_isolation()
@@ -470,7 +515,8 @@ def orchestrate(config, receipt_path):
                     'Scratch parent overlaps backup or production data')
             require(receipt_path != protected and protected not in receipt_path.parents,
                     'Receipt overlaps backup or production data')
-        config = {**config, 'volumeMax': live_volume_max()}
+        config = {**config, 'volumeMax': volume_max(config)}
+        group = unit_cgroup(config, unit)
         source = select_archive(share)
         receipt['archiveId'] = source.name
         root, identity = create_root(parent, run_id)
@@ -478,6 +524,7 @@ def orchestrate(config, receipt_path):
         receipt['disk'] = {'freeBeforeBytes': shutil.disk_usage(root).free}
         restored = restore_archive(source, root)
         receipt['disk'] = restored.pop('disk')
+        receipt['timings'].update(restored.pop('timings', {}))
         receipt['proofs'].update(restored)
         receipt['timings']['restoreSeconds'] = round(time.monotonic() - start, 3)
         volume_count = restored_volume_count(root/'seaweedfs')
@@ -487,11 +534,7 @@ def orchestrate(config, receipt_path):
         (root/'config.json').write_text(json.dumps(config))
         receipt['unit'] = unit
         launched = True
-        command = ['sudo', '-n', 'systemd-run', '--unit=' + unit, '--collect', '--wait',
-                   '--uid=' + str(os.getuid()), '-p', 'PrivateNetwork=yes', '-p', 'PrivateTmp=yes',
-                   '-p', 'RuntimeMaxSec=2400', '-p', 'TimeoutStopSec=45', '-p', 'KillMode=control-group',
-                   '-p', 'MemoryMax=6G', '-p', 'TasksMax=1024', '-p', 'Nice=10',
-                   sys.executable, '-u', str(pathlib.Path(__file__).resolve()), 'worker', str(root)]
+        command = worker_command(config, unit, root)
         outcome = subprocess.run(command, capture_output=True, text=True, timeout=2500)
         require(outcome.returncode == 0, 'Isolated drill worker failed (see retained receipt; no production changes)')
         proof = json.loads((root/'proof.json').read_text())
@@ -504,12 +547,12 @@ def orchestrate(config, receipt_path):
         cleanup_start = time.monotonic()
         try:
             if launched:
-                subprocess.run(['sudo', '-n', 'systemctl', 'stop', unit], capture_output=True, timeout=60)
-                observed = subprocess.run(['systemctl', 'show', unit, '-p', 'LoadState', '--value'],
+                control = unit_control(config)
+                subprocess.run([*control, 'stop', unit], capture_output=True, timeout=60)
+                observed = subprocess.run([*control, 'show', unit, '-p', 'LoadState', '--value'],
                                           capture_output=True, text=True, timeout=20)
                 receipt['teardown']['unitAbsent'] = observed.stdout.strip() == 'not-found'
-                # The cgroup must be absent/empty, not merely an inactive unit.
-                group = pathlib.Path('/sys/fs/cgroup/system.slice')/unit
+                # The exact manager cgroup must be absent/empty, not merely an inactive unit.
                 receipt['teardown']['processesAbsent'] = not group.exists() or all(
                     not path.read_text().strip() for path in group.rglob('cgroup.procs'))
                 if root is not None and (root/'children-stopped.json').is_file():
