@@ -530,15 +530,15 @@ const digestReading = (
       ? []
       : stopMemoryWarnings(facts.stopMemory);
 
-  if (memory.length > 0) {
-    return firing("warn", memory.join("; "));
-  }
-
-  if (
+  const digestFailed =
     facts.digest === "fail" ||
-    (facts.measurementFailed && (sources.measurementMisses ?? 0) >= 2)
-  ) {
-    return firing("warn", digestEvidence(facts));
+    (facts.measurementFailed && (sources.measurementMisses ?? 0) >= 2);
+
+  if (memory.length > 0 || digestFailed) {
+    return firing(
+      "warn",
+      [...(digestFailed ? [digestEvidence(facts)] : []), ...memory].join("; ")
+    );
   }
 
   if (facts.measurementFailed) {

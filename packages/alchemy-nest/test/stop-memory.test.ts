@@ -200,3 +200,56 @@ it.prop(
     expect(recovered.readings["digest.fail"].status).toBe("ok");
   }
 );
+
+it.prop(
+  "memory warnings preserve simultaneous digest evidence and leave no-memory measurement gating unchanged",
+  [
+    AlarmFacts,
+    Schema.Literals(["celld", "seaweedfs"]),
+    Schema.Int.check(Schema.isBetween({ maximum: 100, minimum: 60 })),
+    Schema.Int.check(Schema.isBetween({ maximum: 3, minimum: 0 })),
+  ],
+  ([base, name, anon, misses]) => {
+    const charge = { anon: 0, current: 100, file: 100, max: 100, peak: 100 };
+    const healthy = { celld: charge, seaweedfs: charge };
+    const memory = { ...healthy, [name]: { ...charge, anon } };
+    const warnings = stopMemoryWarnings(memory);
+    const prior = { ...emptySources, measurementMisses: misses };
+
+    for (const digest of ["ok", "fail", null] as const) {
+      const facts = { ...base, digest, stopMemory: null };
+      const baseline = observeAlarms(prior, facts, 0).readings["digest.fail"];
+
+      const withoutWarning = observeAlarms(
+        prior,
+        { ...facts, stopMemory: healthy },
+        0
+      ).readings["digest.fail"];
+
+      const combined = observeAlarms(prior, { ...facts, stopMemory: memory }, 0)
+        .readings["digest.fail"];
+
+      const quietStatus =
+        facts.measurementFailed || digest === null ? "unknown" : "ok";
+
+      const expectedStatus =
+        digest === "fail" || (facts.measurementFailed && misses >= 1)
+          ? "firing"
+          : quietStatus;
+
+      expect(baseline.status).toBe(expectedStatus);
+      expect(withoutWarning).toEqual(baseline);
+      expect(combined.status).toBe("firing");
+
+      if (combined.status === "firing") {
+        expect(combined.severity).toBe("warn");
+        expect(combined.evidence).toBe(
+          [
+            ...(baseline.status === "firing" ? [baseline.evidence] : []),
+            ...warnings,
+          ].join("; ")
+        );
+      }
+    }
+  }
+);
