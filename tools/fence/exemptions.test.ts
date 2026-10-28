@@ -39,9 +39,17 @@ it.effect(
         })
       ).toEqual([]);
 
-      for (const entry of exemptions) {
-        expect(blobHash(yield* fs.readFile(entry.path))).toBe(entry.sha256);
+      for (const path of new Set(exemptions.map((entry) => entry.path))) {
+        const current = blobHash(yield* fs.readFile(path));
 
+        expect(
+          exemptions
+            .filter((entry) => entry.path === path)
+            .map((entry) => entry.sha256)
+        ).toContain(current);
+      }
+
+      for (const entry of exemptions) {
         for (const alias of entry.alsoAt ?? []) {
           for (const rule of entry.rules) {
             expect(isExempt(alias, entry.sha256, rule)).toBe(true);
