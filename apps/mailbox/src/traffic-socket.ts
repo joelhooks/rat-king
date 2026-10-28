@@ -6,7 +6,7 @@ import { transition } from "xstate";
 
 import type { ClaimsValue } from "./auth.ts";
 import { failure } from "./failure.ts";
-import { socketMachine, socketCodes } from "./socket.ts";
+import { sendIfOpen, socketMachine, socketCodes } from "./socket.ts";
 
 const Attachment = Schema.Struct({
   deadline: Schema.Int,
@@ -41,7 +41,8 @@ const close = (socket: WebSocket, code: number) => {
 };
 
 const notice = (socket: WebSocket, seq: number) => {
-  socket.send(
+  sendIfOpen(
+    socket,
     JSON.stringify({
       $type: "sh.mschf.ratking.mailbox.subscribeTraffic#notice",
       seq,

@@ -51,3 +51,14 @@ export const socketStep = (
 };
 
 export const socketCodes = { auth: 4401, stale: 4409, timeout: 4408 } as const;
+
+const socketOpen = 1;
+
+export const sendIfOpen = (
+  socket: Pick<WebSocket, "readyState" | "send">,
+  text: string
+) => {
+  if (socket.readyState === socketOpen) {
+    socket.send(text);
+  }
+};

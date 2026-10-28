@@ -70,7 +70,12 @@ import { nameHealth } from "./name-health.ts";
 import { replayLayer } from "./replay.ts";
 import { isoTime, markRetired, presenceOf, standingOf } from "./retirement.ts";
 import { SenderFence } from "./sender-fence.ts";
-import { SocketAttachment, socketStep, socketCodes } from "./socket.ts";
+import {
+  SocketAttachment,
+  sendIfOpen,
+  socketStep,
+  socketCodes,
+} from "./socket.ts";
 import { sqliteStore } from "./sqlite.ts";
 import type { Sql } from "./sqlite.ts";
 import { MailboxStore, Retirement, storageOperation } from "./store.ts";
@@ -801,7 +806,8 @@ export class Mailbox extends DurableObject<Bindings> {
 
       if (attachment.state === "authenticated") {
         for (const event of events) {
-          socket.send(
+          sendIfOpen(
+            socket,
             JSON.stringify({
               $type: "sh.mschf.ratking.mailbox.subscribe#notice",
               seq: event.seq,
@@ -888,6 +894,15 @@ export class Mailbox extends DurableObject<Bindings> {
   }
 
   override webSocketMessage(socket: WebSocket, message: string | ArrayBuffer) {
+    return Mailbox.logged("webSocketMessage", () =>
+      this.runWebSocketMessage(socket, message)
+    );
+  }
+
+  private runWebSocketMessage(
+    socket: WebSocket,
+    message: string | ArrayBuffer
+  ) {
     if (this.ctx.id.name === trafficDid) {
       return this.feedSockets.message(socket, message);
     }
@@ -967,7 +982,8 @@ export class Mailbox extends DurableObject<Bindings> {
             }
 
             socket.serializeAttachment(socketStep(current, "accept"));
-            socket.send(
+            sendIfOpen(
+              socket,
               JSON.stringify({
                 $type: "sh.mschf.ratking.mailbox.subscribe#notice",
                 seq: tx.watermark(),
@@ -1004,6 +1020,12 @@ export class Mailbox extends DurableObject<Bindings> {
   }
 
   override webSocketClose(socket: WebSocket) {
+    return Mailbox.logged("webSocketClose", () =>
+      this.runWebSocketClose(socket)
+    );
+  }
+
+  private runWebSocketClose(socket: WebSocket) {
     if (this.ctx.id.name === trafficDid) {
       this.feedSockets.close(socket);
 
@@ -1020,6 +1042,12 @@ export class Mailbox extends DurableObject<Bindings> {
   }
 
   override webSocketError(socket: WebSocket) {
+    return Mailbox.logged("webSocketError", () =>
+      this.runWebSocketError(socket)
+    );
+  }
+
+  private runWebSocketError(socket: WebSocket) {
     if (this.ctx.id.name === trafficDid) {
       this.feedSockets.close(socket);
 
@@ -1032,10 +1060,14 @@ export class Mailbox extends DurableObject<Bindings> {
   }
 
   override alarm() {
+    return Mailbox.logged("alarm", () => this.runAlarm());
+  }
+
+  private static logged(handler: string, run: () => Promise<void> | void) {
     return Effect.runPromise(
-      Effect.promise(() => this.runAlarm()).pipe(
+      Effect.promise(() => Promise.resolve(run())).pipe(
         Effect.tapCause((cause) =>
-          Effect.logError("Mailbox alarm failed", Cause.pretty(cause))
+          Effect.logError(`Mailbox ${handler} failed`, Cause.pretty(cause))
         )
       )
     );
