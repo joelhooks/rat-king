@@ -112,9 +112,9 @@ const Account = Schema.Struct({
   ),
 });
 
-export const requestTypes = ["fetch", "rpc", "alarm"] as const;
+export const requestTypes = ["http", "jsrpc", "alarm"] as const;
 
-export const websocketMessageTypes = ["websocket_message"] as const;
+export const websocketMessageTypes = ["hibernation"] as const;
 
 export const invocationRequests = Effect.fn("Measure.invocationRequests")(
   function* invocationRequests(rows: readonly (typeof Invocation.Type)[]) {

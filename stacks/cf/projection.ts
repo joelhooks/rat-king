@@ -55,6 +55,10 @@ export const projectWorker = (
     },
     env,
     name: workerName,
+    observability: {
+      enabled: true,
+      logs: { enabled: true, invocationLogs: true },
+    },
     script: prepared.bundle,
     workersDev: { enabled: true, previewsEnabled: false },
   } satisfies WorkerProps<

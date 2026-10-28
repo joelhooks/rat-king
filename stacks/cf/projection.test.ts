@@ -101,10 +101,12 @@ it.effect.prop(
         "compatibility",
         "env",
         "name",
+        "observability",
         "script",
         "workersDev",
       ]);
       expect(props.name).toBe(workerName);
+      expect(props.observability.logs.enabled).toBe(true);
       expect(props.script).toBe(bundle);
       expect(props.bundle).toBe(false);
       expect(props.compatibility).toEqual({
