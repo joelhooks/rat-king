@@ -126,6 +126,7 @@ import {
   transferCustody,
 } from "./relay.ts";
 import type { RelayOutboundValue } from "./relay.ts";
+import { awaitRestartGate } from "./restart-gate.ts";
 import { countRetry, emptyRetries } from "./retry-counters.ts";
 import { SecretStore } from "./secrets.ts";
 import { replyRecipients, Threads, threadsLayer } from "./threads.ts";
@@ -257,9 +258,17 @@ export type ReaderState = Data.TaggedEnum<{
 
 export const ReaderState = Data.taggedEnum<ReaderState>();
 
+export type ClaimOutcome = Data.TaggedEnum<{
+  Idle: { readonly gate: "absent" };
+  Requested: { readonly gate: "released" };
+  Held: { readonly holder: LeaseHolder };
+}>;
+
+export const ClaimOutcome = Data.taggedEnum<ClaimOutcome>();
+
 export class ReaderControl extends Context.Service<
   ReaderControl,
-  { readonly claim: Effect.Effect<boolean> }
+  { readonly claim: Effect.Effect<ClaimOutcome> }
 >()("ratking/ReaderControl") {}
 
 export const ADMISSION_TRIES = 10;
@@ -2117,6 +2126,19 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       yield* Ref.set(claimGate, Option.none());
     });
 
+  const awaitGate = (name: string, gatePath: string, sessionId: string) =>
+    Effect.gen(function* holdForGate() {
+      const reason = `${name}: waiting for the restart gate before claiming the lease`;
+
+      yield* Ref.set(adopting, true);
+      yield* setState(ReaderState.SendOnly({ name, reason }));
+      yield* Effect.logInfo(`Rat King ${reason}`);
+      yield* awaitRestartGate(gatePath, sessionId).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path)
+      );
+    });
+
   const awaitSuccession = (name: string, startedAt: number) =>
     Effect.gen(function* awaitParentRelease() {
       const now = yield* Clock.currentTimeMillis;
@@ -2134,6 +2156,23 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
       return yield* successionRetryDelay.pipe(Effect.flatMap(Effect.sleep));
     });
+
+  const liveRival = Effect.gen(function* resolveRival() {
+    const own = yield* Ref.get(established);
+    const facts = yield* Ref.get(session);
+
+    if (Option.isNone(own) || Option.isNone(facts)) {
+      return Option.none<LeaseHolder>();
+    }
+
+    const found = yield* withClient(own.value, [], (client) =>
+      holderOf(client, own.value.did)
+    ).pipe(Effect.orElseSucceed(() => Option.none<LeaseHolder>()));
+
+    return found.pipe(
+      Option.filter((held) => held.live && held.session !== facts.value.session)
+    );
+  });
 
   const locate = Effect.fn("RatKing.locate")(function* locate(
     requested: string
@@ -2281,6 +2320,10 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             "Non-interactive Pi: send-only, no reader and no lease. Set RATKING_PRINT_NAME to read a name",
         })
       );
+    }
+
+    if (facts.restartGate !== undefined) {
+      yield* awaitGate(own.name, facts.restartGate, facts.session);
     }
 
     if (barred) {
@@ -3323,12 +3366,25 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       ReaderControl,
       ReaderControl.of({
         claim: Ref.get(claimGate).pipe(
-          Effect.flatMap((gate) =>
-            Option.match(gate, {
-              onNone: () => Effect.succeed(false),
-              onSome: (request) => Deferred.succeed(request, true),
-            })
-          )
+          Effect.flatMap((gate): Effect.Effect<ClaimOutcome> => {
+            if (Option.isNone(gate)) {
+              return Effect.succeed(ClaimOutcome.Idle({ gate: "absent" }));
+            }
+
+            return liveRival.pipe(
+              Effect.flatMap((rival): Effect.Effect<ClaimOutcome> => {
+                if (Option.isSome(rival)) {
+                  return Effect.succeed(
+                    ClaimOutcome.Held({ holder: rival.value })
+                  );
+                }
+
+                return Deferred.succeed(gate.value, true).pipe(
+                  Effect.as(ClaimOutcome.Requested({ gate: "released" }))
+                );
+              })
+            );
+          })
         ),
       })
     ),

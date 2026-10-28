@@ -51,6 +51,7 @@ export interface SessionFacts {
   readonly reads?: boolean;
   readonly successor?: boolean;
   readonly owner?: Option.Option<string>;
+  readonly restartGate?: string | undefined;
   readonly onState?: (reader: ReaderState) => void;
 }
 

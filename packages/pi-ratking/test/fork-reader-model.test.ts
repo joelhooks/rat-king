@@ -66,9 +66,9 @@ class Command implements fc.AsyncCommand<Model, Real> {
       model.blocked = false;
     }
 
-    if (this.step === "claim" && !model.live) {
+    if (this.step === "claim" && !model.live && !model.blocked) {
       model.attempts += 1;
-      model.live = !model.blocked;
+      model.live = true;
     }
 
     await real.step(this.step, {
@@ -83,7 +83,7 @@ class Command implements fc.AsyncCommand<Model, Real> {
 }
 
 it.live.prop(
-  "a fork cannot touch its parent's lease and a held fork only retries on explicit claim",
+  "a fork cannot touch its parent's lease and a held fork retries only on an explicit claim, and only once the parent's lease is gone",
   [Arbitrary.schema(Schema.Array(StepSchema).check(Schema.isMaxLength(12)))],
   ([steps]) =>
     Effect.gen(function* proof() {
@@ -168,6 +168,13 @@ it.live.prop(
 
           if (nsid.endsWith(".resolveLease")) {
             const holder = new URL(request.url).searchParams.get("did") ?? "";
+
+            if (!blocked && holder.includes("switchboard.review")) {
+              return HttpClientResponse.fromWeb(
+                request,
+                Response.json({ error: "LeaseNotFound" }, { status: 404 })
+              );
+            }
 
             return HttpClientResponse.fromWeb(
               request,
@@ -275,9 +282,9 @@ it.live.prop(
                   action: "claim",
                 });
 
-                expect(result.isError).toBe(wasLive);
+                expect(result.isError).toBe(wasLive || blocked);
 
-                if (!wasLive) {
+                if (!wasLive && !blocked) {
                   yield* eventually(
                     fork.status.pipe(
                       Effect.filterOrFail(

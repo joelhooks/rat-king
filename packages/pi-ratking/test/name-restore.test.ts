@@ -159,6 +159,7 @@ const session = (script: Script) =>
     const notices: string[] = [];
     const statuses: (string | undefined)[] = [];
     let claimed = Option.none<string>();
+    let reader: ReaderState = ReaderState.Starting({ reason: "starting" });
     let started: (start: SessionStart) => Promise<void> = idle;
     let ended: () => Promise<void> = idle;
     let tool: ExecutableTool | undefined;
@@ -174,14 +175,17 @@ const session = (script: Script) =>
           Effect.sync(() => {
             const name = Option.getOrElse(facts.env, () => "pi-default");
 
+            const publish = (next: ReaderState) => {
+              reader = next;
+              facts.onState?.(next);
+            };
+
             claimed = Option.some(name);
-            facts.onState?.(ReaderState.Minting({ name }));
-            facts.onState?.(
-              ReaderState.Acquiring({ did: "did:web:x.invalid", name })
-            );
+            publish(ReaderState.Minting({ name }));
+            publish(ReaderState.Acquiring({ did: "did:web:x.invalid", name }));
 
             if (Option.isNone(script.held)) {
-              facts.onState?.(
+              publish(
                 ReaderState.Live({
                   did: "did:web:x.invalid",
                   expiresAt: "2099-01-01T00:00:00.000Z",
@@ -191,6 +195,13 @@ const session = (script: Script) =>
               );
             }
           }),
+        status: Effect.sync(() => ({
+          endpoint: "https://mailbox.example.invalid",
+          openAsks: 0,
+          quarantine: { count: 0, latest: Option.none() },
+          reader,
+          self: Option.none(),
+        })),
       }),
       Layer.mock(Inbox, { holder: Effect.sync(() => script.held) })
     );
@@ -297,8 +308,8 @@ it.live(
       expect(taken.claimed).toEqual(Option.some("switchboard"));
       expect(taken.notices).toEqual([heldNotice("switchboard")]);
       expect(taken.statuses.at(-1)).toBe(heldNotice("switchboard"));
-      expect(taken.tool).toContain("NotConfigured");
-      expect(taken.tool).toContain(heldReason("switchboard"));
+      expect(taken.tool).not.toContain("NotConfigured");
+      expect(taken.tool).not.toContain(heldReason("switchboard"));
       expect(script.store).toHaveLength(1);
 
       const override = yield* session({

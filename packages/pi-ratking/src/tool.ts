@@ -22,6 +22,7 @@ import { LexiconRecord } from "@rat-king/ratking-client/payload";
 import { literalPrompt } from "@rat-king/ratking-client/prompt";
 import {
   RatKing,
+  ClaimOutcome,
   ReaderControl,
   ReaderState,
   SendPhase,
@@ -522,12 +523,19 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
               ),
             onSome: (reader) =>
               reader.claim.pipe(
-                Effect.map((requested) =>
-                  requested
-                    ? ok(
+                Effect.map((outcome) =>
+                  ClaimOutcome.$match(outcome, {
+                    Held: ({ holder }) =>
+                      loud(
+                        `Name claim not attempted: the lease is held by ${holder.session} (${holder.harness}, generation ${holder.generation}, expires ${holder.expiresAt}).`
+                      ),
+                    Idle: () =>
+                      loud("No blocked name claim is waiting. Check status."),
+                    Requested: () =>
+                      ok(
                         "One explicit name claim requested. Check status for the lease outcome."
-                      )
-                    : loud("No blocked name claim is waiting. Check status.")
+                      ),
+                  })
                 )
               ),
           })
