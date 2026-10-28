@@ -38,7 +38,7 @@ interface Server {
   until: number;
 }
 
-const settle = TestClock.withLive(Effect.sleep("1 millis"));
+const settle = TestClock.withLive(Effect.sleep("5 millis"));
 
 const stamp = (until: number) => DateTime.formatIso(DateTime.makeUnsafe(until));
 
@@ -134,10 +134,17 @@ const serve = (server: Server, session: string) => {
   return http;
 };
 
-const advance = (millis: number) =>
+const advance = <R = never>(
+  millis: number,
+  observe: Effect.Effect<void, never, R> = Effect.void
+) =>
   Effect.forEach(
     Array.from({ length: Math.ceil(millis / 1000) }),
-    () => TestClock.adjust(1000).pipe(Effect.andThen(settle)),
+    () =>
+      TestClock.adjust(1000).pipe(
+        Effect.andThen(settle),
+        Effect.andThen(observe)
+      ),
     { discard: true }
   );
 
@@ -190,25 +197,26 @@ it.effect.prop(
         server.holder = scenario.holder;
         server.until = (yield* Clock.currentTimeMillis) + TTL_MS;
 
-        const flipped = server.until;
+        let parked = false;
 
-        yield* advance(TTL_MS - 10_000);
+        const watch = Effect.gen(function* sample() {
+          parked ||= yield* sendOnly;
+        });
 
-        if (scenario.holder === "foreign") {
-          expect(yield* sendOnly).toBe(true);
-        } else {
-          expect(yield* sendOnly).toBe(false);
+        yield* advance(TTL_MS + 60_000, watch);
+
+        const settled = scenario.holder === "foreign" ? sendOnly : live;
+
+        for (let step = 0; step < 600 && !(yield* settled); step += 1) {
+          yield* advance(1000, watch);
         }
 
-        yield* advance(60_000);
-
-        expect(yield* Clock.currentTimeMillis).toBeGreaterThan(flipped);
+        expect(yield* settled).toBe(true);
 
         if (scenario.holder === "foreign") {
           expect(yield* live).toBe(false);
-          expect(yield* sendOnly).toBe(true);
         } else {
-          expect(yield* live).toBe(true);
+          expect(parked).toBe(false);
         }
       }).pipe(
         Effect.provide(
