@@ -6,6 +6,28 @@ import { scrubChild } from "../../../stacks/nest/restore-drill-diagnostics.ts";
 import { violations } from "../../../tools/fence/rules.ts";
 
 it.prop(
+  "the disk class is a case-insensitive word match, not evidence of failure",
+  { word: Arbitrary.schema(Schema.Literals(["disk", "DISK", "Disk"])) },
+  ({ word }) => {
+    const child: Parameters<typeof scrubChild>[0] = {
+      argv: ["celld"],
+      env: {},
+      name: "celld",
+      stderr: "",
+      stdout: `startup ${word} backend initialized`,
+    };
+
+    expect(scrubChild(child, null).stdout).toBe(
+      "[diagnostic: object-store disk event]"
+    );
+    expect(
+      scrubChild({ ...child, stdout: "diskless backend initialized" }, null)
+        .stdout
+    ).toBe("[redacted child output]");
+  }
+);
+
+it.prop(
   "timeout context retains only approved targets and operation kinds",
   {
     nonce: Arbitrary.schema(

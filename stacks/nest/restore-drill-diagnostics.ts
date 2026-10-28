@@ -17,6 +17,8 @@ const Snapshot = Schema.Struct({
   inventory: Schema.String,
 });
 
+const diskWordNotFailurePattern = /\bdisk\b/iu;
+
 const classes: readonly (readonly [RegExp, string])[] = [
   [/connection refused/iu, "connection refused"],
   [/connection reset/iu, "connection reset"],
@@ -25,7 +27,7 @@ const classes: readonly (readonly [RegExp, string])[] = [
   [/assign/iu, "object-store volume assignment event"],
   [/grow/iu, "object-store volume growth event"],
   [/read[ _-]?only/iu, "object-store read-only event"],
-  [/\bdisk\b/iu, "object-store disk event"],
+  [diskWordNotFailurePattern, "object-store disk event"],
   [/no such file|not found/iu, "required resource not found"],
   [/permission denied|access denied|forbidden/iu, "access denied"],
   [/address already in use/iu, "listen address already in use"],
