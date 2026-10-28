@@ -10,6 +10,7 @@ import {
 } from "../../packages/alchemy-nest/src/listeners.ts";
 import { nodeService, storeService } from "./backup.ts";
 import { healthScript } from "./health-script.ts";
+import { StopMemory, stopMemoryWarnings } from "./stop-memory.ts";
 
 export const backupService = "rat-king-mailbox-backup.service";
 
@@ -79,6 +80,7 @@ export const Facts = Schema.Struct({
     celld: Schema.NullOr(UnitState),
     seaweedfs: Schema.NullOr(UnitState),
   }),
+  stopMemory: Schema.optionalKey(Schema.NullOr(StopMemory)),
   storage: Schema.Struct({
     dataDirs: Schema.NullOr(Schema.Struct({ celld: Count, seaweedfs: Count })),
     objects: Schema.NullOr(
@@ -253,6 +255,13 @@ export const assess = (facts: HealthFacts, previous?: HealthDigest) => {
     serviceFindings(facts, since),
     storageFindings(facts, previous),
     backupFindings(facts),
+    {
+      failures: [],
+      warnings:
+        facts.stopMemory === null || facts.stopMemory === undefined
+          ? []
+          : stopMemoryWarnings(facts.stopMemory),
+    },
     {
       failures: [],
       warnings: Object.entries(facts.unavailable).map(
@@ -617,6 +626,12 @@ export const collectHealth = Effect.fn("Nest.health")(function* collectHealth(
       ),
       seaweedfs: field("services.seaweedfs", unitState(storeService)),
       slots: field("storage.slots", slots),
+      stopMemory: field(
+        "stopMemory",
+        stdout(["/usr/bin/python3", "-c", healthScript, "memory"]).pipe(
+          Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(StopMemory)))
+        )
+      ),
     },
     { concurrency: 4 }
   );
@@ -632,6 +647,7 @@ export const collectHealth = Effect.fn("Nest.health")(function* collectHealth(
     observedAt,
     retention: facts.retention,
     services: { celld: facts.celld, seaweedfs: facts.seaweedfs },
+    stopMemory: facts.stopMemory,
     storage: {
       dataDirs: facts.dataDirs,
       objects: facts.objects,

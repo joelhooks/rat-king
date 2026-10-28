@@ -14,6 +14,7 @@ import {
 } from "./alarm-wakes.ts";
 import { Sha, ShipReceipt } from "./ship-config.ts";
 import { sanitizeCandidateStderr } from "./ship-diagnostics.ts";
+import { StopMemory, stopMemoryWarnings } from "./stop-memory.ts";
 
 const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
@@ -141,6 +142,7 @@ export const AlarmFacts = Schema.Struct({
     Schema.Union([Schema.Literal("off"), Schema.NullOr(SessionsBackupFact)])
   ),
   slots: Schema.NullOr(Schema.Struct({ free: Count, max: Count })),
+  stopMemory: Schema.optionalKey(Schema.NullOr(StopMemory)),
   wakes: Schema.optionalKey(Schema.NullOr(Schema.Array(WakeSighting))),
   windows: Schema.optionalKey(Schema.Array(WindowReceipt)),
 });
@@ -523,11 +525,20 @@ const digestReading = (
   facts: typeof AlarmFacts.Type,
   sources: typeof SourceState.Type
 ): AlarmReadingValue => {
-  if (
+  const memory =
+    facts.stopMemory === null || facts.stopMemory === undefined
+      ? []
+      : stopMemoryWarnings(facts.stopMemory);
+
+  const digestFailed =
     facts.digest === "fail" ||
-    (facts.measurementFailed && (sources.measurementMisses ?? 0) >= 2)
-  ) {
-    return firing("warn", digestEvidence(facts));
+    (facts.measurementFailed && (sources.measurementMisses ?? 0) >= 2);
+
+  if (memory.length > 0 || digestFailed) {
+    return firing(
+      "warn",
+      [...(digestFailed ? [digestEvidence(facts)] : []), ...memory].join("; ")
+    );
   }
 
   if (facts.measurementFailed) {

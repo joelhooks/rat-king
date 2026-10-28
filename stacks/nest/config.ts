@@ -1,6 +1,7 @@
 import { Config, Effect, FileSystem, Schema } from "effect";
 
 import type { Node } from "../../packages/alchemy-nest/src/inventory-schema.ts";
+import { fleetMemoryLimits } from "./stop-memory.ts";
 
 export const stageName = Config.schema(
   Schema.Literals(["proof", "pilot", "fleet"]),
@@ -51,7 +52,9 @@ export const configuration = Effect.fn("Nest.configuration")(
     }
 
     const memoryMax = yield* Config.String("RAT_KING_SLICE_MEMORY_MAX").pipe(
-      Config.withDefault({ fleet: "8G", pilot: "1536M", proof: "4G" }[stage])
+      Config.withDefault(
+        { fleet: fleetMemoryLimits.slice, pilot: "1536M", proof: "4G" }[stage]
+      )
     );
 
     const fs = yield* FileSystem.FileSystem;

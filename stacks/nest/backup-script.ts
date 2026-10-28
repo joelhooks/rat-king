@@ -1,5 +1,6 @@
 import { cacheIoScript } from "../../packages/alchemy-nest/src/cache-io-script.ts";
 import { objectArchiveScript } from "../../packages/alchemy-nest/src/object-archive-script.ts";
+import { unitMemoryScript } from "./memory-script.ts";
 
 export const backupScript = String.raw`
 import datetime, gzip, hashlib, json, os, pathlib, re, shutil, signal, sqlite3, stat, subprocess, sys, tarfile, tempfile, time, uuid
@@ -7,6 +8,7 @@ operation, data_arg, backup_arg = sys.argv[1:4]
 data, backup = pathlib.Path(data_arg), pathlib.Path(backup_arg)
 ${cacheIoScript}
 ${objectArchiveScript}
+${unitMemoryScript}
 BACKUP_NAME = r'[0-9]{8}T[0-9]{6}\.[0-9]{6}Z-[0-9a-f]{32}'
 PUBLISH_PREFIX = '.mailbox-publish-'
 SNAPSHOT_ROOTS = ['seaweedfs', 'celld']
@@ -255,6 +257,8 @@ elif operation == 'arm':
     age = time.monotonic_ns() // 1000 - started
     if started <= 0 or age < 0 or age >= 20 * 60 * 1000000:
         fail('Refusing late celld stop: unit age must be below 20 minutes')
+    for unit in ['rat-king-celld.service', 'rat-king-seaweedfs.service', 'rat-king.slice']:
+        print('BACKUP_STOP_MEMORY ' + unit + ' ' + json.dumps(unit_memory(unit), sort_keys=True), flush=True)
     marker = data / '.mailbox-backup-restart-required'
     with marker.open('x') as stream:
         stream.write('restart required\n')

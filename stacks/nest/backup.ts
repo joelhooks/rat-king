@@ -147,7 +147,34 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
       Effect.gen(function* stagedBackup() {
         yield* checkpoint("ready");
         yield* memory("before-stop");
-        yield* script("arm");
+
+        const armed = yield* bounded(
+          "arm",
+          stepLimit,
+          shell.exec([
+            "python3",
+            "-c",
+            backupScript,
+            "arm",
+            input.dataRoot,
+            input.backupRoot,
+          ])
+        );
+
+        yield* Effect.log(armed.stdout.trim());
+
+        yield* Effect.succeed(armed).pipe(
+          Effect.filterOrFail(
+            (result) => result.code === 0,
+            () =>
+              new HostError({
+                operation: "arm",
+                reason:
+                  "Backup could not arm early-stop recovery; mailbox left running. Inspect backup unit age and the restart marker before retrying.",
+              })
+          )
+        );
+
         const stoppedAt = yield* Clock.currentTimeMillis;
 
         yield* Effect.gen(function* quiesce() {
