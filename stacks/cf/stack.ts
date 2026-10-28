@@ -37,7 +37,9 @@ export const preview = Stack(
       hostedBindings,
       {
         commit: yield* Config.String("RAT_KING_COMMIT"),
+        documents,
         vars: hostedVars({
+          bundleDocuments: true,
           documents,
           gatewayModel: "",
           gatewayUrl: "",

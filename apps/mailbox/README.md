@@ -22,7 +22,7 @@ Hibernatable sockets use `acceptWebSocket`, lifecycle attachments and DO alarms 
 
 ## DID registration
 
-`admin.putDidDocument` allows only issuers in `OPERATOR_DIDS`, an optional JSON array that defaults to `[]`. It stores the public document in the DO named by its ID. Identical repeats return the DID; different documents fail with `DocumentConflict`. Static `DID_DOCUMENTS` cannot be overridden. Key rotation is not available in this version.
+`admin.putDidDocument` allows only issuers in `OPERATOR_DIDS`, an optional JSON array that defaults to `[]`. It stores the public document in the DO named by its ID. Identical repeats return the DID; different documents fail with `DocumentConflict`. Static documents cannot be overridden. They come from the `DID_DOCUMENTS` variable, or from a copy bundled into the Worker when the variable is absent (the hosted Cloudflare declaration, where a text binding is too small). Key rotation is not available in this version.
 
 ## Name issuer
 

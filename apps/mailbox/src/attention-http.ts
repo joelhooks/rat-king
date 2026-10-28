@@ -9,6 +9,7 @@ import { Effect, Schema } from "effect";
 import type { Bindings } from "./bindings.ts";
 import type { FailureScope } from "./failure-log.ts";
 import { failure } from "./failure.ts";
+import { jsonResponse } from "./json-response.ts";
 import { trafficDid } from "./traffic-store.ts";
 
 export const attentionMethods = [
@@ -98,9 +99,6 @@ export const attentionRequest = Effect.fn("Attention.request")(
       try: mailbox.route.bind(mailbox, transport, caller),
     });
 
-    return new Response(response.body, {
-      headers: { "content-type": "application/json" },
-      status: response.status,
-    });
+    return jsonResponse(response.body, response.status);
   }
 );

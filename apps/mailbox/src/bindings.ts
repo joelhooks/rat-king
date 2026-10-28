@@ -13,7 +13,7 @@ export interface Bindings {
   readonly ISSUER_RESERVED?: string;
   readonly DELEGATION?: string;
   readonly SERVICE_DID: string;
-  readonly DID_DOCUMENTS: string;
+  readonly DID_DOCUMENTS?: string;
   readonly LEASE_RESOLVERS?: string;
   readonly OPERATOR_DIDS?: string;
   readonly OBSERVER_DIDS?: string;
@@ -81,12 +81,16 @@ export interface HostedBuild {
   readonly gatewayUrl: string;
   readonly gatewayModel: string;
   readonly sidecar: boolean;
+  readonly bundleDocuments?: boolean;
 }
 
 export const hostedVars = (input: HostedBuild) => {
+  const documentVars =
+    input.bundleDocuments === true ? {} : { DID_DOCUMENTS: input.documents };
+
   const vars = {
     AGENT_MODEL: input.model,
-    DID_DOCUMENTS: input.documents,
+    ...documentVars,
     HOSTED_AGENTS: JSON.stringify([input.hostedDid]),
     SERVICE_DID: input.serviceDid,
   };
