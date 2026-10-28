@@ -17,5 +17,23 @@
     "sha256": "8e919a06b7602ba044bae5450419cc755427292e4c827a8f511a31052c859851",
     "rules": ["secret-name"],
     "reason": "Owner-approved references to unmodified RFC 9180 vector field names."
+  },
+  {
+    "path": "stacks/cf/MEASURE.md",
+    "sha256": "2b51e21f4a0ade90aad1b1ef59b756fe23387c20f5d3f246054f81f10aa13042",
+    "rules": ["secret-name"],
+    "reason": "Owner-approved public Cloudflare API token and Cloudflare analytics token environment names in the portable runbook. No secret values or instance-specific references."
+  },
+  {
+    "path": "tools/cf-measure/cost.ts",
+    "sha256": "7c3911c56d9c712c05d6c2d9726ef10ed0462b94c045a91d233ad3c44a0bdbb5",
+    "rules": ["secret-name"],
+    "reason": "Owner-approved public Cloudflare analytics token environment name read through redacted configuration. No credential values."
+  },
+  {
+    "path": "tools/cf-measure/cost.test.ts",
+    "sha256": "b52f60bfd5bad7f79cd99b03ac96ac089a6eca0d9c861f4a30cbe68016966676",
+    "rules": ["secret-name"],
+    "reason": "Owner-approved public Cloudflare analytics token environment name with an invented fake test value, never a credential."
   }
 ]
