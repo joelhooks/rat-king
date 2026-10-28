@@ -104,7 +104,7 @@ export const makeFakeShell = Effect.fn("HostShell.fake")((custody?: Custody) =>
 
       return {
         code: 0,
-        stdout: `LoadState=loaded\nActiveState=${unit.active ? "active" : "inactive"}\nSubState=${unit.active ? "running" : "dead"}\nUnitFileState=${unit.enabled ? "enabled" : "disabled"}\nNeedDaemonReload=${new TextDecoder().decode(files.get(unit.path)?.bytes) === unit.loaded ? "no" : "yes"}\nFragmentPath=${unit.path}\n`,
+        stdout: `LoadState=loaded\nActiveState=${unit.active ? "active" : "inactive"}\nSubState=${unit.active ? "running" : "dead"}\nUnitFileState=${unit.enabled ? "enabled" : "disabled"}\nNeedDaemonReload=${new TextDecoder().decode(files.get(unit.path)?.bytes) === unit.loaded ? "no" : "yes"}\nFragmentPath=${unit.path}\nDropInPaths=\n`,
       };
     };
 

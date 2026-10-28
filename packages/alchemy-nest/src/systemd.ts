@@ -8,6 +8,7 @@ import { must } from "./host-shell.ts";
 import type { Interface } from "./host-shell.ts";
 import { deleteFile } from "./instance-files.ts";
 import { removeStoreSockets, wantsLink } from "./unit-cleanup.ts";
+import { assertDeclaredControlDropIns } from "./unit-control.ts";
 
 const directive = Schema.String.check(Schema.isPattern(/^[^\r\n\0]*$/u));
 
@@ -131,7 +132,7 @@ const status = Effect.fn("SystemdUnit.status")(function* status(
     "show",
     props.name,
     "--no-pager",
-    "--property=LoadState,ActiveState,SubState,UnitFileState,NeedDaemonReload,FragmentPath,InvocationID",
+    "--property=LoadState,ActiveState,SubState,UnitFileState,NeedDaemonReload,FragmentPath,InvocationID,DropInPaths",
   ]);
 
   const fields = new Map(
@@ -148,14 +149,20 @@ const status = Effect.fn("SystemdUnit.status")(function* status(
   const load = fields.get("LoadState");
 
   if (load === "not-found") {
-    return { active: false, enabled: false, needDaemonReload: false };
+    return {
+      active: false,
+      dropInPaths: [],
+      enabled: false,
+      needDaemonReload: false,
+    };
   }
 
   if (
     result.code !== 0 ||
     load !== "loaded" ||
     !fields.has("ActiveState") ||
-    !fields.has("NeedDaemonReload")
+    !fields.has("NeedDaemonReload") ||
+    !fields.has("DropInPaths")
   ) {
     return yield* refuse("Unusable or malformed user unit status.");
   }
@@ -171,6 +178,9 @@ const status = Effect.fn("SystemdUnit.status")(function* status(
     active:
       fields.get("ActiveState") === "active" ||
       fields.get("ActiveState") === "activating",
+    dropInPaths: (fields.get("DropInPaths") ?? "")
+      .split(/\s+/u)
+      .filter(Boolean),
     enabled:
       fields.get("UnitFileState") === "enabled" ||
       fields.get("UnitFileState") === "enabled-runtime",
@@ -210,7 +220,9 @@ export const readUnit = Effect.fn("SystemdUnit.read")(function* readUnit(
 ) {
   yield* validateUnit(props);
   const file = yield* readFile(shell, unitPath(props));
-  const live = yield* status(shell, props);
+  const { dropInPaths, ...live } = yield* status(shell, props);
+
+  yield* assertDeclaredControlDropIns(shell, props, dropInPaths);
 
   if (file === undefined) {
     if (live.active || live.enabled) {
@@ -461,7 +473,9 @@ export const reconcileUnit = Effect.fn("SystemdUnit.reconcile")(
     }
 
     const before = yield* readFile(shell, path);
-    const live = yield* status(shell, valid);
+    const { dropInPaths, ...live } = yield* status(shell, valid);
+
+    yield* assertDeclaredControlDropIns(shell, valid, dropInPaths);
 
     if (before === undefined && live.active && output === undefined) {
       return yield* refuse(
