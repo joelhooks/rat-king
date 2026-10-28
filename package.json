@@ -40,6 +40,7 @@
     "typescript": "7.0.2",
     "ultracite": "8.0.1",
     "vitest": "5.0.5",
+    "workerd": "1.20261002.1",
     "xstate": "6.0.0-alpha.70"
   },
   "devEngines": {

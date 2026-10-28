@@ -5,6 +5,7 @@ import { Effect, Schema } from "effect";
 
 import { base64url, Document, Documents, documentResolver } from "./auth.ts";
 import type { Bindings } from "./bindings.ts";
+import { bundledDocuments } from "./bundled-documents.ts";
 import { failure } from "./failure.ts";
 
 export const didAllowlist = (value: string | undefined) =>
@@ -12,8 +13,18 @@ export const didAllowlist = (value: string | undefined) =>
     value ?? "[]"
   );
 
+export const documentsJson = (env: Bindings) => {
+  const json = env.DID_DOCUMENTS ?? bundledDocuments;
+
+  if (json === undefined) {
+    throw failure("MailboxUnavailable", 503);
+  }
+
+  return json;
+};
+
 export const configuredDocuments = (env: Bindings) =>
-  Schema.decodeUnknownSync(Documents)(JSON.parse(env.DID_DOCUMENTS));
+  Schema.decodeUnknownSync(Documents)(JSON.parse(documentsJson(env)));
 
 export const lookupPeerDocument = Effect.fn("Directory.lookup")(
   function* lookupPeerDocument(

@@ -41,6 +41,7 @@ export interface DeploymentBuild {
   readonly commit: string;
   readonly main: string;
   readonly vars: Readonly<Record<string, string>>;
+  readonly documents?: string;
 }
 
 export class DeploymentError extends Schema.TaggedError<DeploymentError>()(

@@ -68,18 +68,18 @@ const publicKey = (privateKey: typeof Identity.Type.signing) => ({
 });
 
 export const document = (identity: typeof Identity.Type) => ({
-  authentication: [`${identity.did}#signing`],
+  authentication: [`${identity.did}#atproto`],
   id: identity.did,
-  keyAgreement: [`${identity.did}#agreement`],
+  keyAgreement: [`${identity.did}#encryption`],
   verificationMethod: [
     {
       controller: identity.did,
-      id: `${identity.did}#signing`,
+      id: `${identity.did}#atproto`,
       publicKeyJwk: publicKey(identity.signing),
     },
     {
       controller: identity.did,
-      id: `${identity.did}#agreement`,
+      id: `${identity.did}#encryption`,
       publicKeyJwk: publicKey(identity.agreement),
     },
   ],

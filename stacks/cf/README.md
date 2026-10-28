@@ -65,3 +65,9 @@ Proven locally:
 - A real offline invocation builds the hosted bundle and evaluates the stock Worker resource graph. The stock planner then requires a live read of the Worker subdomain. The rejecting transport produces `OFFLINE_HTTP_REFUSED`; no rendered action plan is claimed.
 
 Not tested: live account authentication, script upload, platform runtime compatibility, workers.dev readback, secret custody on Cloudflare, migration execution, encrypted recipient behavior, no-change live plan, live destroy or live teardown. Offline graph construction is not deployment proof.
+
+## Local rehearsal under workerd
+
+`pnpm exec vitest run --project cf tools/cf-measure/local.test.ts` builds the hosted bundle exactly as `stacks/cf/stack.ts` does, serves it under the pinned local `workerd` with eight fresh test identities and drives leases, sends, deliveries and acks against it. It makes no network calls. Run it before any deploy.
+
+DID documents reach the Cloudflare Worker inside the bundle, not as a text variable, because a text binding is capped near 5.1 kB. The celld stack still passes them as `DID_DOCUMENTS`; the Worker prefers that variable and falls back to the bundled copy.

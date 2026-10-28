@@ -43,13 +43,19 @@ import {
   flushDelegations,
 } from "./delegation.ts";
 import { deskMethods } from "./desk.ts";
-import { documentsLayer, didAllowlist, peerDocument } from "./documents.ts";
+import {
+  documentsJson,
+  documentsLayer,
+  didAllowlist,
+  peerDocument,
+} from "./documents.ts";
 import { logFailure } from "./failure-log.ts";
 import type { FailureScope } from "./failure-log.ts";
 import { errorResponse, failure } from "./failure.ts";
 import { wakeHosted } from "./hosted-wake.ts";
 import { issuerInstance } from "./issuer-object.ts";
 import { issuerMethods } from "./issuer.ts";
+import { jsonResponse } from "./json-response.ts";
 import { validLease } from "./lease.ts";
 import {
   Caller,
@@ -419,7 +425,7 @@ export class Mailbox extends DurableObject<Bindings> {
       resolvers: didAllowlist(this.env.LEASE_RESOLVERS),
       staticDocuments: Schema.decodeSync(
         Schema.fromJsonString(Schema.Array(Defs.DidDocument))
-      )(this.env.DID_DOCUMENTS),
+      )(documentsJson(this.env)),
     }).pipe(
       Layer.provide(
         Layer.succeed(SenderFence, {
@@ -602,7 +608,7 @@ export class Mailbox extends DurableObject<Bindings> {
 
     const staticDocuments = Schema.decodeSync(
       Schema.fromJsonString(Schema.Array(Defs.DidDocument))
-    )(this.env.DID_DOCUMENTS);
+    )(documentsJson(this.env));
 
     return Effect.runPromise(
       MailboxStore.use((store) =>
@@ -634,7 +640,7 @@ export class Mailbox extends DurableObject<Bindings> {
 
     const staticDocuments = Schema.decodeSync(
       Schema.fromJsonString(Schema.Array(Defs.DidDocument))
-    )(this.env.DID_DOCUMENTS);
+    )(documentsJson(this.env));
 
     return Effect.runPromise(
       MailboxStore.use((store) =>
@@ -677,7 +683,7 @@ export class Mailbox extends DurableObject<Bindings> {
   standing() {
     const staticDocuments = Schema.decodeSync(
       Schema.fromJsonString(Schema.Array(Defs.DidDocument))
-    )(this.env.DID_DOCUMENTS);
+    )(documentsJson(this.env));
 
     return Effect.runPromise(
       MailboxStore.use((store) =>
@@ -1168,10 +1174,7 @@ const issuerRequest = Effect.fn("Issuer.request")(function* issuerRequest(
     try: () => issuers.getByName(issuerInstance).route(transport, caller),
   });
 
-  return new Response(response.body, {
-    headers: { "content-type": "application/json" },
-    status: response.status,
-  });
+  return jsonResponse(response.body, response.status);
 });
 
 const deskQuery = (
@@ -1284,10 +1287,7 @@ const deskRequest = Effect.fn("Desk.request")(function* deskRequest(
     try: () => desks.getByName(desk).route(transport, caller),
   });
 
-  return new Response(response.body, {
-    headers: { "content-type": "application/json" },
-    status: response.status,
-  });
+  return jsonResponse(response.body, response.status);
 });
 
 const presenceRequest = Effect.fn("Mailbox.presence")(function* presenceRequest(
@@ -1602,10 +1602,7 @@ const handleRequest = (
       );
     }
 
-    return new Response(response.body, {
-      headers: { "content-type": "application/json" },
-      status: response.status,
-    });
+    return jsonResponse(response.body, response.status);
   });
 
 export const fetchRequest = (

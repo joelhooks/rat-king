@@ -15,7 +15,10 @@ import {
   layer,
   RatKingMailbox,
 } from "../../packages/mailbox-client/src/index.ts";
-import type { MailboxClientError } from "../../packages/mailbox-client/src/index.ts";
+import type {
+  LeaseFence,
+  MailboxClientError,
+} from "../../packages/mailbox-client/src/index.ts";
 import type { Inputs } from "./identities.ts";
 import { classify, MeasureError, summarize } from "./model.ts";
 import type { Event, Timing } from "./model.ts";
@@ -66,6 +69,14 @@ export const mailboxPort = Effect.fn("Measure.mailboxPort")(
       )
     );
 
+    const fences = new Map<number, LeaseFence>();
+
+    const fenceOf = (index: number) => {
+      const fence = fences.get(index);
+
+      return fence === undefined ? {} : { fence };
+    };
+
     const get = (index: number) => {
       const mailbox = mailboxes[index];
 
@@ -85,14 +96,28 @@ export const mailboxPort = Effect.fn("Measure.mailboxPort")(
           {
             ackOnReturn: false,
             failOnHeld: true,
-            harness: { $type: "sh.mschf.ratking.runtime.lease#pi" },
+            harness: {
+              $type: "sh.mschf.ratking.runtime.lease#pi",
+              sessionId: `cf-measure-${index}`,
+            },
             onLease: (lease) =>
-              onEvent({
-                expiresAt: lease.expiresAt,
-                generation: lease.generation,
-                index,
-                kind: "lease",
-              }).pipe(Effect.andThen(ready)),
+              Effect.sync(() => {
+                fences.set(index, {
+                  did: lease.did,
+                  generation: lease.generation,
+                  leaseId: lease.leaseId,
+                });
+              }).pipe(
+                Effect.andThen(
+                  onEvent({
+                    expiresAt: lease.expiresAt,
+                    generation: lease.generation,
+                    index,
+                    kind: "lease",
+                  })
+                ),
+                Effect.andThen(ready)
+              ),
             onRetryMetric: (tag) => onEvent({ index, kind: "retry", tag }),
             onSkip: (skip) =>
               onEvent({ index, kind: "skip", reason: skip.reason }),
@@ -102,6 +127,7 @@ export const mailboxPort = Effect.fn("Measure.mailboxPort")(
         get(from)
           .send(inputs.readers[to]?.did ?? "", body, {
             encrypt: true,
+            ...fenceOf(from),
             wakeReason: "quiet",
             woke: false,
           })
