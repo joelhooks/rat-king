@@ -63,7 +63,7 @@ describe("user unit lifecycle", () => {
               return {
                 code: 0,
                 stdout:
-                  "LoadState=loaded\nActiveState=inactive\nUnitFileState=\nNeedDaemonReload=no\nFragmentPath=\n",
+                  "LoadState=loaded\nActiveState=inactive\nUnitFileState=\nNeedDaemonReload=no\nFragmentPath=\nDropInPaths=\n",
               };
             }
 

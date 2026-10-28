@@ -9,7 +9,12 @@ import { stageOwnedUnit } from "../../../stacks/nest/ship-unit-stage.ts";
 import { fleetMemoryLimits } from "../../../stacks/nest/stop-memory.ts";
 import { makeFakeShell } from "../src/fake-shell.ts";
 import { nodeUnit, sliceUnit, storeUnit } from "../src/service-units.ts";
-import { needsUpdate, readUnit, reconcileUnit } from "../src/systemd.ts";
+import {
+  needsUpdate,
+  readUnit,
+  reconcileUnit,
+  renderUnit,
+} from "../src/systemd.ts";
 import type { UnitProps } from "../src/systemd.ts";
 
 const Revision = Schema.Int.check(Schema.isBetween({ maximum: 2, minimum: 0 }));
@@ -393,6 +398,268 @@ it.effect.prop(
 
       yield* Effect.promise(() =>
         fc.asyncModelRun(() => ({ model: { applied: false }, real }), commands)
+      );
+    })
+);
+
+const ControlCycle = Schema.Struct({
+  cap: Schema.Literals(["8G", "14G"]),
+  correctSection: Schema.Boolean,
+  key: Schema.Literals([
+    "MemoryMax",
+    "MemorySwapMax",
+    "CPUQuota",
+    "TasksMax",
+    "MemoryHigh",
+    "ExecStart",
+  ]),
+  kind: Schema.Literals([
+    "persistent",
+    "runtime",
+    "ordinary",
+    "none",
+    "unreadable",
+  ]),
+  matching: Schema.Boolean,
+});
+
+it.effect.prop(
+  "declared resource control drop-ins block plan and apply without mutation, while reviewed cleanup and reload leave matching services running",
+  [Schema.Boolean, Schema.Array(ControlCycle).check(Schema.isMaxLength(6))],
+  ([slice, cycles]) =>
+    Effect.gen(function* controlCustodyModel() {
+      const context = yield* Effect.context();
+      const fake = yield* makeFakeShell();
+      const section = slice ? "Slice" : "Service";
+      const name = `fixture.invalid.${slice ? "slice" : "service"}`;
+      const home = "/home/example";
+
+      const declaration = (cap: string): UnitProps => ({
+        home,
+        name,
+        scope: "user",
+        sections: [
+          { lines: [["MemoryMax", cap]], name: section },
+          {
+            lines: [
+              ["MemorySwapMax", "0"],
+              ["CPUQuota", "200%"],
+              ["TasksMax", "2048"],
+              ...(slice
+                ? []
+                : [
+                    ["ExecStart", "/opt/fixture"] satisfies readonly [
+                      string,
+                      string,
+                    ],
+                  ]),
+            ],
+            name: section,
+          },
+        ],
+      });
+
+      const initialCap = slice ? "14G" : "8G";
+
+      const real = {
+        output: yield* reconcileUnit(
+          fake.shell,
+          declaration(initialCap),
+          undefined,
+          false
+        ),
+      };
+
+      let reportedPath = "";
+      let control: Uint8Array | undefined;
+
+      const shell = {
+        ...fake.shell,
+        exec: (argv: readonly string[]) =>
+          fake.shell.exec(argv).pipe(
+            Effect.map((result) =>
+              argv[2] === "show" && !argv.includes("--value")
+                ? {
+                    ...result,
+                    stdout: result.stdout.replace(
+                      "DropInPaths=\n",
+                      `DropInPaths=${reportedPath}\n`
+                    ),
+                  }
+                : result
+            )
+          ),
+        read: (path: string) =>
+          path === reportedPath
+            ? Effect.succeed(control)
+            : fake.shell.read(path),
+      };
+
+      const transitions: (typeof ControlCycle.Type)[] = [
+        {
+          cap: initialCap,
+          correctSection: true,
+          key: "MemoryMax",
+          kind: "persistent",
+          matching: true,
+        },
+        {
+          cap: initialCap,
+          correctSection: true,
+          key: "MemoryMax",
+          kind: "runtime",
+          matching: false,
+        },
+        {
+          cap: initialCap,
+          correctSection: true,
+          key: "MemoryMax",
+          kind: "none",
+          matching: true,
+        },
+        ...cycles,
+      ];
+
+      const commands: AsyncCommand<{ cap: string }, typeof real>[] =
+        transitions.map((cycle) => ({
+          check: () => true,
+          run: (model, actual) =>
+            Effect.runPromiseWith(context)(
+              Effect.gen(function* controlStep() {
+                const prefix = {
+                  none: "",
+                  ordinary: `${home}/.config/systemd/user`,
+                  persistent: `${home}/.config/systemd/user.control`,
+                  runtime: "/run/user/1234/systemd/user.control",
+                  unreadable: `${home}/.config/systemd/user.control`,
+                }[cycle.kind];
+
+                reportedPath =
+                  prefix === ""
+                    ? ""
+                    : `${prefix}/${name}.d/50-${cycle.key}.conf`;
+
+                const next = declaration(cycle.cap);
+
+                const value = cycle.matching
+                  ? (next.sections
+                      .flatMap((item) => item.lines)
+                      .find(([key]) => key === cycle.key)?.[1] ?? "0")
+                  : "1";
+
+                const text = `# Created via systemctl set-property\n[${cycle.correctSection ? section : "Unit"}]\n ${cycle.key} = ${value}\nEnvironment=KEEP=1\n# MemoryMax=1\n`;
+
+                control =
+                  cycle.kind === "unreadable"
+                    ? undefined
+                    : new TextEncoder().encode(text);
+
+                if (cycle.kind === "none") {
+                  const beforeReload = (yield* fake.calls()).length;
+
+                  yield* shell.exec(["systemctl", "--user", "daemon-reload"]);
+
+                  expect(
+                    (yield* fake.calls())
+                      .slice(beforeReload)
+                      .filter((call) => call.operation === "exec")
+                      .map((call) => call.argv[2])
+                  ).toEqual(["daemon-reload"]);
+                }
+
+                const blocked =
+                  cycle.kind === "unreadable" ||
+                  ((cycle.kind === "persistent" || cycle.kind === "runtime") &&
+                    cycle.correctSection &&
+                    [
+                      "MemoryMax",
+                      "MemorySwapMax",
+                      "CPUQuota",
+                      "TasksMax",
+                    ].includes(cycle.key));
+
+                const before = (yield* fake.calls()).length;
+
+                const planned = yield* readUnit(shell, next).pipe(
+                  Effect.result
+                );
+
+                const applied = yield* reconcileUnit(
+                  shell,
+                  next,
+                  actual.output,
+                  false
+                ).pipe(Effect.result);
+
+                const calls = (yield* fake.calls()).slice(before);
+
+                expect(Result.isFailure(planned)).toBe(blocked);
+                expect(Result.isFailure(applied)).toBe(blocked);
+
+                if (Result.isFailure(applied)) {
+                  expect(applied.failure.reason).toContain(reportedPath);
+                  expect(applied.failure.reason).toContain("re-run the plan");
+
+                  if (cycle.kind !== "unreadable") {
+                    expect(applied.failure.reason).toContain(cycle.key);
+                    expect(applied.failure.reason).toContain(
+                      `mv -n -- '${reportedPath}' '${reportedPath}.disabled'`
+                    );
+                    expect(applied.failure.reason).toContain(
+                      "systemctl --user daemon-reload"
+                    );
+                    expect(new TextDecoder().decode(control)).toBe(text);
+                  }
+
+                  expect(
+                    calls.some((call) =>
+                      ["write", "remove", "mkdir", "rmdir"].includes(
+                        call.operation
+                      )
+                    )
+                  ).toBe(false);
+                  expect(
+                    calls
+                      .filter((call) => call.operation === "exec")
+                      .every((call) => call.argv[2] === "show")
+                  ).toBe(true);
+                } else {
+                  if (Result.isSuccess(planned)) {
+                    expect(
+                      needsUpdate(next, actual.output, planned.success)
+                    ).toBe(cycle.cap !== model.cap);
+                  }
+
+                  expect(
+                    calls
+                      .filter(
+                        (call) =>
+                          call.operation === "exec" &&
+                          ["start", "restart", "stop"].includes(
+                            call.argv[2] ?? ""
+                          )
+                      )
+                      .map((call) => call.argv.slice(2))
+                  ).toEqual(
+                    !slice && cycle.cap !== model.cap ? [["restart", name]] : []
+                  );
+                  actual.output = applied.success;
+                  model.cap = cycle.cap;
+                }
+
+                expect(
+                  new TextDecoder().decode(
+                    yield* fake.shell.read(actual.output.path)
+                  )
+                ).toBe(renderUnit(declaration(model.cap)));
+                expect(actual.output.active).toBe(true);
+              })
+            ),
+          toString: () => JSON.stringify(cycle),
+        }));
+
+      yield* Effect.promise(() =>
+        fc.asyncModelRun(() => ({ model: { cap: initialCap }, real }), commands)
       );
     })
 );
