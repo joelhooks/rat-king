@@ -18,6 +18,16 @@ m['live_volume_max'].__globals__['subprocess'].run=lambda *a,**k:types.SimpleNam
 try:m['live_volume_max']()
 except RuntimeError:pass
 else:raise AssertionError('Unreadable live unit accepted')
+calls=[]
+m['volume_max'].__globals__['live_volume_max']=lambda: calls.append('live') or maximum
+assert m['volume_max']({})==maximum and calls==['live']
+calls.clear()
+assert m['volume_max']({'volumeMax':maximum})==maximum and calls==[]
+for invalid in [0,-1,True,'2048',None,1.5]:
+ try:m['volume_max']({'volumeMax':invalid})
+ except RuntimeError:pass
+ else:raise AssertionError('Invalid explicit volume limit accepted')
+assert calls==[], 'Explicit limit fell back to the live host'
 print('LIVE_LIMIT_PASSED')
 `;
 
