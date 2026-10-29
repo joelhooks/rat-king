@@ -39,6 +39,7 @@ const bounded = new Set([
   "share-verify",
   "gzip share",
   "cleanup",
+  "retention",
 ]);
 
 const outputs = new Map([
@@ -75,7 +76,7 @@ const labelOf = (argv: readonly string[]) => {
 const publication = (label: string) =>
   label.startsWith("share-") ||
   label.startsWith("gzip") ||
-  ["pack", "cleanup"].includes(label);
+  ["pack", "cleanup", "retention"].includes(label);
 
 const violationsOf = (model: Model, label: string) => {
   const [verb, unit] = label.split(" ");
@@ -181,7 +182,11 @@ it.effect.prop(
       expect(violations).toEqual([]);
       expect(model.units).toEqual({ node: true, store: true });
       expect(model.armed).toBe(false);
-      const clean = faulted === -1 || calls[faulted] === "cgroup";
+
+      const clean =
+        faulted === -1 ||
+        ["cgroup", "retention"].includes(calls[faulted] ?? "");
+
       expect(Exit.isSuccess(exit)).toBe(clean);
 
       if (clean) {

@@ -56,6 +56,7 @@ export const Facts = Schema.Struct({
       Schema.Struct({
         ...Run.fields,
         memoryPeak: Schema.NullOr(Count),
+        retentionRefused: Schema.optionalKey(Schema.Boolean),
         stopMs: Schema.NullOr(Count),
       })
     ),
@@ -215,6 +216,10 @@ const backupFindings = (facts: HealthFacts): Findings => {
     warnings.push(`last backup run ${lastRun.result}`);
   }
 
+  if (lastRun?.retentionRefused === true) {
+    warnings.push("backup retention refused");
+  }
+
   if (
     lastRun !== null &&
     lastRun.stopMs !== null &&
@@ -342,6 +347,15 @@ export const backupAgeHours = (name: string, observedAt: DateTime.Utc) => {
   );
 
   return (DateTime.toEpochMillis(observedAt) - created) / 3_600_000;
+};
+
+export const retentionRefusedFrom = (journal: string) => {
+  const published = journal.lastIndexOf("BACKUP_PUBLISHED");
+
+  return (
+    published !== -1 &&
+    journal.slice(published).includes("BACKUP_RETENTION_ALARM")
+  );
 };
 
 export const stopMsFrom = (journal: string) => {
@@ -574,6 +588,7 @@ export const collectHealth = Effect.fn("Nest.health")(function* collectHealth(
     return {
       ...run(props),
       memoryPeak: count(props.get("MemoryPeak")),
+      retentionRefused: retentionRefusedFrom(journal),
       stopMs: stopMsFrom(journal),
     };
   });

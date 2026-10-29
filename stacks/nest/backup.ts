@@ -281,6 +281,34 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
             script("cleanup", staging, name)
           );
           yield* Effect.log("BACKUP_PUBLISHED", name);
+
+          const retained = yield* bounded(
+            "retention",
+            stepLimit,
+            shell.exec([
+              "python3",
+              "-c",
+              backupScript,
+              "retention",
+              input.dataRoot,
+              input.backupRoot,
+              name,
+            ])
+          ).pipe(
+            Effect.catchTag("HostError", () =>
+              Effect.succeed({ code: 1, stdout: "" })
+            )
+          );
+
+          yield* Effect.log(retained.stdout.trim());
+
+          if (retained.code !== 0) {
+            yield* Effect.logWarning(
+              "BACKUP_RETENTION_ALARM reason=error kept=0 wouldRemove=0"
+            );
+          }
+
+          yield* checkpoint("retained");
         }).pipe(
           Effect.tapError(() => checkpoint("abandoned")),
           Effect.ensuring(memory("publish-end"))

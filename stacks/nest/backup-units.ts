@@ -19,7 +19,12 @@ export const backupUnit = (input: {
   scope: "user",
   sections: [
     {
-      lines: [["Description", "Rat King mailbox consistent data backup"]],
+      lines: [
+        [
+          "Description",
+          "Rat King mailbox consistent backup and post-publish retention",
+        ],
+      ],
       name: "Unit",
     },
     {
