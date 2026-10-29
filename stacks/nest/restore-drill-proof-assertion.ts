@@ -1,10 +1,11 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 export const AssertionCode = Schema.Literals([
   "NAMESPACE_NOT_PRIVATE",
   "MISSING_BINDING",
   "EXPECTED_KEYPAIR",
   "NAME_CURSOR_REPEATED",
+  "PROOF_NAME_NOT_IN_ISSUER",
   "MAILBOX_CURSOR_REPEATED",
   "EVENT_COUNT_MISMATCH",
   "MESSAGE_COUNT_MISMATCH",
@@ -34,6 +35,15 @@ export class ProofAssertionFailure extends Schema.TaggedError<ProofAssertionFail
     assertionCode: AssertionCode,
   }
 ) {}
+
+export const requireIssuerName = (
+  entry: { readonly did: string } | undefined
+) =>
+  entry === undefined
+    ? Effect.fail(
+        new ProofAssertionFailure({ assertionCode: "PROOF_NAME_NOT_IN_ISSUER" })
+      )
+    : Effect.succeed(entry.did);
 
 export const requireMailboxCounts = (
   expected: typeof MailboxCounts.Type,
