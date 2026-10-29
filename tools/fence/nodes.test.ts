@@ -1,6 +1,6 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Schema } from "effect";
+import { Arbitrary, Effect, FileSystem, Schema } from "effect";
 import { describe, expect } from "vitest";
 
 import { Instance, violations } from "./rules.ts";
@@ -27,6 +27,33 @@ const decode = Schema.decodeUnknownEffect(Instance, {
 const licensePath = "packages/alchemy-nest/LICENSE-homeflare-kit";
 
 describe("private nodes and the narrow license exemption", () => {
+  it.effect.prop(
+    "host identities remain private while generic memory and cgroup settings are publishable",
+    {
+      memory: Arbitrary.schema(Schema.Literals(["6G", "8G", "1536M"])),
+      privateCgroupView: Arbitrary.schema(Schema.Boolean),
+    },
+    ({ memory, privateCgroupView }) =>
+      Effect.gen(function* nodeSettings() {
+        const decoded = yield* decode({
+          ...inventory,
+          nodes: {
+            "node-a": { ...node, celldMemoryMax: memory, privateCgroupView },
+          },
+        });
+
+        expect(
+          violations({ content: memory, inventory: decoded })
+        ).not.toContain("instance-nodes");
+
+        for (const value of ["node-a", ...Object.values(node)]) {
+          expect(violations({ content: value, inventory: decoded })).toContain(
+            "instance-nodes"
+          );
+        }
+      })
+  );
+
   it.effect(
     "keeps legacy inventory valid and feeds every node value into the denylist",
     () =>

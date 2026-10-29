@@ -20,7 +20,10 @@ export const instanceLiterals = (
     "nodes",
     Object.entries(inventory.nodes ?? {}).flatMap(([alias, node]) => [
       alias,
-      ...Object.values(node),
+      node.ssh,
+      node.tailnetIPv4,
+      node.home,
+      node.dataRoot,
     ]),
   ],
 ];
