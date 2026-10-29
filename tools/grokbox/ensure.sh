@@ -2,6 +2,11 @@
 set -euo pipefail
 umask 077
 
+if [[ "$(uname -s)" != Linux ]]; then
+  printf 'ensure: requires Linux\n' >&2
+  exit 1
+fi
+
 step=configuration
 fail() { printf 'ensure: %s failed: %s\n' "$step" "$1" >&2; exit 1; }
 trap 'printf "ensure: %s failed\n" "$step" >&2' ERR
