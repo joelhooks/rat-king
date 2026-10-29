@@ -5,6 +5,16 @@ import type { ReaderHeartbeatValue } from "../../packages/ratking-client/src/rea
 import { SessionsBackupFact, sessionsBackupReading } from "./alarm-backups.ts";
 import { AlarmKey, AlarmReading } from "./alarm-config.ts";
 import type { AlarmReadingValue } from "./alarm-config.ts";
+import {
+  MAILBOX_INSTANCE,
+  MaintenanceWindow,
+  coveringWindow,
+  coversOf,
+  maintenanceEvidence,
+  overranWindow,
+  overrunEvidence,
+} from "./alarm-maintenance.ts";
+import type { Cover } from "./alarm-maintenance.ts";
 import { RecallCanaryFact, recallCanaryReading } from "./alarm-recall.ts";
 import {
   WakeSighting,
@@ -14,7 +24,7 @@ import {
 } from "./alarm-wakes.ts";
 import { Sha, ShipReceipt } from "./ship-config.ts";
 import { sanitizeCandidateStderr } from "./ship-diagnostics.ts";
-import { StopMemory, stopMemoryWarnings } from "./stop-memory.ts";
+import { StopMemory, stopMemoryChecks } from "./stop-memory.ts";
 
 const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
@@ -125,6 +135,7 @@ export const AlarmFacts = Schema.Struct({
   failed: Schema.optionalKey(Schema.Array(Schema.String)),
   health: Schema.NullOr(Schema.Int),
   instances: Schema.optionalKey(Schema.Array(InstanceHealth)),
+  maintenance: Schema.optionalKey(Schema.Array(MaintenanceWindow)),
   measurementFailed: Schema.Boolean,
   quarantinedHour: Schema.NullOr(Count),
   readers: Schema.NullOr(
@@ -152,6 +163,7 @@ export const SourceState = Schema.Struct({
   downChecks: Count,
   entered: Schema.NullOr(Schema.Finite),
   instanceDownChecks: Schema.optionalKey(Schema.Record(Schema.String, Count)),
+  lastUp: Schema.optionalKey(Schema.Record(Schema.String, Schema.Finite)),
   measurementMisses: Schema.optionalKey(Count),
   unexplained: Schema.Array(Schema.Finite),
   wakeTargets: Schema.optionalKey(Schema.Array(WakeTarget)),
@@ -203,10 +215,9 @@ const trackSources = (
     (facts.windows ?? []).some(
       (window) => window.start * 1000 <= instant && window.end * 1000 >= instant
     ) ||
-    (facts.backup !== undefined &&
-      facts.backup !== null &&
-      facts.backup.start <= instant &&
-      (facts.backup.end ?? now) >= instant);
+    coversOf(facts, MAILBOX_INSTANCE).some(
+      (cover) => cover.start <= instant && cover.end >= instant
+    );
 
   const unexplained = prior.unexplained.filter(
     (instant) => !explains(instant) && now - instant < RESTART_MEMORY_MS
@@ -221,12 +232,29 @@ const trackSources = (
     unexplained.push(facts.entered);
   }
 
+  const lastUp = {
+    ...prior.lastUp,
+    ...(facts.health === 200 ? { [MAILBOX_INSTANCE]: now } : undefined),
+    ...Object.fromEntries(
+      (facts.instances ?? [])
+        .filter((instance) => instance.status === "ok")
+        .map((instance) => [instance.name, now])
+    ),
+  };
+
+  const watched = Object.fromEntries(
+    Object.entries(lastUp).filter(
+      ([instance]) => coversOf(facts, instance).length > 0
+    )
+  );
+
   const base = {
     downChecks:
       !facts.deployKnown || deployWindow(facts, now) || facts.health === 200
         ? 0
         : Math.min(prior.downChecks + 1, 2),
     entered: facts.entered ?? prior.entered,
+    ...(Object.keys(watched).length === 0 ? undefined : { lastUp: watched }),
     unexplained,
   };
 
@@ -353,28 +381,87 @@ const readerReading = (facts: typeof AlarmFacts.Type): AlarmReadingValue => {
   return facts.readers.complete ? ok : unknown;
 };
 
+const maintenance = (covers: readonly Cover[]): AlarmReadingValue => ({
+  evidence: covers.map(maintenanceEvidence).join("; "),
+  recipients: [...new Set(covers.flatMap((cover) => cover.recipients))],
+  status: "maintenance",
+  windows: covers.map((cover) => cover.id),
+});
+
+const overrun = (
+  evidence: string,
+  facts: typeof AlarmFacts.Type,
+  sources: typeof SourceState.Type,
+  instance: string,
+  now: number
+) => {
+  const window = overranWindow(
+    facts,
+    instance,
+    sources.lastUp?.[instance],
+    now
+  );
+
+  return window === undefined
+    ? evidence
+    : `${evidence}; ${overrunEvidence(window)}`;
+};
+
+export const exposedDownInstances = (
+  facts: typeof AlarmFacts.Type,
+  now: number
+) =>
+  (facts.instances ?? []).filter(
+    (instance): instance is Extract<typeof instance, { status: "down" }> =>
+      instance.status === "down" &&
+      coveringWindow(facts, instance.name, now) === undefined
+  );
+
 const instanceReading = (
   facts: typeof AlarmFacts.Type,
-  sources: typeof SourceState.Type
+  sources: typeof SourceState.Type,
+  now: number
 ): AlarmReadingValue => {
   const down = (facts.instances ?? []).filter(
     (instance) => instance.status === "down"
   );
 
-  const pages = down.some(
+  const exposed = exposedDownInstances(facts, now);
+
+  if (down.length === 0) {
+    return ok;
+  }
+
+  if (exposed.length === 0) {
+    return maintenance(
+      down.flatMap((instance) => {
+        const cover = coveringWindow(facts, instance.name, now);
+
+        return cover === undefined ? [] : [cover];
+      })
+    );
+  }
+
+  const pages = exposed.some(
     (instance) =>
       instance.page === true &&
       (sources.instanceDownChecks?.[instance.name] ?? 0) >= 2
   );
 
-  return down.length === 0
-    ? ok
-    : firing(
-        pages ? "critical" : "warn",
-        down
-          .map((instance) => `${instance.name}: ${instance.reason}`)
-          .join("; ")
-      );
+  return firing(
+    pages ? "critical" : "warn",
+    exposed
+      .map((instance) =>
+        overrun(
+          `${instance.name}: ${instance.reason}`,
+          facts,
+          sources,
+          instance.name,
+          now
+        )
+      )
+      .join("; ")
+  );
 };
 
 const downReading = (
@@ -387,10 +474,20 @@ const downReading = (
   }
 
   if (sources.downChecks >= 2) {
-    return firing(
-      "critical",
-      "Mailbox health was not 200 in two consecutive checks"
-    );
+    const cover = coveringWindow(facts, MAILBOX_INSTANCE, now);
+
+    return cover === undefined
+      ? firing(
+          "critical",
+          overrun(
+            "Mailbox health was not 200 in two consecutive checks",
+            facts,
+            sources,
+            MAILBOX_INSTANCE,
+            now
+          )
+        )
+      : maintenance([cover]);
   }
 
   return facts.health === 200 ? ok : unknown;
@@ -523,12 +620,19 @@ const doctorReading = (
 
 const digestReading = (
   facts: typeof AlarmFacts.Type,
-  sources: typeof SourceState.Type
+  sources: typeof SourceState.Type,
+  now: number
 ): AlarmReadingValue => {
-  const memory =
+  const stopped = coveringWindow(facts, MAILBOX_INSTANCE, now);
+
+  const checks =
     facts.stopMemory === null || facts.stopMemory === undefined
       ? []
-      : stopMemoryWarnings(facts.stopMemory);
+      : stopMemoryChecks(facts.stopMemory);
+
+  const memory = checks
+    .filter((check) => stopped === undefined || check.kind !== "unavailable")
+    .map((check) => check.text);
 
   const digestFailed =
     facts.digest === "fail" ||
@@ -539,6 +643,10 @@ const digestReading = (
       "warn",
       [...(digestFailed ? [digestEvidence(facts)] : []), ...memory].join("; ")
     );
+  }
+
+  if (stopped !== undefined && checks.length > memory.length) {
+    return maintenance([stopped]);
   }
 
   if (facts.measurementFailed) {
@@ -574,9 +682,9 @@ export const observeAlarms = (
     "cache.rewrites": cacheReading(facts, now),
     "celld.down": downReading(facts, sources, now),
     "celld.restarted": restartReading(facts, sources, now),
-    "digest.fail": digestReading(facts, sources),
+    "digest.fail": digestReading(facts, sources, now),
     "filer.slots": slotReading(facts),
-    "instance.down": instanceReading(facts, sources),
+    "instance.down": instanceReading(facts, sources, now),
     "issuer.broken": doctorReading(facts, sources),
     "quarantine.growth": quarantineReading(facts),
     "readers.stuck": readerReading(facts),

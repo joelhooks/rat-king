@@ -113,6 +113,12 @@ export const AlarmReading = Schema.Union([
     severity: Severity,
     status: Schema.Literal("firing"),
   }),
+  Schema.Struct({
+    evidence: Schema.String,
+    recipients: Schema.Array(AgentName),
+    status: Schema.Literal("maintenance"),
+    windows: Schema.Array(Schema.String),
+  }),
 ]);
 
 export type AlarmReadingValue = typeof AlarmReading.Type;

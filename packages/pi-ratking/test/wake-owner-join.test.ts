@@ -28,7 +28,7 @@ const settings = Schema.decodeUnknownSync(AlarmSettings)({
 });
 
 it.effect.prop(
-  "a second stalled name notifies its owner immediately; switchboard pages even when another name opened the incident",
+  "a second stalled name notifies its owner immediately; switchboard pages once critical even when another name opened the incident",
   [Schema.Boolean],
   ([switchboardFirst]) =>
     Effect.gen(function* joined() {
@@ -93,9 +93,9 @@ it.effect.prop(
         ports
       );
 
-      expect(pages).toHaveLength(switchboardFirst ? 1 : 0);
+      expect(pages).toEqual([]);
 
-      yield* alarmCycle(
+      const together = yield* alarmCycle(
         first,
         { ...facts, wakes: [board, worker] },
         1_001_000,
@@ -107,6 +107,18 @@ it.effect.prop(
       expect(notices[1]).toContain(
         switchboardFirst ? "worker-owner" : "board-owner"
       );
+      expect(pages).toEqual([]);
+
+      yield* alarmCycle(
+        together,
+        { ...facts, wakes: [board, worker] },
+        1_860_000,
+        settings,
+        ports
+      );
+
       expect(pages).toHaveLength(1);
+      expect(pages[0]).toContain("wake.unacked critical");
+      expect(pages[0]).toContain("Incident 1000000");
     })
 );

@@ -25,6 +25,7 @@ import { configDoctor } from "./config-doctor.ts";
 import { commsCounts, digest } from "./digest.ts";
 import { drainCommand } from "./drain.ts";
 import { DigestJson, summarize } from "./health.ts";
+import { maintenanceCommand } from "./maintenance-command.ts";
 import { mintHost } from "./mint-host.ts";
 import { restoreDrill } from "./restore.ts";
 import { sealCommand, sealedSendCommand } from "./seal.ts";
@@ -53,6 +54,7 @@ const program = Effect.gen(function* launcher() {
       "alarm-plist",
       "alarm-check",
       "alarm-worker",
+      "maintenance",
       "digest",
       "doctor",
       "done-bar",
@@ -76,6 +78,7 @@ const program = Effect.gen(function* launcher() {
     flags.length > 0 &&
     action !== "provision" &&
     action !== "mailbox" &&
+    action !== "maintenance" &&
     (action !== "health" || flags.length !== 2 || flags[0] !== "--previous")
   ) {
     return yield* refuse("Only health accepts --previous <file>");
@@ -139,6 +142,7 @@ const program = Effect.gen(function* launcher() {
       )
     ),
     Match.when("alarm", () => alarmCommand(config, resolvedConfigPath)),
+    Match.when("maintenance", () => maintenanceCommand(config, flags)),
     Match.when("alarm-plist", () =>
       config.alarm === undefined
         ? refuse("Alarm configuration required")

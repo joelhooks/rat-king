@@ -7,9 +7,13 @@ import { expect } from "vitest";
 
 import { AlarmSettings } from "../../../stacks/nest/alarm-config.ts";
 import type { AlarmFacts } from "../../../stacks/nest/alarm-sources.ts";
-import { mergeWakeTargets } from "../../../stacks/nest/alarm-wakes.ts";
+import {
+  WAKE_CRITICAL_MS,
+  mergeWakeTargets,
+} from "../../../stacks/nest/alarm-wakes.ts";
 import {
   AlarmJournal,
+  PAGE_ACK_WAIT_MS,
   alarmCycle,
   emptyJournal,
 } from "../../../stacks/nest/alarm.ts";
@@ -18,7 +22,14 @@ import type {
   AlarmPorts,
 } from "../../../stacks/nest/alarm.ts";
 
-const Step = Schema.Literals(["wake", "ack", "missing", "expired", "absent"]);
+const Step = Schema.Literals([
+  "wake",
+  "wait",
+  "ack",
+  "missing",
+  "expired",
+  "absent",
+]);
 
 const Inputs = Schema.Struct({
   ackExpired: Schema.Boolean,
@@ -54,11 +65,18 @@ const settings = Schema.decodeUnknownSync(AlarmSettings)({
 });
 
 interface Model {
+  cleared: number;
   firing: boolean;
-  paged: boolean;
+  now: number;
+  paged: number;
+  pagedIncident: number | null;
+  since: number;
 }
 
+const WAIT_MS = 11 * 60_000;
+
 interface Real {
+  readonly oldest: number;
   readonly step: (step: typeof Step.Type) => Promise<void>;
   readonly state: () => AlarmJournalValue;
   readonly pages: string[];
@@ -78,20 +96,46 @@ const command = (
     const before = real.notices.length;
 
     await real.step(step);
+    model.now += step === "wait" ? WAIT_MS : 1000;
 
-    if (step === "wake" || (configured && step === "expired")) {
+    const stalled =
+      step === "wake" || step === "wait" || (configured && step === "expired");
+
+    const wasFiring = model.firing;
+
+    if (stalled) {
+      model.since = wasFiring ? model.since : model.now;
       model.firing = true;
-      model.paged ||= page;
+
+      if (
+        page &&
+        model.now - real.oldest > WAKE_CRITICAL_MS &&
+        model.now - model.since >= PAGE_ACK_WAIT_MS &&
+        model.pagedIncident !== model.since &&
+        model.paged === 0
+      ) {
+        model.paged += 1;
+        model.pagedIncident = model.since;
+      }
     }
 
     if (step === "ack") {
+      if (wasFiring && model.pagedIncident === model.since) {
+        model.cleared += 1;
+      }
+
       model.firing = false;
     }
 
     expect(real.state().alarms["wake.unacked"]?.value === "firing").toBe(
       model.firing
     );
-    expect(real.pages).toHaveLength(model.paged ? 1 : 0);
+    expect(real.pages.filter((text) => text.startsWith("🚨"))).toHaveLength(
+      model.paged
+    );
+    expect(real.pages.filter((text) => text.startsWith("✅"))).toHaveLength(
+      model.cleared
+    );
 
     for (const notice of real.notices.slice(before)) {
       expect(notice.recipients).toContain("owner-invalid");
@@ -102,7 +146,7 @@ const command = (
 });
 
 it.effect.prop(
-  "wake alarm routes to owners without paging by default, pages opted-in targets and switchboard, and preserves incidents across missing evidence and restarts",
+  "wake alarm routes to owners without paging by default, pages opted-in targets and switchboard only once critical and confirmed, pages each paged clear, and preserves incidents across missing evidence and restarts",
   [Inputs],
   ([input]) =>
     Effect.gen(function* model() {
@@ -124,6 +168,10 @@ it.effect.prop(
 
         let journal = emptyJournal;
         let now = 1_000_000;
+
+        const oldest =
+          now - (input.configured ? input.unackedMinutes : 15) * 60_000;
+
         const notices: Real["notices"] = [];
         const pages: string[] = [];
 
@@ -147,10 +195,11 @@ it.effect.prop(
 
         const real: Real = {
           notices,
+          oldest,
           pages,
           state: () => journal,
           step: async (step) => {
-            now += 1000;
+            now += step === "wait" ? WAIT_MS : 1000;
 
             const health = {
               complete: true,
@@ -168,11 +217,7 @@ it.effect.prop(
                 step === "ack"
                   ? null
                   : {
-                      at:
-                        now -
-                        (input.configured ? input.unackedMinutes : 15) *
-                          60_000 -
-                        1000,
+                      at: oldest,
                       id: "3m7x2ka4xv22a",
                       sender: "sender-invalid",
                     },
@@ -217,7 +262,17 @@ it.effect.prop(
 
         yield* Effect.promise(() =>
           fc.asyncModelRun(
-            () => ({ model: { firing: false, paged: false }, real }),
+            () => ({
+              model: {
+                cleared: 0,
+                firing: false,
+                now: 1_000_000,
+                paged: 0,
+                pagedIncident: null,
+                since: 0,
+              },
+              real,
+            }),
             ["wake" as const, ...input.steps].map((step) =>
               command(
                 step,

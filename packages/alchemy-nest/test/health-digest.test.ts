@@ -103,7 +103,7 @@ it.prop(
 );
 
 it.prop(
-  "a service that is not active fails the digest, whatever else is true",
+  "a service that is not active outside the backup's stop fails the digest, whatever else is true",
   [
     Facts,
     Schema.Literals(["celld", "seaweedfs"]),
@@ -114,6 +114,7 @@ it.prop(
 
     const down = {
       ...facts,
+      backup: { ...facts.backup, lastRun: null },
       services: { ...facts.services, [name]: { ...unit, activeState } },
     };
 

@@ -127,7 +127,7 @@ const Delta = Schema.Union([
 ]);
 
 it.prop(
-  "unit anonymous memory warns at 60 percent and clears below it, regardless of charged file cache or slice charge",
+  "outside a mailbox window, unit anonymous memory warns at 60 percent and clears below it, regardless of charged file cache or slice charge",
   [
     AlarmFacts,
     Delta,
@@ -164,7 +164,9 @@ it.prop(
 
     const facts = {
       ...base,
+      backup: null,
       digest: "ok" as const,
+      maintenance: [],
       measurementFailed: false,
       stopMemory: memory,
     };
