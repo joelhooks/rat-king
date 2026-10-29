@@ -23,6 +23,12 @@ export const backupLifecycle = createMachine({
     recovering: {
       on: { recovered: { target: "failed" }, refused: { target: "failed" } },
     },
+    retaining: {
+      on: {
+        abandoned: { target: "failed" },
+        retained: { target: "complete" },
+      },
+    },
     startingMailbox: {
       on: {
         failed: { target: "recovering" },
@@ -38,7 +44,7 @@ export const backupLifecycle = createMachine({
     verifying: {
       on: {
         abandoned: { target: "failed" },
-        verified: { target: "complete" },
+        verified: { target: "retaining" },
       },
     },
   },

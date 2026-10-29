@@ -1,3 +1,4 @@
+import { backupRetentionScript } from "../../packages/alchemy-nest/src/backup-retention-script.ts";
 import { cacheIoScript } from "../../packages/alchemy-nest/src/cache-io-script.ts";
 import { objectArchiveScript } from "../../packages/alchemy-nest/src/object-archive-script.ts";
 import { unitMemoryScript } from "./memory-script.ts";
@@ -9,6 +10,7 @@ data, backup = pathlib.Path(data_arg), pathlib.Path(backup_arg)
 ${cacheIoScript}
 ${objectArchiveScript}
 ${unitMemoryScript}
+${backupRetentionScript}
 BACKUP_NAME = r'[0-9]{8}T[0-9]{6}\.[0-9]{6}Z-[0-9a-f]{32}'
 PUBLISH_PREFIX = '.mailbox-publish-'
 SNAPSHOT_ROOTS = ['seaweedfs', 'celld']
@@ -369,6 +371,8 @@ elif operation in ['share-verify', 'cleanup']:
     else:
         cleanup_partials()
         print('BACKUP_CLEANED')
+elif operation == 'retention':
+    retention_run(backup, sys.argv[4])
 elif operation == 'snapshot-fetch':
     # Copy and validate before anything stops, so the outage covers only the swap.
     candidates = sorted([path for path in backup.iterdir() if complete_backup(path, snapshot_backup)], reverse=True)

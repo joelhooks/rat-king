@@ -79,7 +79,7 @@ it.effect.prop(
 const published = "20000102T030405.123456Z-0123456789abcdef0123456789abcdef";
 
 it.effect.prop(
-  "any staged failure removes that run's directory after restarting stopped services and prune precedes preflight",
+  "publication failures skip retention, retention errors preserve backup success, and every staged run cleans its own directory",
   {
     fault: Arbitrary.schema(
       Schema.Literals([
@@ -90,6 +90,9 @@ it.effect.prop(
         "share-manifest",
         "share-verify",
         "cleanup",
+        "retention",
+        "local-gzip-test",
+        "share-gzip-test",
       ])
     ),
   },
@@ -118,7 +121,10 @@ it.effect.prop(
           const label =
             argv[0] === "systemctl"
               ? `${argv[2]} ${argv[3]}`
-              : (argv[3] ?? "gzip");
+              : (argv[3] ??
+                (argv[2]?.startsWith("/mnt/example/") === true
+                  ? "share-gzip-test"
+                  : "local-gzip-test"));
 
           calls.push(label);
 
@@ -166,7 +172,7 @@ it.effect.prop(
         version: "invented",
       }).pipe(Effect.exit);
 
-      expect(Exit.isFailure(exit)).toBe(true);
+      expect(Exit.isFailure(exit)).toBe(fault !== "retention");
       expect(staging).not.toBe("");
       expect(yield* fs.exists(staging)).toBe(false);
       expect([...units.values()]).toEqual([true, true]);
@@ -176,6 +182,20 @@ it.effect.prop(
       expect(calls.indexOf("cleanup-staging")).toBeGreaterThan(
         calls.indexOf(fault)
       );
+
+      if (fault === "retention") {
+        expect(calls.indexOf("retention")).toBeGreaterThan(
+          calls.indexOf("cleanup")
+        );
+        expect(calls.indexOf("retention")).toBeGreaterThan(
+          calls.indexOf("share-verify")
+        );
+        expect(calls.indexOf("retention")).toBeGreaterThan(
+          calls.indexOf("share-gzip-test")
+        );
+      } else {
+        expect(calls).not.toContain("retention");
+      }
 
       if (fault === "snapshot") {
         expect(

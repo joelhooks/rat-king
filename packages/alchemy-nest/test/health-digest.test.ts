@@ -420,6 +420,61 @@ it.effect.prop(
     })
 );
 
+it.effect.prop(
+  "only a retention alarm after the latest confirmed publication warns, without marking the successful backup failed",
+  [Schema.Literals(["normal", "before", "after", "cleared", "unpublished"])],
+  ([mode]) =>
+    Effect.gen(function* retentionWarning() {
+      yield* TestClock.setTime(DateTime.toEpochMillis(at(observedAt)));
+
+      const alarm =
+        "BACKUP_RETENTION_ALARM reason=removal-limit kept=22 wouldRemove=12";
+
+      const published = "BACKUP_PUBLISHED example";
+
+      const journals = {
+        after: `${published}\n${alarm}`,
+        before: `${alarm}\n${published}`,
+        cleared: `${published}\n${alarm}\n${published}`,
+        normal: `${published}\nBACKUP_RETENTION_REMOVED example 42`,
+        unpublished: alarm,
+      };
+
+      const shell = {
+        exec: (argv: readonly string[]) => {
+          const command = argv.slice(4);
+
+          return Effect.succeed({
+            code: 0,
+            stdout:
+              command[0] === "journalctl" ? journals[mode] : reply(command),
+          });
+        },
+      };
+
+      const client = HttpClient.make((request) =>
+        Effect.succeed(HttpClientResponse.fromWeb(request, new Response("ok")))
+      );
+
+      const facts = yield* collectHealth(shell, {
+        backupRoot: "/srv/backups",
+        bucket: "rat-king-cells",
+        dataRoot: "/data",
+        healthUrl: "http://192.0.2.10:18787/.well-known/celld/health",
+        home: "/home/example",
+        publicIPv4: "192.0.2.10",
+        sidecar: false,
+      }).pipe(Effect.provideService(HttpClient.HttpClient, client));
+
+      expect(facts.backup.lastRun?.result).toBe("success");
+      expect(facts.backup.lastRun?.retentionRefused).toBe(mode === "after");
+      expect(assess(facts).reasons.includes("backup retention refused")).toBe(
+        mode === "after"
+      );
+      expect(assess(facts).reasons).not.toContain("last backup run failed");
+    })
+);
+
 const shareFixture = String.raw`
 import contextlib, io, json, os, pathlib, sys, tempfile
 script, entries = sys.argv[1], json.loads(sys.argv[2])
