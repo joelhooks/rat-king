@@ -24,6 +24,7 @@ import {
 } from "./restore-drill-mailbox-projection.ts";
 import {
   MailboxCounts,
+  requireIssuerName,
   requireMailboxCounts,
 } from "./restore-drill-proof-assertion.ts";
 import {
@@ -430,13 +431,7 @@ const program = Effect.gen(function* restoreProof() {
         }
       } while (nameCursor !== undefined);
 
-      if (known !== undefined) {
-        return known.did;
-      }
-
-      const template = yield* binding("ISSUER_DID_TEMPLATE");
-
-      return template.replace("{agent}", knownName.replaceAll("/", "."));
+      return yield* requireIssuerName(known);
     })
   );
 
