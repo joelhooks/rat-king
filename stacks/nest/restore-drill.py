@@ -1,6 +1,7 @@
 """Restore an archive in an owned, network-isolated namespace. Never import production env."""
 import argparse
 import contextlib
+import collections
 import datetime
 import fcntl
 import hashlib
@@ -171,12 +172,47 @@ def restore_archive(source, root):
             'disk': {'freeBeforeBytes': free_before, 'requiredBytes': int(required * 1.2 + 1024**3)}}
 
 
-def http_json(port, path, payload=None):
+def cell_error_details(status, body):
+    text = body[:16384].decode('utf-8', errors='replace')
+    code = None
+    try:
+        value = json.loads(text)
+        if isinstance(value, dict):
+            error = value.get('error')
+            detail = error if isinstance(error, dict) else value
+            code = detail.get('code')
+            text = detail.get('message', error if isinstance(error, str) else 'Cell activation failed')
+    except ValueError:
+        pass
+    if not isinstance(text, str):
+        text = 'Cell activation failed'
+    text = re.sub(r'did:[A-Za-z0-9:.%_-]+', '[did]', text)
+    text = re.sub(r'https?://[^\s\"<>]+', '[endpoint]', text)
+    text = re.sub(r'(?i)\b(?:token|secret|password|authorization|access[_-]?key)[\"\s]*[:=][\"\s]*[^\s,;}]+',
+                  '[credential redacted]', text)
+    text = re.sub(r'\b[a-fA-F0-9]{32,}\b', '[identifier]', text)
+    if not isinstance(code, str) or re.fullmatch(r'[A-Za-z][A-Za-z0-9_]{0,63}', code) is None:
+        code = None
+    return {'status': status, 'endpointPath': '/cell/', 'code': code, 'message': text[:200]}
+
+
+class ScratchHttpError(RuntimeError):
+    def __init__(self, details):
+        super().__init__('Cell activation HTTP ' + str(details['status']))
+        self.details = details
+
+
+def http_json(port, path, payload=None, timeout=20):
     request = urllib.request.Request('http://127.0.0.1:' + str(port) + path,
                                      data=None if payload is None else json.dumps(payload).encode(),
                                      headers={'Accept': 'application/json', 'Content-Type': 'application/json'})
-    with OPENER.open(request, timeout=20) as response:
-        return json.load(response)
+    try:
+        with OPENER.open(request, timeout=timeout) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as error:
+        if path.startswith('/cell/'):
+            raise ScratchHttpError(cell_error_details(error.code, error.read(16384))) from None
+        raise
 
 
 def wait_http(processes, port, path, timeout=120):
@@ -206,12 +242,109 @@ def wait_s3(processes, port, timeout=120):
         time.sleep(0.25)
 
 
+def weed_wait_state(samples, timeout=300):
+    # waiting -> ready on writable default storage by deadline; otherwise timeout.
+    # Ready and timeout are terminal. Bucket-only writability is not readiness.
+    require(type(timeout) in (int, float) and 0 < timeout <= 300, 'Invalid weed readiness deadline')
+    previous = 0
+    for sample in samples:
+        elapsed = sample['elapsedSeconds']
+        counts = sample['collections']['default']
+        require(type(elapsed) in (int, float) and previous <= elapsed < float('inf')
+                and all(type(counts[k]) is int and counts[k] >= 0 for k in ('total', 'writable'))
+                and counts['writable'] <= counts['total'], 'Invalid weed readiness sample')
+        previous = elapsed
+        if elapsed > timeout:
+            return 'timeout'
+        if counts['writable'] > 0:
+            return 'ready'
+        if elapsed >= timeout:
+            return 'timeout'
+    return 'waiting'
+
+
+def weed_volume_sample(directory, volumes, bucket, elapsed):
+    # SeaweedFS binary commit 530be3e: topology_info.go and VolumeLayoutInfo.
+    layouts = directory['Topology']['Layouts']
+    require(layouts is None or isinstance(layouts, list), 'Invalid weed layouts')
+    centers = volumes['Volumes']['DataCenters']
+    require(isinstance(centers, dict), 'Invalid weed volume topology')
+    ids = {}
+    for racks in centers.values():
+        for nodes in racks.values():
+            for replicas in nodes.values():
+                require(isinstance(replicas, list), 'Invalid weed volume list')
+                for volume in replicas:
+                    vid, collection = volume['Id'], volume['Collection']
+                    require(type(vid) is int and vid > 0 and isinstance(collection, str), 'Invalid weed volume')
+                    ids.setdefault(collection, set()).add(vid)
+    writable = {}
+    for layout in layouts or []:
+        collection = layout['collection']
+        values = layout['writables'] or []
+        require(isinstance(collection, str) and isinstance(values, list)
+                and all(type(v) is int and v > 0 for v in values), 'Invalid weed writable volumes')
+        writable.setdefault(collection, set()).update(values)
+    counts = {}
+    for collection, label in (('', 'default'), (bucket, bucket)):
+        registered = ids.get(collection, set())
+        counts[label] = {'total': len(registered), 'writable': len(registered & writable.get(collection, set()))}
+    return {'class': 'weed-volume-readiness', 'elapsedSeconds': elapsed,
+            'registeredTotal': sum(len(v) for v in ids.values()), 'collections': counts}
+
+
+def wait_weed_writable(processes, port, bucket, root, timeout=300):
+    start = time.monotonic()
+    samples = []
+    while True:
+        require(all(p.poll() is None for p in processes), 'Scratch service exited during weed readiness')
+        try:
+            directory = http_json(port, '/dir/status', timeout=3)
+            volumes = http_json(port, '/vol/status', timeout=3)
+            sample = weed_volume_sample(directory, volumes, bucket, round(time.monotonic() - start, 3))
+            sample['status'] = 'observed'
+        except (OSError, ValueError, KeyError, TypeError, RuntimeError):
+            sample = {'class': 'weed-volume-readiness', 'elapsedSeconds': round(time.monotonic() - start, 3),
+                      'status': 'unavailable', 'registeredTotal': 0,
+                      'collections': {'default': {'total': 0, 'writable': 0}, bucket: {'total': 0, 'writable': 0}}}
+        samples.append(sample)
+        state = weed_wait_state(samples, timeout)
+        (root/'weed-readiness.json').write_text(json.dumps({'status': state, 'samples': samples}))
+        print(json.dumps(sample, sort_keys=True), flush=True)
+        require(state != 'timeout', 'Weed default collection has no proven writable volumes before readiness deadline')
+        if state == 'ready':
+            return
+        time.sleep(min(2, max(0, timeout - (time.monotonic() - start))))
+
+
 def bounded_tail(path):
     if not path.exists():
         return ''
     with path.open('rb') as source:
         source.seek(max(0, path.stat().st_size - 65536))
         return '\n'.join(source.read(65536).decode('utf-8', errors='replace').splitlines()[-200:])
+
+
+def retain_private_tails(config, root):
+    if 'privateDiagnosticsParent' not in config:
+        return None
+    parent = canonical(config['privateDiagnosticsParent'])
+    require(parent != root and root not in parent.parents, 'Private diagnostics must outlive scratch')
+    run_id = root.name.removeprefix('restore-drill-')
+    require(re.fullmatch('[a-f0-9]{32}', run_id), 'Invalid private diagnostic run id')
+    target = parent/('raw-' + run_id + '.log')
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, 'wb') as output:
+        os.fchmod(output.fileno(), 0o600)
+        for name in ('celld.stdout', 'celld.stderr', 'weed.stderr'):
+            path = root/(name + '.log')
+            output.write(('=== ' + name + ' ===\n').encode())
+            if path.is_file():
+                with path.open('rb') as source:
+                    output.writelines(collections.deque(source, maxlen=400))
+        output.flush()
+        os.fsync(output.fileno())
+    return str(target)
 
 
 def retain_diagnostics(config, root, children):
@@ -456,7 +589,12 @@ def worker(config, root):
                           '--internal-listen', '127.0.0.1:' + str(internal)], root/'celld', env)
         (root/'pids.json').write_text(json.dumps([p.pid for p in processes]))
         version = wait_http(processes, public, '/.well-known/rat-king/version')
-        require(http_json(public, '/.well-known/celld/health').get('ok') is True, 'Health proof missing')
+        startup = {'version': version}
+        (root/'startup-health.json').write_text(json.dumps(startup))
+        startup['celld'] = http_json(public, '/.well-known/celld/health')
+        (root/'startup-health.json').write_text(json.dumps(startup))
+        require(startup['celld'].get('ok') is True, 'Health proof missing')
+        wait_weed_writable(processes, master, config['bucket'], root)
         # Activate and inspect restored actors without modifying mailbox records.
         proof_dids = [config['messageDid'], config['knownDid']]
         inventory = inspect_mailboxes(root, internal, proof_dids)
@@ -508,6 +646,7 @@ def orchestrate(config, receipt_path):
         require_linux_isolation()
         parent = canonical(config['scratchParent'])
         share = canonical(config['backupRoot'])
+        private_parent = canonical(config['privateDiagnosticsParent']) if 'privateDiagnosticsParent' in config else None
         inventory = json.loads(canonical(config['inventory']).read_text())
         production_roots = [canonical(node['dataRoot']) for node in inventory['nodes'].values()]
         for protected in [share, *production_roots]:
@@ -515,6 +654,12 @@ def orchestrate(config, receipt_path):
                     'Scratch parent overlaps backup or production data')
             require(receipt_path != protected and protected not in receipt_path.parents,
                     'Receipt overlaps backup or production data')
+            if private_parent is not None:
+                require(private_parent != protected and protected not in private_parent.parents
+                        and private_parent not in protected.parents, 'Private diagnostics overlap protected data')
+        if private_parent is not None:
+            require(private_parent != parent and parent not in private_parent.parents,
+                    'Private diagnostics overlap scratch parent')
         config = {**config, 'volumeMax': volume_max(config)}
         group = unit_cgroup(config, unit)
         source = select_archive(share)
@@ -535,7 +680,11 @@ def orchestrate(config, receipt_path):
         receipt['unit'] = unit
         launched = True
         command = worker_command(config, unit, root)
-        outcome = subprocess.run(command, capture_output=True, text=True, timeout=2500)
+        proof_start = time.monotonic()
+        try:
+            outcome = subprocess.run(command, capture_output=True, text=True, timeout=2500)
+        finally:
+            receipt['timings']['proofAttemptSeconds'] = round(time.monotonic() - proof_start, 3)
         require(outcome.returncode == 0, 'Isolated drill worker failed (see retained receipt; no production changes)')
         proof = json.loads((root/'proof.json').read_text())
         receipt['proofs'].update({k: proof[k] for k in ('health', 'message', 'lease', 'mailboxCounts', 'mailboxKeyProofs')})
@@ -574,6 +723,14 @@ def orchestrate(config, receipt_path):
                 receipt['proofErrors'] = json.loads((root/'proof-errors.json').read_text())
             if root is not None and (root/'proof-progress.json').is_file():
                 receipt['proofProgress'] = json.loads((root/'proof-progress.json').read_text())
+            for filename, key in (('startup-health.json', 'startupHealth'), ('weed-readiness.json', 'weedReadiness')):
+                if root is not None and (root/filename).is_file():
+                    receipt[key] = json.loads((root/filename).read_text())
+            if root is not None and 'privateDiagnosticsParent' in config:
+                try:
+                    receipt['privateDiagnostics'] = retain_private_tails(config, root)
+                except (OSError, RuntimeError):
+                    receipt['privateDiagnosticsError'] = 'Private tail retention failed'
             require(receipt['teardown'].get('processesAbsent') and receipt['teardown'].get('unitAbsent'),
                     'Service teardown unproven; retaining scratch root')
             if root is not None:
@@ -600,7 +757,10 @@ def main():
         try:
             worker(json.loads((root/'config.json').read_text()), root)
         except BaseException as error:
-            (root/'worker-error.json').write_text(json.dumps({'type': type(error).__name__, 'reason': str(error)}))
+            detail = {'type': type(error).__name__, 'reason': str(error)}
+            if isinstance(error, ScratchHttpError):
+                detail.update(error.details)
+            (root/'worker-error.json').write_text(json.dumps(detail))
             raise
         return 0
     parser = argparse.ArgumentParser()

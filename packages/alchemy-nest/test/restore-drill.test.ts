@@ -159,6 +159,28 @@ with tempfile.TemporaryDirectory() as tmp:
     assert retained['proofProgress'] == proof_progress
     assert retained['teardown']['rootAbsent'] and not list(scratch.iterdir())
     assert target.stat().st_mode & 0o777 == 0o600
+    # A real subprocess-boundary failure must preserve startup evidence and duration.
+    import types
+    health={'version':{'commit':'test-version'},'celld':{'ok':True}}
+    readiness={'status':'timeout','samples':[{'class':'weed-volume-readiness','elapsedSeconds':300,'collections':{'default':{'total':1,'writable':0}}}]}
+    def fake_restore(source,owned_root):
+        return {'sha256':'a'*64,'inventories':{},'disk':{}}
+    def failed_worker(command,**kwargs):
+        if 'systemd-run' in command:
+            owned_root=pathlib.Path(command[-1])
+            (owned_root/'startup-health.json').write_text(json.dumps(health))
+            (owned_root/'weed-readiness.json').write_text(json.dumps(readiness))
+            return types.SimpleNamespace(returncode=1,stdout='')
+        return types.SimpleNamespace(returncode=0,stdout='not-found')
+    m['orchestrate'].__globals__['restore_archive']=fake_restore
+    m['orchestrate'].__globals__['subprocess'].run=failed_worker
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert m['orchestrate']({'backupRoot':str(share),'scratchParent':str(scratch),'inventory':str(inventory)},target)==1
+    failed_worker_receipt=json.loads(target.read_text().splitlines()[-1])
+    assert failed_worker_receipt['startupHealth']==health
+    assert failed_worker_receipt['weedReadiness']==readiness
+    assert failed_worker_receipt['timings']['proofAttemptSeconds']>=0
+    assert failed_worker_receipt['teardown']['rootAbsent'] and not list(scratch.iterdir())
 print('DRILL_PROPERTIES_PASSED')
 `;
 
