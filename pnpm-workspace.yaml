@@ -1,6 +1,7 @@
 packages:
   - "apps/*"
   - "packages/*"
+  - "tools/grokbox"
 
 overrides:
   "@mischief/worker>effect": "4.0.5"
