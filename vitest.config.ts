@@ -59,6 +59,10 @@ export default defineConfig({
         test: { name: "ratking-client" },
       },
       {
+        extends: "apps/ratking-mcp/vitest.config.ts",
+        test: { name: "ratking-mcp" },
+      },
+      {
         extends: "apps/ratking-cli/vitest.config.ts",
         test: { name: "ratking-cli" },
       },
