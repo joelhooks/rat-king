@@ -421,7 +421,7 @@ def unit_control(config):
 
 def worker_command(config, unit, root):
     control = unit_control(config)
-    isolation = (['systemd-run', '--user', '-p', 'PrivateUsers=yes', '-p', 'Slice=app.slice'] if '--user' in control else
+    isolation = (['systemd-run', '--user', '-p', 'PrivateUsers=yes', '-p', 'ProtectControlGroups=private', '-p', 'Slice=app.slice'] if '--user' in control else
                  ['sudo', '-n', 'systemd-run', '--uid=' + str(os.getuid())])
     return [*isolation, '--unit=' + unit, '--collect', '--wait',
             '-p', 'PrivateNetwork=yes', '-p', 'PrivateTmp=yes',
