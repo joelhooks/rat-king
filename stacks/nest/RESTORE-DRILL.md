@@ -22,6 +22,8 @@ Add `restoreDrill` beside `runtime` in the private fleet stage file. Example val
 }
 ```
 
+`knownName` must be an ordinary name the issuer lists in both the live service and the backup, with `knownDid` taken from the live issuer. A host's reserved names, such as the switchboard, live only in that host's local table and never in the issuer, so they can't serve as proof names. A name missing from the restored issuer fails with `PROOF_NAME_NOT_IN_ISSUER`.
+
 The scratch parent and receipt parent must already exist. The scratch parent cannot overlap the backup share or any production data root declared in `runtime.RATS_NEST_INSTANCE`. The receipt cannot live inside those protected roots. Keep instance configuration, receipts and actual host paths outside the public repository.
 
 Run:
