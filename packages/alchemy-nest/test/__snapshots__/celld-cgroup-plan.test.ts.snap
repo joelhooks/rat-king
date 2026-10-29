@@ -1,0 +1,66 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`default inventory preserves the existing 8G celld plan 1`] = `
+"[Unit]
+Description=Rat King cell node
+Requires=rat-king-seaweedfs.service
+After=rat-king-seaweedfs.service
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart="/home/example/.local/share/rat-king/bin/celld" --listen 203.0.113.10:18787 --internal-listen 127.0.0.1:18788
+ExecStopPost=-/usr/bin/python3 "/home/example/.local/share/rat-king/bin/storage-maintenance.py" diagnose
+EnvironmentFile=/home/example/.config/rat-king/celld.env
+WorkingDirectory=/srv/example/mailbox/celld
+Environment=CELLD_OTEL=0
+Environment=CELLD_LTX_RETENTION_SECS=86400
+Environment=CELLD_SHUTDOWN_TOTAL_MS=8000
+Environment="CELLD_TEST_DATA_DIR=/srv/example/mailbox/celld"
+Slice=rat-king.slice
+MemoryMax=8G
+MemorySwapMax=0
+CPUQuota=200%
+TasksMax=1024
+Nice=10
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=180
+UMask=0077
+
+[Install]
+WantedBy=default.target
+"
+`;
+
+exports[`opt-in inventory scopes the celld cgroup and its 5G limit 1`] = `
+"[Unit]
+Description=Rat King cell node
+Requires=rat-king-seaweedfs.service
+After=rat-king-seaweedfs.service
+StartLimitIntervalSec=0
+
+[Service]
+ExecStart="/home/example/.local/share/rat-king/bin/celld" --listen 203.0.113.10:18787 --internal-listen 127.0.0.1:18788
+ExecStopPost=-/usr/bin/python3 "/home/example/.local/share/rat-king/bin/storage-maintenance.py" diagnose
+EnvironmentFile=/home/example/.config/rat-king/celld.env
+WorkingDirectory=/srv/example/mailbox/celld
+Environment=CELLD_OTEL=0
+Environment=CELLD_LTX_RETENTION_SECS=86400
+Environment=CELLD_SHUTDOWN_TOTAL_MS=8000
+Environment="CELLD_TEST_DATA_DIR=/srv/example/mailbox/celld"
+Slice=rat-king.slice
+ProtectControlGroups=private
+MemoryMax=5G
+MemorySwapMax=0
+CPUQuota=200%
+TasksMax=1024
+Nice=10
+Restart=on-failure
+RestartSec=10
+TimeoutStartSec=180
+UMask=0077
+
+[Install]
+WantedBy=default.target
+"
+`;

@@ -31,6 +31,16 @@ const limitLines = (
     : [["OOMPolicy", input.oomPolicy] satisfies readonly [string, string]]),
 ];
 
+const nodeLimitLines = (
+  host: Node,
+  input: ServiceLimits
+): readonly (readonly [string, string])[] => [
+  ...(host.privateCgroupView === true
+    ? [["ProtectControlGroups", "private"] satisfies readonly [string, string]]
+    : []),
+  ...limitLines(input, host.celldMemoryMax ?? "3G", "200%"),
+];
+
 export const sliceUnit = (
   home: string,
   memoryMax = "4G",
@@ -214,7 +224,7 @@ export const nodeUnit = (
         ["Environment", "CELLD_SHUTDOWN_TOTAL_MS=8000"],
         ["Environment", quote(`CELLD_TEST_DATA_DIR=${input.data}`)],
         ["Slice", input.layout?.slice ?? "rat-king.slice"],
-        ...limitLines(input, "3G", "200%"),
+        ...nodeLimitLines(input.host, input),
         ["TasksMax", "1024"],
         ["Nice", "10"],
         ["Restart", "on-failure"],

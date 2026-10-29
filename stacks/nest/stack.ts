@@ -55,6 +55,7 @@ import { backupTimer, backupUnit } from "./backup-units.ts";
 import { fleetCelldBinary } from "./celld-build.ts";
 import { mailboxCliEnvironment } from "./cli-environment.ts";
 import {
+  celldMemoryMax,
   configuration,
   stageName,
   workerIPv4 as stageWorkerIPv4,
@@ -327,7 +328,7 @@ export const nestStack = (restore?: RestoreRequest) =>
         binary: fleetCelldBinary(node.home),
         bucket,
         host: node,
-        memoryMax: fleetMemoryLimits.celld,
+        memoryMax: celldMemoryMax(node),
         prepared: staged,
         purgeOnDelete: !recoverState,
         tuning: { CELLD_LTX_LOCAL_L0_KEEP: "32" },

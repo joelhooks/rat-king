@@ -8,6 +8,9 @@ export const stageName = Config.schema(
   "RAT_KING_STAGE"
 ).pipe(Config.withDefault("proof"));
 
+export const celldMemoryMax = (node: Node): string =>
+  node.celldMemoryMax ?? fleetMemoryLimits.celld;
+
 export const workerIPv4 = (
   stage: "proof" | "pilot" | "fleet",
   node: Node

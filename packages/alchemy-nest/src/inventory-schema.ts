@@ -12,8 +12,12 @@ const path = value.check(
 );
 
 export const NodeSchema = Schema.Struct({
+  celldMemoryMax: Schema.optionalKey(
+    value.check(Schema.isPattern(/^[1-9][0-9]*(?:\.[0-9]+)?[KMGT]?$/u))
+  ),
   dataRoot: path,
   home: path,
+  privateCgroupView: Schema.optionalKey(Schema.Boolean),
   ssh: value.check(Schema.isPattern(/^(?!-)[A-Za-z0-9_.@:-]+$/u)),
   tailnetIPv4: value.check(
     Schema.isPattern(/^(?:\d{1,3}\.){3}\d{1,3}$/u),
