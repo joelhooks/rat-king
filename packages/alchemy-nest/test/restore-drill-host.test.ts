@@ -24,11 +24,13 @@ assert '-p' in command and 'PrivateNetwork=yes' in command and 'KillMode=control
 control=m['unit_control'](config)
 if scope=='user':
  assert command[:2]==['systemd-run','--user'] and 'PrivateUsers=yes' in command
+ assert 'ProtectControlGroups=private' in command, 'User worker observes unrelated ancestor memory charges'
  assert not any(arg.startswith('--uid=') for arg in command)
  assert control==['systemctl','--user']
 else:
  assert command[:3]==['sudo','-n','systemd-run'] and any(arg.startswith('--uid=') for arg in command)
  assert control==['sudo','-n','systemctl']
+ assert 'ProtectControlGroups=private' not in command, 'System-manager compatibility changed without qualification'
 m['unit_cgroup'].__globals__['subprocess'].run=lambda *a,**k:types.SimpleNamespace(returncode=0,stdout='/user.slice/example.slice/test-manager.service/init.scope\n')
 group=m['unit_cgroup'](config,'restore-drill-example.service')
 assert str(group)==('/sys/fs/cgroup/user.slice/example.slice/test-manager.service/app.slice/restore-drill-example.service' if scope=='user' else '/sys/fs/cgroup/system.slice/restore-drill-example.service')
