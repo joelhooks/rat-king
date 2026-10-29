@@ -14,6 +14,7 @@ import { shellQuote } from "../../packages/alchemy-nest/src/ssh.ts";
 import { HeartbeatJson } from "../../packages/ratking-client/src/reader-health.ts";
 import { collectSessionsBackup } from "./alarm-backups.ts";
 import { collectInstanceHealth } from "./alarm-instances.ts";
+import { readMaintenance } from "./alarm-maintenance.ts";
 import { collectRecallCanary } from "./alarm-recall.ts";
 import type { DeployMarker, WindowReceipt } from "./alarm-sources.ts";
 import { AlarmFacts, CacheBreach, sightReaders } from "./alarm-sources.ts";
@@ -301,6 +302,7 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
         doctor: probe(ports.doctor(config)),
         health: probe(health),
         instances: collectInstanceHealth(config.alarm.instances),
+        maintenance: probe(readMaintenance(config.runtime.RAT_KING_STATE_DIR)),
         quarantine: Effect.all(
           [
             ports.comms(config.comms.local, now - 3_600_000, true),
@@ -360,6 +362,7 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
         digest: observations.digest,
         doctor: observations.doctor,
         health: observations.health,
+        maintenance: observations.maintenance,
         quarantine: observations.quarantine,
         receipts: observations.receipts,
       }),
@@ -389,6 +392,7 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
       failed,
       health: healthy?.health.status ?? null,
       instances: observations.instances,
+      maintenance: Option.getOrElse(observations.maintenance, () => []),
       measurementFailed: failed.length > 0,
       quarantinedHour: Option.getOrNull(observations.quarantine),
       readers: observations.readers.facts,

@@ -24,8 +24,15 @@ export const StopMemory = Schema.Struct({
   slice: Schema.optionalKey(MemoryCharge),
 });
 
-export const stopMemoryWarnings = (memory: typeof StopMemory.Type) =>
-  (["celld", "seaweedfs"] as const).flatMap((name) => {
+export interface StopMemoryCheck {
+  readonly kind: "unavailable" | "high";
+  readonly text: string;
+}
+
+export const stopMemoryChecks = (
+  memory: typeof StopMemory.Type
+): StopMemoryCheck[] =>
+  (["celld", "seaweedfs"] as const).flatMap((name): StopMemoryCheck[] => {
     const charge = memory[name];
 
     if (charge === undefined) {
@@ -39,13 +46,22 @@ export const stopMemoryWarnings = (memory: typeof StopMemory.Type) =>
       charge.max === 0
     ) {
       return [
-        `${name} anonymous memory accounting unavailable; inspect cgroup memory.stat and unit cap`,
+        {
+          kind: "unavailable" as const,
+          text: `${name} anonymous memory accounting unavailable; inspect cgroup memory.stat and unit cap`,
+        },
       ];
     }
 
     return charge.anon / charge.max >= anonWarningFraction
       ? [
-          `${name} anonymous memory ${charge.anon} bytes is at least 60% of unit cap ${charge.max} bytes; inspect anonymous growth before the nightly backup`,
+          {
+            kind: "high" as const,
+            text: `${name} anonymous memory ${charge.anon} bytes is at least 60% of unit cap ${charge.max} bytes; inspect anonymous growth before the nightly backup`,
+          },
         ]
       : [];
   });
+
+export const stopMemoryWarnings = (memory: typeof StopMemory.Type) =>
+  stopMemoryChecks(memory).map((check) => check.text);

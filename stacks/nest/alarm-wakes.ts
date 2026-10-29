@@ -40,6 +40,8 @@ export const WakeSighting = Schema.Struct({
 
 export const DEFAULT_WAKE_UNACKED_MINUTES = 15;
 
+export const WAKE_CRITICAL_MS = 30 * 60_000;
+
 const wakeLimit = (item: typeof WakeSighting.Type) =>
   (item.configured === true && item.unackedMinutes !== undefined
     ? item.unackedMinutes
@@ -101,6 +103,15 @@ export const stalledWakes = (
           item.health.lease.expiresAt > now &&
           overdue(item, now))
   );
+
+const waitedMs = (item: typeof WakeSighting.Type, now: number) => {
+  const oldest = item.health === null ? null : waiting(item.health);
+
+  return oldest === null ? 0 : now - oldest.at;
+};
+
+export const pagingWake = (item: typeof WakeSighting.Type) =>
+  item.name === "switchboard" || item.page === true;
 
 export const newWakeTargets = (
   prior: readonly (typeof WakeTarget.Type)[],
@@ -170,7 +181,11 @@ export const wakeReading = (
           stalled.flatMap((item) => (item.owner === null ? [] : [item.owner]))
         ),
       ],
-      severity: "warn",
+      severity: stalled.some(
+        (item) => pagingWake(item) && waitedMs(item, now) > WAKE_CRITICAL_MS
+      )
+        ? "critical"
+        : "warn",
       status: "firing",
     };
   }

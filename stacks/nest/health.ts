@@ -8,9 +8,10 @@ import {
   readListeners,
   stackListeners,
 } from "../../packages/alchemy-nest/src/listeners.ts";
+import { BACKUP_OWNER, backupCover } from "./alarm-maintenance.ts";
 import { nodeService, storeService } from "./backup.ts";
 import { healthScript } from "./health-script.ts";
-import { StopMemory, stopMemoryWarnings } from "./stop-memory.ts";
+import { StopMemory, stopMemoryChecks } from "./stop-memory.ts";
 
 export const backupService = "rat-king-mailbox-backup.service";
 
@@ -116,11 +117,32 @@ export const DigestJson = Schema.fromJsonString(Digest);
 
 interface Findings {
   readonly failures: readonly string[];
+  readonly maintenance?: readonly string[];
   readonly warnings: readonly string[];
 }
 
+const planned = (finding: string) =>
+  `maintenance by ${BACKUP_OWNER}: ${finding}`;
+
 const millis = (instant: DateTime.Utc | null) =>
   instant === null ? undefined : DateTime.toEpochMillis(instant);
+
+const backupStopping = (facts: HealthFacts) => {
+  const run = facts.backup.lastRun;
+  const start = millis(run?.startedAt ?? null);
+  const end = millis(run?.endedAt ?? null);
+  const at = DateTime.toEpochMillis(facts.observedAt);
+
+  const cover =
+    start === undefined
+      ? undefined
+      : backupCover({
+          end: end === undefined || end < start ? null : end,
+          start,
+        });
+
+  return cover !== undefined && cover.start <= at && at <= cover.end;
+};
 
 const insideBackupRun = (enteredAt: number, facts: HealthFacts) => {
   const run = facts.backup.lastRun;
@@ -139,8 +161,13 @@ const insideBackupRun = (enteredAt: number, facts: HealthFacts) => {
   );
 };
 
-const serviceFindings = (facts: HealthFacts, since: number): Findings => {
+const serviceFindings = (
+  facts: HealthFacts,
+  since: number,
+  stopping: boolean
+): Findings => {
   const failures: string[] = [];
+  const maintenance: string[] = [];
   const warnings: string[] = [];
 
   for (const [name, unit] of Object.entries(facts.services)) {
@@ -149,7 +176,7 @@ const serviceFindings = (facts: HealthFacts, since: number): Findings => {
     }
 
     if (unit.activeState !== "active") {
-      failures.push(`${name} ${unit.activeState}`);
+      (stopping ? maintenance : failures).push(`${name} ${unit.activeState}`);
     }
 
     const enteredAt = millis(unit.activeEnterTimestamp);
@@ -165,7 +192,7 @@ const serviceFindings = (facts: HealthFacts, since: number): Findings => {
     }
   }
 
-  return { failures, warnings };
+  return { failures, maintenance, warnings };
 };
 
 const storageFindings = (
@@ -249,23 +276,34 @@ export const assess = (facts: HealthFacts, previous?: HealthDigest) => {
     DateTime.toEpochMillis(facts.observedAt) -
       Duration.toMillis(restartWindowWithoutPrevious);
 
-  const findings = [
-    {
-      failures:
-        facts.health.status === 200
-          ? []
-          : [`health ${facts.health.status ?? "unreachable"}`],
-      warnings: [],
-    },
-    serviceFindings(facts, since),
+  const stopping = backupStopping(facts);
+
+  const health =
+    facts.health.status === 200
+      ? []
+      : [`health ${facts.health.status ?? "unreachable"}`];
+
+  const memory =
+    facts.stopMemory === null || facts.stopMemory === undefined
+      ? []
+      : stopMemoryChecks(facts.stopMemory);
+
+  const plannedMemory = (check: { readonly kind: string }) =>
+    stopping && check.kind === "unavailable";
+
+  const findings: Findings[] = [
+    stopping
+      ? { failures: [], maintenance: health, warnings: [] }
+      : { failures: health, warnings: [] },
+    serviceFindings(facts, since, stopping),
     storageFindings(facts, previous),
     backupFindings(facts),
     {
       failures: [],
-      warnings:
-        facts.stopMemory === null || facts.stopMemory === undefined
-          ? []
-          : stopMemoryWarnings(facts.stopMemory),
+      maintenance: memory.filter(plannedMemory).map((check) => check.text),
+      warnings: memory
+        .filter((check) => !plannedMemory(check))
+        .map((check) => check.text),
     },
     {
       failures: [],
@@ -277,11 +315,16 @@ export const assess = (facts: HealthFacts, previous?: HealthDigest) => {
 
   const total = {
     failures: findings.flatMap((entry) => entry.failures),
+    maintenance: findings.flatMap((entry) => entry.maintenance ?? []),
     warnings: findings.flatMap((entry) => entry.warnings),
   };
 
   return {
-    reasons: [...total.failures, ...total.warnings],
+    reasons: [
+      ...total.failures,
+      ...total.warnings,
+      ...total.maintenance.map(planned),
+    ],
     status: statusOf(total),
   };
 };

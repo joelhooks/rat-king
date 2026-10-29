@@ -13,6 +13,7 @@ import {
 import type { AlarmFacts } from "../../../stacks/nest/alarm-sources.ts";
 import {
   AlarmJournal,
+  PAGE_ACK_WAIT_MS,
   alarmCycle,
   emptyJournal,
 } from "../../../stacks/nest/alarm.ts";
@@ -233,10 +234,20 @@ it.effect.prop(
           ports
         );
 
-        yield* alarmCycle(
+        const confirmed = yield* alarmCycle(
           first,
           { ...facts, health: 503 },
           3000,
+          decoded,
+          ports
+        );
+
+        expect(pages).toEqual([]);
+
+        yield* alarmCycle(
+          confirmed,
+          { ...facts, health: 503 },
+          3000 + PAGE_ACK_WAIT_MS,
           decoded,
           ports
         );

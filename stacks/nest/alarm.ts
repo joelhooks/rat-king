@@ -4,14 +4,20 @@ import * as Defs from "../../packages/lexicon/src/defs.ts";
 import { AlarmKey, AlarmState, alarmKeys } from "./alarm-config.ts";
 import type {
   AlarmKeyValue,
+  AlarmReadingValue,
   AlarmSettingsValue,
   AlarmStateValue,
 } from "./alarm-config.ts";
 import { advanceAlarm, emptyAlarm } from "./alarm-machine.ts";
 import type { AlarmRefused } from "./alarm-refusal.ts";
-import { SourceState, emptySources, observeAlarms } from "./alarm-sources.ts";
+import {
+  SourceState,
+  emptySources,
+  exposedDownInstances,
+  observeAlarms,
+} from "./alarm-sources.ts";
 import type { AlarmFacts } from "./alarm-sources.ts";
-import { stalledWakes, newWakeTargets } from "./alarm-wakes.ts";
+import { newWakeTargets } from "./alarm-wakes.ts";
 import type { FleetError } from "./stage-config.ts";
 
 export const Delivery = Schema.Struct({
@@ -24,16 +30,30 @@ export const Delivery = Schema.Struct({
 const Notice = Schema.Struct({
   incident: Schema.Finite,
   key: AlarmKey,
-  kind: Schema.Literals(["fire", "clear"]),
+  kind: Schema.Literals(["fire", "clear", "maintenance"]),
   recipients: Schema.Array(Schema.String),
   text: Schema.String,
+});
+
+const MaintenanceNoticed = Schema.Struct({
+  at: Schema.Finite,
+  id: Schema.String,
+  key: AlarmKey,
 });
 
 export const AlarmJournal = Schema.Struct({
   alarms: Schema.Record(Schema.String, AlarmState),
   instanceRecipients: Schema.optionalKey(Schema.Array(Schema.String)),
+  maintenance: Schema.optionalKey(Schema.Array(MaintenanceNoticed)),
   notices: Schema.Array(Notice),
-  pages: Schema.Array(Schema.Struct({ at: Schema.Finite, key: AlarmKey })),
+  pages: Schema.Array(
+    Schema.Struct({
+      at: Schema.Finite,
+      incident: Schema.optionalKey(Schema.Finite),
+      key: AlarmKey,
+      kind: Schema.optionalKey(Schema.Literal("clear")),
+    })
+  ),
   pending: Schema.Array(Delivery),
   sources: SourceState,
   version: Schema.Literal(1),
@@ -130,8 +150,55 @@ export const mayPage = (
   key: AlarmKeyValue,
   now: number
 ) =>
-  pages.filter((page) => now - page.at < 86_400_000).length < 6 &&
-  !pages.some((page) => page.key === key && now - page.at < 21_600_000);
+  pages.filter((page) => page.kind !== "clear" && now - page.at < 86_400_000)
+    .length < 6 &&
+  !pages.some(
+    (page) =>
+      page.kind !== "clear" && page.key === key && now - page.at < 21_600_000
+  );
+
+export const PAGE_CONFIRM_MS = 5 * 60_000;
+
+export const PAGE_ACK_WAIT_MS = 10 * 60_000;
+
+const paged = (
+  pages: AlarmJournalValue["pages"],
+  key: AlarmKeyValue,
+  incident: number
+) =>
+  pages.some(
+    (page) =>
+      page.kind !== "clear" && page.key === key && page.incident === incident
+  );
+
+export const pageDue = (
+  pages: AlarmJournalValue["pages"],
+  key: AlarmKeyValue,
+  before: AlarmStateValue,
+  state: AlarmStateValue,
+  reading: AlarmReadingValue,
+  now: number
+) => {
+  const incident = state.context.since;
+
+  return (
+    reading.status === "firing" &&
+    reading.severity === "critical" &&
+    state.value === "firing" &&
+    ((before.value === "firing" && before.context.since === incident) ||
+      now - incident >= PAGE_CONFIRM_MS) &&
+    now - incident >= PAGE_ACK_WAIT_MS &&
+    !paged(pages, key, incident) &&
+    mayPage(pages, key, now)
+  );
+};
+
+export const clearPageText = (
+  key: AlarmKeyValue,
+  incident: number,
+  now: number
+) =>
+  `✅ cleared ${key} ${incident} after ${Math.max(0, Math.floor((now - incident) / 1000))} seconds. SR 🐀`;
 
 export const alarmText = (
   key: AlarmKeyValue,
@@ -142,7 +209,42 @@ export const alarmText = (
 ) =>
   clear
     ? `✅ ${key} cleared after ${Math.max(0, Math.floor((now - state.context.since) / 1000))} seconds. SR 🐀`
-    : `🚨 ${key} ${state.context.severity}: ${summaries[key]}. Evidence: ${evidence}. Since ${DateTime.formatIso(DateTime.makeUnsafe(state.context.since))}. SR 🐀`;
+    : `🚨 ${key} ${state.context.severity}: ${summaries[key]}. Evidence: ${evidence}. Since ${DateTime.formatIso(DateTime.makeUnsafe(state.context.since))}. Incident ${state.context.since}. SR 🐀`;
+
+export const maintenanceText = (key: AlarmKeyValue, evidence: string) =>
+  `🛠️ ${key} quiet: ${evidence}. Not paged or broadcast; it alarms as usual if still down after the end plus grace. SR 🐀`;
+
+const noticeMaintenance = (
+  journal: AlarmJournalValue,
+  key: AlarmKeyValue,
+  reading: Extract<AlarmReadingValue, { status: "maintenance" }>,
+  now: number
+): AlarmJournalValue => {
+  const noticed = journal.maintenance ?? [];
+
+  const fresh = reading.windows.filter(
+    (id) => !noticed.some((item) => item.key === key && item.id === id)
+  );
+
+  if (fresh.length === 0 || reading.recipients.length === 0) {
+    return journal;
+  }
+
+  return {
+    ...journal,
+    maintenance: [...noticed, ...fresh.map((id) => ({ at: now, id, key }))],
+    notices: [
+      ...journal.notices,
+      {
+        incident: now,
+        key,
+        kind: "maintenance",
+        recipients: reading.recipients,
+        text: maintenanceText(key, reading.evidence),
+      },
+    ],
+  };
+};
 
 const withAlarmState = (
   journal: AlarmJournalValue,
@@ -183,18 +285,6 @@ const rememberInstanceRecipients = (
         : [],
   };
 };
-
-const needsPage = (
-  key: AlarmKeyValue,
-  severity: string,
-  facts: typeof AlarmFacts.Type,
-  now: number
-) =>
-  severity === "critical" ||
-  (key === "wake.unacked" &&
-    stalledWakes(facts.wakes ?? [], now).some(
-      (item) => item.name === "switchboard" || item.page === true
-    ));
 
 const wakeRecoveryRecipients = (
   journal: AlarmJournalValue,
@@ -310,7 +400,20 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
 
   let current: AlarmJournalValue = {
     ...prior,
-    pages: prior.pages.filter((page) => now - page.at < 86_400_000),
+    ...(prior.maintenance === undefined
+      ? undefined
+      : {
+          maintenance: prior.maintenance.filter(
+            (item) => now - item.at < 86_400_000
+          ),
+        }),
+    pages: prior.pages.filter(
+      (page) =>
+        now - page.at < 86_400_000 ||
+        (page.incident !== undefined &&
+          prior.alarms[page.key]?.value === "firing" &&
+          prior.alarms[page.key]?.context.since === page.incident)
+    ),
     sources: observation.sources,
   };
 
@@ -323,6 +426,11 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
       continue;
     }
 
+    if (reading.status === "maintenance") {
+      current = noticeMaintenance(current, key, reading, now);
+      continue;
+    }
+
     const before = current.alarms[key] ?? emptyAlarm;
 
     const next = advanceAlarm(
@@ -331,6 +439,41 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
       now,
       renotifyAfter(key, prior, facts, now, settings)
     );
+
+    const incident = next.state.context.since;
+
+    if (pageDue(current.pages, key, before, next.state, reading, now)) {
+      current = {
+        ...current,
+        pages: [...current.pages, { at: now, incident, key }],
+      };
+      yield* ports.save(current);
+      yield* ports
+        .page(
+          alarmText(
+            key,
+            next.state,
+            now,
+            reading.status === "firing" ? reading.evidence : "",
+            false
+          )
+        )
+        .pipe(Effect.catch(() => ports.unavailable));
+    }
+
+    if (next.notice === "clear" && paged(current.pages, key, incident)) {
+      current = {
+        ...current,
+        pages: [
+          ...current.pages,
+          { at: now, incident, key, kind: "clear" as const },
+        ],
+      };
+      yield* ports.save(current);
+      yield* ports
+        .page(clearPageText(key, incident, now))
+        .pipe(Effect.catch(() => ports.unavailable));
+    }
 
     if (next.notice === "none") {
       current = withAlarmState(current, key, next.state);
@@ -345,16 +488,6 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
       next.notice === "clear"
     );
 
-    if (
-      next.notice === "fire" &&
-      needsPage(key, next.state.context.severity, facts, now) &&
-      mayPage(current.pages, key, now)
-    ) {
-      current = { ...current, pages: [...current.pages, { at: now, key }] };
-      yield* ports.save(current);
-      yield* ports.page(text).pipe(Effect.catch(() => ports.unavailable));
-    }
-
     const notice = {
       incident: next.state.context.since,
       key,
@@ -364,9 +497,7 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
           ...alarmRecipients(
             settings,
             key,
-            (facts.instances ?? [])
-              .filter((instance) => instance.status === "down")
-              .map((instance) => instance.name)
+            exposedDownInstances(facts, now).map((instance) => instance.name)
           ),
           ...(reading.status === "firing" ? (reading.recipients ?? []) : []),
           ...instanceRecoveryRecipients(current, key, next.notice),
