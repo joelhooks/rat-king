@@ -1,0 +1,11 @@
+{
+  "name": "@rat-king/grokbox",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@effect/platform-node": "4.0.5",
+    "@hpke/core": "1.9.0",
+    "effect": "4.0.5"
+  }
+}

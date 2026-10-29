@@ -2,8 +2,12 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
-    maxWorkers: 4,
+    maxWorkers: 2,
     projects: [
+      {
+        extends: "tools/grokbox/vitest.config.ts",
+        test: { name: "grokbox" },
+      },
       {
         extends: "apps/ratking-sh/vitest.config.ts",
         test: { env: { ALCHEMY_TELEMETRY_DISABLED: "1" }, name: "ratking-sh" },
