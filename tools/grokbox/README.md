@@ -76,7 +76,7 @@ Run `bash tools/grokbox/ensure.sh` with `TS_VERSION` set to the approved exact s
 
 The script verifies published binary SHA-256 checksums, keeps daemon state under `~/.local/share/tailscale`, reuses a live daemon rather than launching a second one, and joins with the private file key when needed. It keeps the reusable key. It writes proxy exports to `~/.local/share/rat-king/env`, verifies the pinned checkout, installs dependencies once per SHA, and creates the shim wrapper if absent. It exits zero only when the configured mailbox version endpoint returns HTTP 200 through the proxy.
 
-An existing checkout at a different SHA is a refusal, not an automatic reset. A live pid without its socket is also a refusal. After a new daemon starts, rerun if its socket was not ready yet. The script reports the failed step; the host supervisor owns retries and the long-lived daemon.
+An existing checkout at a different SHA is a refusal, not an automatic reset. Runtime files live in `${XDG_RUNTIME_DIR:-/tmp}/tailscale-<uid>`, not the persistent state directory. The script checks the recorded process command line and scans for a daemon using the socket before removing stale runtime files. It refuses a live unresponsive daemon. A new daemon gets up to 30 seconds to answer status before join. The script reports the failed step; the host supervisor owns later retries and the long-lived daemon.
 
 ## MCP
 

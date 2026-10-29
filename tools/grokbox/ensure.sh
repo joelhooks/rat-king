@@ -14,11 +14,13 @@ trap 'printf "ensure: %s failed\n" "$step" >&2' ERR
 
 repo=${RATKING_REPO:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)}
 bin="$HOME/.local/tailscale/bin"
-run="$HOME/.local/run/tailscale"
+run="${XDG_RUNTIME_DIR:-/tmp}/tailscale-$(id -u)"
 state="$HOME/.local/share/tailscale"
 private="$HOME/.local/share/rat-king"
 sock="$run/tailscaled.sock"
+[[ ! -L "$run" ]] || fail 'runtime directory must not be a symlink'
 mkdir -p "$bin" "$run" "$state" "$private" "$HOME/.local/bin"
+[[ "$(stat -c '%u' "$run")" == "$(id -u)" ]] || fail 'runtime directory must be owned by this uid'
 chmod 700 "$run" "$state" "$private"
 
 step=binaries
@@ -47,19 +49,35 @@ fi
 
 step=daemon
 pid=''
+live=false
 if [[ -f "$run/tailscaled.pid" ]]; then read -r pid < "$run/tailscaled.pid"; fi
-if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
-  [[ -S "$sock" ]] || fail 'recorded daemon is alive but its socket is missing; operator recovery required'
-elif [[ -S "$sock" ]]; then
-  "$bin/tailscale" --socket="$sock" status --json >/dev/null || fail 'existing socket is not responsive; refusing a second daemon'
+if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null && [[ -r "/proc/$pid/cmdline" ]]; then
+  command_line=$(tr '\0' ' ' < "/proc/$pid/cmdline")
+  if [[ "$command_line" == *tailscaled* && "$command_line" == *"--socket=$sock"* ]]; then live=true; fi
+fi
+if pgrep -u "$(id -u)" -f "tailscaled.*--socket=$sock" >/dev/null; then live=true; fi
+
+status=''
+if [[ -S "$sock" ]] && status=$("$bin/tailscale" --socket="$sock" status --json 2>/dev/null); then
+  :
+elif [[ "$live" == true ]]; then
+  fail 'live daemon is unresponsive; refusing a second daemon'
 else
+  [[ ! -e "$sock" || -S "$sock" ]] || fail 'socket path is occupied by a non-socket file'
+  rm -f -- "$sock" "$run/tailscaled.pid"
   "$bin/tailscaled" --tun=userspace-networking --state="$state/tailscaled.state" --socket="$sock" --outbound-http-proxy-listen=127.0.0.1:1055 >>"$run/tailscaled.log" 2>&1 &
   pid=$!
   printf '%s\n' "$pid" > "$run/tailscaled.pid"
+  ready=false
+  for ((attempt=0; attempt<30; attempt++)); do
+    if status=$("$bin/tailscale" --socket="$sock" status --json 2>/dev/null); then ready=true; break; fi
+    kill -0 "$pid" 2>/dev/null || fail 'new daemon exited before readiness'
+    sleep 1
+  done
+  [[ "$ready" == true ]] || fail 'new daemon did not become ready within 30 seconds'
 fi
 
 step=join
-status=$("$bin/tailscale" --socket="$sock" status --json) || fail 'daemon is not ready; rerun ensure when its socket is ready'
 backend=$(printf '%s' "$status" | node -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{process.stdout.write(JSON.parse(s).BackendState??"")})')
 if [[ "$backend" != Running ]]; then
   key="$private/tailnet.key"

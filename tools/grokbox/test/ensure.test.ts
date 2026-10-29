@@ -29,7 +29,8 @@ it.prop(
     try {
       const bin = path.join(home, ".local/tailscale/bin");
       const fake = path.join(home, "fake");
-      const run = path.join(home, ".local/run/tailscale");
+      const runtime = path.join(home, "runtime");
+      const run = path.join(runtime, `tailscale-${process.getuid?.()}`);
       const privateDir = path.join(home, ".local/share/rat-king");
 
       for (const dir of [
@@ -80,6 +81,7 @@ it.prop(
         RATKING_SHA: sha,
         TS_HOSTNAME: "example-bot-host",
         TS_VERSION: "1.2.3",
+        XDG_RUNTIME_DIR: runtime,
       };
 
       const execute = () =>
