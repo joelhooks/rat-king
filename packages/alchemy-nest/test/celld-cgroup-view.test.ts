@@ -52,6 +52,55 @@ it.prop(
 );
 
 it.prop(
+  "a private cgroup view runs only celld's listener gate outside the sandbox",
+  { privateCgroupView: Arbitrary.schema(Schema.Boolean) },
+  ({ privateCgroupView }) => {
+    const configured = Schema.decodeSync(NodeSchema)({
+      ...host,
+      privateCgroupView,
+    });
+
+    const limits = {
+      celld: { restartGate: true },
+      seaweed: { restartGate: true },
+    };
+
+    const baseline = renderUnits(host, {}, limits);
+    const actual = renderUnits(configured, {}, limits);
+
+    for (const [index, unit] of actual.entries()) {
+      const isCelld = unit.path.endsWith("/rat-king-celld.service");
+      const lines = unit.text.split("\n");
+      const post = lines.filter((line) => line.startsWith("ExecStartPost="));
+
+      expect(lines.some((line) => line.startsWith("ExecStartPre=+"))).toBe(
+        false
+      );
+
+      if (isCelld) {
+        expect(post).toHaveLength(1);
+        expect(post[0]?.startsWith("ExecStartPost=+/usr/local/bin/node ")).toBe(
+          privateCgroupView
+        );
+      } else {
+        expect(post.some((line) => line.startsWith("ExecStartPost=+"))).toBe(
+          false
+        );
+      }
+
+      expect(
+        unit.text
+          .replace("ProtectControlGroups=private\n", "")
+          .replace(
+            "ExecStartPost=+/usr/local/bin/node ",
+            "ExecStartPost=/usr/local/bin/node "
+          )
+      ).toBe(baseline[index]?.text);
+    }
+  }
+);
+
+it.prop(
   "inventory memory caps reject disabled, unbounded or malformed quantities",
   {
     malformed: Arbitrary.schema(
