@@ -38,16 +38,17 @@ All bots sharing a uid and filesystem form **one trust domain**. Separate names 
    node tools/grokbox/seal.mjs <public-document.json> < <private-key-input-file>
    ```
 
-   On the host, save the received blob outside the checkout, then open it:
+   On the host, save the received blob outside the checkout. Open it into a new file in the 0700 runtime dir, then join with that file:
 
    ```sh
-   node tools/grokbox/open-sealed.mjs <new-key-file> <host-secret-name> < <sealed-blob.json>
-   tailscale up --auth-key=file:<new-key-file> --hostname=<operator-approved-host>
+   run=${XDG_RUNTIME_DIR:-/tmp}/tailscale-$(id -u)
+   node tools/grokbox/open-sealed.mjs "$run/join.key" <host-secret-name> < <sealed-blob.json>
+   bash tools/grokbox/ensure.sh --join "$run/join.key"
    ```
 
-   For persistent rejoin, write the reusable key to `~/.local/share/rat-king/tailnet.key` and keep it at mode 0600. Delete a one-time key only after the operator confirms it is no longer needed.
+   `ensure.sh --join` uses the key once with `tailscale up --auth-key=file:<f>` and deletes the file right after, whether the join succeeded or failed. No key is stored for later. Every bot on the host shares one uid, so a stored key would let any of them add nodes.
 
-   `RATKING_HOST_IDENTITY` may supply the secret name instead of the second argument. There is no host-specific default. The opener authenticates before creating a new 0600 file. It refuses existing paths, wrong-host blobs and tampering. Bootstrap HPKE uses P-256, HKDF-SHA256 and AES-128-GCM, with info `sh.mschf.ratking.grokbox.bootstrap.v1` and `kid` as AAD.
+   `RATKING_HOST_IDENTITY` may supply the secret name instead of the second argument. There is no host-specific default. The opener takes an explicit new path only. It authenticates before creating a new 0600 file, and refuses existing paths, wrong-host blobs and tampering. Bootstrap HPKE uses P-256, HKDF-SHA256 and AES-128-GCM, with info `sh.mschf.ratking.grokbox.bootstrap.v1` and `kid` as AAD.
 
 5. Run the single host-owned `tailscaled` process in userspace mode with `--tun=userspace-networking --outbound-http-proxy-listen=127.0.0.1:1055`. The host supervisor owns its lifecycle; do not start a second daemon. Give Node processes both settings:
 
@@ -74,7 +75,7 @@ All bots sharing a uid and filesystem form **one trust domain**. Separate names 
 
 Run `bash tools/grokbox/ensure.sh` with `TS_VERSION` set to the approved exact static binary version, `TS_HOSTNAME` set to the approved hostname, and `RATKING_SHA` set to the approved full commit. `RATKING_REPO` may identify a checkout elsewhere. There are no fleet-specific defaults.
 
-The script verifies published binary SHA-256 checksums, keeps daemon state under `~/.local/share/tailscale`, reuses a live daemon rather than launching a second one, and joins with the private file key when needed. It keeps the reusable key. It writes proxy exports to `~/.local/share/rat-king/env`, verifies the pinned checkout, installs dependencies once per SHA, and creates the shim wrapper if absent. It exits zero only when the configured mailbox version endpoint returns HTTP 200 through the proxy.
+The script verifies published binary SHA-256 checksums, keeps node state under `~/.local/share/tailscale` (0700), reuses a live daemon rather than launching a second one, and restarts the daemon from that state. The node comes back without a key. It never reads a stored key. If the state is missing or the node is logged out, it exits nonzero with `ensure: node state lost; ask the desk for a fresh one-time key sealed to the host key`, and never tries a key on its own. Then open the new key as in step 4 and run `ensure.sh --join <file>`. It writes proxy exports to `~/.local/share/rat-king/env`, verifies the pinned checkout, installs dependencies once per SHA, and creates the shim wrapper if absent. It exits zero only when the configured mailbox version endpoint returns HTTP 200 through the proxy.
 
 An existing checkout at a different SHA is a refusal, not an automatic reset. Runtime files live in `${XDG_RUNTIME_DIR:-/tmp}/tailscale-<uid>`, not the persistent state directory. The script checks the recorded process command line and scans for a daemon using the socket before removing stale runtime files. It refuses a live unresponsive daemon. A new daemon gets up to 30 seconds to answer status before join. The script reports the failed step; the host supervisor owns later retries and the long-lived daemon.
 

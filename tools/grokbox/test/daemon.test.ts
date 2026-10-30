@@ -52,7 +52,7 @@ describe.skipIf(process.platform !== "linux")(
 
           script(
             path.join(bin, "tailscale"),
-            'if [[ "$1" == version ]]; then echo 1.2.3; elif [[ "$*" == *status* ]]; then [[ -f "$HOME/ready" ]] || exit 1; echo \'{"BackendState":"NeedsLogin"}\'; else printf "%s\\n" "$@" >> "$HOME/up-log"; fi'
+            'if [[ "$1" == version ]]; then echo 1.2.3; elif [[ "$*" == *status* ]]; then [[ -f "$HOME/ready" ]] || exit 1; echo \'{"BackendState":"Running"}\'; else printf "%s\\n" "$@" >> "$HOME/up-log"; fi'
           );
           const daemon = path.join(bin, "tailscaled");
           writeFileSync(
@@ -65,9 +65,13 @@ describe.skipIf(process.platform !== "linux")(
           script(path.join(fake, "corepack"), "exit 99");
           script(path.join(fake, "curl"), "printf 200");
           writeFileSync(path.join(privateDir, `deps-${sha}`), "");
-          writeFileSync(path.join(privateDir, "tailnet.key"), "test-value", {
-            mode: 0o600,
+          mkdirSync(path.join(home, ".local/share/tailscale"), {
+            recursive: true,
           });
+          writeFileSync(
+            path.join(home, ".local/share/tailscale/tailscaled.state"),
+            "{}"
+          );
           writeFileSync(
             path.join(home, ".config/rat-king/pi.json"),
             JSON.stringify({ endpoint: "https://mailbox.example.invalid" })
@@ -126,9 +130,7 @@ describe.skipIf(process.platform !== "linux")(
             expect(readFileSync(path.join(home, "starts"), "utf-8")).toBe(
               "start\n"
             );
-            expect(readFileSync(path.join(home, "up-log"), "utf-8")).toContain(
-              `--auth-key=file:${privateDir}/tailnet.key`
-            );
+            expect(existsSync(path.join(home, "up-log"))).toBe(false);
             expect(existsSync(path.join(home, "ready"))).toBe(true);
           }
         } finally {
