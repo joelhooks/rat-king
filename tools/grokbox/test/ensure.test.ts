@@ -179,10 +179,13 @@ describe.skipIf(process.platform !== "linux")("Linux-only ensure.sh", () => {
     expect(out.upLog).toBe("");
   });
 
-  it("an unsafe one-time key mode refuses and the key is still deleted", () => {
+  it("a --join file that fails the checks is refused and left untouched", () => {
     const out = run(base, ["--join", "@KEY"], 0o644);
     expect(out.result.status).toBe(1);
-    expect(out.keyExists).toBe(false);
+    expect(out.keyExists).toBe(true);
+    expect(out.result.stderr).toContain(
+      "not deleting a file that failed the checks"
+    );
     expect(out.upLog).toBe("");
   });
 });

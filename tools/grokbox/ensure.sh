@@ -8,6 +8,7 @@ if [[ "$(uname -s)" != Linux ]]; then
 fi
 
 joinkey=''
+validated=''
 temp=''
 case "$#:${1:-}" in
   0:) ;;
@@ -16,10 +17,18 @@ case "$#:${1:-}" in
 esac
 # The one-time key never outlives this process, whether the join succeeded or not.
 finish() {
-  if [[ -n "$joinkey" ]]; then rm -f -- "$joinkey"; fi
+  if [[ -n "$joinkey" && -n "$validated" ]]; then rm -f -- "$joinkey"; fi
   if [[ -n "$temp" && -d "$temp" ]]; then rm -f -- "$temp/archive.tgz" "$temp/checksum" "$temp/tailscale" "$temp/tailscaled"; rmdir -- "$temp" || true; fi
 }
 trap finish EXIT
+if [[ -n "$joinkey" ]]; then
+  if [[ -f "$joinkey" && ! -L "$joinkey" && "$(stat -c '%a' "$joinkey")" == 600 && "$(stat -c '%u' "$joinkey")" == "$(id -u)" ]]; then
+    validated=1
+  else
+    printf 'ensure: refused %s; not deleting a file that failed the checks\n' "$joinkey" >&2
+    exit 1
+  fi
+fi
 
 step=configuration
 fail() { printf 'ensure: %s failed: %s\n' "$step" "$1" >&2; exit 1; }
@@ -103,8 +112,6 @@ step=join
 backend=$(printf '%s' "$status" | node -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{process.stdout.write(JSON.parse(s).BackendState??"")})')
 if [[ "$backend" != Running ]]; then
   [[ -n "$joinkey" ]] || lost
-  [[ -f "$joinkey" && ! -L "$joinkey" ]] || fail 'one-time key must be a regular file'
-  [[ "$(stat -c '%a' "$joinkey")" == 600 && "$(stat -c '%u' "$joinkey")" == "$(id -u)" ]] || fail 'one-time key must be owned by this uid with mode 0600'
   "$bin/tailscale" --socket="$sock" up --auth-key="file:$joinkey" --advertise-tags=tag:grokbot --hostname="$TS_HOSTNAME" --shields-up --accept-dns=false --timeout=60s
   rm -f -- "$joinkey"
 fi
