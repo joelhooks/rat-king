@@ -31,6 +31,9 @@ const limitLines = (
     : [["OOMPolicy", input.oomPolicy] satisfies readonly [string, string]]),
 ];
 
+const listenerGateEscapesPrivateCgroupView = (host: Node): "+" | "" =>
+  host.privateCgroupView === true ? "+" : "";
+
 const nodeLimitLines = (
   host: Node,
   input: ServiceLimits
@@ -206,7 +209,7 @@ export const nodeUnit = (
               ] satisfies readonly [string, string],
               [
                 "ExecStartPost",
-                `/usr/local/bin/node ${quote(input.restartGate.path)} ${quote(input.restartGate.address)} node${input.layout !== undefined && input.layout.instance !== "rat-king" ? ` ${quote(input.layout.instance)} ${input.layout.portBase} ${quote(input.layout.dataRoot)}` : ""}`,
+                `${listenerGateEscapesPrivateCgroupView(input.host)}/usr/local/bin/node ${quote(input.restartGate.path)} ${quote(input.restartGate.address)} node${input.layout !== undefined && input.layout.instance !== "rat-king" ? ` ${quote(input.layout.instance)} ${input.layout.portBase} ${quote(input.layout.dataRoot)}` : ""}`,
               ] satisfies readonly [string, string],
             ]),
         ...(input.storageDiagnostic === undefined
