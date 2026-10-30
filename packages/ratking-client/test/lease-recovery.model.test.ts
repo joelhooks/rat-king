@@ -25,13 +25,13 @@ import type { ConsumeOptions } from "../../mailbox-client/src/consume.ts";
 import { MailboxClientError } from "../../mailbox-client/src/error.ts";
 import { RatKingMailbox } from "../../mailbox-client/src/mailbox.ts";
 import type { AcquireRequest } from "../../mailbox-client/src/mailbox.ts";
-import { recoverHeld } from "../src/lease-recovery.ts";
+import { parkUntilClaimOrRetry, recoverHeld } from "../src/lease-recovery.ts";
 
 const did = "did:web:agent.example.invalid";
 
 const LEASE_MS = 300_000;
 
-const GRACE_MS = 30_000;
+const GRACE_MS = 45_000;
 
 const BASE = Date.parse("2026-01-01T00:00:00.000Z");
 
@@ -44,6 +44,7 @@ const Steps = Schema.Array(
     "renew-fail",
     "release-timeout",
     "foreign-acquire",
+    "takeover",
     "lost-reply",
     "claim",
     "restart",
@@ -122,7 +123,7 @@ const run = (world: World, mailbox: typeof RatKingMailbox.Service) =>
       world.parkedForeign = foreign;
       world.state = "send-only";
       world.gate = yield* Deferred.make<boolean>();
-      yield* Deferred.await(world.gate);
+      yield* parkUntilClaimOrRetry(world.gate);
       world.gate = undefined;
       world.parkedForeign = false;
     });
@@ -374,11 +375,7 @@ it.effect.prop(
           "parked although no live foreign session holds the name"
         ).toBeUndefined();
 
-        const eligible =
-          !world.down &&
-          !world.reading &&
-          !world.parkedForeign &&
-          (!liveHolder || own);
+        const eligible = !world.down && !world.reading && (!liveHolder || own);
 
         if (!eligible) {
           world.eligibleSince = undefined;
@@ -389,7 +386,7 @@ it.effect.prop(
         world.eligibleSince ??= now;
 
         const free =
-          liveHolder && own && holder !== undefined
+          holder !== undefined && (own || !liveHolder)
             ? Date.parse(holder.expiresAt)
             : now;
 
@@ -471,6 +468,32 @@ it.effect.prop(
                     leaseIdFor(world.generations)
                   );
                 }
+
+                break;
+              }
+
+              case "takeover": {
+                world.down = true;
+                yield* advance(LEASE_MS + 100_000);
+                world.down = false;
+
+                const later = yield* Clock.currentTimeMillis;
+
+                if (
+                  world.holder === undefined ||
+                  Date.parse(world.holder.expiresAt) <= later
+                ) {
+                  world.generations += 1;
+                  world.holder = issue(
+                    "foreign",
+                    world.generations,
+                    later,
+                    stamp(later + LEASE_MS),
+                    leaseIdFor(world.generations)
+                  );
+                }
+
+                yield* advance(60_000);
 
                 break;
               }

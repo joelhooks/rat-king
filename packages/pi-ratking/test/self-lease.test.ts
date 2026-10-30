@@ -149,7 +149,7 @@ const advance = <R = never>(
   );
 
 it.effect.prop(
-  "a reader whose own earlier lease still holds the name, or whose holder is unidentified, ends Live once the TTL passes, in a successor or not; a live foreign session still parks it send-only",
+  "a reader whose own earlier lease still holds the name, or whose holder is unidentified, ends Live once the TTL passes, in a successor or not; a live foreign session parks it send-only until its lease lapses, with no claim",
   [Arbitrary.schema(Case)],
   ([scenario]) =>
     Effect.gen(function* recovery() {
@@ -197,15 +197,25 @@ it.effect.prop(
         server.holder = scenario.holder;
         server.until = (yield* Clock.currentTimeMillis) + TTL_MS;
 
+        const foreignUntil = server.until;
+
         let parked = false;
 
+        let tookLive = false;
+
         const watch = Effect.gen(function* sample() {
+          const now = yield* Clock.currentTimeMillis;
+
           parked ||= yield* sendOnly;
+          tookLive ||=
+            scenario.holder === "foreign" &&
+            now < foreignUntil &&
+            (yield* live);
         });
 
         yield* advance(TTL_MS + 60_000, watch);
 
-        const settled = scenario.holder === "foreign" ? sendOnly : live;
+        const settled = live;
 
         for (let step = 0; step < 600 && !(yield* settled); step += 1) {
           yield* advance(1000, watch);
@@ -214,10 +224,12 @@ it.effect.prop(
         expect(yield* settled).toBe(true);
 
         if (scenario.holder === "foreign") {
-          expect(yield* live).toBe(false);
+          expect(parked).toBe(true);
         } else {
           expect(parked).toBe(false);
         }
+
+        expect(tookLive).toBe(false);
       }).pipe(
         Effect.provide(
           Layer.provideMerge(

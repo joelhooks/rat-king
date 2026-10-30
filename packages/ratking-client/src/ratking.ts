@@ -75,6 +75,7 @@ import { Issuer } from "./issuer.ts";
 import {
   readerRetryDelay,
   recoverHeld,
+  parkUntilClaimOrRetry,
   successionRetryDelay,
   UNIDENTIFIED,
 } from "./lease-recovery.ts";
@@ -2116,7 +2117,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       );
     });
 
-  const waitForClaim = (name: string) =>
+  const waitForClaim = (name: string, retrying = false) =>
     Effect.gen(function* awaitClaim() {
       const gate = yield* Deferred.make<boolean>();
 
@@ -2124,9 +2125,9 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       yield* Ref.set(claimGate, Option.some(gate));
       yield* setState(ReaderState.SendOnly({ name, reason: heldReason(name) }));
       yield* Effect.logWarning(
-        `Rat King ${name}: ${heldReason(name)}; use claim to retry once`
+        `Rat King ${name}: ${heldReason(name)}; use claim to retry now`
       );
-      yield* Deferred.await(gate);
+      yield* retrying ? parkUntilClaimOrRetry(gate) : Deferred.await(gate);
       yield* Ref.set(claimGate, Option.none());
     });
 
@@ -2148,7 +2149,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       const now = yield* Clock.currentTimeMillis;
 
       if (now - startedAt > SUCCESSION_WINDOW_MS) {
-        return yield* waitForClaim(name);
+        return yield* waitForClaim(name, true);
       }
 
       yield* setState(
@@ -2453,7 +2454,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                   park:
                     facts.successor === true
                       ? awaitSuccession(own.name, startedAt)
-                      : waitForClaim(own.name),
+                      : waitForClaim(own.name, true),
                   resolve: withClient(own, [], (client) =>
                     holderOf(client, own.did)
                   ).pipe(Effect.mapError(unreachable)),
