@@ -1,0 +1,19 @@
+{
+  "name": "@rat-king/ratking-mcp",
+  "version": "0.1.0",
+  "private": true,
+  "bin": {
+    "ratking-mcp": "./bin/ratking-mcp.ts"
+  },
+  "type": "module",
+  "dependencies": {
+    "@effect/platform-node": "4.0.5",
+    "@rat-king/ratking-client": "workspace:*",
+    "effect": "4.0.5"
+  },
+  "devDependencies": {
+    "@effect/vitest": "4.0.5",
+    "fast-check": "4.10.2",
+    "vitest": "5.0.5"
+  }
+}
