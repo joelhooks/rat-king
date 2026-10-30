@@ -7,6 +7,29 @@ if [[ "$(uname -s)" != Linux ]]; then
   exit 1
 fi
 
+joinkey=''
+validated=''
+temp=''
+case "$#:${1:-}" in
+  0:) ;;
+  2:--join) joinkey=$2 ;;
+  *) printf 'ensure: usage: ensure.sh [--join <one-time-key-file>]\n' >&2; exit 1 ;;
+esac
+# The one-time key never outlives this process, whether the join succeeded or not.
+finish() {
+  if [[ -n "$joinkey" && -n "$validated" ]]; then rm -f -- "$joinkey"; fi
+  if [[ -n "$temp" && -d "$temp" ]]; then rm -f -- "$temp/archive.tgz" "$temp/checksum" "$temp/tailscale" "$temp/tailscaled"; rmdir -- "$temp" || true; fi
+}
+trap finish EXIT
+if [[ -n "$joinkey" ]]; then
+  if [[ -f "$joinkey" && ! -L "$joinkey" && "$(stat -c '%a' "$joinkey")" == 600 && "$(stat -c '%u' "$joinkey")" == "$(id -u)" ]]; then
+    validated=1
+  else
+    printf 'ensure: refused %s; not deleting a file that failed the checks\n' "$joinkey" >&2
+    exit 1
+  fi
+fi
+
 step=configuration
 fail() { printf 'ensure: %s failed: %s\n' "$step" "$1" >&2; exit 1; }
 trap 'printf "ensure: %s failed\n" "$step" >&2' ERR
@@ -36,8 +59,6 @@ if [[ ! -x "$bin/tailscale" || ! -x "$bin/tailscaled" ]] || [[ "$("$bin/tailscal
     *) fail 'unsupported architecture' ;;
   esac
   temp=$(mktemp -d "$private/install.XXXXXXXX")
-  cleanup() { rm -f -- "$temp/archive.tgz" "$temp/checksum" "$temp/tailscale" "$temp/tailscaled"; rmdir -- "$temp"; }
-  trap cleanup EXIT
   archive="tailscale_${TS_VERSION}_${arch}"
   url="https://pkgs.tailscale.com/stable/$archive.tgz"
   curl --fail --silent --show-error --location "$url" --output "$temp/archive.tgz"
@@ -48,9 +69,13 @@ if [[ ! -x "$bin/tailscale" || ! -x "$bin/tailscaled" ]] || [[ "$("$bin/tailscal
   [[ "${actual%% *}" == "$expected" ]] || fail 'static binary checksum mismatch'
   tar -xzf "$temp/archive.tgz" -C "$temp" --strip-components=1 "$archive/tailscale" "$archive/tailscaled"
   install -m 755 "$temp/tailscale" "$temp/tailscaled" "$bin/"
-  cleanup
-  trap - EXIT
+  finish_temp=$temp
+  rm -f -- "$finish_temp/archive.tgz" "$finish_temp/checksum" "$finish_temp/tailscale" "$finish_temp/tailscaled"
+  rmdir -- "$finish_temp"
+  temp=''
 fi
+
+lost() { printf 'ensure: node state lost; ask the desk for a fresh one-time key sealed to the host key\n' >&2; exit 1; }
 
 step=daemon
 pid=''
@@ -69,6 +94,7 @@ elif [[ "$live" == true ]]; then
   fail 'live daemon is unresponsive; refusing a second daemon'
 else
   [[ ! -e "$sock" || -S "$sock" ]] || fail 'socket path is occupied by a non-socket file'
+  if [[ -z "$joinkey" && ! -s "$state/tailscaled.state" ]]; then lost; fi
   rm -f -- "$sock" "$run/tailscaled.pid"
   "$bin/tailscaled" --tun=userspace-networking --state="$state/tailscaled.state" --socket="$sock" --outbound-http-proxy-listen=127.0.0.1:1055 >>"$run/tailscaled.log" 2>&1 &
   pid=$!
@@ -85,10 +111,9 @@ fi
 step=join
 backend=$(printf '%s' "$status" | node -e 'let s="";process.stdin.on("data",c=>s+=c);process.stdin.on("end",()=>{process.stdout.write(JSON.parse(s).BackendState??"")})')
 if [[ "$backend" != Running ]]; then
-  key="$private/tailnet.key"
-  [[ -f "$key" && ! -L "$key" ]] || fail 'missing regular tailnet.key'
-  [[ "$(stat -c '%a' "$key")" == 600 && "$(stat -c '%u' "$key")" == "$(id -u)" ]] || fail 'tailnet.key must be owned by this uid with mode 0600'
-  "$bin/tailscale" --socket="$sock" up --auth-key="file:$key" --advertise-tags=tag:grokbot --hostname="$TS_HOSTNAME" --shields-up --accept-dns=false --timeout=60s
+  [[ -n "$joinkey" ]] || lost
+  "$bin/tailscale" --socket="$sock" up --auth-key="file:$joinkey" --advertise-tags=tag:grokbot --hostname="$TS_HOSTNAME" --shields-up --accept-dns=false --timeout=60s
+  rm -f -- "$joinkey"
 fi
 
 step=environment
