@@ -22,8 +22,8 @@ import {
 } from "../../packages/alchemy-nest/src/files.ts";
 import { HostShell, must } from "../../packages/alchemy-nest/src/host-shell.ts";
 import { Host } from "../../packages/alchemy-nest/src/host.ts";
-import { listenerProbe } from "../../packages/alchemy-nest/src/probes.ts";
-import { stopUnits } from "../../packages/alchemy-nest/src/startup-contract.ts";
+import { stopUnlessServing } from "../../packages/alchemy-nest/src/listener-cleanup.ts";
+import { listenerProbe } from "../../packages/alchemy-nest/src/listener-probe.ts";
 import { deleteDeclaredUnit } from "../../packages/alchemy-nest/src/systemd.ts";
 import { removeStoreSockets } from "../../packages/alchemy-nest/src/unit-cleanup.ts";
 import { withAlarmHeartbeat } from "./alarm-heartbeat.ts";
@@ -68,6 +68,30 @@ export type Action =
   | "destroy"
   | "teardown-probe"
   | "recover-delete";
+
+const mailboxUnits = [
+  "rat-king-celld.service",
+  "rat-king-seaweedfs.service",
+  "rat-king-claude-sidecar.service",
+];
+
+const celldServing = (
+  stage: Parameters<typeof workerUrl>[0],
+  node: Parameters<typeof workerUrl>[1]
+) =>
+  Effect.gen(function* probeVersion() {
+    const client = yield* HttpClient.HttpClient;
+
+    const response = yield* client.get(
+      `${workerUrl(stage, node)}/.well-known/rat-king/version`
+    );
+
+    return response.status === 200;
+  }).pipe(
+    Effect.timeout("10 seconds"),
+    Effect.provide(FetchHttpClient.layer),
+    Effect.orElseSucceed(() => false)
+  );
 
 const requireFleet = (stage: string) =>
   stage === "fleet"
@@ -334,17 +358,7 @@ export const run = (action: Action) =>
           sidecar
         ).pipe(
           Effect.onError(() =>
-            stopUnits(shell, [
-              "rat-king-celld.service",
-              "rat-king-seaweedfs.service",
-              "rat-king-claude-sidecar.service",
-            ]).pipe(
-              Effect.matchEffect({
-                onFailure: (error) =>
-                  Effect.logError("LISTENER_CLEANUP_FAILED", error),
-                onSuccess: () => Effect.void,
-              })
-            )
+            stopUnlessServing(shell, celldServing(stage, host), mailboxUnits)
           )
         )
       );
@@ -497,17 +511,7 @@ export const run = (action: Action) =>
 
     yield* listenerProbe(shell, workerIPv4(stage, host), true, sidecar).pipe(
       Effect.onError(() =>
-        stopUnits(shell, [
-          "rat-king-celld.service",
-          "rat-king-seaweedfs.service",
-          "rat-king-claude-sidecar.service",
-        ]).pipe(
-          Effect.matchEffect({
-            onFailure: (error) =>
-              Effect.logError("LISTENER_CLEANUP_FAILED", error),
-            onSuccess: () => Effect.void,
-          })
-        )
+        stopUnlessServing(shell, celldServing(stage, host), mailboxUnits)
       )
     );
     yield* Effect.log("MAILBOX_DEPLOYED");

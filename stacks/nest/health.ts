@@ -5,6 +5,11 @@ import { HostError } from "../../packages/alchemy-nest/src/host-shell.ts";
 import type { Interface } from "../../packages/alchemy-nest/src/host-shell.ts";
 import { declaredListeners } from "../../packages/alchemy-nest/src/listener-contract.ts";
 import {
+  foreignReport,
+  foreignRows,
+  inStack,
+} from "../../packages/alchemy-nest/src/listener-report.ts";
+import {
   readListeners,
   stackListeners,
 } from "../../packages/alchemy-nest/src/listeners.ts";
@@ -75,7 +80,13 @@ export const Facts = Schema.Struct({
     latencyMs: Schema.NullOr(Count),
     status: Schema.NullOr(Schema.Int),
   }),
-  listeners: Schema.NullOr(Schema.Struct({ count: Count, expected: Count })),
+  listeners: Schema.NullOr(
+    Schema.Struct({
+      count: Count,
+      expected: Count,
+      foreign: Schema.optionalKey(Schema.Array(Schema.String)),
+    })
+  ),
   observedAt: Instant,
   retention: Schema.NullOr(Run),
   services: Schema.Struct({
@@ -207,6 +218,8 @@ const storageFindings = (
   if (listeners !== null && listeners.count !== listeners.expected) {
     failures.push(`listeners ${listeners.count}/${listeners.expected}`);
   }
+
+  failures.push(...(listeners?.foreign ?? []));
 
   if (slots?.alarm === true) {
     failures.push("storage alarm");
@@ -554,8 +567,17 @@ export const collectHealth = Effect.fn("Nest.health")(function* collectHealth(
 
   const listeners = readListeners({ exec: (argv) => bounded(argv) }).pipe(
     Effect.map((evidence) => ({
-      count: stackListeners(evidence.text, evidence.unitCgroups).length,
+      count:
+        stackListeners(evidence.text, evidence.unitCgroups).length -
+        foreignRows(
+          stackListeners(evidence.text, evidence.unitCgroups),
+          inStack
+        ).length,
       expected: declaredListeners(input.publicIPv4, true, input.sidecar).length,
+      foreign: foreignReport(
+        stackListeners(evidence.text, evidence.unitCgroups),
+        inStack
+      ),
     }))
   );
 
