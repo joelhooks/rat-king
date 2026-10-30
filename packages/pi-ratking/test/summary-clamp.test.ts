@@ -79,6 +79,7 @@ const harness = () => {
         return delivered;
       }),
     retire: () => unavailable,
+    roles: unavailable,
     run: () => unavailable,
     send: (_to, body, options) =>
       Effect.sync(() => {

@@ -56,6 +56,14 @@ export const Entry = Schema.StructWithRest(
       Schema.isGreaterThanOrEqualTo(1),
       Schema.isLessThanOrEqualTo(9_007_199_254_740_991)
     ),
+    resolvedFrom: Schema.optionalKey(
+      Runtime.lexString({
+        description:
+          "The name the sender addressed, when it resolved to this recipient through a role or a successor.",
+        maxLength: 128,
+        type: "string",
+      })
+    ),
     senderDid: Runtime.lexString({ format: "did", type: "string" }).pipe(
       Schema.brand("Lexicon:did")
     ),

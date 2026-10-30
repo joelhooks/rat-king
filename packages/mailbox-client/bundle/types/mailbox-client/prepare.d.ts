@@ -281,6 +281,7 @@ export declare const prepare: (options: PrepareOptions) => Effect.Effect<{
         readonly cc?: string;
         readonly critical?: boolean;
         readonly fence?: LeaseFence;
+        readonly resolvedFrom?: string;
         readonly woke?: boolean;
         readonly wakeReason?: Send.InputValue["wakeReason"];
     } | undefined) => Effect.Effect<SendResult, never, never>;
@@ -305,6 +306,7 @@ export declare const prepare: (options: PrepareOptions) => Effect.Effect<{
         readonly version: number;
     }, fence?: LeaseFence | undefined, intent?: {
         readonly critical?: boolean;
+        readonly resolvedFrom?: string;
         readonly woke: boolean;
         readonly wakeReason: Send.InputValue["wakeReason"];
     } | undefined) => Effect.Effect<{

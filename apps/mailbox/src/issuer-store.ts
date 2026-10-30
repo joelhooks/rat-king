@@ -20,6 +20,12 @@ export interface RetiredName extends RetirementValue {
   readonly did: string;
 }
 
+export interface RoleEntry {
+  readonly name: string;
+  readonly target: string;
+  readonly role: string;
+}
+
 export interface IssuerTransaction {
   readonly enrolled: (host: string) => boolean;
   readonly enroll: (host: string) => void;
@@ -35,6 +41,10 @@ export interface IssuerTransaction {
   readonly unretire: (name: string, retiredAt?: number) => void;
   readonly retired: (after: string, limit: number) => readonly RetiredName[];
   readonly retiredEntry: (name: string) => RetiredName | undefined;
+  readonly role: (name: string) => RoleEntry | undefined;
+  readonly setRole: (entry: RoleEntry) => void;
+  readonly deleteRole: (name: string) => boolean;
+  readonly roles: (after: string, limit: number) => readonly RoleEntry[];
 }
 
 export class IssuerStore extends Context.Service<
@@ -59,6 +69,12 @@ const NameRow = Schema.Struct({
   parent: Schema.NullOr(Schema.fromJsonString(Parent)),
 });
 
+const RoleRow = Schema.Struct({
+  name: Schema.String,
+  role: Schema.String,
+  target: Schema.String,
+});
+
 const RetiredRow = Schema.Struct({
   by: Schema.String,
   did: Schema.String,
@@ -77,6 +93,9 @@ export const issuerStore = (sql: Sql) => {
   );
   sql.exec(
     "CREATE TABLE IF NOT EXISTS retired (name TEXT PRIMARY KEY, did TEXT NOT NULL, retired_at INTEGER NOT NULL, successor TEXT NOT NULL, by TEXT NOT NULL)"
+  );
+  sql.exec(
+    "CREATE TABLE IF NOT EXISTS roles (name TEXT PRIMARY KEY, target TEXT NOT NULL, role TEXT NOT NULL)"
   );
 
   const transaction: IssuerTransaction = {
@@ -110,6 +129,9 @@ export const issuerStore = (sql: Sql) => {
         ? undefined
         : Schema.decodeUnknownSync(BindingRow)(row);
     },
+    deleteRole: (name) =>
+      [...sql.exec("DELETE FROM roles WHERE name=? RETURNING name", name)]
+        .length > 0,
     enroll: (host) => {
       sql.exec("INSERT OR IGNORE INTO hosts (did) VALUES (?)", host);
     },
@@ -165,6 +187,28 @@ export const issuerStore = (sql: Sql) => {
           return successor === "" ? decoded : { ...decoded, successor };
         }
       ).at(0),
+    role: (name) =>
+      Array.from(
+        sql.exec("SELECT name,target,role FROM roles WHERE name=?", name),
+        (row) => Schema.decodeUnknownSync(RoleRow)(row)
+      ).at(0),
+    roles: (after, limit) =>
+      Array.from(
+        sql.exec(
+          "SELECT name,target,role FROM roles WHERE name > ? ORDER BY name ASC LIMIT ?",
+          after,
+          limit
+        ),
+        (row) => Schema.decodeUnknownSync(RoleRow)(row)
+      ),
+    setRole: (entry) => {
+      sql.exec(
+        "INSERT INTO roles (name,target,role) VALUES (?,?,?) ON CONFLICT(name) DO UPDATE SET target=excluded.target, role=excluded.role",
+        entry.name,
+        entry.target,
+        entry.role
+      );
+    },
     unretire: (name, retiredAt) => {
       if (retiredAt === undefined) {
         sql.exec("DELETE FROM retired WHERE name=?", name);

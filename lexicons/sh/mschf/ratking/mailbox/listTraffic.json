@@ -124,6 +124,11 @@
           "type": "string",
           "description": "UTF-8 body of a signed plaintext message, verified at admission. Absent for encrypted messages."
         },
+        "resolvedFrom": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "The name the sender addressed, when it resolved to this recipient through a role or a successor."
+        },
         "via": {
           "type": "ref",
           "ref": "#via",

@@ -1,0 +1,37 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.identity.listRoles",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Authenticated list of roles, ordered by name. The cursor is the last name of the previous page, exclusive.",
+      "parameters": {
+        "type": "params",
+        "properties": {
+          "cursor": { "type": "string", "maxLength": 128 },
+          "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 100 }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["roles"],
+          "properties": {
+            "roles": {
+              "type": "array",
+              "maxLength": 100,
+              "items": { "type": "ref", "ref": "sh.mschf.ratking.identity.setRole#role" }
+            },
+            "cursor": { "type": "string", "maxLength": 128 }
+          }
+        }
+      },
+      "errors": [
+        { "name": "InvalidRequest" },
+        { "name": "AuthRequired" },
+        { "name": "MailboxUnavailable" }
+      ]
+    }
+  }
+}

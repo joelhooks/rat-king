@@ -48,6 +48,8 @@ const clientCommands = [
   ["traffic", true],
   ["snapshot", true],
   ["resolve", true],
+  ["role", true],
+  ["role list", false],
 ] as const;
 
 const mailboxCommands = [
@@ -63,6 +65,12 @@ const mailboxCommands = [
   ["retire", true],
   ["unretire", true],
   ["retired", false],
+  ["successor", true],
+  ["successor set", true],
+  ["role", true],
+  ["role set", true],
+  ["role delete", true],
+  ["role list", false],
   ["lease", true],
   ["lease acquire", true],
   ["lease renew", true],

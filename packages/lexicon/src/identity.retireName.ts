@@ -17,6 +17,14 @@ export const Retirement = Schema.StructWithRest(
     successor: Schema.optionalKey(
       Runtime.lexString({ maxLength: 128, type: "string" })
     ),
+    updatedAt: Schema.optionalKey(
+      Runtime.lexString({
+        description:
+          "When identity.setSuccessor last re-pointed the retirement.",
+        format: "datetime",
+        type: "string",
+      }).pipe(Schema.brand("Lexicon:datetime"))
+    ),
   }),
   [Schema.Record(Schema.String, Runtime.Data)]
 );
@@ -54,6 +62,7 @@ export const KnownErrors = [
   "Forbidden",
   "NameReserved",
   "NameNotFound",
+  "LeaseLive",
   "MailboxUnavailable",
 ] as const;
 

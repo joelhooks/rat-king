@@ -49,6 +49,7 @@ export const harness = (
     readonly attentionLevers?: boolean;
     readonly ccDigestMinutes?: Readonly<Record<string, number>>;
     readonly reserved?: ReservedValue;
+    readonly roleAllowlist?: readonly string[];
     readonly turnRecords?: boolean;
     readonly relays?: readonly RelaySettingValue[];
     readonly documents?: readonly string[];

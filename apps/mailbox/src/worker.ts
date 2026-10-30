@@ -8,6 +8,8 @@ import * as DeskPending from "@rat-king/lexicon/desk.pending";
 import * as DeskReplyFor from "@rat-king/lexicon/desk.replyFor";
 import * as ListNames from "@rat-king/lexicon/identity.listNames";
 import * as ListRetired from "@rat-king/lexicon/identity.listRetired";
+import * as ListRoles from "@rat-king/lexicon/identity.listRoles";
+import * as ResolveRecipient from "@rat-king/lexicon/identity.resolveRecipient";
 /* oxlint-disable promise/prefer-await-to-callbacks, typescript/promise-function-async -- Effect adapters require lazy Promise thunks, not callback-style control flow. */
 import { MailboxServer, serverLayer } from "@rat-king/lexicon/mailbox-server";
 import * as Ack from "@rat-king/lexicon/mailbox.ack";
@@ -68,7 +70,14 @@ import {
 import { nameHealthRequest } from "./name-health-http.ts";
 import { nameHealth } from "./name-health.ts";
 import { replayLayer } from "./replay.ts";
-import { isoTime, markRetired, presenceOf, standingOf } from "./retirement.ts";
+import { confirmResolution } from "./resolution.ts";
+import {
+  isoTime,
+  markRetired,
+  presenceOf,
+  repointRetirement,
+  standingOf,
+} from "./retirement.ts";
 import { SenderFence } from "./sender-fence.ts";
 import {
   SocketAttachment,
@@ -638,7 +647,7 @@ export class Mailbox extends DurableObject<Bindings> {
       }).pipe(Effect.provide(this.store))
     );
   }
-  retire(json: string) {
+  retire(json: string, holderMayRetire: boolean) {
     const retirement = Schema.decodeSync(Schema.fromJsonString(Retirement))(
       json
     );
@@ -650,12 +659,34 @@ export class Mailbox extends DurableObject<Bindings> {
     return Effect.runPromise(
       MailboxStore.use((store) =>
         store.transaction((tx) => {
-          markRetired(tx, staticDocuments, retirement);
+          markRetired(tx, staticDocuments, retirement, holderMayRetire);
 
           return "retired";
         })
       ).pipe(
-        Effect.catchTag("XrpcFailure", (error) => Effect.succeed(error.error)),
+        Effect.catchTag("XrpcFailure", (error) =>
+          Effect.succeed(
+            error.error === "LeaseLive"
+              ? JSON.stringify({ error: error.error, message: error.message })
+              : error.error
+          )
+        ),
+        Effect.provide(this.store)
+      )
+    );
+  }
+  repoint(successor: string, updatedAt: number) {
+    return Effect.runPromise(
+      MailboxStore.use((store) =>
+        store.transaction((tx) =>
+          Schema.encodeSync(Schema.fromJsonString(Retirement))(
+            repointRetirement(tx, successor, updatedAt)
+          )
+        )
+      ).pipe(
+        Effect.catchTag("XrpcFailure", (error) =>
+          Effect.succeed(JSON.stringify({ error: error.error }))
+        ),
         Effect.provide(this.store)
       )
     );
@@ -1156,6 +1187,62 @@ const methods = new Set<string>(
   ].map((method) => method.nsid)
 );
 
+const issuerQuery = (
+  nsid: string,
+  entries: readonly (readonly [string, string])[]
+) => {
+  switch (nsid) {
+    case ListNames.Method.nsid: {
+      return ListNames.decodeParams(entries).pipe(
+        Effect.flatMap(Schema.encodeEffect(ListNames.Params))
+      );
+    }
+
+    case ListRetired.Method.nsid: {
+      return ListRetired.decodeParams(entries).pipe(
+        Effect.flatMap(Schema.encodeEffect(ListRetired.Params))
+      );
+    }
+
+    case ListRoles.Method.nsid: {
+      return ListRoles.decodeParams(entries).pipe(
+        Effect.flatMap(Schema.encodeEffect(ListRoles.Params))
+      );
+    }
+
+    default: {
+      return ResolveRecipient.decodeParams(entries).pipe(
+        Effect.flatMap(Schema.encodeEffect(ResolveRecipient.Params))
+      );
+    }
+  }
+};
+
+const confirmSend = (
+  env: Bindings,
+  sender: string,
+  resolvedFrom: string | undefined,
+  recipient: string
+) => {
+  const issuers = env.ISSUER;
+
+  if (resolvedFrom === undefined) {
+    return Effect.void;
+  }
+
+  return confirmResolution(
+    issuers === undefined
+      ? undefined
+      : (resolve) =>
+          Effect.tryPromise({
+            catch: () => failure("MailboxUnavailable", 503),
+            try: () => issuers.getByName(issuerInstance).route(resolve, sender),
+          }),
+    resolvedFrom,
+    recipient
+  );
+};
+
 const issuerRequest = Effect.fn("Issuer.request")(function* issuerRequest(
   request: Request,
   env: Bindings,
@@ -1170,22 +1257,21 @@ const issuerRequest = Effect.fn("Issuer.request")(function* issuerRequest(
 
   let transport: XrpcRequest;
 
-  if (nsid === ListNames.Method.nsid || nsid === ListRetired.Method.nsid) {
+  if (
+    nsid === ListNames.Method.nsid ||
+    nsid === ListRetired.Method.nsid ||
+    nsid === ListRoles.Method.nsid ||
+    nsid === ResolveRecipient.Method.nsid
+  ) {
     if (request.method !== "GET") {
       return yield* Effect.fail(failure("InvalidRequest"));
     }
 
     const entries = [...new URL(request.url).searchParams.entries()];
 
-    const params = yield* (
-      nsid === ListNames.Method.nsid
-        ? ListNames.decodeParams(entries).pipe(
-            Effect.flatMap(Schema.encodeEffect(ListNames.Params))
-          )
-        : ListRetired.decodeParams(entries).pipe(
-            Effect.flatMap(Schema.encodeEffect(ListRetired.Params))
-          )
-    ).pipe(Effect.mapError(() => failure("InvalidRequest")));
+    const params = yield* issuerQuery(nsid, entries).pipe(
+      Effect.mapError(() => failure("InvalidRequest"))
+    );
 
     transport = { input: undefined, method: "GET", nsid, params };
   } else {
@@ -1565,11 +1651,16 @@ const handleRequest = (
         try: () => request.json(),
       });
 
+      let resolvedFrom: string | undefined;
+
       const destination = Effect.gen(function* destination() {
         switch (nsid) {
           case Send.Method.nsid: {
-            return (yield* Schema.decodeUnknownEffect(Send.Input)(input))
-              .envelope.aad.recipientDid;
+            const sent = yield* Schema.decodeUnknownEffect(Send.Input)(input);
+
+            ({ resolvedFrom } = sent);
+
+            return sent.envelope.aad.recipientDid;
           }
 
           case Ack.Method.nsid: {
@@ -1610,6 +1701,8 @@ const handleRequest = (
       recipient = yield* destination.pipe(
         Effect.mapError(() => failure("InvalidRequest"))
       );
+
+      yield* confirmSend(env, issuer, resolvedFrom, recipient);
       transport = {
         input: yield* Schema.decodeUnknownEffect(
           Schema.toEncoded(Runtime.Data)

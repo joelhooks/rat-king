@@ -152,10 +152,46 @@ export const quietAttention = (): FakeAttention => ({
   },
 });
 
+export interface FakeIssuer {
+  readonly roles?: readonly Schema.Json[];
+  readonly routes?: ReadonlyMap<
+    string,
+    { readonly status: number; readonly body: Schema.Json }
+  >;
+}
+
+const ROLE_PAGE = 2;
+
+const unavailable = { body: { error: "MailboxUnavailable" }, status: 503 };
+
+const issuerAnswer = (issuer: FakeIssuer, nsid: string, url: URL) => {
+  if (nsid.endsWith(".resolveRecipient")) {
+    return (
+      issuer.routes?.get(url.searchParams.get("name") ?? "") ?? unavailable
+    );
+  }
+
+  if (!nsid.endsWith(".listRoles") || issuer.roles === undefined) {
+    return unavailable;
+  }
+
+  const start = Number(url.searchParams.get("cursor") ?? 0);
+  const roles = issuer.roles.slice(start, start + ROLE_PAGE);
+
+  return {
+    body:
+      start + ROLE_PAGE < issuer.roles.length
+        ? { cursor: String(start + ROLE_PAGE), roles }
+        : { roles },
+    status: 200,
+  };
+};
+
 export const fakeMailbox = (
   mails: readonly Mail[],
   held?: FakeLease,
-  attention: FakeAttention = quietAttention()
+  attention: FakeAttention = quietAttention(),
+  issuer: FakeIssuer = {}
 ) => {
   const calls: Call[] = [];
   const sends: Defs.EncryptedEnvelopeValue[] = [];
@@ -302,6 +338,10 @@ export const fakeMailbox = (
 
       if (nsid.endsWith(".send")) {
         return yield* admission(text, now);
+      }
+
+      if (nsid.includes(".identity.")) {
+        return issuerAnswer(issuer, nsid, url);
       }
 
       if (nsid.endsWith("attention.getPreferences")) {

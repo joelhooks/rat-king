@@ -105,6 +105,14 @@ const notDelivered = (failure: NotDelivered, ground: Ground): PromptInput =>
       tag: "Retired",
       why: failure.reason,
     })),
+    Match.when("RoleUnresolved", () => ({
+      accepted:
+        "a name whose role or successor chain ends at a live row within 3 hops",
+      debug: `ratking role list ${asFlag(ground)}`,
+      fix: `ratking send ${asFlag(ground)} --to <row> --summary "..." --body "..."`,
+      tag: "RoleUnresolved",
+      why: failure.reason,
+    })),
     Match.when("ReaderCannotRender", () => ({
       accepted:
         "a plain message, or a recipient whose reader renders this record type",

@@ -234,6 +234,15 @@ const retireCommand = async (
     return;
   }
 
+  if (caller !== recipientDid && live(model)) {
+    const refusal = Schema.decodeUnknownSync(ErrorBody)(response.body);
+
+    expect([response.status, refusal.error]).toEqual([409, "LeaseLive"]);
+    expect(refusal.message).toContain("held by a live reader");
+
+    return;
+  }
+
   const output = Schema.decodeUnknownSync(Schema.fromJsonString(Retire.Output))(
     response.body
   );
@@ -365,7 +374,7 @@ const command = (spec: SpecValue): fc.AsyncCommand<Model, Real> => ({
 });
 
 it.effect.prop(
-  "a retired name refuses admission naming its successor until its own lease acquisition or an authorized unretire clears it, and presence follows the lease",
+  "a retired name refuses admission naming its successor until its own lease acquisition or an authorized unretire clears it, only its own DID may retire it under a live lease, and presence follows the lease",
   [Arbitrary.array(Arbitrary.schema(Spec), { maxLength: 25 })],
   ([specs]) =>
     Effect.gen(function* lifecycle() {

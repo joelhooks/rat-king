@@ -327,6 +327,14 @@ export const Receipt = Schema.StructWithRest(
         Schema.brand("Lexicon:datetime")
       )
     ),
+    resolvedFrom: Schema.optionalKey(
+      Runtime.lexString({
+        description:
+          "The name the sender addressed when the issuer resolved it to this recipient through a role or a successor.",
+        maxLength: 128,
+        type: "string",
+      })
+    ),
     seq: Schema.Int.check(
       Schema.isGreaterThanOrEqualTo(1),
       Schema.isLessThanOrEqualTo(9_007_199_254_740_991)

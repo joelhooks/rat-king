@@ -40,6 +40,7 @@ export declare const openDelegated: (envelope: {
     readonly originalId?: string & import("effect/Brand").Brand<"Lexicon:tid">;
     readonly recipientDid: string & import("effect/Brand").Brand<"Lexicon:did">;
     readonly recordedAt?: string & import("effect/Brand").Brand<"Lexicon:datetime">;
+    readonly resolvedFrom?: string;
     readonly seq: number;
     readonly state: string;
     readonly via?: {

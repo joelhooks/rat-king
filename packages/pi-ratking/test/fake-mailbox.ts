@@ -41,7 +41,10 @@ export interface FakeMailbox {
   readonly seen: Deferred.Deferred<boolean>;
 }
 
-export const fakeMailbox = (mode: MailboxMode): FakeMailbox => {
+export const fakeMailbox = (
+  mode: MailboxMode,
+  roles?: readonly Schema.Json[]
+): FakeMailbox => {
   const requests: Defs.EncryptedEnvelopeValue[] = [];
   const calls: string[] = [];
   const seen = Deferred.makeUnsafe<boolean>();
@@ -81,6 +84,10 @@ export const fakeMailbox = (mode: MailboxMode): FakeMailbox => {
             },
           })
         );
+      }
+
+      if (nsid.endsWith(".listRoles") && roles !== undefined) {
+        return HttpClientResponse.fromWeb(request, Response.json({ roles }));
       }
 
       if (nsid.endsWith(".list")) {

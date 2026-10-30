@@ -1,0 +1,36 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.identity.setSuccessor",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Operator-only, idempotent re-pointing of an already retired name to a new successor. It never retires or unretires and takes no lease. retiredAt and by are kept; updatedAt records the change. The successor may be a bound name or a role. A successor whose chain leads back to the name is refused with RoleUnresolved.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["name", "successor"],
+          "properties": {
+            "name": { "type": "string", "maxLength": 128 },
+            "successor": { "type": "string", "maxLength": 128 }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": { "type": "ref", "ref": "sh.mschf.ratking.identity.retireName#retirement" }
+      },
+      "errors": [
+        { "name": "InvalidRequest" },
+        { "name": "InvalidName" },
+        { "name": "AuthRequired" },
+        { "name": "Forbidden" },
+        { "name": "NameReserved", "description": "The name is reserved or a role, so it is never retired." },
+        { "name": "NotRetired", "description": "The name is not retired; retire it with identity.retireName instead." },
+        { "name": "UnknownName", "description": "The successor is neither a bound name nor a role." },
+        { "name": "RoleUnresolved", "description": "The successor's chain cycles back to the name or needs more than 3 hops." },
+        { "name": "MailboxUnavailable" }
+      ]
+    }
+  }
+}

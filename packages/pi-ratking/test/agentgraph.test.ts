@@ -205,6 +205,7 @@ it.effect.prop(
         pending: unavailable,
         reply: () => unavailable,
         retire: () => unavailable,
+        roles: unavailable,
         run: () => unavailable,
         send: (to, body, options) =>
           Effect.gen(function* capture() {
