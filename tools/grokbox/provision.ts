@@ -67,5 +67,5 @@ export const provisioningLayer = issuerLayer.pipe(
   Layer.provideMerge(secretStoreLayer),
   Layer.provideMerge(directoryLayer),
   Layer.provideMerge(settingsLayer),
-  Layer.provide(Layer.merge(NodeServices.layer, FetchHttpClient.layer))
+  Layer.provideMerge(Layer.merge(NodeServices.layer, FetchHttpClient.layer))
 );
