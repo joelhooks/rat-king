@@ -1,4 +1,4 @@
-import { Clock, Data, Effect, Option, Random } from "effect";
+import { Clock, Data, Deferred, Effect, Option, Random } from "effect";
 
 export interface HeldHolder {
   readonly expiresAt: string;
@@ -74,3 +74,20 @@ export const recoverHeld = <E>(options: {
         options.retrying.pipe(Effect.andThen(Effect.sleep(delayMs))),
     });
   });
+
+export const PARKED_RETRY_MS = 30_000;
+
+export const PARKED_RETRY_JITTER_MS = 5000;
+
+export const parkedRetryDelay = Random.nextIntBetween(
+  0,
+  PARKED_RETRY_JITTER_MS
+).pipe(
+  Effect.map((jitter) => Math.min(LEASE_TTL_MS, PARKED_RETRY_MS + jitter))
+);
+
+export const parkUntilClaimOrRetry = (gate: Deferred.Deferred<boolean>) =>
+  Effect.raceFirst(
+    Deferred.await(gate),
+    parkedRetryDelay.pipe(Effect.flatMap(Effect.sleep))
+  );
