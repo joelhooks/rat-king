@@ -1,16 +1,8 @@
-import {
-  Crypto,
-  Effect,
-  FileSystem,
-  Predicate,
-  Redacted,
-  Schema,
-} from "effect";
+import { Crypto, Effect, FileSystem, Redacted, Schema } from "effect";
 import { HttpClient } from "effect/http";
 
 import { refuse } from "./files.ts";
 import type { Interface } from "./host-shell.ts";
-import { assessListeners, readListeners } from "./instance-listeners.ts";
 import type { InstanceLayout } from "./instance.ts";
 import { s3Script } from "./s3-script.ts";
 
@@ -325,30 +317,3 @@ export const bootstrapCheck = Effect.fn("Celld.bootstrapCheck")(function* check(
 
   return "bootstrap body matched";
 });
-
-export const listenerProbe = Effect.fn("Celld.listenerProbe")(
-  function* listeners(
-    shell: Interface,
-    publicIPv4: string,
-    nodeExpected: boolean,
-    sidecarExpected?: boolean,
-    layout?: InstanceLayout
-  ) {
-    const evidence = yield* readListeners(shell, layout);
-
-    const assessment = assessListeners(
-      evidence.text,
-      publicIPv4,
-      nodeExpected,
-      sidecarExpected === true,
-      evidence.unitCgroups,
-      layout
-    );
-
-    if (!Predicate.isTagged(assessment, "Ready")) {
-      return yield* refuse("Listener contract did not match");
-    }
-
-    return assessment.receipt;
-  }
-);

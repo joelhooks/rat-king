@@ -12,12 +12,12 @@ import { FetchHttpClient, HttpClient } from "effect/http";
 import { refuse } from "./files.ts";
 import { HostShell, must } from "./host-shell.ts";
 import { Host, layer as inventoryLayer } from "./host.ts";
+import { listenerProbe } from "./listener-probe.ts";
 import { liveStack } from "./live-stack.ts";
 import {
   bootstrapProbe,
   bootstrapCheck,
   diagnoseProbe,
-  listenerProbe,
   raceProbe,
 } from "./probes.ts";
 import { layer as sshLayer } from "./ssh.ts";
