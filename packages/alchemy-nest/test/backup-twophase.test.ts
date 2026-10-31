@@ -27,6 +27,9 @@ with tempfile.TemporaryDirectory() as tmp:
     volume.write_bytes(bytes(range(256)) * 800)
     os.utime(volume, ns=(10**18, 10**18))
     (data/'seaweedfs/fresh').write_bytes(b'fresh')
+    for other in [data/'celld/state.db', data/'seaweedfs/filer.log']:
+        other.write_bytes(bytes(range(256)) * 800)
+        os.utime(other, ns=(10**18, 10**18))
     def command(argv, **kwargs):
         if argv[0] == 'findmnt':
             return subprocess.CompletedProcess(argv, 0, str(backup)+'\n', '')
@@ -68,7 +71,15 @@ with tempfile.TemporaryDirectory() as tmp:
         raw = bytearray(staged_volume.read_bytes())
         raw[offset] ^= 0xFF
         staged_volume.write_bytes(bytes(raw))
-    if phase in ['tail', 'prefix-mismatch', 'shrunk', 'new-inode', 'recent', 'bad-manifest']:
+    if phase in ['tail', 'prefix-mismatch', 'shrunk', 'new-inode', 'recent', 'bad-manifest', 'non-volume-grow']:
+        if phase == 'non-volume-grow':
+            for other in [data/'celld/state.db', data/'seaweedfs/filer.log']:
+                staged = staging/other.relative_to(data)
+                raw = bytearray(staged.read_bytes())
+                raw[3] ^= 0xFF
+                staged.write_bytes(bytes(raw))
+                with other.open('ab') as stream:
+                    stream.write(b'grown' * 100)
         if phase == 'tail':
             tamper(0)
         if phase == 'prefix-mismatch':
@@ -135,6 +146,7 @@ const phases = [
   "new-inode",
   "recent",
   "bad-manifest",
+  "non-volume-grow",
 ] as const;
 
 it.effect.prop(

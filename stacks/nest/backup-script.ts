@@ -131,14 +131,16 @@ def staged_size(target):
     except FileNotFoundError:
         return None
     return info.st_size if stat.S_ISREG(info.st_mode) else None
-def file_plan(info, prior):
+def tail_eligible(key):
+    return key.startswith('seaweedfs/') and key.endswith(('.dat', '.idx'))
+def file_plan(info, prior, key):
     if prior is None:
         return 'full'
     inode, size, mtime, recent = prior
     if info.st_ino != inode or info.st_size < size:
         return 'full'
     if info.st_size > size:
-        return 'tail'
+        return 'tail' if tail_eligible(key) else 'full'
     return 'full' if recent or info.st_mtime_ns != mtime else 'skip'
 def append_tail(source, target, info, size):
     with source.open('rb') as src, target.open('r+b') as dst:
@@ -154,11 +156,11 @@ def append_tail(source, target, info, size):
     os.chmod(target, stat.S_IMODE(info.st_mode))
     os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
     return staged_size(target) == info.st_size
-def sync_file(source, target, prior):
+def sync_file(source, target, prior, key):
     info = source.lstat()
     if not stat.S_ISREG(info.st_mode):
         fail('Special data file refused')
-    plan = file_plan(info, prior)
+    plan = file_plan(info, prior, key)
     size = staged_size(target)
     if plan == 'skip' and size != info.st_size:
         plan = 'full'
@@ -170,7 +172,7 @@ def sync_file(source, target, prior):
 def sync_files(parent, copied, prefix, entries, known, record):
     for name in sorted(entries):
         try:
-            info = sync_file(parent / name, copied / name, known.get(prefix + name))
+            info = sync_file(parent / name, copied / name, known.get(prefix + name), prefix + name)
         except FileNotFoundError:
             if record is None:
                 raise
