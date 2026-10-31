@@ -1,18 +1,18 @@
 import type { BinaryProps } from "../../packages/alchemy-nest/src/release.ts";
 
 export const fleetCelldBuild = {
-  buildCommand: "cargo +1.98.1 build --release --locked",
-  package: "gzip -9 -n -c target/release/celld",
-  source: "celld ce4f4dc3514cd5cce209a77bebafdae8d69afdcc",
+  buildCommand: "cargo build --locked --release -p celld --bin celld",
+  package: "gzip -9 -n -k target/release/celld",
+  source: "celld a8e7e36a8b3bb7c7935006428270802be28b9d5d",
 };
 
 export const fleetCelldBinary = (home: string): Omit<BinaryProps, "path"> => ({
   asset: {
     format: "gz",
     memberSha256:
-      "f139756468bb3b6d842fb6f78606262012b8ad5f813a1a9606592f04853723b5",
+      "23593b97d82897bf671b635d2828baf7f4a40b7d3b402082b729655dd8b5c1f1",
   },
-  hostSource: `${home}/.local/share/rat-king/artifacts/celld-ce4f4dc-x86_64-unknown-linux-gnu.gz`,
-  sha256: "8f6fc721e9a9515c3b3667241e1bae9b26cfb78fcbdfa170a8ce1ea1331d5074",
-  size: 25_324_630,
+  hostSource: `${home}/.local/share/rat-king/artifacts/celld-a8e7e36-x86_64-unknown-linux-gnu.gz`,
+  sha256: "612b0f5e40369ab1e7a985ec9657f39525f66145eddc5fdefb6f6eb88499e21c",
+  size: 25_340_298,
 });
