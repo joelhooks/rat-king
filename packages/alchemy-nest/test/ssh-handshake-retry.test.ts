@@ -1,6 +1,6 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Layer, Result } from "effect";
+import { Arbitrary, Effect, FileSystem, Layer, Result, Schema } from "effect";
 import { expect } from "vitest";
 
 import { HostShell } from "../src/host-shell.ts";
@@ -78,18 +78,57 @@ const withFakeSsh = (refuse: number, stderr: string, late = false) =>
     return { calls, outcome };
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
 
-it("only a refusal before the command ran counts as retryable", () => {
-  expect(refusedBeforeCommand(255, `${refused}\n`)).toBe(true);
-  expect(
-    refusedBeforeCommand(
-      255,
-      "kex_exchange_identification: read: Connection reset by peer"
-    )
-  ).toBe(true);
-  expect(refusedBeforeCommand(1, refused)).toBe(false);
-  expect(refusedBeforeCommand(255, `${commandStarted}${refused}\n`)).toBe(
-    false
-  );
+const dropped = [
+  "kex_exchange_identification: read: Connection reset by peer",
+  "ssh_exchange_identification: Connection closed by remote host",
+  "Connection closed by UNKNOWN port 65535",
+  "Connection reset by 203.0.113.9 port 22",
+  "Connection timed out during banner exchange",
+  "channel 0: open failed: connect failed: Connection refused",
+  "stdio forwarding failed",
+];
+
+const droppedStderr = Arbitrary.schema(Schema.Literals(dropped));
+
+const noise = Arbitrary.schema(Schema.String);
+
+const unmarked = (text: string) => text.replaceAll(commandStarted, "");
+
+it.prop(
+  "every dropped-before-command stderr form is retried at exit 255",
+  { after: noise, before: noise, form: droppedStderr },
+  ({ after, before, form }) => {
+    expect(
+      refusedBeforeCommand(
+        255,
+        `${unmarked(before)}\n${form}\n${unmarked(after)}`
+      )
+    ).toBe(true);
+  }
+);
+
+it.prop(
+  "the started marker blocks a retry whatever the stderr says",
+  { after: noise, before: noise, form: droppedStderr },
+  ({ after, before, form }) => {
+    expect(
+      refusedBeforeCommand(255, `${before}${commandStarted}${form}\n${after}`)
+    ).toBe(false);
+  }
+);
+
+it.prop(
+  "only exit 255 is retried",
+  {
+    code: Arbitrary.schema(Schema.Int),
+    form: droppedStderr,
+  },
+  ({ code, form }) => {
+    expect(refusedBeforeCommand(code === 255 ? 1 : code, form)).toBe(false);
+  }
+);
+
+it("unrelated ssh stderr is not retried", () => {
   expect(
     refusedBeforeCommand(255, "Connection to host closed by remote host.")
   ).toBe(false);
@@ -132,13 +171,13 @@ it.live(
     })
 );
 
-it.live("a server that keeps refusing gives up after four retries", () =>
+it.live("a server that keeps refusing gives up after five retries", () =>
   Effect.gen(function* giveUp() {
     const { calls, outcome } = yield* withFakeSsh(9, refused);
 
     expect(Result.isFailure(outcome) && outcome.failure).toMatchObject({
       operation: "ssh",
     });
-    expect(calls).toBe(5);
+    expect(calls).toBe(6);
   })
 );

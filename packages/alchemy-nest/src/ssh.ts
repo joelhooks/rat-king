@@ -27,14 +27,22 @@ export const commandStarted = "\u001Ehostshell-started\n";
 
 const announceStart = "printf '\\036hostshell-started\\n' >&2; ";
 
+const droppedBeforeCommand = [
+  /\b(?:kex|ssh)_exchange_identification:/u,
+  /Connection (?:closed|reset) by .* port \d+/u,
+  /Connection timed out during banner exchange/u,
+  /channel \d+: open failed/u,
+  /stdio forwarding failed/u,
+];
+
 export const refusedBeforeCommand = (code: number, stderr: string) =>
   code === 255 &&
   !stderr.includes(commandStarted) &&
-  /\b(?:kex|ssh)_exchange_identification:/u.test(stderr);
+  droppedBeforeCommand.some((pattern) => pattern.test(stderr));
 
-export const handshakeRetry = Schedule.exponential("250 millis").pipe(
+export const handshakeRetry = Schedule.exponential("150 millis").pipe(
   Schedule.jittered,
-  Schedule.upTo({ times: 4 })
+  Schedule.upTo({ times: 5 })
 );
 
 export interface ShellTransport {
