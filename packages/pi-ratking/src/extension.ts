@@ -11,7 +11,7 @@ import { Transport } from "@rat-king/lexicon/transport";
 import { Identity, recordType, transportLayer } from "@rat-king/mailbox-client";
 import { ownerCid } from "@rat-king/mailbox-client/owner-queue";
 import { decodeAgentGraphBody } from "@rat-king/ratking-client/agentgraph";
-import { attend, formatReason } from "@rat-king/ratking-client/attend";
+import { attend, formatReason, Reasons } from "@rat-king/ratking-client/attend";
 import type { Verdict } from "@rat-king/ratking-client/attend";
 import { countFilterHit, filterHits } from "@rat-king/ratking-client/attention";
 import {
@@ -228,6 +228,24 @@ const wakeLine = (mail: PendingMail) =>
       `- ${value.from} · ${(value.summary ?? value.body).replaceAll(/\s+/gu, " ").slice(0, DIGEST_LINE_MAX)} · id ${mail.id}${value.replyTo === undefined ? "" : ` · reply to ${value.replyTo}`}`,
   });
 
+const filterRule = (mail: PendingMail) =>
+  mail.reason !== undefined &&
+  Reasons.$is("lever")(mail.reason) &&
+  mail.reason.rule !== undefined
+    ? [mail.reason.rule]
+    : [];
+
+const heldNote = (mails: readonly PendingMail[]) => {
+  const rules = [...new Set(mails.flatMap(filterRule))];
+
+  return [
+    ...(mails.some((mail) => filterRule(mail).length === 0) ? [COPY_NOTE] : []),
+    ...(rules.length === 0
+      ? []
+      : [`Held by your filter ${rules.join(", ")}, so this did not wake you.`]),
+  ];
+};
+
 export const renderDigest = (
   tool: string,
   mails: readonly PendingMail[],
@@ -242,7 +260,7 @@ export const renderDigest = (
         ...(mails.every((mail) => mail.wake === true)
           ? []
           : [
-              COPY_NOTE,
+              ...heldNote(mails),
               `To reply: ${tool}({ action: "reply", replyTo: "<id>", summary: "...", message: "..." })`,
             ]),
       ].join("\n")
@@ -512,6 +530,7 @@ type Services = Layer.Success<typeof appLayer>;
 type Runtime = ManagedRuntime.ManagedRuntime<Services, NotConfigured>;
 
 export interface SessionStart {
+  readonly digestTickMillis?: number;
   readonly isIdle?: () => boolean;
   readonly onStarted?: () => void;
   readonly turnCount?: number;
@@ -1063,6 +1082,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
     const acknowledgments = new Map<string, Effect.Effect<void>>();
     const controlRecords = new Map<string, string>();
     let isIdle = idle;
+    let digestTick = DIGEST_TICK;
     let flushing = false;
     const sweeps: (() => void)[] = [];
 
@@ -1250,16 +1270,33 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       }
     });
 
-    const digestTicks = Clock.currentTimeMillis.pipe(
-      Effect.flatMap((now) =>
-        Effect.sync(() => {
-          mail.tick(now);
-          wakes.tick(now);
-        })
-      ),
-      Effect.repeat(Schedule.spaced(DIGEST_TICK)),
-      Effect.forkScoped,
-      Effect.asVoid
+    const digestTicks = Effect.suspend(() =>
+      Clock.currentTimeMillis.pipe(
+        Effect.flatMap((now) =>
+          Effect.sync(() => {
+            mail.tick(now);
+            wakes.tick(now);
+          })
+        ),
+        Effect.repeat(Schedule.spaced(digestTick)),
+        Effect.forkScoped,
+        Effect.asVoid
+      )
+    );
+
+    const idleFlush = Effect.suspend(() =>
+      Effect.sleep(digestTick).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            if (isIdle()) {
+              mail.flushNext({ deliverAs: "followUp", triggerTurn: false });
+            }
+          })
+        ),
+        Effect.forever,
+        Effect.forkScoped,
+        Effect.asVoid
+      )
     );
 
     const rememberControl = (inbound: Parameters<Deliver>[0]) => {
@@ -2272,6 +2309,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
                   })
                 );
               yield* digestTicks;
+              yield* idleFlush;
               yield* RatKing.use((ratking) => ratking.run(facts, deliver));
             })
           ).pipe(
@@ -2312,6 +2350,10 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       retired = false;
       retirement = undefined;
       isIdle = start.isIdle ?? idle;
+      digestTick =
+        start.digestTickMillis === undefined
+          ? DIGEST_TICK
+          : Duration.millis(start.digestTickMillis);
 
       const stopped = stop();
 
