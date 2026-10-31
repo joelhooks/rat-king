@@ -2,6 +2,7 @@ import {
   Clock,
   DateTime,
   Effect,
+  Exit,
   FileSystem,
   Option,
   Result,
@@ -188,12 +189,40 @@ const observeReaders = (
         })
       );
 
-const probe = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(
-    Effect.timeout("30 seconds"),
-    Effect.map(Option.some),
-    Effect.catchCause(() => Effect.succeed(Option.none<A>()))
-  );
+const probe = <A, E, R>(name: string, effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* measure() {
+    const began = yield* Clock.currentTimeMillis;
+
+    const exit = yield* Effect.exit(
+      effect.pipe(Effect.timeoutOption("30 seconds"))
+    );
+
+    const value = Exit.isSuccess(exit) ? exit.value : Option.none<A>();
+
+    if (Option.isNone(value)) {
+      yield* Effect.logWarning(
+        JSON.stringify({
+          measurement: name,
+          ms: (yield* Clock.currentTimeMillis) - began,
+          reason: Exit.isSuccess(exit) ? "timeout" : "failed",
+        })
+      );
+    }
+
+    return value;
+  });
+
+const mailboxHealth = (
+  liveness: Option.Option<number>,
+  digest: HealthDigest | null
+) => Option.getOrNull(liveness) ?? digest?.health.status ?? null;
+
+const observeLiveness = (liveness?: Effect.Effect<number, FleetError>) =>
+  liveness === undefined
+    ? Effect.succeed({ measured: false, status: Option.none<number>() })
+    : probe("liveness", liveness).pipe(
+        Effect.map((status) => ({ measured: true, status }))
+      );
 
 const unavailable = (
   measured: Readonly<Record<string, Option.Option<unknown>>>
@@ -201,6 +230,11 @@ const unavailable = (
   Object.entries(measured)
     .filter(([, value]) => Option.isNone(value))
     .map(([name]) => name);
+
+const livenessGap = (liveness: {
+  readonly measured: boolean;
+  readonly status: Option.Option<number>;
+}) => (liveness.measured ? unavailable({ liveness: liveness.status }) : []);
 
 const backupWindowOf = (digest: HealthDigest | null) => {
   const run = digest?.backup.lastRun ?? null;
@@ -219,6 +253,9 @@ const backupWindowOf = (digest: HealthDigest | null) => {
 };
 
 const collectorPorts = { comms: collectComms, doctor: configDoctor };
+
+export const withLiveness = (liveness?: Effect.Effect<number, FleetError>) =>
+  liveness === undefined ? undefined : { ...collectorPorts, liveness };
 
 const stopMemoryOf = (health: HealthDigest | null) =>
   health?.stopMemory ?? null;
@@ -243,6 +280,7 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
     ports: {
       readonly comms: typeof collectComms;
       readonly doctor: typeof configDoctor;
+      readonly liveness?: Effect.Effect<number, FleetError>;
     } = collectorPorts
   ) {
     if (config.alarm === undefined || config.ship === undefined) {
@@ -279,7 +317,7 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
               Effect.option
             ),
         }),
-        deploy: probe(deploy),
+        deploy: probe("deploy", deploy),
         digest: fs
           .exists(`${config.runtime.RAT_KING_STATE_DIR}/health.jsonl`)
           .pipe(
@@ -299,10 +337,14 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
             }),
             Effect.option
           ),
-        doctor: probe(ports.doctor(config)),
-        health: probe(health),
+        doctor: probe("doctor", ports.doctor(config)),
+        health: probe("health", health),
         instances: collectInstanceHealth(config.alarm.instances),
-        maintenance: probe(readMaintenance(config.runtime.RAT_KING_STATE_DIR)),
+        liveness: observeLiveness(ports.liveness),
+        maintenance: probe(
+          "maintenance",
+          readMaintenance(config.runtime.RAT_KING_STATE_DIR)
+        ),
         quarantine: Effect.all(
           [
             ports.comms(config.comms.local, now - 3_600_000, true),
@@ -347,7 +389,7 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
           config.alarm.sessionsBackup === undefined
             ? Effect.succeed("off" as const)
             : collectSessionsBackup(config.alarm.sessionsBackup),
-        windows: probe(windows),
+        windows: probe("windows", windows),
       },
       { concurrency: "unbounded" }
     );
@@ -366,6 +408,7 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
         quarantine: observations.quarantine,
         receipts: observations.receipts,
       }),
+      ...livenessGap(observations.liveness),
       ...observations.readers.failed,
     ];
 
@@ -390,7 +433,7 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
           ? null
           : DateTime.toEpochMillis(healthy.services.celld.activeEnterTimestamp),
       failed,
-      health: healthy?.health.status ?? null,
+      health: mailboxHealth(observations.liveness.status, healthy),
       instances: observations.instances,
       maintenance: Option.getOrElse(observations.maintenance, () => []),
       measurementFailed: failed.length > 0,

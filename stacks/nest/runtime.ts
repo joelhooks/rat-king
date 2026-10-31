@@ -21,7 +21,10 @@ import {
   refuse,
 } from "../../packages/alchemy-nest/src/files.ts";
 import { HostShell, must } from "../../packages/alchemy-nest/src/host-shell.ts";
-import { Host } from "../../packages/alchemy-nest/src/host.ts";
+import {
+  Host,
+  layer as inventoryLayer,
+} from "../../packages/alchemy-nest/src/host.ts";
 import { stopUnlessServing } from "../../packages/alchemy-nest/src/listener-cleanup.ts";
 import { listenerProbe } from "../../packages/alchemy-nest/src/listener-probe.ts";
 import { deleteDeclaredUnit } from "../../packages/alchemy-nest/src/systemd.ts";
@@ -609,6 +612,29 @@ export const healthDigest = (previous?: string, config?: StageConfigValue) =>
       )
     )
   );
+
+export const mailboxStatus = Effect.gen(function* readMailboxStatus() {
+  const stage = yield* stageName;
+
+  const host = yield* (yield* Host).node(
+    yield* Config.String("RAT_KING_LIVE_NODE")
+  );
+
+  const response = yield* (yield* HttpClient.HttpClient).get(
+    `${workerUrl(stage, host)}/.well-known/celld/health`
+  );
+
+  return response.status;
+}).pipe(
+  Effect.timeout("10 seconds"),
+  Effect.provide(
+    Layer.mergeAll(
+      FetchHttpClient.layer,
+      inventoryLayer.pipe(Layer.provide(NodeServices.layer))
+    )
+  ),
+  Effect.mapError(() => new FleetError({ reason: "Mailbox health unreadable" }))
+);
 
 export const recoverStorage = Effect.gen(function* recoverNestStorage() {
   const stage = yield* stageName;
