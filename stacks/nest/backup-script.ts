@@ -17,6 +17,8 @@ SNAPSHOT_ROOTS = ['seaweedfs', 'celld']
 SNAPSHOT_ARCHIVE = 'mailbox.tar.gz'
 # Copy and verify both stopped data directories inside this budget, or fail and restart.
 SNAPSHOT_BUDGET = 45
+PRECOPY_BUDGET = 900
+SETTLE_NS = 2000000000
 FICLONE = 0x40049409
 LEGACY_STAGING_FILES = {'objects.tar', 'celld.tar', 'objects.tar.gz', 'celld.tar.gz', 'objects.tar.sqlite', 'objects.tar.sqlite-journal', 'objects.tar.data'}
 STAGING_FILES = LEGACY_STAGING_FILES | {'snapshot.json', 'archive.json', SNAPSHOT_ARCHIVE}
@@ -110,23 +112,72 @@ def clone_file(source, destination):
             pass
         # Stop-window CPU is capped; counts and bytes are the acceptance check, not a hash.
         cache_copy(src, dst, hashed=False)
-def copy_tree(source, target):
-    target.mkdir(mode=0o700)
+def copy_file(source, target, live):
+    info = source.lstat()
+    temporary = target.with_name(target.name + '.rk-tmp')
+    temporary.unlink(missing_ok=True)
+    try:
+        clone_file(source, temporary)
+        os.chmod(temporary, stat.S_IMODE(info.st_mode))
+        recent = live and time.time_ns() - info.st_mtime_ns < SETTLE_NS
+        os.utime(temporary, ns=(0, 0) if recent else (info.st_atime_ns, info.st_mtime_ns))
+        os.replace(temporary, target)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+def warm_copy(source, target):
+    try:
+        info = target.lstat()
+    except FileNotFoundError:
+        return False
+    current = source.lstat()
+    return stat.S_ISREG(info.st_mode) and info.st_size == current.st_size and info.st_mtime_ns == current.st_mtime_ns
+def prune_stale(source, target):
+    for directory, names, entries in os.walk(target, topdown=False):
+        parent = pathlib.Path(directory)
+        relative = parent.relative_to(target)
+        for name in names + entries:
+            path = parent / name
+            try:
+                wanted = (source / relative / name).lstat().st_mode
+            except FileNotFoundError:
+                wanted = None
+            kept = path.lstat().st_mode
+            if wanted is not None and not path.is_symlink() and stat.S_ISDIR(wanted) == stat.S_ISDIR(kept):
+                continue
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+def sync_tree(source, target, live=False):
+    no_links(source)
+    if target.is_symlink() or (target.exists() and not target.is_dir()):
+        fail('Staging tree is not a directory')
+    target.mkdir(mode=0o700, exist_ok=True)
+    prune_stale(source, target)
     directories = [(source, target)]
     for directory, names, entries in os.walk(source):
         parent = pathlib.Path(directory)
         copied = target / parent.relative_to(source)
         names.sort()
         for name in names:
-            (copied / name).mkdir(mode=0o700)
+            (copied / name).mkdir(mode=0o700, exist_ok=True)
             directories.append((parent / name, copied / name))
         for name in sorted(entries):
-            if not stat.S_ISREG((parent / name).lstat().st_mode):
-                fail('Special data file refused')
-            clone_file(parent / name, copied / name)
-            shutil.copystat(parent / name, copied / name, follow_symlinks=False)
+            try:
+                if not stat.S_ISREG((parent / name).lstat().st_mode):
+                    fail('Special data file refused')
+                if not warm_copy(parent / name, copied / name):
+                    copy_file(parent / name, copied / name, live)
+            except FileNotFoundError:
+                if not live:
+                    raise
     for original, copied in reversed(directories):
-        shutil.copystat(original, copied, follow_symlinks=False)
+        try:
+            shutil.copystat(original, copied, follow_symlinks=False)
+        except FileNotFoundError:
+            if not live:
+                raise
 def add_tree(archive, root, name):
     archive.add(root, arcname=name, recursive=False)
     for directory, names, entries in os.walk(root):
@@ -245,7 +296,7 @@ def secured_member(member, destination):
     safe = tarfile.data_filter(member, destination)
     return safe.replace(mode=0o700 if safe.isdir() else 0o600)
 no_links(data)
-if operation not in {'snapshot', 'arm', 'disarm', 'pack', 'cgroup', 'snapshot-restore', 'prune-staging', 'cleanup-staging', 'stage'}:
+if operation not in {'snapshot', 'precopy', 'arm', 'disarm', 'pack', 'cgroup', 'snapshot-restore', 'prune-staging', 'cleanup-staging', 'stage'}:
     mounted_share()
 if operation == 'preflight':
     trees = {name: tree_stats(data / name, key_names=name == 'celld') for name in SNAPSHOT_ROOTS}
@@ -281,6 +332,14 @@ elif operation == 'stage':
     staging = data / ('.mailbox-backup-' + uuid.uuid4().hex)
     staging.mkdir(mode=0o700)
     print(str(staging))
+elif operation == 'precopy':
+    signal.signal(signal.SIGALRM, lambda *_: fail('Warm-up copy exceeded its budget'))
+    signal.alarm(PRECOPY_BUDGET)
+    staging = staging_path()
+    for name in SNAPSHOT_ROOTS:
+        sync_tree(data / name, staging / name, live=True)
+    signal.alarm(0)
+    print('BACKUP_PRECOPY_DONE')
 elif operation == 'snapshot':
     signal.signal(signal.SIGALRM, lambda *_: fail('Snapshot copy exceeded its stop budget'))
     signal.alarm(SNAPSHOT_BUDGET)
@@ -289,7 +348,7 @@ elif operation == 'snapshot':
     trees = {}
     for name in SNAPSHOT_ROOTS:
         trees[name] = tree_stats(data / name, key_names=name == 'celld')
-        copy_tree(data / name, staging / name)
+        sync_tree(data / name, staging / name)
         if tree_stats(staging / name) != trees[name]:
             fail('Snapshot copy does not match source file count and bytes')
     write_synced(staging / 'snapshot.json', trees)
