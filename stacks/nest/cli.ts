@@ -208,13 +208,20 @@ const program = Effect.gen(function* launcher() {
               config,
               runtime.healthDigest(),
               marker,
-              windows
+              windows,
+              runtime.mailboxStatus
             );
           }
 
           return yield* Console.log(
             JSON.stringify(
-              yield* alarmCheck(config, runtime.healthDigest(), marker, windows)
+              yield* alarmCheck(
+                config,
+                runtime.healthDigest(),
+                marker,
+                windows,
+                runtime.mailboxStatus
+              )
             )
           );
         }

@@ -6,7 +6,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import type { SecretStore } from "../../apps/mailbox/cli/secrets.ts";
 import { secretStoreLayer } from "../../apps/mailbox/cli/secrets.ts";
-import { collectAlarmFacts } from "./alarm-collector.ts";
+import { collectAlarmFacts, withLiveness } from "./alarm-collector.ts";
 import type { AlarmHeartbeat } from "./alarm-heartbeat.ts";
 import {
   alarmFailure,
@@ -15,7 +15,11 @@ import {
   writeAlarmHeartbeat,
 } from "./alarm-heartbeat.ts";
 import { prepareAlarmDeliveries, sendAlarmDelivery } from "./alarm-mail.ts";
-import type { DeployMarker, WindowReceipt } from "./alarm-sources.ts";
+import type {
+  AlarmFacts,
+  DeployMarker,
+  WindowReceipt,
+} from "./alarm-sources.ts";
 import { observeAlarms } from "./alarm-sources.ts";
 import { collectWakeHealth } from "./alarm-wake-collector.ts";
 import { AlarmJournal, alarmCycle, emptyJournal } from "./alarm.ts";
@@ -84,12 +88,23 @@ export const readAlarmJournal = Effect.fn("Alarm.readJournal")(
   }
 );
 
+const reportMissing = (facts: typeof AlarmFacts.Type) =>
+  facts.failed === undefined || facts.failed.length === 0
+    ? Effect.void
+    : Console.log(
+        JSON.stringify({
+          health: facts.health,
+          measurementsUnavailable: facts.failed,
+        })
+      );
+
 export const alarmWorker = Effect.fn("Alarm.worker")(
   function* alarmWorker<E, R, E2, R2, E4 = never, R4 = never>(
     config: StageConfigValue,
     health: Effect.Effect<HealthDigest, E, R>,
     deploy: Effect.Effect<typeof DeployMarker.Type | null, E2, R2>,
-    windows?: Effect.Effect<readonly (typeof WindowReceipt.Type)[], E4, R4>
+    windows?: Effect.Effect<readonly (typeof WindowReceipt.Type)[], E4, R4>,
+    liveness?: Effect.Effect<number, FleetError>
   ) {
     if (
       config.alarm?.enabled !== true ||
@@ -166,8 +181,11 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           deploy,
           (readers) =>
             collectWakeHealth(config, readers, prior.sources.wakeTargets),
-          windows
+          windows,
+          withLiveness(liveness)
         );
+
+        yield* reportMissing(facts);
 
         const ports: AlarmPorts<
           | FileSystem.FileSystem
@@ -318,7 +336,8 @@ export const alarmCheck = Effect.fn("Alarm.check")(
     config: StageConfigValue,
     health: Effect.Effect<HealthDigest, E, R>,
     deploy: Effect.Effect<typeof DeployMarker.Type | null, E2, R2>,
-    windows?: Effect.Effect<readonly (typeof WindowReceipt.Type)[], E4, R4>
+    windows?: Effect.Effect<readonly (typeof WindowReceipt.Type)[], E4, R4>,
+    liveness?: Effect.Effect<number, FleetError>
   ) {
     const fs = yield* FileSystem.FileSystem;
 
@@ -332,7 +351,8 @@ export const alarmCheck = Effect.fn("Alarm.check")(
       deploy,
       (readers) =>
         collectWakeHealth(config, readers, prior.sources.wakeTargets),
-      windows
+      windows,
+      withLiveness(liveness)
     );
 
     return observeAlarms(prior.sources, facts, yield* Clock.currentTimeMillis)
