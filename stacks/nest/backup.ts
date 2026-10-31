@@ -35,6 +35,8 @@ export const stepLimit = Duration.seconds(60);
 
 export const snapshotLimit = Duration.seconds(60);
 
+export const precopyLimit = Duration.minutes(15);
+
 export const packLimit = Duration.minutes(45);
 
 export const transferLimit = (bytes: number) =>
@@ -145,6 +147,10 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
     ),
     (staging) =>
       Effect.gen(function* stagedBackup() {
+        yield* phase(
+          "precopy",
+          bounded("precopy", precopyLimit, script("precopy", staging))
+        );
         yield* checkpoint("ready");
         yield* memory("before-stop");
 

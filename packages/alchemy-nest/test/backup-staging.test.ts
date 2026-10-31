@@ -83,6 +83,7 @@ it.effect.prop(
   {
     fault: Arbitrary.schema(
       Schema.Literals([
+        "precopy",
         "arm",
         "snapshot",
         "pack",
@@ -195,6 +196,10 @@ it.effect.prop(
         );
       } else {
         expect(calls).not.toContain("retention");
+      }
+
+      if (["precopy", "arm"].includes(fault)) {
+        expect(calls.filter((call) => call.startsWith("stop "))).toEqual([]);
       }
 
       if (fault === "snapshot") {

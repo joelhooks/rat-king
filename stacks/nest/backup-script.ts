@@ -17,9 +17,12 @@ SNAPSHOT_ROOTS = ['seaweedfs', 'celld']
 SNAPSHOT_ARCHIVE = 'mailbox.tar.gz'
 # Copy and verify both stopped data directories inside this budget, or fail and restart.
 SNAPSHOT_BUDGET = 45
+PRECOPY_BUDGET = 900
+SETTLE_NS = 2000000000
+TAIL_CHECK = 65536
 FICLONE = 0x40049409
 LEGACY_STAGING_FILES = {'objects.tar', 'celld.tar', 'objects.tar.gz', 'celld.tar.gz', 'objects.tar.sqlite', 'objects.tar.sqlite-journal', 'objects.tar.data'}
-STAGING_FILES = LEGACY_STAGING_FILES | {'snapshot.json', 'archive.json', SNAPSHOT_ARCHIVE}
+STAGING_FILES = LEGACY_STAGING_FILES | {'snapshot.json', 'precopy.json', 'archive.json', SNAPSHOT_ARCHIVE}
 PUBLISH_FILES = {'objects.tar', 'celld.tar', 'objects.tar.gz', 'celld.tar.gz', SNAPSHOT_ARCHIVE, 'manifest.pending', 'manifest.json'}
 def regular(path):
     return path.is_file() and not path.is_symlink()
@@ -110,23 +113,122 @@ def clone_file(source, destination):
             pass
         # Stop-window CPU is capped; counts and bytes are the acceptance check, not a hash.
         cache_copy(src, dst, hashed=False)
-def copy_tree(source, target):
-    target.mkdir(mode=0o700)
+def copy_file(source, target):
+    info = source.lstat()
+    temporary = target.with_name(target.name + '.rk-tmp')
+    temporary.unlink(missing_ok=True)
+    try:
+        clone_file(source, temporary)
+        os.chmod(temporary, stat.S_IMODE(info.st_mode))
+        os.utime(temporary, ns=(info.st_atime_ns, info.st_mtime_ns))
+        os.replace(temporary, target)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+def staged_size(target):
+    try:
+        info = target.lstat()
+    except FileNotFoundError:
+        return None
+    return info.st_size if stat.S_ISREG(info.st_mode) else None
+def tail_eligible(key):
+    return key.startswith('seaweedfs/') and key.endswith(('.dat', '.idx'))
+def file_plan(info, prior, key):
+    if prior is None:
+        return 'full'
+    inode, size, mtime, recent = prior
+    if info.st_ino != inode or info.st_size < size:
+        return 'full'
+    if info.st_size > size:
+        return 'tail' if tail_eligible(key) else 'full'
+    return 'full' if recent or info.st_mtime_ns != mtime else 'skip'
+def append_tail(source, target, info, size):
+    with source.open('rb') as src, target.open('r+b') as dst:
+        check = min(TAIL_CHECK, size)
+        src.seek(size - check)
+        dst.seek(size - check)
+        if src.read(check) != dst.read(check):
+            return False
+        dst.truncate(size)
+        dst.seek(size)
+        src.seek(size)
+        cache_copy(src, dst, hashed=False)
+    os.chmod(target, stat.S_IMODE(info.st_mode))
+    os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
+    return staged_size(target) == info.st_size
+def sync_file(source, target, prior, key):
+    info = source.lstat()
+    if not stat.S_ISREG(info.st_mode):
+        fail('Special data file refused')
+    plan = file_plan(info, prior, key)
+    size = staged_size(target)
+    if plan == 'skip' and size != info.st_size:
+        plan = 'full'
+    if plan == 'tail' and (size is None or size < prior[1] or not append_tail(source, target, info, prior[1])):
+        plan = 'full'
+    if plan == 'full':
+        copy_file(source, target)
+    return info
+def sync_files(parent, copied, prefix, entries, known, record):
+    for name in sorted(entries):
+        try:
+            info = sync_file(parent / name, copied / name, known.get(prefix + name), prefix + name)
+        except FileNotFoundError:
+            if record is None:
+                raise
+            continue
+        if record is not None:
+            record[prefix + name] = [info.st_ino, info.st_size, info.st_mtime_ns, time.time_ns() - info.st_mtime_ns < SETTLE_NS]
+def load_precopy(staging):
+    path = staging / 'precopy.json'
+    if not regular(path):
+        return {}
+    try:
+        known = json.loads(path.read_text())
+    except ValueError:
+        return {}
+    valid = isinstance(known, dict) and all(isinstance(value, list) and len(value) == 4 and all(type(item) is int for item in value[:3]) and type(value[3]) is bool for value in known.values())
+    return known if valid else {}
+def prune_stale(source, target):
+    for directory, names, entries in os.walk(target, topdown=False):
+        parent = pathlib.Path(directory)
+        relative = parent.relative_to(target)
+        for name in names + entries:
+            path = parent / name
+            try:
+                wanted = (source / relative / name).lstat().st_mode
+            except FileNotFoundError:
+                wanted = None
+            kept = path.lstat().st_mode
+            if wanted is not None and not path.is_symlink() and stat.S_ISDIR(wanted) == stat.S_ISDIR(kept):
+                continue
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+def sync_tree(source, target, root, known, record=None):
+    no_links(source)
+    if target.is_symlink() or (target.exists() and not target.is_dir()):
+        fail('Staging tree is not a directory')
+    target.mkdir(mode=0o700, exist_ok=True)
+    prune_stale(source, target)
     directories = [(source, target)]
     for directory, names, entries in os.walk(source):
         parent = pathlib.Path(directory)
-        copied = target / parent.relative_to(source)
+        relative = parent.relative_to(source)
+        copied = target / relative
         names.sort()
         for name in names:
-            (copied / name).mkdir(mode=0o700)
+            (copied / name).mkdir(mode=0o700, exist_ok=True)
             directories.append((parent / name, copied / name))
-        for name in sorted(entries):
-            if not stat.S_ISREG((parent / name).lstat().st_mode):
-                fail('Special data file refused')
-            clone_file(parent / name, copied / name)
-            shutil.copystat(parent / name, copied / name, follow_symlinks=False)
+        prefix = root + '/' + ('' if str(relative) == '.' else relative.as_posix() + '/')
+        sync_files(parent, copied, prefix, entries, known, record)
     for original, copied in reversed(directories):
-        shutil.copystat(original, copied, follow_symlinks=False)
+        try:
+            shutil.copystat(original, copied, follow_symlinks=False)
+        except FileNotFoundError:
+            if record is None:
+                raise
 def add_tree(archive, root, name):
     archive.add(root, arcname=name, recursive=False)
     for directory, names, entries in os.walk(root):
@@ -245,7 +347,7 @@ def secured_member(member, destination):
     safe = tarfile.data_filter(member, destination)
     return safe.replace(mode=0o700 if safe.isdir() else 0o600)
 no_links(data)
-if operation not in {'snapshot', 'arm', 'disarm', 'pack', 'cgroup', 'snapshot-restore', 'prune-staging', 'cleanup-staging', 'stage'}:
+if operation not in {'snapshot', 'precopy', 'arm', 'disarm', 'pack', 'cgroup', 'snapshot-restore', 'prune-staging', 'cleanup-staging', 'stage'}:
     mounted_share()
 if operation == 'preflight':
     trees = {name: tree_stats(data / name, key_names=name == 'celld') for name in SNAPSHOT_ROOTS}
@@ -281,15 +383,26 @@ elif operation == 'stage':
     staging = data / ('.mailbox-backup-' + uuid.uuid4().hex)
     staging.mkdir(mode=0o700)
     print(str(staging))
+elif operation == 'precopy':
+    signal.signal(signal.SIGALRM, lambda *_: fail('Warm-up copy exceeded its budget'))
+    signal.alarm(PRECOPY_BUDGET)
+    staging = staging_path()
+    record = {}
+    for name in SNAPSHOT_ROOTS:
+        sync_tree(data / name, staging / name, name, {}, record)
+    write_synced(staging / 'precopy.json', record)
+    signal.alarm(0)
+    print('BACKUP_PRECOPY_DONE')
 elif operation == 'snapshot':
     signal.signal(signal.SIGALRM, lambda *_: fail('Snapshot copy exceeded its stop budget'))
     signal.alarm(SNAPSHOT_BUDGET)
     inactive(store_stopped=True)
     staging = staging_path()
     trees = {}
+    known = load_precopy(staging)
     for name in SNAPSHOT_ROOTS:
         trees[name] = tree_stats(data / name, key_names=name == 'celld')
-        copy_tree(data / name, staging / name)
+        sync_tree(data / name, staging / name, name, known)
         if tree_stats(staging / name) != trees[name]:
             fail('Snapshot copy does not match source file count and bytes')
     write_synced(staging / 'snapshot.json', trees)
