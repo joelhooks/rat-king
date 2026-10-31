@@ -1,9 +1,10 @@
 // @effect-diagnostics asyncFunction:off -- fast-check asyncModelRun drives Pi's Promise extension API.
+import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import type { Inbound } from "@rat-king/ratking-client/payload";
 import { RatKing } from "@rat-king/ratking-client/ratking";
 import type { Deliver } from "@rat-king/ratking-client/ratking";
-import { Arbitrary, Effect, Layer, Option, Schema } from "effect";
+import { Arbitrary, Effect, FileSystem, Layer, Option, Schema } from "effect";
 import { HttpClient } from "effect/http";
 import { asyncModelRun } from "fast-check";
 import type { AsyncCommand } from "fast-check";
@@ -24,6 +25,7 @@ interface Mailbox {
   readonly acks: Map<string, number>;
   readonly early: string[];
   readonly posted: string[];
+  readonly state: string;
   readonly unacked: Set<string>;
 }
 
@@ -31,7 +33,7 @@ interface Session {
   readonly entries: HistoryEntry[];
 }
 
-const Kind = Schema.Literals(["direct", "sentBy", "quiet", "cc"]);
+const Kind = Schema.Literals(["direct", "sentBy", "quiet", "cc", "ruled"]);
 
 const nothing = () => {};
 
@@ -71,6 +73,17 @@ const inboundOf = (kind: typeof Kind.Type, id: string): Inbound => {
     Object.assign(inbound, { copy: true, quiet: true });
   }
 
+  if (kind === "ruled") {
+    Object.assign(inbound, {
+      levers: {
+        enabled: true,
+        prefs: {
+          rules: [{ id: "hold", match: { from: "sender" }, route: "quiet" }],
+        },
+      },
+    });
+  }
+
   return inbound;
 };
 
@@ -82,7 +95,14 @@ const settle = async () => {
   await Effect.runPromise(Effect.yieldNow.pipe(Effect.repeat({ times: 3 })));
 };
 
+const tick = async () => {
+  // oxlint-disable-next-line effect-tests/no-manual-effect-runtime-in-tests -- waits out the shortened digest tick in real time.
+  await Effect.runPromise(Effect.sleep(80));
+  await settle();
+};
+
 const rig = (box: Mailbox, session: Session, drop: boolean) => {
+  const { state } = box;
   let streaming = false;
   let start: (facts: SessionStart) => Promise<void> = idleHandler;
   let stop: () => Promise<void> = idleHandler;
@@ -92,13 +112,14 @@ const rig = (box: Mailbox, session: Session, drop: boolean) => {
   let shown = ignoreShown;
   let deliver = ignoreDelivery;
   let replay: readonly string[] = [];
+  let turns = 0;
   const nextTurn: Message[] = [];
   const followUps: Message[] = [];
   const deferred: Message[] = [];
 
   const layer = Layer.merge(
     harness(
-      "state.invalid",
+      state,
       HttpClient.make(() => Effect.die("Unexpected HTTP"))
     ),
     Layer.mock(RatKing, {
@@ -150,6 +171,7 @@ const rig = (box: Mailbox, session: Session, drop: boolean) => {
       } else if (delivery?.triggerTurn === true && streaming) {
         followUps.push(message);
       } else if (delivery?.triggerTurn === true) {
+        turns += 1;
         streaming = true;
         loop(message);
       } else if (streaming) {
@@ -175,6 +197,7 @@ const rig = (box: Mailbox, session: Session, drop: boolean) => {
       tool: Effect.succeed("ratking"),
     })(pi);
     await startSession(start, {
+      digestTickMillis: 20,
       isIdle: () => !streaming,
       session: "quiet-ack",
       warn: nothing,
@@ -247,6 +270,7 @@ const rig = (box: Mailbox, session: Session, drop: boolean) => {
     stop: async () => {
       await stop();
     },
+    turns: () => turns,
   };
 };
 
@@ -312,11 +336,20 @@ interface Setup {
   real: Real;
 }
 
-const fresh = (): Setup => {
+const fresh = async (): Promise<Setup> => {
+  // oxlint-disable-next-line effect-tests/no-manual-effect-runtime-in-tests -- the rig is built inside a fast-check async model, outside an Effect test body.
+  const state = await Effect.runPromise(
+    FileSystem.FileSystem.pipe(
+      Effect.flatMap((fs) => fs.makeTempDirectory()),
+      Effect.provide(NodeServices.layer)
+    )
+  );
+
   const box: Mailbox = {
     acks: new Map(),
     early: [],
     posted: [],
+    state,
     unacked: new Set(),
   };
 
@@ -333,7 +366,7 @@ it.effect.prop(
   [Arbitrary.array(Arbitrary.schema(Step), { maxLength: 14, minLength: 1 })],
   ([steps]) =>
     Effect.promise(async () => {
-      const setup = fresh();
+      const setup = await fresh();
       await setup.real.current.ready();
       await asyncModelRun(() => setup, steps.map(command));
       await setup.real.current.finish();
@@ -345,7 +378,7 @@ it.effect(
   "a quiet send shown by display alone is acked, and a restart does not show it again",
   () =>
     Effect.promise(async () => {
-      const setup = fresh();
+      const setup = await fresh();
       await setup.real.current.ready();
       await setup.real.current.post("sentBy", "q1");
       expect(setup.real.box.acks.get("q1")).toBe(1);
@@ -364,7 +397,7 @@ it.effect(
   "a shown id that Pi redelivers is acked silently without a second display",
   () =>
     Effect.promise(async () => {
-      const setup = fresh();
+      const setup = await fresh();
       await setup.real.current.ready();
       await setup.real.current.post("sentBy", "q1");
       await setup.real.current.stop();
@@ -383,7 +416,7 @@ it.effect(
   "two copies held for the next turn show as one digest and both are acked",
   () =>
     Effect.promise(async () => {
-      const setup = fresh();
+      const setup = await fresh();
       await setup.real.current.ready();
       await setup.real.current.post("quiet", "a");
       await setup.real.current.post("quiet", "b");
@@ -400,7 +433,7 @@ it.effect(
   "a crash before the entry is appended leaves the mail unacked and shows it once after restart",
   () =>
     Effect.promise(async () => {
-      const setup = fresh();
+      const setup = await fresh();
       setup.real.current = rig(setup.real.box, setup.real.session, true);
       await setup.real.current.ready();
       await setup.real.current.post("sentBy", "q1");
@@ -412,5 +445,25 @@ it.effect(
       await setup.real.current.redeliver();
       expect(occurrences(setup.real.session, "q1")).toBe(1);
       expect(setup.real.box.acks.get("q1")).toBe(1);
+    })
+);
+
+it.effect(
+  "an idle Pi shows and acks mail its own quiet rule held within a tick, without a turn",
+  () =>
+    Effect.promise(async () => {
+      {
+        const setup = await fresh();
+        await setup.real.current.ready();
+        await setup.real.current.post("ruled", "r1");
+        await setup.real.current.post("ruled", "r2");
+        expect(setup.real.box.unacked.size).toBe(2);
+        await tick();
+        await tick();
+        expect(setup.real.box.unacked.size).toBe(0);
+        expect(setup.real.session.entries).toHaveLength(1);
+        expect(setup.real.box.early).toEqual([]);
+        expect(setup.real.current.turns()).toBe(0);
+      }
     })
 );
