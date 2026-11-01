@@ -1,4 +1,4 @@
-import { Clock, Duration, Effect, Schema } from "effect";
+import { Clock, Duration, Effect, Schedule, Schema } from "effect";
 import { transition } from "xstate";
 
 import { HostError, must } from "../../packages/alchemy-nest/src/host-shell.ts";
@@ -10,6 +10,7 @@ export const BackupInput = Schema.Struct({
   backupRoot: Schema.String,
   commit: Schema.String,
   dataRoot: Schema.String,
+  healthUrl: Schema.optional(Schema.String),
   home: Schema.String,
   version: Schema.String,
 });
@@ -38,6 +39,12 @@ export const snapshotLimit = Duration.seconds(60);
 export const precopyLimit = Duration.minutes(15);
 
 export const packLimit = Duration.minutes(45);
+
+export const settleDelay = Duration.seconds(60);
+
+export const healthWait = Duration.minutes(5);
+
+export const idleCommand = ["nice", "-n", "19", "ionice", "-c3"] as const;
 
 export const transferLimit = (bytes: number) =>
   Duration.seconds(120 + Math.ceil(bytes / 1_048_576));
@@ -95,9 +102,41 @@ export const startMailbox = (shell: Pick<Interface, "exec">) => {
   });
 };
 
+export const settle = (
+  shell: Pick<Interface, "exec">,
+  healthUrl: string | undefined,
+  delay: Duration.Duration = settleDelay
+) =>
+  phase(
+    "settle",
+    Effect.gen(function* settled() {
+      if (healthUrl !== undefined) {
+        yield* must(shell, [
+          "curl",
+          "--fail",
+          "--silent",
+          "--output",
+          "/dev/null",
+          "--max-time",
+          "10",
+          healthUrl,
+        ]).pipe(
+          Effect.retry({ schedule: Schedule.spaced(Duration.seconds(2)) }),
+          Effect.timeoutOrElse({
+            duration: healthWait,
+            orElse: () => Effect.logWarning("BACKUP_SETTLE_HEALTH_TIMEOUT"),
+          })
+        );
+      }
+
+      yield* Effect.sleep(delay);
+    })
+  );
+
 export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
   shell: Pick<Interface, "exec">,
-  input: typeof BackupInput.Type
+  input: typeof BackupInput.Type,
+  settleFor: Duration.Duration = settleDelay
 ) {
   let state = backupLifecycle.resolveState({ context: {}, value: "preflight" });
 
@@ -217,6 +256,8 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
           (yield* Clock.currentTimeMillis) - stoppedAt
         );
 
+        yield* settle(shell, input.healthUrl, settleFor);
+
         yield* Effect.gen(function* publish() {
           yield* memory("publish-start");
 
@@ -229,7 +270,12 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
           yield* bounded(
             "local-gzip-test",
             transfer,
-            must(shell, ["gzip", "-t", `${staging}/mailbox.tar.gz`])
+            must(shell, [
+              ...idleCommand,
+              "gzip",
+              "-t",
+              `${staging}/mailbox.tar.gz`,
+            ])
           );
 
           const pending = yield* Schema.decodeEffect(PendingName)(
@@ -275,6 +321,7 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
             "share-gzip-test",
             transfer,
             must(shell, [
+              ...idleCommand,
               "gzip",
               "-t",
               `${input.backupRoot}/${name}/mailbox.tar.gz`,

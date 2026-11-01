@@ -1,15 +1,6 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
-import {
-  Arbitrary,
-  Deferred,
-  Duration,
-  Effect,
-  Exit,
-  Fiber,
-  Schema,
-} from "effect";
-import { TestClock } from "effect/testing";
+import { Arbitrary, Effect, Exit, Fiber, Schema } from "effect";
 import { expect } from "vitest";
 
 import { backupRecoveryScript } from "../../../stacks/nest/backup-recovery.ts";
@@ -18,6 +9,7 @@ import { backupUnit } from "../../../stacks/nest/backup-units.ts";
 import { runBackup } from "../../../stacks/nest/backup.ts";
 import { localExec } from "../src/local-exec.ts";
 import { validateUnit } from "../src/systemd.ts";
+import { advanceClock } from "./backup-clock.ts";
 
 const backupRoot = "/mnt/example";
 
@@ -64,8 +56,8 @@ const labelOf = (argv: readonly string[]) => {
     return `${argv[2]} ${unitName(argv[3])}`;
   }
 
-  if (argv[0] === "gzip") {
-    return argv[2]?.startsWith(backupRoot) === true
+  if (argv[0] === "nice" && argv[4] === "-c3" && argv[5] === "gzip") {
+    return argv[7]?.startsWith(backupRoot) === true
       ? "gzip share"
       : "gzip local";
   }
@@ -131,7 +123,6 @@ it.effect.prop(
       const calls: string[] = [];
       const violations: string[] = [];
       let faulted = -1;
-      const hung = yield* Deferred.make<boolean>();
 
       const shell = {
         exec: Effect.fn("BackupModel.exec")(function* exec(
@@ -144,8 +135,6 @@ it.effect.prop(
             faulted = index;
 
             if (hang && bounded.has(label)) {
-              yield* Deferred.succeed(hung, true);
-
               return yield* Effect.never;
             }
 
@@ -171,11 +160,7 @@ it.effect.prop(
         })
       );
 
-      yield* Effect.raceFirst(
-        Deferred.await(hung),
-        Fiber.await(fiber).pipe(Effect.asVoid)
-      );
-      yield* TestClock.adjust(Duration.hours(3));
+      yield* Effect.forkChild(advanceClock);
 
       const exit = yield* Fiber.await(fiber);
 

@@ -446,6 +446,7 @@ export const nestStack = (restore?: RestoreRequest) =>
                 backupRoot,
                 commit,
                 dataRoot: node.dataRoot,
+                healthUrl: `${workerUrl}/.well-known/celld/health`,
                 home: node.home,
                 ready,
                 version,
