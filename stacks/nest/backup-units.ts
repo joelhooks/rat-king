@@ -11,6 +11,7 @@ export const backupUnit = (input: {
   readonly version: string;
   readonly commit: string;
   readonly ready: string;
+  readonly healthUrl?: string;
 }): UnitProps => ({
   enabled: false,
   home: input.home,
@@ -32,7 +33,7 @@ export const backupUnit = (input: {
         ["Type", "oneshot"],
         [
           "ExecStart",
-          `/usr/bin/flock --nonblock ${quote(`${input.home}/.config/rat-king/mailbox-backup.lock`)} /usr/local/bin/node ${quote(`${input.home}/.local/share/rat-king/bin/mailbox-backup.mjs`)} ${[input.dataRoot, input.backupRoot, input.version, input.commit, input.home].map(quote).join(" ")}`,
+          `/usr/bin/flock --nonblock ${quote(`${input.home}/.config/rat-king/mailbox-backup.lock`)} /usr/local/bin/node ${quote(`${input.home}/.local/share/rat-king/bin/mailbox-backup.mjs`)} ${[input.dataRoot, input.backupRoot, input.version, input.commit, input.home, ...(input.healthUrl === undefined ? [] : [input.healthUrl])].map(quote).join(" ")}`,
         ],
         [
           "ExecStopPost",

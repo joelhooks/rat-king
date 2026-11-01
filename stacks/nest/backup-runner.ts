@@ -5,12 +5,14 @@ import { localExec } from "../../packages/alchemy-nest/src/local-exec.ts";
 import { BackupInput, runBackup } from "./backup.ts";
 
 const program = Effect.gen(function* backupMain() {
-  const [dataRoot, backupRoot, version, commit, home] = process.argv.slice(2);
+  const [dataRoot, backupRoot, version, commit, home, healthUrl] =
+    process.argv.slice(2);
 
   const input = yield* Schema.decodeUnknownEffect(BackupInput)({
     backupRoot,
     commit,
     dataRoot,
+    healthUrl,
     home,
     version,
   });

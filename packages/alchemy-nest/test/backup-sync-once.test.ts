@@ -33,7 +33,7 @@ with tempfile.TemporaryDirectory() as tmp:
     def syncfs(fd):
         events.append('sync')
     os.fsync, os.syncfs, os.sync = fsync, syncfs, lambda: events.append('sync')
-    instrumented = script.replace('def copy_file(source, target):', 'def copy_file(source, target):\n    events.append("copy")').replace('def tree_stats(root, key_names=False):', 'def tree_stats(root, key_names=False):\n    events.append("stats")')
+    instrumented = script.replace('def copy_file(source, target):', 'def copy_file(source, target):\n    events.append("copy")').replace('def tree_stats(root, key_names=False, live=False):', 'def tree_stats(root, key_names=False, live=False):\n    events.append("stats")')
     def run(action, *args):
         sys.argv = ['backup', action, str(data), str(backup), *args]
         with contextlib.redirect_stdout(io.StringIO()):

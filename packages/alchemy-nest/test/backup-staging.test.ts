@@ -1,11 +1,25 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
-import { Arbitrary, Effect, Exit, FileSystem, Schema } from "effect";
+import { Arbitrary, Duration, Effect, Exit, FileSystem, Schema } from "effect";
 import { expect } from "vitest";
 
 import { backupScript } from "../../../stacks/nest/backup-script.ts";
 import { runBackup } from "../../../stacks/nest/backup.ts";
 import { localExec } from "../src/local-exec.ts";
+
+const labelOf = (argv: readonly string[]) => {
+  if (argv[0] === "systemctl") {
+    return `${argv[2]} ${argv[3]}`;
+  }
+
+  if (argv[0] === "nice") {
+    return argv[7]?.startsWith("/mnt/example/") === true
+      ? "share-gzip-test"
+      : "local-gzip-test";
+  }
+
+  return argv[3] ?? "unknown";
+};
 
 const fixture = String.raw`
 import contextlib, io, pathlib, sys, tempfile
@@ -119,13 +133,7 @@ it.effect.prop(
         exec: Effect.fn("StagingContract.exec")(function* exec(
           argv: readonly string[]
         ) {
-          const label =
-            argv[0] === "systemctl"
-              ? `${argv[2]} ${argv[3]}`
-              : (argv[3] ??
-                (argv[2]?.startsWith("/mnt/example/") === true
-                  ? "share-gzip-test"
-                  : "local-gzip-test"));
+          const label = labelOf(argv);
 
           calls.push(label);
 
@@ -165,13 +173,17 @@ it.effect.prop(
         }),
       };
 
-      const exit = yield* runBackup(shell, {
-        backupRoot: "/mnt/example",
-        commit: "invented",
-        dataRoot,
-        home: "/home/example",
-        version: "invented",
-      }).pipe(Effect.exit);
+      const exit = yield* runBackup(
+        shell,
+        {
+          backupRoot: "/mnt/example",
+          commit: "invented",
+          dataRoot,
+          home: "/home/example",
+          version: "invented",
+        },
+        Duration.zero
+      ).pipe(Effect.exit);
 
       expect(Exit.isFailure(exit)).toBe(fault !== "retention");
       expect(staging).not.toBe("");

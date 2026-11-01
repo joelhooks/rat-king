@@ -57,6 +57,13 @@ def write_synced(path, value):
         os.fsync(stream.fileno())
 def fail(reason):
     raise RuntimeError(reason)
+def idle_priority():
+    if hasattr(os, 'setpriority'):
+        os.setpriority(os.PRIO_PROCESS, 0, 19)
+    try:
+        subprocess.run(['ionice', '-c3', '-p', str(os.getpid())], capture_output=True)
+    except OSError:
+        pass
 def no_links(path):
     if not path.is_absolute() or '..' in path.parts:
         fail('Expected canonical absolute path')
@@ -92,7 +99,14 @@ def digest(path):
             h.update(chunk)
         stream.release()
     return h.hexdigest()
-def tree_stats(root, key_names=False):
+def entry_mode(path, tolerate):
+    try:
+        return path.lstat()
+    except FileNotFoundError:
+        if tolerate:
+            return None
+        raise
+def tree_stats(root, key_names=False, live=False):
     # Regular files and directories only. Counts are the copy's acceptance check.
     no_links(root)
     if not root.is_dir():
@@ -101,12 +115,15 @@ def tree_stats(root, key_names=False):
     for directory, names, entries in os.walk(root):
         for name in names + entries:
             path = pathlib.Path(directory) / name
-            mode = path.lstat().st_mode
+            info = entry_mode(path, live)
+            if info is None:
+                continue
+            mode = info.st_mode
             if stat.S_ISDIR(mode):
                 directories += 1
             elif stat.S_ISREG(mode):
                 files += 1
-                size += path.lstat().st_size
+                size += info.st_size
             else:
                 fail('Special data file refused')
             if key_names:
@@ -357,10 +374,12 @@ def secured_member(member, destination):
     safe = tarfile.data_filter(member, destination)
     return safe.replace(mode=0o700 if safe.isdir() else 0o600)
 no_links(data)
+if operation in {'pack', 'share-copy', 'share-verify'}:
+    idle_priority()
 if operation not in {'snapshot', 'precopy', 'arm', 'disarm', 'pack', 'cgroup', 'snapshot-restore', 'prune-staging', 'cleanup-staging', 'stage'}:
     mounted_share()
 if operation == 'preflight':
-    trees = {name: tree_stats(data / name, key_names=name == 'celld') for name in SNAPSHOT_ROOTS}
+    trees = {name: tree_stats(data / name, key_names=name == 'celld', live=True) for name in SNAPSHOT_ROOTS}
     # Staging copy plus compressed archive must fit before anything stops.
     if shutil.disk_usage(data).free < 3 * sum(tree['bytes'] for tree in trees.values()):
         fail('Not enough local space for a staging snapshot')
