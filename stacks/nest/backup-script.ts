@@ -40,6 +40,17 @@ def sync_directory(path):
         os.fsync(fd)
     finally:
         os.close(fd)
+def sync_staged(staging):
+    fd = os.open(staging, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        if hasattr(os, 'syncfs'):
+            os.syncfs(fd)
+        else:
+            os.sync()
+    finally:
+        os.close(fd)
+    for directory, names, entries in os.walk(staging):
+        sync_directory(pathlib.Path(directory))
 def write_synced(path, value):
     with path.open('x') as stream:
         json.dump(value, stream, sort_keys=True)
@@ -112,7 +123,7 @@ def clone_file(source, destination):
         except (ImportError, OSError):
             pass
         # Stop-window CPU is capped; counts and bytes are the acceptance check, not a hash.
-        cache_copy(src, dst, hashed=False)
+        cache_copy(src, dst, hashed=False, durable=False)
 def copy_file(source, target):
     info = source.lstat()
     temporary = target.with_name(target.name + '.rk-tmp')
@@ -152,7 +163,7 @@ def append_tail(source, target, info, size):
         dst.truncate(size)
         dst.seek(size)
         src.seek(size)
-        cache_copy(src, dst, hashed=False)
+        cache_copy(src, dst, hashed=False, durable=False)
     os.chmod(target, stat.S_IMODE(info.st_mode))
     os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
     return staged_size(target) == info.st_size
@@ -390,6 +401,7 @@ elif operation == 'precopy':
     record = {}
     for name in SNAPSHOT_ROOTS:
         sync_tree(data / name, staging / name, name, {}, record)
+    sync_staged(staging)
     write_synced(staging / 'precopy.json', record)
     signal.alarm(0)
     print('BACKUP_PRECOPY_DONE')
@@ -403,6 +415,8 @@ elif operation == 'snapshot':
     for name in SNAPSHOT_ROOTS:
         trees[name] = tree_stats(data / name, key_names=name == 'celld')
         sync_tree(data / name, staging / name, name, known)
+    sync_staged(staging)
+    for name in SNAPSHOT_ROOTS:
         if tree_stats(staging / name) != trees[name]:
             fail('Snapshot copy does not match source file count and bytes')
     write_synced(staging / 'snapshot.json', trees)
