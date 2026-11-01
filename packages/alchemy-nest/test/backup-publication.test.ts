@@ -62,7 +62,7 @@ with tempfile.TemporaryDirectory() as tmp:
     # A copy that drops bytes must fail the count/bytes check before any restart.
     if phase == 'short-copy':
         staging = pathlib.Path(run('stage'))
-        injected = script.replace('fcntl.ioctl(dst.fileno(), FICLONE, src.fileno())', 'raise OSError("reflink unavailable")').replace('        cache_copy(src, dst, hashed=False)\ndef copy_file', '        dst.write(src.read() + b"x")\ndef copy_file')
+        injected = script.replace('fcntl.ioctl(dst.fileno(), FICLONE, src.fileno())', 'raise OSError("reflink unavailable")').replace('        cache_copy(src, dst, hashed=False, durable=False)\ndef copy_file', '        dst.write(src.read() + b"x")\ndef copy_file')
         assert injected != script
         sys.argv = ['backup', 'snapshot', str(data), str(backup), str(staging)]
         try:

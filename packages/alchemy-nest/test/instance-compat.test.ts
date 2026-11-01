@@ -15,7 +15,7 @@ it.live("mailbox restart gate pins Effect 4.0.5 bundle bytes", () =>
     );
 
     expect(textDigest(bundle)).toBe(
-      "6a46e431f0657f845a614f38eb157805dcd05614abd8166250f7a003ffa76fdc"
+      "ca6d4c496631353ef6c7fd8711c5f2521e4e8367621b7acbfaf4aa0b2af63bf7"
     );
   }).pipe(Effect.provide(NodePath.layer))
 );

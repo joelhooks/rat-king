@@ -69,14 +69,17 @@ class CacheReader:
     def __getattr__(self, name):
         return getattr(self.stream, name)
 
-def cache_copy(source, destination, window=CACHE_WINDOW, hashed=True):
+def cache_copy(source, destination, window=CACHE_WINDOW, hashed=True, durable=True):
     import hashlib
     digest = hashlib.sha256() if hashed else None
     reader, writer = CacheReader(source), CacheWriter(destination, window, digest)
     for chunk in iter(lambda: reader.read(COPY_CHUNK), b''):
         writer.write(chunk)
     reader.release()
-    writer.sync()
+    if durable:
+        writer.sync()
+    else:
+        writer.flush()
     return digest.hexdigest() if hashed else None
 
 def cache_tar(path):
