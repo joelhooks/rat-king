@@ -49,8 +49,7 @@ def sync_staged(staging):
             os.sync()
     finally:
         os.close(fd)
-    for directory, names, entries in os.walk(staging):
-        sync_directory(pathlib.Path(directory))
+    sync_directory(staging)
 def write_synced(path, value):
     with path.open('x') as stream:
         json.dump(value, stream, sort_keys=True)

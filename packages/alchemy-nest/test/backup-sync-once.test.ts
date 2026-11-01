@@ -50,6 +50,7 @@ with tempfile.TemporaryDirectory() as tmp:
         run(action, str(staging))
         assert events.count('sync') == 1, events
         assert events.count('file') == 1, events
+        assert events.count('dir') == 1, events
         position = events.index('sync')
         assert 'copy' not in events[position:], events
         if action == 'snapshot':
