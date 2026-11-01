@@ -7,7 +7,7 @@ import { backupScript } from "../../../stacks/nest/backup-script.ts";
 import { localExec } from "../src/local-exec.ts";
 
 const fixture = String.raw`
-import base64, contextlib, io, json, os, pathlib, subprocess, sys, tempfile
+import base64, contextlib, io, json, os, pathlib, stat, subprocess, sys, tempfile
 script = sys.argv[1]
 payloads = [base64.b64decode(value) for value in json.loads(sys.argv[2])]
 events = []
@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory() as tmp:
     subprocess.run = command
     real_fsync = os.fsync
     def fsync(fd):
-        events.append('dir' if pathlib.Path('/proc/self/fd/' + str(fd)).resolve().is_dir() else 'file')
+        events.append('dir' if stat.S_ISDIR(os.fstat(fd).st_mode) else 'file')
         real_fsync(fd)
     def syncfs(fd):
         events.append('sync')
