@@ -1,6 +1,6 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
-import { attend } from "@rat-king/ratking-client/attend";
+import { attend, isOperator } from "@rat-king/ratking-client/attend";
 import {
   PayloadJson,
   RecordJson,
@@ -148,11 +148,13 @@ it.live.prop(
 
 const OwnerCase = Schema.Struct({
   encrypted: Schema.Boolean,
+  from: Schema.Literals(["sender", "operator", "joel"]),
   intent: Schema.Literals(["normal", "quiet", "cc", "delegated", "noReply"]),
+  trusted: Schema.Boolean,
 });
 
 it.live.prop(
-  "F2 and F5: an owner without router config projects authenticated forwards and preserves the original attention instead of forcing a wake",
+  "F2 and F5: only opted-in owners trust forwarded originals; other owners receive labelled unverified mail without operator privileges or forced attention",
   [Arbitrary.schema(OwnerCase)],
   ([sample]) =>
     Effect.gen(function* unconfiguredOwner() {
@@ -166,10 +168,16 @@ it.live.prop(
         Object.assign(delivery, { delegatedTo: "another-owner" });
       }
 
+      const claimed = {
+        ...original(),
+        did: didOf(sample.from),
+        from: sample.from,
+      };
+
       const record = {
         $type: "sh.mschf.ratking.thread#message",
         delivery,
-        original: relayRecord(original(), sample.encrypted),
+        original: relayRecord(claimed, sample.encrypted),
         router: "gateway",
         thread: root,
       };
@@ -182,7 +190,7 @@ it.live.prop(
             from: "gateway",
           },
         ],
-        {}
+        { threadRouting: sample.trusted ? [{ name: "gateway" }] : [] }
       );
 
       const message = result.received.find((entry) => "body" in entry);
@@ -193,26 +201,41 @@ it.live.prop(
         throw new Error("Forward was swallowed as a data record");
       }
 
-      expect(message.id).toBe(originalId);
-      expect(message.from).toBe("sender");
-      expect(message.threadRouter?.name).toBe("gateway");
+      expect(message.id).toBe(sample.trusted ? originalId : result.finalId);
+      expect(message.from).toBe(sample.trusted ? sample.from : "gateway");
+      expect(message.verified).toBe(sample.trusted);
+      expect(isOperator(message)).toBe(
+        sample.trusted && sample.from !== "sender"
+      );
+      expect(message.threadRouter?.name).toBe(
+        sample.trusted ? "gateway" : undefined
+      );
       expect(message.routedWake).toBeUndefined();
 
-      if (sample.intent !== "noReply") {
+      if (!sample.trusted) {
+        expect(renderInbound("ratking", message)).toContain(
+          "Unverified forward from gateway; claimed original sender:"
+        );
+      } else if (sample.intent !== "noReply") {
         expect(renderInbound("ratking", message)).toContain("via gateway");
       }
 
       const expected = attend(
-        { ...original(), ...delivery },
-        {},
+        {
+          ...claimed,
+          ...delivery,
+          from: sample.trusted ? sample.from : "gateway",
+          verified: sample.trusted,
+        },
+        { enabled: true },
         0,
         undefined,
         Option.none()
       );
 
-      expect(attend(message, {}, 0, undefined, Option.none())).toEqual(
-        expected
-      );
+      expect(
+        attend(message, { enabled: true }, 0, undefined, Option.none())
+      ).toEqual(expected);
       expect(result.outgoing).toHaveLength(0);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 12 }, timeout: 30_000 }

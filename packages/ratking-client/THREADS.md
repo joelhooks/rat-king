@@ -12,7 +12,9 @@ Add this fragment to Pi configuration. Names here are examples.
 }
 ```
 
-Install the updated client on the router and each owner. Owners do not need router configuration to project a forward. A forward names its router, and the receiver requires that name to match the verified signed sender. Earlier forwards without the router field use their verified sender as the router. The original sender and ID are the router's signed attestation, not an independently verified original signature.
+Install the updated client on the router and each owner. Before enabling, each owner must opt into its router in its own Pi configuration with `{"threadRouting": [{"name": "router"}]}`. An existing configured relay also grants trust when its `name` matches the signed forwarder and its `to` matches this owner. An unrelated relay or router entry grants no trust.
+
+A forward names its router, and the receiver requires that name to match the verified signed sender. Earlier forwards without the router field use their verified sender as the router. The original sender and ID are a trusted router's signed attestation, not an independently verified original signature.
 
 Use `threads: ["work-one"]` instead of `senders` to opt in explicit thread keys or conversation roots. When both lists exist, either match opts in an event. Empty lists match nothing. Omitting both lists enables all verified senders for that router. Omitting `threadRouting`, or setting it to `[]`, preserves existing relay behavior.
 
@@ -43,7 +45,7 @@ ratking({
 });
 ```
 
-A first reply to a forwarded message claims its thread automatically. A reply to a configured router's own dispatch also claims that dispatch's root. The reply goes to the original sender, not the router. Other owners remain subscribed. If the reply succeeds but its automatic claim fails, the result reports partial success and directs the owner to retry only `thread-claim`.
+A first reply to a trusted forwarded message claims its thread automatically. A reply to a configured router's own dispatch also claims that dispatch's root. The reply goes to the original sender, not the router. Other owners remain subscribed. If the reply succeeds but its automatic claim fails, the result reports partial success and directs the owner to retry only `thread-claim`.
 
 Release removes only the caller. Hand-back removes the caller and alerts the router through its existing relay or direct path, even if the caller had not claimed yet. Escalation uses that path without removing any owner. Controls are accepted only from verified names, and they cannot release another sender's ownership.
 
@@ -67,7 +69,9 @@ An exact name matches only itself. A trailing slash matches that namespace prefi
 
 ## Delivery and recovery
 
-Every owner receives a signed forward carrying the original sender, ID, thread and delivery intent. The receiver projects it into normal mail and remembers the original reply target. Normal attention decides whether it wakes: quiet, cc and delegated originals keep their intent at the owner. Non-pass-through messages keep their original intent on the fallback path too. The router keeps a quiet copy only after successful pass-through, including for asks. That quiet copy bypasses attention rules that would otherwise wake the router. Failed eligible forwards retain a fail-open wake marker when the existing fallback path delivers them directly.
+Every owner receives a signed forward carrying the original sender, ID, thread and delivery intent. When the router is trusted, the receiver projects it into normal mail and remembers the original reply target. Normal attention decides whether it wakes: quiet, cc and delegated originals keep their intent at the owner. Non-pass-through messages keep their original intent on the fallback path too. The router keeps a quiet copy only after successful pass-through, including for asks. That quiet copy bypasses attention rules that would otherwise wake the router. Failed eligible forwards retain a fail-open wake marker when the existing fallback path delivers them directly.
+
+Without owner-side trust, the receiver delivers an unverified forward instead of silently refusing an already-admitted envelope. Its body explicitly names the signed forwarder and the claimed original sender, including for notice mail. The displayed sender, DID and reply target belong to the actual forwarder; attested original labels, delegation provenance, recipient lists, reply references and thread roots are not inherited. It cannot gain operator attention or auto-claim the original thread. Quiet, cc and delegated delivery intent still applies. The router does not treat this visible downgraded delivery as a forwarding failure. Owners must configure trust before relying on original-sender replies and ownership automation.
 
 Encrypted events are resealed separately for every owner. An owner cannot project an encrypted-original forward from a plaintext envelope. A missing name, changed owner identity, retired recipient, unsupported advertised render capability or failed send returns the original event to the router's existing relay or direct path. Forwarding continues to the other owners after a failure. Already accepted owners may therefore receive an event before the router wakes. Mailbox redelivery can retry forwards; this is not an exactly-once protocol.
 
@@ -86,4 +90,4 @@ A successful send means mailbox admission, not proof that the owner's model proc
 
 Remove the router's `threadRouting` entry to restore its previous relay or direct delivery behavior. Owner state can stay on disk for a later opt-in. No server migration or live configuration change is part of this patch.
 
-Tests cover the lifecycle as a fast-check command model, claim authorization and audit logging, signed-envelope replies and controls, both legacy relay endpoints, fallback attention, unconfigured owners, and partial or retired-recipient failures. Regression properties for F1, F2 and F5 also fail against the original implementation at `5ac1ed1`. They run on the existing Node filesystem and crypto adapters without platform-specific commands. macOS execution still belongs to the desk's platform gate.
+Tests cover the lifecycle as a fast-check command model, claim authorization and audit logging, signed-envelope replies and controls, both legacy relay endpoints, fallback attention, trusted and unconfigured owners, and partial or retired-recipient failures. Trust properties generate signed forwarders and arbitrary original records, including forged verified operator identities, and check explicit router trust, matching legacy relays and wrong-target relays. The original F1 and F2 regressions fail against `5ac1ed1`; the operator-spoof regression fails against `c1faab5`. They run on the existing Node filesystem and crypto adapters without platform-specific commands. macOS execution still belongs to the desk's platform gate.

@@ -2297,7 +2297,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         message: base.message,
         record: (inbound) =>
           Effect.gen(function* projectThreadRecord() {
-            const projected = projectThread(own.name, inbound);
+            const projected = projectThread(settings, own.name, inbound);
 
             if (Option.isNone(projected)) {
               yield* base.record(inbound);

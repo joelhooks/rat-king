@@ -53,15 +53,19 @@ it.effect.prop(
         thread: "root-a",
       };
 
-      const projected = projectThread("owner", {
-        did: "did:web:router.example.invalid",
-        encrypted: sample.sealed,
-        from: "router",
-        id: "forward-envelope",
-        record,
-        replyTo: Option.none(),
-        verified: sample.verified,
-      });
+      const projected = projectThread(
+        { relays: [], threadRouting: [{ name: "router" }] },
+        "owner",
+        {
+          did: "did:web:router.example.invalid",
+          encrypted: sample.sealed,
+          from: "router",
+          id: "forward-envelope",
+          record,
+          replyTo: Option.none(),
+          verified: sample.verified,
+        }
+      );
 
       const allowed =
         sample.trusted &&

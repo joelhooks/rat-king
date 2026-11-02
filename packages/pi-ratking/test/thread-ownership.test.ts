@@ -25,9 +25,8 @@ it.live.prop(
     Arbitrary.schema(Schema.Boolean),
     Arbitrary.schema(Schema.NonEmptyString),
     Arbitrary.schema(Schema.Literals(["forward", "relay", "dispatch"])),
-    Arbitrary.schema(Schema.Boolean),
   ],
-  ([encrypt, body, source, configured]) =>
+  ([encrypt, body, source]) =>
     Effect.gen(function* ownershipProof() {
       const fs = yield* FileSystem.FileSystem;
       const state = yield* fs.makeTempDirectoryScoped();
@@ -56,34 +55,38 @@ it.live.prop(
           () => Effect.void
         );
 
-        const projected = projectThread("tester", {
-          did: router.did,
-          encrypted: encrypt,
-          from: "router",
-          id: "forward-envelope",
-          record: {
-            $type: "sh.mschf.ratking.thread#message",
-            original: {
-              $type: "sh.mschf.ratking.relay#message",
-              body,
-              cc: false,
-              did: sender.did,
-              encrypted: encrypt,
-              from: "sender",
-              id: originalId,
-              kind: "ask",
-              label: null,
-              replyTo: root,
-              summary: null,
-              to: "router",
-              verified: true,
+        const projected = projectThread(
+          { relays: [], threadRouting: [{ name: "router" }] },
+          "tester",
+          {
+            did: router.did,
+            encrypted: encrypt,
+            from: "router",
+            id: "forward-envelope",
+            record: {
+              $type: "sh.mschf.ratking.thread#message",
+              original: {
+                $type: "sh.mschf.ratking.relay#message",
+                body,
+                cc: false,
+                did: sender.did,
+                encrypted: encrypt,
+                from: "sender",
+                id: originalId,
+                kind: "ask",
+                label: null,
+                replyTo: root,
+                summary: null,
+                to: "router",
+                verified: true,
+              },
+              reply: { parent: root, root },
+              thread: root,
             },
-            reply: { parent: root, root },
-            thread: root,
-          },
-          replyTo: Option.none(),
-          verified: true,
-        });
+            replyTo: Option.none(),
+            verified: true,
+          }
+        );
 
         if (Option.isNone(projected)) {
           throw new Error("Expected trusted forward");
@@ -202,8 +205,7 @@ it.live.prop(
         Effect.provide(
           harness(state, mailbox.http, [], {
             encrypt,
-            threadRouting:
-              source === "forward" && !configured ? [] : [{ name: "router" }],
+            threadRouting: [{ name: "router" }],
           }).pipe(Layer.provideMerge(threadsLayer))
         )
       );

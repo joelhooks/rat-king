@@ -3,7 +3,7 @@ import { createMachine, transition } from "xstate";
 
 import { ReplyRef } from "../../mailbox-client/src/payload.ts";
 import { isOperator } from "./attend.ts";
-import type { ThreadRoutingValue } from "./config.ts";
+import type { SettingsValue, ThreadRoutingValue } from "./config.ts";
 import { AgentName, Did } from "./name.ts";
 import type { Inbound, InboundRecord } from "./payload.ts";
 import { RelayRecord, relayedInbound, relayRecord } from "./relay.ts";
@@ -30,7 +30,9 @@ export const ThreadDelivery = Schema.Struct({
   quiet: Schema.optionalKey(Schema.Boolean),
 });
 
-const deliveryOf = (inbound: Inbound): typeof ThreadDelivery.Type => {
+const deliveryOf = (
+  inbound: typeof ThreadDelivery.Type
+): typeof ThreadDelivery.Type => {
   const delivery: typeof ThreadDelivery.Type = {};
 
   for (const key of [
@@ -121,7 +123,33 @@ const direct = (config: ThreadRoutingValue, inbound: Inbound) =>
     `${Option.getOrElse(inbound.summary, () => "")}\n${inbound.body}`
   );
 
+type ThreadTrust = Pick<SettingsValue, "relays" | "threadRouting">;
+
+const trustsRouter = (settings: ThreadTrust, ownName: string, from: string) =>
+  settings.threadRouting?.some((router) => router.name === from) === true ||
+  settings.relays.some((relay) => relay.to === ownName && relay.name === from);
+
+const untrustedForward = (
+  ownName: string,
+  inbound: InboundRecord,
+  record: typeof ThreadForward.Type
+): Inbound => ({
+  ...deliveryOf(record.delivery ?? {}),
+  body: `Unverified forward from ${inbound.from}; claimed original sender: ${record.original.from}.\n\n${record.original.body}`,
+  cc: record.original.cc,
+  did: inbound.did,
+  from: inbound.from,
+  id: inbound.id,
+  kind: record.original.kind,
+  label: Option.none(),
+  replyTo: Option.none(),
+  summary: Option.none(),
+  to: ownName,
+  verified: false,
+});
+
 export const projectThread = (
+  settings: ThreadTrust,
   ownName: string,
   inbound: InboundRecord
 ): Option.Option<Inbound> => {
@@ -137,6 +165,10 @@ export const projectThread = (
         (!record.original.encrypted || inbound.encrypted === true)
     ),
     Option.map((record) => {
+      if (!trustsRouter(settings, ownName, inbound.from)) {
+        return untrustedForward(ownName, inbound, record);
+      }
+
       const projected: Inbound = {
         ...relayedInbound(record.original),
         ...record.delivery,
