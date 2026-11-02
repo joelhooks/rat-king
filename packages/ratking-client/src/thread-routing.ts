@@ -3,7 +3,7 @@ import { createMachine, transition } from "xstate";
 
 import { ReplyRef } from "../../mailbox-client/src/payload.ts";
 import { isOperator } from "./attend.ts";
-import type { ThreadRoutingValue } from "./config.ts";
+import type { SettingsValue, ThreadRoutingValue } from "./config.ts";
 import { AgentName, Did } from "./name.ts";
 import type { Inbound, InboundRecord } from "./payload.ts";
 import { RelayRecord, relayedInbound, relayRecord } from "./relay.ts";
@@ -22,10 +22,40 @@ export const ThreadControl = Schema.Struct({
   thread: Schema.NonEmptyString,
 });
 
+export const ThreadDelivery = Schema.Struct({
+  copy: Schema.optionalKey(Schema.Boolean),
+  delegatedTo: Schema.optionalKey(Schema.String),
+  digestMinutes: Schema.optionalKey(Schema.Finite),
+  noReply: Schema.optionalKey(Schema.Boolean),
+  quiet: Schema.optionalKey(Schema.Boolean),
+});
+
+const deliveryOf = (
+  inbound: typeof ThreadDelivery.Type
+): typeof ThreadDelivery.Type => {
+  const delivery: typeof ThreadDelivery.Type = {};
+
+  for (const key of [
+    "copy",
+    "delegatedTo",
+    "digestMinutes",
+    "noReply",
+    "quiet",
+  ] as const) {
+    if (inbound[key] !== undefined) {
+      Object.assign(delivery, { [key]: inbound[key] });
+    }
+  }
+
+  return delivery;
+};
+
 export const ThreadForward = Schema.Struct({
   $type: Schema.Literal("sh.mschf.ratking.thread#message"),
+  delivery: Schema.optionalKey(ThreadDelivery),
   original: RelayRecord,
   reply: Schema.optionalKey(ReplyRef),
+  router: Schema.optionalKey(AgentName),
   thread: Schema.NonEmptyString,
 });
 
@@ -84,6 +114,7 @@ const direct = (config: ThreadRoutingValue, inbound: Inbound) =>
   isOperator(inbound) ||
   inbound.threadRouter !== undefined ||
   inbound.copy === true ||
+  inbound.delegatedTo !== undefined ||
   inbound.kind === "data" ||
   inbound.noReply === true ||
   inbound.askSummary !== undefined ||
@@ -92,15 +123,37 @@ const direct = (config: ThreadRoutingValue, inbound: Inbound) =>
     `${Option.getOrElse(inbound.summary, () => "")}\n${inbound.body}`
   );
 
+type ThreadTrust = Pick<SettingsValue, "relays" | "threadRouting">;
+
+const trustsRouter = (settings: ThreadTrust, ownName: string, from: string) =>
+  settings.threadRouting?.some((router) => router.name === from) === true ||
+  settings.relays.some((relay) => relay.to === ownName && relay.name === from);
+
+const untrustedForward = (
+  ownName: string,
+  inbound: InboundRecord,
+  record: typeof ThreadForward.Type
+): Inbound => ({
+  ...deliveryOf(record.delivery ?? {}),
+  body: `Unverified forward from ${inbound.from}; claimed original sender: ${record.original.from}.\n\n${record.original.body}`,
+  cc: record.original.cc,
+  did: inbound.did,
+  from: inbound.from,
+  id: inbound.id,
+  kind: record.original.kind,
+  label: Option.none(),
+  replyTo: Option.none(),
+  summary: Option.none(),
+  to: ownName,
+  verified: false,
+});
+
 export const projectThread = (
-  routers: readonly ThreadRoutingValue[],
+  settings: ThreadTrust,
   ownName: string,
   inbound: InboundRecord
 ): Option.Option<Inbound> => {
-  if (
-    !inbound.verified ||
-    !routers.some((router) => router.name === inbound.from)
-  ) {
+  if (!inbound.verified) {
     return Option.none();
   }
 
@@ -108,18 +161,20 @@ export const projectThread = (
     Option.filter(
       (record) =>
         record.original.kind !== "data" &&
+        (record.router === undefined || record.router === inbound.from) &&
         (!record.original.encrypted || inbound.encrypted === true)
     ),
     Option.map((record) => {
+      if (!trustsRouter(settings, ownName, inbound.from)) {
+        return untrustedForward(ownName, inbound, record);
+      }
+
       const projected: Inbound = {
         ...relayedInbound(record.original),
-        cc: false,
+        ...record.delivery,
         ccNames: (record.original.ccNames ?? []).filter(
           (name) => name !== inbound.from
         ),
-        copy: false,
-        quiet: false,
-        routedWake: true,
         thread: record.thread,
         threadRouter: {
           did: inbound.did,
@@ -147,6 +202,12 @@ export interface ThreadPorts<E> {
     encrypted: boolean
   ) => Effect.Effect<void, E>;
   readonly deliver: (inbound: Inbound, settled: boolean) => Effect.Effect<void>;
+  readonly fallback: (
+    inbound: Inbound,
+    settled: boolean,
+    encrypted: boolean,
+    redelivered: boolean
+  ) => Effect.Effect<void, E>;
 }
 
 const nextEntry = (
@@ -217,6 +278,24 @@ export const openThreadRouting = <E>(
 
       const { value } = decoded;
 
+      if (
+        value.op === "claim" &&
+        config.owners !== undefined &&
+        !config.owners.some((pattern) =>
+          pattern.endsWith("/")
+            ? inbound.from.startsWith(pattern)
+            : inbound.from === pattern
+        )
+      ) {
+        yield* Effect.logWarning("Thread claim refused", {
+          owner: inbound.from,
+          router: config.name,
+          thread: value.thread,
+        });
+
+        return false;
+      }
+
       const previous = entries.get(value.thread) ?? {
         owners: [],
         state: "unowned",
@@ -238,8 +317,21 @@ export const openThreadRouting = <E>(
         entries.set(value.thread, next);
       }
 
+      if (value.op === "claim") {
+        yield* Effect.logInfo("Thread claimed", {
+          owner: inbound.from,
+          router: config.name,
+          thread: value.thread,
+        });
+      }
+
       if (value.op === "escalate" || value.op === "handback") {
-        yield* ports.deliver(controlNotice(inbound, value), false);
+        yield* ports.fallback(
+          controlNotice(inbound, value),
+          false,
+          inbound.encrypted ?? true,
+          false
+        );
       }
 
       return true;
@@ -248,19 +340,23 @@ export const openThreadRouting = <E>(
     const receive = Effect.fn("ThreadRouting.receive")(function* receive(
       inbound: Inbound,
       settled: boolean,
-      encrypted: boolean
+      encrypted: boolean,
+      redelivered: boolean,
+      fallback: ThreadPorts<E>["fallback"]
     ) {
       if (!threadEnabled(config, inbound) || direct(config, inbound)) {
-        yield* ports.deliver({ ...inbound, routedWake: true }, settled);
+        yield* fallback(inbound, settled, encrypted, redelivered);
 
-        return;
+        return false;
       }
 
       const owners = entries.get(threadKey(inbound))?.owners ?? [];
 
       const record: typeof ThreadForward.Type = {
         $type: "sh.mschf.ratking.thread#message",
+        delivery: deliveryOf(inbound),
         original: relayRecord(inbound, encrypted),
+        router: config.name,
         thread: threadKey(inbound),
       };
 
@@ -284,23 +380,42 @@ export const openThreadRouting = <E>(
         failed ||= !accepted;
       }
 
+      if (failed) {
+        yield* fallback(
+          { ...inbound, routedWake: true },
+          settled,
+          encrypted,
+          redelivered
+        );
+
+        return false;
+      }
+
       yield* ports.deliver(
-        failed
-          ? { ...inbound, routedWake: true }
-          : {
-              ...inbound,
-              copy: true,
-              quiet: true,
-              routedCopy: true,
-              routedWake: false,
-            },
+        {
+          ...inbound,
+          copy: true,
+          quiet: true,
+          routedCopy: true,
+          routedWake: false,
+        },
         settled
       );
+
+      return true;
     });
 
     return {
       control: (inbound: InboundRecord) => mutex.withPermit(control(inbound)),
-      receive: (inbound: Inbound, settled: boolean, encrypted: boolean) =>
-        mutex.withPermit(receive(inbound, settled, encrypted)),
+      receive: (
+        inbound: Inbound,
+        settled: boolean,
+        encrypted: boolean,
+        redelivered = false,
+        fallback = ports.fallback
+      ) =>
+        mutex.withPermit(
+          receive(inbound, settled, encrypted, redelivered, fallback)
+        ),
     };
   });

@@ -57,6 +57,7 @@ const socket = Layer.succeed(WebSocketPort, {
 const Case = Schema.Struct({
   encrypted: Schema.Boolean,
   fail: Schema.Literals(["none", "reject", "retired"]),
+  quiet: Schema.Boolean,
 });
 
 it.live.prop(
@@ -110,14 +111,20 @@ it.live.prop(
       const envelopes = [
         yield* seal(alpha, claim),
         yield* seal(beta, claim),
-        yield* seal(sender, () =>
-          Schema.encodeSync(PayloadJson)({
+        yield* seal(sender, () => {
+          const payload = {
             body: "follow-up",
             from: "sender",
             thread: root,
             to: "tester",
-          })
-        ),
+          };
+
+          if (sample.quiet) {
+            Object.assign(payload, { quiet: true });
+          }
+
+          return Schema.encodeSync(PayloadJson)(payload);
+        }),
       ];
 
       const delivered = yield* Deferred.make<Inbound>();
@@ -299,6 +306,7 @@ it.live.prop(
             id: copy.id,
           });
           expect(forward.thread).toBe(root);
+          expect(forward.delivery?.quiet === true).toBe(sample.quiet);
         }
       }).pipe(
         Effect.provide(

@@ -55,34 +55,38 @@ it.live.prop(
           () => Effect.void
         );
 
-        const projected = projectThread([{ name: "router" }], "tester", {
-          did: router.did,
-          encrypted: encrypt,
-          from: "router",
-          id: "forward-envelope",
-          record: {
-            $type: "sh.mschf.ratking.thread#message",
-            original: {
-              $type: "sh.mschf.ratking.relay#message",
-              body,
-              cc: false,
-              did: sender.did,
-              encrypted: encrypt,
-              from: "sender",
-              id: originalId,
-              kind: "ask",
-              label: null,
-              replyTo: root,
-              summary: null,
-              to: "router",
-              verified: true,
+        const projected = projectThread(
+          { relays: [], threadRouting: [{ name: "router" }] },
+          "tester",
+          {
+            did: router.did,
+            encrypted: encrypt,
+            from: "router",
+            id: "forward-envelope",
+            record: {
+              $type: "sh.mschf.ratking.thread#message",
+              original: {
+                $type: "sh.mschf.ratking.relay#message",
+                body,
+                cc: false,
+                did: sender.did,
+                encrypted: encrypt,
+                from: "sender",
+                id: originalId,
+                kind: "ask",
+                label: null,
+                replyTo: root,
+                summary: null,
+                to: "router",
+                verified: true,
+              },
+              reply: { parent: root, root },
+              thread: root,
             },
-            reply: { parent: root, root },
-            thread: root,
-          },
-          replyTo: Option.none(),
-          verified: true,
-        });
+            replyTo: Option.none(),
+            verified: true,
+          }
+        );
 
         if (Option.isNone(projected)) {
           throw new Error("Expected trusted forward");

@@ -116,6 +116,10 @@ export const ownershipModel = Effect.fn("Test.ownershipModel")(
           Effect.sync(() => {
             deliveries.push(message);
           }),
+        fallback: (message) =>
+          Effect.sync(() => {
+            deliveries.push(message);
+          }),
         forward: (owner, record, encrypted) =>
           Effect.gen(function* forwardEvent() {
             forwards.push({
