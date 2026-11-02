@@ -844,6 +844,10 @@ const parameters = Type.Object({
       "claim",
       "cancel",
       "retire",
+      "thread-claim",
+      "thread-release",
+      "thread-escalate",
+      "thread-handback",
     ].map((action) => Type.Literal(action)),
     {
       description:
@@ -962,6 +966,12 @@ const parameters = Type.Object({
   ),
   supersedes: Type.Optional(
     Type.String({ description: "Accepted for compatibility; unused." })
+  ),
+  thread: Type.Optional(
+    Type.String({
+      description:
+        "Conversation root or explicit thread key. Thread actions target the router with to:.",
+    })
   ),
   timeoutSeconds: Type.Optional(
     Type.Number({

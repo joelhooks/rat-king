@@ -52,7 +52,7 @@ import { HttpClient } from "effect/http";
 import type { RetryEvent } from "../../mailbox-client/src/retry-metrics.ts";
 import { AskJournal, askAge, openAsks } from "./asks.ts";
 import type { AsksApi, PendingAskValue } from "./asks.ts";
-import { forwardNames } from "./attend.ts";
+import { forwardNames, isOperator } from "./attend.ts";
 import type { Levers } from "./attend.ts";
 import { attentionReader } from "./attention.ts";
 import type {
@@ -62,6 +62,7 @@ import type {
 } from "./attention.ts";
 import { AskAimedAtCc, ccLint, ccRefusal } from "./cc-lint.ts";
 import { Settings } from "./config.ts";
+import type { ThreadRoutingValue } from "./config.ts";
 import { injects, recipientLevels } from "./delivery.ts";
 import type { RecipientLevelValue } from "./delivery.ts";
 import { digestFor } from "./digest.ts";
@@ -131,6 +132,12 @@ import type { RelayOutboundValue } from "./relay.ts";
 import { awaitRestartGate } from "./restart-gate.ts";
 import { countRetry, emptyRetries } from "./retry-counters.ts";
 import { SecretStore } from "./secrets.ts";
+import {
+  openThreadRouting,
+  projectThread,
+  threadEnabled,
+  ThreadJournal,
+} from "./thread-routing.ts";
 import { replyRecipients, Threads, threadsLayer } from "./threads.ts";
 import type { Received, Reply } from "./threads.ts";
 
@@ -444,6 +451,7 @@ export type AskOptions = Pick<
   | "onPhase"
   | "quiet"
   | "summary"
+  | "thread"
 > & {
   readonly dueBy?: number;
   readonly onDelivered?: Effect.Effect<void>;
@@ -598,6 +606,17 @@ const persistenceError = (error: { readonly _tag: string }) =>
     code: "NotAttempted",
     reason: `Relay journal: ${reasonOf(error)}`,
   });
+
+const inheritedThreadEncryption = (
+  record: Received,
+  options: SendOptions | undefined
+) => {
+  const source = record.threadRouter ?? record.relay;
+
+  return source !== undefined && options?.encrypt === undefined
+    ? { encrypt: source.encrypted }
+    : {};
+};
 
 export const makeRatKing = Effect.gen(function* makeRatKing() {
   const settings = yield* Settings;
@@ -1064,6 +1083,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             yield* threads.remember(inbound);
             yield* route.record({
               did: inbound.did,
+              encrypted: message.encrypted ?? true,
               from: inbound.from,
               id: inbound.id,
               record: record.value,
@@ -1857,7 +1877,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     );
   });
 
-  const routing = (
+  const relayRouting = (
     own: Self,
     deliver: Deliver
   ): Effect.Effect<RelayRoute, NotDelivered, Scope.Scope> =>
@@ -2026,6 +2046,161 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                   .handled(handled.value.id)
                   .pipe(Effect.andThen(consumeAck(inbound.id)))
               : deliver(inbound, false);
+          }),
+      } satisfies RelayRoute;
+    });
+
+  const claimRepliedThread = (record: Received, originalId: string) =>
+    Effect.gen(function* claimReply() {
+      const routed = record.threadRouter ?? record.relay;
+
+      const source =
+        routed !== undefined &&
+        settings.threadRouting?.some((entry) => entry.name === routed.name) ===
+          true
+          ? routed
+          : undefined;
+
+      const router =
+        source?.name ??
+        settings.threadRouting?.find((entry) => entry.name === record.from)
+          ?.name;
+
+      if (router === undefined) {
+        return;
+      }
+
+      yield* transmit(
+        router,
+        {
+          $type: "sh.mschf.ratking.thread#control",
+          op: "claim",
+          thread: record.thread ?? originalId,
+        },
+        { encrypt: source?.encrypted ?? settings.encrypt, kind: "data" },
+        () => Effect.void
+      );
+    });
+
+  const threadRoute = (
+    own: Self,
+    config: ThreadRoutingValue,
+    deliver: Deliver,
+    fallback: RelayRoute
+  ) =>
+    Effect.gen(function* routeOwned() {
+      const file = path.join(
+        settings.state,
+        "thread-routing",
+        `${provisionLabel(own.name)}.json`
+      );
+
+      const router = yield* openThreadRouting(config, {
+        deliver,
+        forward: (owner, record, encrypted) =>
+          Effect.gen(function* forwardThread() {
+            const target = yield* directory
+              .resolve(owner.name)
+              .pipe(
+                Effect.mapError((error) =>
+                  refused("UnknownName")(reasonOf(error))
+                )
+              );
+
+            if (target.did !== owner.did) {
+              return yield* refused("UnknownName")(
+                "Thread owner identity changed"
+              );
+            }
+
+            return yield* transmit(
+              owner.name,
+              record,
+              { encrypt: encrypted, kind: "data" },
+              () => Effect.void
+            ).pipe(Effect.asVoid);
+          }),
+        load: fs.exists(file).pipe(
+          Effect.flatMap((exists) =>
+            exists
+              ? fs
+                  .readFileString(file)
+                  .pipe(
+                    Effect.flatMap(
+                      Schema.decodeEffect(Schema.fromJsonString(ThreadJournal))
+                    )
+                  )
+              : Effect.succeed([])
+          ),
+          Effect.mapError(persistenceError),
+          Effect.catch((error) =>
+            Effect.logWarning(
+              "Thread owners unavailable; router will wake",
+              error.code
+            ).pipe(Effect.as([]))
+          )
+        ),
+        save: (entries) =>
+          Schema.encodeEffect(Schema.fromJsonString(ThreadJournal))(
+            entries
+          ).pipe(
+            Effect.flatMap((json) => writePrivateJson(file, json)),
+            Effect.provideService(FileSystem.FileSystem, fs),
+            Effect.provideService(Path.Path, path),
+            Effect.mapError(persistenceError)
+          ),
+      });
+
+      return {
+        message: (
+          inbound: Inbound,
+          settled: boolean,
+          encrypted: boolean,
+          redelivered: boolean
+        ) =>
+          threadEnabled(config, inbound) || isOperator(inbound)
+            ? router.receive(inbound, settled, encrypted)
+            : fallback.message(inbound, settled, encrypted, redelivered),
+        record: (inbound: InboundRecord) =>
+          router
+            .control(inbound)
+            .pipe(
+              Effect.flatMap((handled) =>
+                handled ? consumeAck(inbound.id) : fallback.record(inbound)
+              )
+            ),
+      } satisfies RelayRoute;
+    });
+
+  const routing = (
+    own: Self,
+    deliver: Deliver
+  ): Effect.Effect<RelayRoute, NotDelivered, Scope.Scope> =>
+    Effect.gen(function* routeThreads() {
+      const routers = settings.threadRouting ?? [];
+      const config = routers.find((router) => router.name === own.name);
+      const fallback = yield* relayRouting(own, deliver);
+
+      const base =
+        config === undefined
+          ? fallback
+          : yield* threadRoute(own, config, deliver, fallback);
+
+      return {
+        message: base.message,
+        record: (inbound) =>
+          Effect.gen(function* projectThreadRecord() {
+            const projected = projectThread(routers, own.name, inbound);
+
+            if (Option.isNone(projected)) {
+              yield* base.record(inbound);
+
+              return;
+            }
+
+            relayed.set(projected.value.id, inbound.id);
+            yield* threads.remember(projected.value);
+            yield* deliver(projected.value, false, displayAck(inbound.id));
           }),
       } satisfies RelayRoute;
     });
@@ -3234,6 +3409,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
       const replyOptions: SendOptions = {
         ...options,
+        ...inheritedThreadEncryption(record.value, options),
         cc: recipients.slice(1),
         kind: options?.kind === "data" ? "data" : "reply",
         replyTo: {
@@ -3242,10 +3418,6 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         },
         thread: record.value.thread ?? originalId,
       };
-
-      if (record.value.relay !== undefined && options?.encrypt === undefined) {
-        Object.assign(replyOptions, { encrypt: record.value.relay.encrypted });
-      }
 
       const { delivered, sent } = yield* transmit(
         target,
@@ -3257,6 +3429,13 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       yield* copyOut(delivered, sent);
       yield* closeLoops(sent, id);
       yield* threads.answer(id);
+      yield* claimRepliedThread(record.value, originalId).pipe(
+        Effect.mapError((error) =>
+          refused("Partial")(
+            `Reply accepted by ${delivered.to} (id ${delivered.id}); thread claim failed: ${reasonOf(error)}. Retry thread-claim only.`
+          )
+        )
+      );
 
       if (
         record.value.relay !== undefined &&

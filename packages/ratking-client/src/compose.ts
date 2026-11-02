@@ -8,6 +8,7 @@ export interface SendingInput {
   readonly encrypt?: boolean | undefined;
   readonly quiet?: boolean | undefined;
   readonly summary?: string | undefined;
+  readonly thread?: string | undefined;
 }
 
 export interface Sending {
@@ -35,6 +36,10 @@ export const sendingOptions = (input: SendingInput): Sending => {
 
   if (input.quiet === true) {
     Object.assign(options, { quiet: true });
+  }
+
+  if (input.thread !== undefined) {
+    Object.assign(options, { thread: input.thread });
   }
 
   if (input.summary !== undefined) {

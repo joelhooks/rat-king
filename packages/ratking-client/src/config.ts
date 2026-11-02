@@ -52,6 +52,14 @@ export const relaysOf = (
   return Schema.is(RelaySetting)(relay) ? [relay] : relay;
 };
 
+export const ThreadRouting = Schema.Struct({
+  name: AgentName,
+  senders: Schema.optionalKey(Schema.Array(AgentName)),
+  threads: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
+});
+
+export type ThreadRoutingValue = typeof ThreadRouting.Type;
+
 export const PiConfig = Schema.Struct({
   askTimeoutMs: Schema.optionalKey(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
@@ -79,6 +87,7 @@ export const PiConfig = Schema.Struct({
   secretsCommand: Schema.optionalKey(Schema.String),
   serviceDid: Did,
   state: Schema.optionalKey(Schema.String),
+  threadRouting: Schema.optionalKey(Schema.Array(ThreadRouting)),
   toolName: Schema.optionalKey(ToolName),
   turnRecords: Schema.optionalKey(Schema.Boolean),
 });
@@ -101,6 +110,7 @@ export interface SettingsValue {
   readonly secretsCommand: string;
   readonly serviceDid: string;
   readonly state: string;
+  readonly threadRouting?: readonly ThreadRoutingValue[];
   readonly turnRecords?: boolean;
 }
 
@@ -229,6 +239,7 @@ export const loadSettings = Effect.fn("RatKing.loadSettings")(
       secretsCommand: config.secretsCommand ?? "secrets",
       serviceDid: config.serviceDid,
       state,
+      threadRouting: config.threadRouting ?? [],
       turnRecords,
     });
 

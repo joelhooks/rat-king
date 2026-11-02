@@ -25,6 +25,7 @@ export const decodeRecord = (body: string) =>
   Schema.decodeEffect(RecordJson)(body).pipe(Effect.option);
 
 export interface InboundRecord {
+  readonly encrypted?: boolean;
   readonly levers?: unknown;
   readonly id: string;
   readonly did: string;
@@ -84,6 +85,9 @@ export const passMarker = (via: typeof PassSource.Type): string => {
 };
 
 export interface Inbound {
+  readonly threadRouter?: typeof RelaySource.Type;
+  readonly routedCopy?: boolean;
+  readonly routedWake?: boolean;
   readonly via?: typeof PassSource.Type;
   readonly delegatedFor?: string;
   readonly delegatedTo?: string;
