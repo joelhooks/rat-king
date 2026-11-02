@@ -1,7 +1,10 @@
 /* oxlint-disable promise/prefer-await-to-callbacks -- Effect layer test adapters. */
 import { NodeServices } from "@effect/platform-node";
 import { Settings } from "@rat-king/ratking-client/config";
-import type { RelaySettingValue } from "@rat-king/ratking-client/config";
+import type {
+  RelaySettingValue,
+  ThreadRoutingValue,
+} from "@rat-king/ratking-client/config";
 import { Directory, directoryLayer } from "@rat-king/ratking-client/directory";
 import { Issuer, IssuerError } from "@rat-king/ratking-client/issuer";
 import type { ReservedValue } from "@rat-king/ratking-client/name";
@@ -47,9 +50,11 @@ export const harness = (
   refuse: readonly string[] = [],
   overrides: {
     readonly attentionLevers?: boolean;
+    readonly encrypt?: boolean;
     readonly ccDigestMinutes?: Readonly<Record<string, number>>;
     readonly reserved?: ReservedValue;
     readonly turnRecords?: boolean;
+    readonly threadRouting?: readonly ThreadRoutingValue[];
     readonly relays?: readonly RelaySettingValue[];
     readonly documents?: readonly string[];
     readonly secrets?: Map<string, string>;

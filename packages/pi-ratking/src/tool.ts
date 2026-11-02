@@ -35,6 +35,7 @@ import type {
   Status,
 } from "@rat-king/ratking-client/ratking";
 import { withSummaryLead } from "@rat-king/ratking-client/summary";
+import { ThreadControl } from "@rat-king/ratking-client/thread-routing";
 import {
   Clock,
   DateTime,
@@ -65,6 +66,10 @@ export const Action = Schema.Literals([
   "cancel",
   "claim",
   "retire",
+  "thread-claim",
+  "thread-release",
+  "thread-escalate",
+  "thread-handback",
 ]);
 
 export const Attachment = Schema.Struct({
@@ -113,6 +118,7 @@ export const ToolParams = Schema.Struct({
   successor: Schema.optionalKey(Schema.String),
   summary: Schema.optionalKey(Schema.String),
   supersedes: Schema.optionalKey(Schema.String),
+  thread: Schema.optionalKey(Schema.NonEmptyString),
   timeoutSeconds: Schema.optionalKey(
     Schema.Finite.check(Schema.isBetween({ maximum: 600, minimum: 1 }))
   ),
@@ -372,6 +378,8 @@ Address agents by Rat King name (for example switchboard, or project/row). list 
 send and ask accept cc: ["name", ...]. to: is for whoever must act, and wakes them unless quiet: true requests next-turn or digest delivery. quiet is not for asks. cc: is for whoever should know: a quiet copy that does not wake. A send whose message or summary addresses a cc'd name (@name, or an "ask for name" line) is refused; pass ccOnPurpose: true if the cc is deliberate. reply defaults to reply-all; replyAll: false answers only the sender. To answer a message that arrived before this Pi's reader last started, add to: the asker's name. handled with replyTo confirms a relayed original to its desk without replying to the sender.
 
 Give every send, ask and reply a summary: one line, at most 280 characters; longer is trimmed and the full text leads the message. Lead with the point or the ask. Phones and compact views show it first; the message holds the detail.
+
+thread-claim, thread-release, thread-escalate and thread-handback take to: router name and thread: conversation root or explicit key. A first reply to a forwarded thread also claims it. Release removes only your subscription; handback also wakes the router to re-dispatch. Escalate wakes the router without releasing ownership. Use message for the reason and encrypt: true for private text.
 
 filter add|remove|list changes receiver wake and display rules only; operator mail and direct asks bypass filters.
 
@@ -710,6 +718,51 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
           }
         );
       })
+    ),
+    Match.whenOr(
+      "thread-claim",
+      "thread-release",
+      "thread-escalate",
+      "thread-handback",
+      () =>
+        Effect.gen(function* threadControl() {
+          const to = yield* needTo(params);
+
+          const record = yield* Schema.decodeUnknownEffect(ThreadControl)({
+            $type: "sh.mschf.ratking.thread#control",
+            op: params.action.slice("thread-".length),
+            thread: params.thread,
+          }).pipe(
+            Effect.mapError(() =>
+              loud(
+                "Thread actions need to: router name and thread: conversation root or explicit key."
+              )
+            )
+          );
+
+          if (params.message !== undefined) {
+            Object.assign(record, { message: params.message });
+          }
+
+          const delivered = yield* ratking.send(
+            to,
+            record,
+            dispatching<SendOptions>(
+              { ...encryption, kind: "data" },
+              dispatch,
+              onPhase
+            )
+          );
+
+          return ok(
+            `Thread ${record.op} delivered to ${delivered.to} (id ${delivered.id}).`,
+            {
+              id: delivered.id,
+              thread: record.thread,
+              to: delivered.to,
+            }
+          );
+        })
     ),
     Match.when("record", () =>
       Effect.gen(function* record() {

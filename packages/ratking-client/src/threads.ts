@@ -13,6 +13,7 @@ export interface Reply {
 }
 
 export interface Received {
+  readonly threadRouter?: NonNullable<Inbound["threadRouter"]>;
   readonly via?: NonNullable<Inbound["via"]>;
   readonly originalId?: string;
   readonly relay?: NonNullable<Inbound["relay"]>;
@@ -132,6 +133,10 @@ const makeThreads = Effect.sync((): ThreadsApi => {
           });
         } else if (inbound.thread !== undefined) {
           Object.assign(record, { thread: inbound.thread });
+        }
+
+        if (inbound.threadRouter !== undefined) {
+          Object.assign(record, { threadRouter: inbound.threadRouter });
         }
 
         if (inbound.relay !== undefined) {

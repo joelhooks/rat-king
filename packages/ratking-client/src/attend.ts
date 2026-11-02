@@ -5,6 +5,8 @@ import { Data, Match, Option } from "effect";
 import type { KindValue } from "../../mailbox-client/src/payload.ts";
 
 export interface Arrival {
+  readonly routedCopy?: boolean;
+  readonly routedWake?: boolean;
   readonly delegatedTo?: string;
   readonly copy?: boolean;
   readonly wakeStatus?: "matched" | "timedOut" | "targetGone" | "failed";
@@ -254,6 +256,12 @@ export const attend = (
   _turnFold: TurnFold | undefined,
   suggestion: Option.Option<Verdict>
 ): Verdict =>
+  (arrival.routedWake === true
+    ? Verdicts.Now({ reason: Reasons.intent({ facts: ["to"] }) })
+    : undefined) ??
+  (arrival.routedCopy === true && !isOperator(arrival)
+    ? Verdicts.Next({ reason: Reasons.intent({ facts: ["quiet"] }) })
+    : undefined) ??
   (arrival.delegatedTo === undefined
     ? undefined
     : Verdicts.Later({
