@@ -53,7 +53,7 @@ with tempfile.TemporaryDirectory() as tmp:
         print('TWOPHASE_PASSED')
         sys.exit(0)
     if phase == 'budget':
-        slow = script.replace('SNAPSHOT_BUDGET = 45', 'SNAPSHOT_BUDGET = 1').replace('def copy_file(source, target):', 'def copy_file(source, target):\n    time.sleep(3)')
+        slow = script.replace('SNAPSHOT_BUDGET = 55', 'SNAPSHOT_BUDGET = 1').replace('def copy_file(source, target):', 'def copy_file(source, target):\n    time.sleep(3)')
         assert slow != script
         try:
             run('snapshot', str(staging), source=slow)

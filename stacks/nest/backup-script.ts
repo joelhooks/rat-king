@@ -16,7 +16,7 @@ PUBLISH_PREFIX = '.mailbox-publish-'
 SNAPSHOT_ROOTS = ['seaweedfs', 'celld']
 SNAPSHOT_ARCHIVE = 'mailbox.tar.gz'
 # Copy and verify both stopped data directories inside this budget, or fail and restart.
-SNAPSHOT_BUDGET = 45
+SNAPSHOT_BUDGET = 55
 PRECOPY_BUDGET = 900
 SETTLE_NS = 2000000000
 TAIL_CHECK = 65536

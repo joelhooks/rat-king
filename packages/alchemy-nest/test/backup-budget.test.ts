@@ -71,7 +71,7 @@ it.effect(
           ?.groups?.milliseconds?.replaceAll("_", "")
       );
 
-      expect(pythonSeconds).toBe(45);
+      expect(pythonSeconds).toBe(55);
       expect(jsSeconds).toBe(60);
       expect(jsSeconds).toBeGreaterThan(pythonSeconds);
       expect((7 + 15 + pythonSeconds + 21) * 1000).toBeLessThan(allowanceMs);
