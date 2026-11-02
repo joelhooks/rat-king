@@ -25,8 +25,9 @@ it.live.prop(
     Arbitrary.schema(Schema.Boolean),
     Arbitrary.schema(Schema.NonEmptyString),
     Arbitrary.schema(Schema.Literals(["forward", "relay", "dispatch"])),
+    Arbitrary.schema(Schema.Boolean),
   ],
-  ([encrypt, body, source]) =>
+  ([encrypt, body, source, configured]) =>
     Effect.gen(function* ownershipProof() {
       const fs = yield* FileSystem.FileSystem;
       const state = yield* fs.makeTempDirectoryScoped();
@@ -55,7 +56,7 @@ it.live.prop(
           () => Effect.void
         );
 
-        const projected = projectThread([{ name: "router" }], "tester", {
+        const projected = projectThread("tester", {
           did: router.did,
           encrypted: encrypt,
           from: "router",
@@ -201,7 +202,8 @@ it.live.prop(
         Effect.provide(
           harness(state, mailbox.http, [], {
             encrypt,
-            threadRouting: [{ name: "router" }],
+            threadRouting:
+              source === "forward" && !configured ? [] : [{ name: "router" }],
           }).pipe(Layer.provideMerge(threadsLayer))
         )
       );

@@ -25,7 +25,7 @@ const Projection = Schema.Struct({
 });
 
 it.effect.prop(
-  "only signed configured routers project a forward; sealed mail cannot project from plaintext, and replies retain the original sender, id and conversation root",
+  "only the signed named router projects a forward; sealed mail cannot project from plaintext, and replies retain the original sender, id and conversation root",
   [Arbitrary.schema(Projection)],
   ([sample]) =>
     Effect.gen(function* projection() {
@@ -49,22 +49,19 @@ it.effect.prop(
           verified: true,
         },
         reply: { parent: "parent", root: "root-a" },
+        router: sample.trusted ? "router" : "different",
         thread: "root-a",
       };
 
-      const projected = projectThread(
-        sample.trusted ? [{ name: "router" }] : [],
-        "owner",
-        {
-          did: "did:web:router.example.invalid",
-          encrypted: sample.sealed,
-          from: "router",
-          id: "forward-envelope",
-          record,
-          replyTo: Option.none(),
-          verified: sample.verified,
-        }
-      );
+      const projected = projectThread("owner", {
+        did: "did:web:router.example.invalid",
+        encrypted: sample.sealed,
+        from: "router",
+        id: "forward-envelope",
+        record,
+        replyTo: Option.none(),
+        verified: sample.verified,
+      });
 
       const allowed =
         sample.trusted &&

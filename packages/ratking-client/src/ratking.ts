@@ -52,7 +52,7 @@ import { HttpClient } from "effect/http";
 import type { RetryEvent } from "../../mailbox-client/src/retry-metrics.ts";
 import { AskJournal, askAge, openAsks } from "./asks.ts";
 import type { AsksApi, PendingAskValue } from "./asks.ts";
-import { forwardNames, isOperator } from "./attend.ts";
+import { forwardNames } from "./attend.ts";
 import type { Levers } from "./attend.ts";
 import { attentionReader } from "./attention.ts";
 import type {
@@ -124,6 +124,7 @@ import {
   copiesOutbound,
   openRelay,
   deliverRelay,
+  projectRelay,
   RelayHandled,
   RelayJournal,
   transferCustody,
@@ -135,7 +136,6 @@ import { SecretStore } from "./secrets.ts";
 import {
   openThreadRouting,
   projectThread,
-  threadEnabled,
   ThreadJournal,
 } from "./thread-routing.ts";
 import { replyRecipients, Threads, threadsLayer } from "./threads.ts";
@@ -1877,6 +1877,71 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     );
   });
 
+  const confirmHandled = Effect.fn("RatKing.confirmHandled")(
+    function* confirmHandled(id: string) {
+      const record = yield* threads.lookup(id);
+
+      if (Option.isNone(record) || record.value.relay === undefined) {
+        const open = relayed.get(id);
+
+        if (open !== undefined && acknowledgments.has(open)) {
+          relayed.delete(id);
+          yield* consumeAck(open);
+
+          return { acked: true, id } satisfies HandledAck;
+        }
+
+        return yield* new AskFailed({
+          code: "NoSuchMessage",
+          reason: `No relayed message ${id} reached this Pi`,
+        });
+      }
+
+      const own = yield* awaitSelf;
+      const relayName = record.value.relay.name;
+
+      const config = settings.relays.find(
+        (relay) => relay.to === own.name && relay.name === relayName
+      );
+
+      if (config === undefined) {
+        return yield* refused("NotAttempted")(
+          "Handled confirmation is available only on the configured EA"
+        );
+      }
+
+      const target = yield* directory
+        .resolve(config.name)
+        .pipe(
+          Effect.mapError(() => refused("UnknownName")("Relay desk is unknown"))
+        );
+
+      if (target.did !== record.value.relay.did) {
+        return yield* refused("NotAttempted")(
+          "Relay desk DID changed; no confirmation sent"
+        );
+      }
+
+      const { delivered } = yield* transmit(
+        config.name,
+        { $type: "sh.mschf.ratking.relay#handled", id },
+        { encrypt: record.value.relay.encrypted, kind: "data" },
+        () => Effect.void
+      );
+
+      yield* threads.answer(id);
+
+      const open = relayed.get(id);
+
+      if (open !== undefined) {
+        relayed.delete(id);
+        yield* consumeAck(open);
+      }
+
+      return delivered;
+    }
+  );
+
   const relayRouting = (
     own: Self,
     deliver: Deliver
@@ -2052,14 +2117,15 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
   const claimRepliedThread = (record: Received, originalId: string) =>
     Effect.gen(function* claimReply() {
-      const routed = record.threadRouter ?? record.relay;
+      const legacy = record.relay;
 
       const source =
-        routed !== undefined &&
-        settings.threadRouting?.some((entry) => entry.name === routed.name) ===
+        record.threadRouter ??
+        (legacy !== undefined &&
+        settings.threadRouting?.some((entry) => entry.name === legacy.name) ===
           true
-          ? routed
-          : undefined;
+          ? legacy
+          : undefined);
 
       const router =
         source?.name ??
@@ -2096,7 +2162,13 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       );
 
       const router = yield* openThreadRouting(config, {
-        deliver,
+        deliver: (inbound, settled) =>
+          deliver(
+            inbound,
+            settled,
+            displayAck(relayed.get(inbound.id) ?? inbound.id)
+          ),
+        fallback: fallback.message,
         forward: (owner, record, encrypted) =>
           Effect.gen(function* forwardThread() {
             const target = yield* directory
@@ -2158,17 +2230,52 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           encrypted: boolean,
           redelivered: boolean
         ) =>
-          threadEnabled(config, inbound) || isOperator(inbound)
-            ? router.receive(inbound, settled, encrypted)
-            : fallback.message(inbound, settled, encrypted, redelivered),
-        record: (inbound: InboundRecord) =>
           router
-            .control(inbound)
-            .pipe(
-              Effect.flatMap((handled) =>
-                handled ? consumeAck(inbound.id) : fallback.record(inbound)
-              )
-            ),
+            .receive(inbound, settled, encrypted, redelivered)
+            .pipe(Effect.asVoid),
+        record: (inbound: InboundRecord) =>
+          Effect.gen(function* routeThreadRecord() {
+            const relay = settings.relays.find(
+              (entry) => entry.to === own.name
+            );
+
+            const original =
+              relay === undefined
+                ? Option.none<Inbound>()
+                : projectRelay(relay, own.name, inbound);
+
+            if (
+              Option.isSome(original) &&
+              original.value.sentBy === undefined
+            ) {
+              relayed.set(original.value.id, inbound.id);
+              yield* threads.remember(original.value);
+
+              const passed = yield* router.receive(
+                original.value,
+                false,
+                original.value.relay?.encrypted ?? inbound.encrypted ?? true,
+                false,
+                () => fallback.record(inbound)
+              );
+
+              if (passed && relay?.mode === "front") {
+                yield* confirmHandled(original.value.id).pipe(
+                  Effect.catch(() =>
+                    Effect.logWarning(
+                      "Thread custody confirmation failed; using legacy relay delivery"
+                    ).pipe(Effect.andThen(fallback.record(inbound)))
+                  )
+                );
+              }
+
+              return;
+            }
+
+            const handled = yield* router.control(inbound);
+
+            yield* handled ? consumeAck(inbound.id) : fallback.record(inbound);
+          }),
       } satisfies RelayRoute;
     });
 
@@ -2190,7 +2297,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         message: base.message,
         record: (inbound) =>
           Effect.gen(function* projectThreadRecord() {
-            const projected = projectThread(routers, own.name, inbound);
+            const projected = projectThread(own.name, inbound);
 
             if (Option.isNone(projected)) {
               yield* base.record(inbound);
@@ -3081,71 +3188,6 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       ),
       Effect.ignore
     );
-
-  const confirmHandled = Effect.fn("RatKing.confirmHandled")(
-    function* confirmHandled(id: string) {
-      const record = yield* threads.lookup(id);
-
-      if (Option.isNone(record) || record.value.relay === undefined) {
-        const open = relayed.get(id);
-
-        if (open !== undefined && acknowledgments.has(open)) {
-          relayed.delete(id);
-          yield* consumeAck(open);
-
-          return { acked: true, id } satisfies HandledAck;
-        }
-
-        return yield* new AskFailed({
-          code: "NoSuchMessage",
-          reason: `No relayed message ${id} reached this Pi`,
-        });
-      }
-
-      const own = yield* awaitSelf;
-      const relayName = record.value.relay.name;
-
-      const config = settings.relays.find(
-        (relay) => relay.to === own.name && relay.name === relayName
-      );
-
-      if (config === undefined) {
-        return yield* refused("NotAttempted")(
-          "Handled confirmation is available only on the configured EA"
-        );
-      }
-
-      const target = yield* directory
-        .resolve(config.name)
-        .pipe(
-          Effect.mapError(() => refused("UnknownName")("Relay desk is unknown"))
-        );
-
-      if (target.did !== record.value.relay.did) {
-        return yield* refused("NotAttempted")(
-          "Relay desk DID changed; no confirmation sent"
-        );
-      }
-
-      const { delivered } = yield* transmit(
-        config.name,
-        { $type: "sh.mschf.ratking.relay#handled", id },
-        { encrypt: record.value.relay.encrypted, kind: "data" },
-        () => Effect.void
-      );
-
-      yield* threads.answer(id);
-
-      const open = relayed.get(id);
-
-      if (open !== undefined) {
-        relayed.delete(id);
-        yield* consumeAck(open);
-      }
-
-      return delivered;
-    }
-  );
 
   const unlessBarred = Ref.get(nameBar).pipe(
     Effect.flatMap((reason) =>

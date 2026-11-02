@@ -182,6 +182,7 @@ export const renderInbound = (tool: string, inbound: Inbound) => {
     onSome: (label) => `${label} (${name})`,
   });
 
+  const router = inbound.relay?.name ?? inbound.threadRouter?.name;
   const label = inbound.cc ? "🐀 cc" : "🐀";
   const heading = inbound.kind === "reply" ? "🐀 reply" : label;
 
@@ -191,7 +192,7 @@ export const renderInbound = (tool: string, inbound: Inbound) => {
   });
 
   return [
-    `**${heading} from ${sender}** · id ${inbound.id}${thread}${inbound.relay === undefined ? "" : ` · via ${inbound.relay.name}`} · ${formatReason(deliveryReason(inbound))}`,
+    `**${heading} from ${sender}** · id ${inbound.id}${thread}${router === undefined ? "" : ` · via ${router}`} · ${formatReason(deliveryReason(inbound))}`,
     ...(inbound.via === undefined ? [] : [passMarker(inbound.via)]),
     ...(inbound.delegatedFor === undefined
       ? []

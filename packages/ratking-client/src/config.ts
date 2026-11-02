@@ -54,6 +54,14 @@ export const relaysOf = (
 
 export const ThreadRouting = Schema.Struct({
   name: AgentName,
+  owners: Schema.optionalKey(
+    Schema.Array(
+      Schema.Union([
+        AgentName,
+        Schema.String.check(Schema.isPattern(/^[a-z0-9]+(?:-[a-z0-9]+)*\/$/u)),
+      ])
+    )
+  ),
   senders: Schema.optionalKey(Schema.Array(AgentName)),
   threads: Schema.optionalKey(Schema.Array(Schema.NonEmptyString)),
 });
