@@ -125,7 +125,7 @@ it.effect.prop(
       for (const event of [
         "acquire",
         "renew-attempt",
-        outcome === "budget" ? "lapse" : outcome,
+        outcome === "budget" ? "retry" : outcome,
         "release",
       ]) {
         expect(events.some((line) => line.startsWith(`lease ${event} `))).toBe(
@@ -137,10 +137,13 @@ it.effect.prop(
         expect(
           events.some(
             (line) =>
-              line.startsWith("lease lapse ") &&
+              line.startsWith("lease retry ") &&
               line.includes('reason="LeaseRenewalFailed:')
           )
         ).toBe(true);
+        expect(events.some((line) => line.startsWith("lease lapse "))).toBe(
+          false
+        );
       }
 
       expect(

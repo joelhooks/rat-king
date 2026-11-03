@@ -42,9 +42,20 @@ export const consumerMachine = createMachine({
     },
     closed: { type: "final" },
     consuming: {
-      on: { LOST: { target: "releasing" }, STOP: { target: "releasing" } },
+      on: {
+        LOST: { target: "releasing" },
+        RETRYING: { target: "retrying" },
+        STOP: { target: "releasing" },
+      },
     },
     releasing: { on: { RELEASED: { target: "closed" } } },
+    retrying: {
+      on: {
+        ACQUIRED: { target: "consuming" },
+        LOST: { target: "releasing" },
+        STOP: { target: "releasing" },
+      },
+    },
     waiting: { on: { RETRY: { target: "acquiring" } } },
   },
 });
@@ -96,6 +107,7 @@ export interface ConsumeOptions {
   readonly resume?: LeaseFence;
   readonly afterSeq?: number;
   readonly onLease?: (lease: Lease.MainValue) => Effect.Effect<void>;
+  readonly onRetry?: (error: MailboxClientError) => Effect.Effect<void>;
   readonly leaseName?: string;
   readonly failOnHeld?: boolean;
   readonly unopenable?: (
@@ -318,18 +330,32 @@ export const consume = <E, R>(
             reason = "LeaseTakenOver";
           }
 
-          yield* logLease(
-            reason === "LeaseExpired" ||
-              (reason === "LeaseRenewalFailed" && unavailable(error))
-              ? "lapse"
-              : "loss",
-            current,
-            `${reason}: ${error.reason}`
-          );
+          let event = reason === "LeaseExpired" ? "lapse" : "loss";
+
+          if (reason === "LeaseRenewalFailed" && unavailable(error)) {
+            event = "retry";
+          }
+
+          yield* logLease(event, current, `${reason}: ${error.reason}`);
 
           return yield* Effect.fail(
             new MailboxClientError({ error: reason, reason: error.reason })
           );
+        });
+
+      const retrying = (error: MailboxClientError) =>
+        unavailable(error)
+          ? step("RETRYING").pipe(
+              Effect.andThen(options.onRetry?.(error) ?? Effect.void)
+            )
+          : Effect.void;
+
+      const recovered = (renewed: boolean) =>
+        Effect.gen(function* recoverReader() {
+          if (renewed || state.matches("retrying")) {
+            yield* step("ACQUIRED");
+            yield* options.onLease?.(current) ?? Effect.void;
+          }
         });
 
       const renew = Effect.gen(function* renew() {
@@ -395,7 +421,9 @@ export const consume = <E, R>(
               Effect.void
           ),
           Effect.tapError((error) =>
-            logLease("renew-failed", current, error.reason)
+            logLease("renew-failed", current, error.reason).pipe(
+              Effect.andThen(retrying(error))
+            )
           ),
           Effect.retry(
             Schedule.spaced("1 second").pipe(
@@ -447,9 +475,7 @@ export const consume = <E, R>(
         );
         yield* logLease("renew", current, "renewed");
 
-        if (options.onLease !== undefined) {
-          yield* options.onLease(current);
-        }
+        yield* recovered(true);
 
         return yield* Effect.void;
       }).pipe(Effect.repeat(Schedule.spaced("0 millis")), Effect.catch(lost));
@@ -457,6 +483,16 @@ export const consume = <E, R>(
       const handed = handoffHistory();
 
       const intake = mailbox.watch(options.afterSeq ?? 0, fence()).pipe(
+        Stream.tap(() => recovered(false)),
+        Stream.tapError(retrying),
+        Stream.retry(
+          Schedule.spaced("1 second").pipe(
+            Schedule.while(
+              ({ input }: { readonly input: MailboxClientError }) =>
+                unavailable(input)
+            )
+          )
+        ),
         Stream.runForEach((batch) =>
           Effect.forEach(
             batch.events,

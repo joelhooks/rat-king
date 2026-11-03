@@ -9,7 +9,7 @@ export declare const consumerMachine: import("xstate").StateMachine<{}, {
     type: string;
 }, {
     [x: string]: import("xstate").AnyActor;
-}, "acquiring" | "closed" | "consuming" | "releasing" | "waiting", string, unknown, undefined, {
+}, "acquiring" | "closed" | "consuming" | "releasing" | "retrying" | "waiting", string, unknown, undefined, {
     type: string;
 }, never, {
     readonly context: {};
@@ -37,6 +37,9 @@ export declare const consumerMachine: import("xstate").StateMachine<{}, {
                 readonly LOST: {
                     readonly target: "releasing";
                 };
+                readonly RETRYING: {
+                    readonly target: "retrying";
+                };
                 readonly STOP: {
                     readonly target: "releasing";
                 };
@@ -46,6 +49,19 @@ export declare const consumerMachine: import("xstate").StateMachine<{}, {
             readonly on: {
                 readonly RELEASED: {
                     readonly target: "closed";
+                };
+            };
+        };
+        readonly retrying: {
+            readonly on: {
+                readonly ACQUIRED: {
+                    readonly target: "consuming";
+                };
+                readonly LOST: {
+                    readonly target: "releasing";
+                };
+                readonly STOP: {
+                    readonly target: "releasing";
                 };
             };
         };
@@ -87,6 +103,9 @@ export declare const consumerMachine: import("xstate").StateMachine<{}, {
                     readonly LOST: {
                         readonly target: "releasing";
                     };
+                    readonly RETRYING: {
+                        readonly target: "retrying";
+                    };
                     readonly STOP: {
                         readonly target: "releasing";
                     };
@@ -96,6 +115,19 @@ export declare const consumerMachine: import("xstate").StateMachine<{}, {
                 readonly on: {
                     readonly RELEASED: {
                         readonly target: "closed";
+                    };
+                };
+            };
+            readonly retrying: {
+                readonly on: {
+                    readonly ACQUIRED: {
+                        readonly target: "consuming";
+                    };
+                    readonly LOST: {
+                        readonly target: "releasing";
+                    };
+                    readonly STOP: {
+                        readonly target: "releasing";
                     };
                 };
             };
@@ -132,6 +164,7 @@ export interface ConsumeOptions {
     readonly resume?: LeaseFence;
     readonly afterSeq?: number;
     readonly onLease?: (lease: Lease.MainValue) => Effect.Effect<void>;
+    readonly onRetry?: (error: MailboxClientError) => Effect.Effect<void>;
     readonly leaseName?: string;
     readonly failOnHeld?: boolean;
     readonly unopenable?: (event: Defs.MessageEventValue, error: MailboxClientError) => Effect.Effect<Option.Option<OpenedMessage>>;

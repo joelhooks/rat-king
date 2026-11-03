@@ -17,6 +17,7 @@ import {
   prepareAlarmMail,
   sendAlarmDelivery,
 } from "./alarm-mail.ts";
+import type { ReaderWindowFacts } from "./alarm-reader-windows.ts";
 import { Delivery } from "./alarm.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
@@ -286,7 +287,13 @@ export const readerCrashSources = (config: Pick<StageConfigValue, "alarm">) =>
     : undefined;
 
 export const watchReaderCrashes = Effect.fn("Alarm.watchReaderCrashes")(
-  function* watchReaderCrashes(config: StageConfigValue, directory: string) {
+  function* watchReaderCrashes<R>(
+    config: StageConfigValue,
+    directory: string,
+    windows: Effect.Effect<ReaderWindowFacts | null, never, R> = Effect.succeed(
+      {}
+    )
+  ) {
     const sources = readerCrashSources(config);
 
     if (sources === undefined) {
@@ -369,10 +376,16 @@ export const watchReaderCrashes = Effect.fn("Alarm.watchReaderCrashes")(
     };
 
     const pass = Effect.gen(function* pass() {
+      const currentWindows = yield* windows;
+
+      if (currentWindows === null) {
+        return;
+      }
+
       const observations = yield* Effect.forEach(
         sources,
         (source) =>
-          collectReaderHeartbeats(source).pipe(
+          collectReaderHeartbeats(source, currentWindows).pipe(
             Effect.timeout("2 seconds"),
             Effect.catchCause(() => Effect.succeed({ crashes: [], seen: [] }))
           ),

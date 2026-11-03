@@ -48,13 +48,15 @@ with tempfile.TemporaryDirectory() as tmp:
     for action in ['precopy', 'snapshot']:
         events.clear()
         run(action, str(staging))
-        assert events.count('sync') == 1, events
-        assert events.count('file') == 1, events
-        assert events.count('dir') == 1, events
-        position = events.index('sync')
-        assert 'copy' not in events[position:], events
-        if action == 'snapshot':
-            assert 'stats' in events[position:], events
+        if action == 'precopy':
+            assert events.count('sync') == 1, events
+            assert events.count('file') == 1, events
+            assert events.count('dir') == 1, events
+            assert 'copy' not in events[events.index('sync'):], events
+        else:
+            assert events.count('sync') == 0, events
+            assert events.count('file') == 2, events
+            assert events.count('stats') == 0, events
         for name in ['celld', 'seaweedfs']:
             assert tree(staging/name) == tree(data/name), 'Staging differs from source'
         (data/'celld/added').write_bytes(b'added' + bytes(len(payloads)))
@@ -62,7 +64,7 @@ with tempfile.TemporaryDirectory() as tmp:
 `;
 
 it.effect.prop(
-  "precopy and snapshot copy without per-file fsync, sync the staged tree once before the snapshot is checked, and stage byte-identical trees",
+  "precopy syncs once, stopped snapshots avoid global sync and full-tree verification, and both stage byte-identical trees",
   {
     payloads: Arbitrary.schema(
       Schema.Array(Schema.Uint8Array).check(Schema.isMaxLength(12))

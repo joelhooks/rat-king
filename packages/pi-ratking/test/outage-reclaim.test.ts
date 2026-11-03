@@ -18,6 +18,9 @@ import { HttpClient, HttpClientResponse } from "effect/http";
 import { TestClock } from "effect/testing";
 import { expect } from "vitest";
 
+import { crashedReader } from "../../../stacks/nest/turn-crash-record.ts";
+import { ReaderHeartbeat } from "../../ratking-client/src/reader-health.ts";
+import { runEffectModel } from "../../ratking-client/test/pass-launcher-model.ts";
 import { fakeMailbox, quietSocket } from "./fake-mailbox.ts";
 import { harness } from "./harness.ts";
 
@@ -111,6 +114,10 @@ const serve = (server: Server, session: string, slow: boolean) => {
       if (nsid.endsWith(".renewLease")) {
         const input = yield* decode(Renew.Input, request);
 
+        if (!held || input.generation !== server.serial) {
+          return respond(request, { error: "LeaseExpired" }, 409);
+        }
+
         server.until = now + TTL_MS;
 
         return respond(request, { lease: lease(server, input.did) });
@@ -200,4 +207,119 @@ it.effect.prop(
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 12 }, timeout: 600_000 }
+);
+
+it.effect.prop(
+  "a planned mid-lease outage of 20–150 seconds transitions through retrying to live without a takeover or synthetic crashed turn",
+  {
+    duration: Schema.Int.check(
+      Schema.isBetween({ maximum: 150_000, minimum: 20_000 })
+    ),
+    slow: Schema.Boolean,
+    start: Schema.Int.check(
+      Schema.isBetween({ maximum: 150_000, minimum: 140_000 })
+    ),
+  },
+  ({ duration, start, slow }) =>
+    Effect.gen(function* plannedStop() {
+      const fs = yield* FileSystem.FileSystem;
+      const state = yield* fs.makeTempDirectoryScoped();
+      const begin = yield* Clock.currentTimeMillis;
+      const transitions: string[] = [];
+      let leaseUntil = begin + TTL_MS;
+
+      const server: Server = {
+        holder: "me",
+        outageFrom: begin + start,
+        outageUntil: begin + start + duration,
+        serial: 0,
+        until: begin,
+      };
+
+      yield* Effect.gen(function* proof() {
+        const ratking = yield* RatKing;
+
+        yield* ratking.run(
+          {
+            alive: () => true,
+            env: Option.some("tester"),
+            onState: (reader) => {
+              transitions.push(reader._tag);
+
+              if (ReaderState.$is("Live")(reader)) {
+                leaseUntil = Date.parse(reader.expiresAt);
+              }
+            },
+            owner: Option.some("desk"),
+            pane: Option.none(),
+            pid: 1,
+            session: "me",
+          },
+          () => Effect.void
+        );
+
+        const invariant = Effect.gen(function* invariant() {
+          const { reader } = yield* ratking.status;
+          const now = yield* Clock.currentTimeMillis;
+
+          const beat = ReaderHeartbeat.make({
+            acquisitionSince: DateTime.makeUnsafe(begin),
+            generation: server.serial,
+            lastConsumeOk: DateTime.makeUnsafe(begin),
+            lastError: null,
+            leaseHeldSince: null,
+            leaseTtlMs: TTL_MS,
+            leaseUntil: DateTime.makeUnsafe(leaseUntil),
+            name: "tester",
+            owner: "desk",
+            pid: 1,
+            session: "me",
+            startedAt: DateTime.makeUnsafe(begin),
+            state: reader._tag,
+            updatedAt: DateTime.makeUnsafe(now),
+          });
+
+          expect(
+            crashedReader(beat, now, {
+              backup: { end: server.outageUntil, start: server.outageFrom },
+            })
+          ).toBeUndefined();
+          expect(transitions).not.toContain("SendOnly");
+          expect(transitions).not.toContain("Refused");
+          expect(server.holder).toBe("me");
+          expect(server.serial).toBeLessThanOrEqual(2);
+        });
+
+        yield* runEffectModel(
+          () => ({ model: { phase: 0 }, real: {} }),
+          [start, duration, 160_000].map((millis, phase) => ({
+            check: (model: Readonly<{ phase: number }>) =>
+              model.phase === phase,
+            run: (model: { phase: number }) =>
+              advance(millis).pipe(
+                Effect.andThen(invariant),
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    model.phase += 1;
+                  })
+                )
+              ),
+            toString: () => ["live", "outage", "recovered"][phase] ?? "step",
+          }))
+        );
+
+        expect(ReaderState.$is("Live")((yield* ratking.status).reader)).toBe(
+          true
+        );
+        expect(transitions).toContain("Retrying");
+      }).pipe(
+        Effect.provide(
+          Layer.provideMerge(
+            harness(state, serve(server, "me", slow)),
+            quietSocket
+          )
+        )
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  { arbitrary: { runs: 6 }, timeout: 120_000 }
 );

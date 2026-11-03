@@ -32,9 +32,7 @@ with tempfile.TemporaryDirectory() as tmp:
         return out.getvalue().strip()
     if phase == 'idle':
         staging = pathlib.Path(run('stage'))
-        (staging/'snapshot.json').write_text(json.dumps({'celld': {}, 'seaweedfs': {}}))
-        for name in ['celld', 'seaweedfs']:
-            (staging/name).mkdir()
+        run('snapshot', str(staging))
         run('pack', str(staging))
         assert any(argv[:2] == ['ionice', '-c3'] for argv in calls), calls
         if hasattr(os, 'getpriority'):
