@@ -4759,9 +4759,20 @@ var consumerMachine = createMachine({
     },
     closed: { type: "final" },
     consuming: {
-      on: { LOST: { target: "releasing" }, STOP: { target: "releasing" } }
+      on: {
+        LOST: { target: "releasing" },
+        RETRYING: { target: "retrying" },
+        STOP: { target: "releasing" }
+      }
     },
     releasing: { on: { RELEASED: { target: "closed" } } },
+    retrying: {
+      on: {
+        ACQUIRED: { target: "consuming" },
+        LOST: { target: "releasing" },
+        STOP: { target: "releasing" }
+      }
+    },
     waiting: { on: { RETRY: { target: "acquiring" } } }
   }
 });
@@ -4923,14 +4934,23 @@ var consume = (mailbox, did, handler, options) => Effect30.scoped(
       if (actual !== void 0 && (actual.leaseId !== current.leaseId || actual.generation !== current.generation)) {
         reason = "LeaseTakenOver";
       }
-      yield* logLease(
-        reason === "LeaseExpired" || reason === "LeaseRenewalFailed" && unavailable(error) ? "lapse" : "loss",
-        current,
-        `${reason}: ${error.reason}`
-      );
+      let event = reason === "LeaseExpired" ? "lapse" : "loss";
+      if (reason === "LeaseRenewalFailed" && unavailable(error)) {
+        event = "retry";
+      }
+      yield* logLease(event, current, `${reason}: ${error.reason}`);
       return yield* Effect30.fail(
         new MailboxClientError({ error: reason, reason: error.reason })
       );
+    });
+    const retrying = (error) => unavailable(error) ? step("RETRYING").pipe(
+      Effect30.andThen(options.onRetry?.(error) ?? Effect30.void)
+    ) : Effect30.void;
+    const recovered = (renewed) => Effect30.gen(function* recoverReader() {
+      if (renewed || state.matches("retrying")) {
+        yield* step("ACQUIRED");
+        yield* options.onLease?.(current) ?? Effect30.void;
+      }
     });
     const renew = Effect30.gen(function* renew2() {
       const now = yield* Clock6.currentTimeMillis;
@@ -4983,7 +5003,9 @@ var consume = (mailbox, did, handler, options) => Effect30.scoped(
           (error) => options.onRetryMetric?.(retryFailure("renew", error)) ?? Effect30.void
         ),
         Effect30.tapError(
-          (error) => logLease("renew-failed", current, error.reason)
+          (error) => logLease("renew-failed", current, error.reason).pipe(
+            Effect30.andThen(retrying(error))
+          )
         ),
         Effect30.retry(
           Schedule3.spaced("1 second").pipe(
@@ -5025,13 +5047,20 @@ var consume = (mailbox, did, handler, options) => Effect30.scoped(
         )
       );
       yield* logLease("renew", current, "renewed");
-      if (options.onLease !== void 0) {
-        yield* options.onLease(current);
-      }
+      yield* recovered(true);
       return yield* Effect30.void;
     }).pipe(Effect30.repeat(Schedule3.spaced("0 millis")), Effect30.catch(lost));
     const handed = handoffHistory();
     const intake = mailbox.watch(options.afterSeq ?? 0, fence()).pipe(
+      Stream2.tap(() => recovered(false)),
+      Stream2.tapError(retrying),
+      Stream2.retry(
+        Schedule3.spaced("1 second").pipe(
+          Schedule3.while(
+            ({ input }) => unavailable(input)
+          )
+        )
+      ),
       Stream2.runForEach(
         (batch) => Effect30.forEach(
           batch.events,

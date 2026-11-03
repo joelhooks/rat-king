@@ -1,6 +1,9 @@
 import { DateTime, Schema } from "effect";
 
-import { readerVerdict } from "../../packages/ratking-client/src/reader-health.ts";
+import {
+  READER_STUCK_MS,
+  readerVerdict,
+} from "../../packages/ratking-client/src/reader-health.ts";
 import type { ReaderHeartbeatValue } from "../../packages/ratking-client/src/reader-health.ts";
 import { SessionsBackupFact, sessionsBackupReading } from "./alarm-backups.ts";
 import { AlarmKey, AlarmReading } from "./alarm-config.ts";
@@ -15,6 +18,7 @@ import {
   overrunEvidence,
 } from "./alarm-maintenance.ts";
 import type { Cover } from "./alarm-maintenance.ts";
+import { readerRecovering } from "./alarm-reader-windows.ts";
 import { RecallCanaryFact, recallCanaryReading } from "./alarm-recall.ts";
 import {
   WakeSighting,
@@ -351,13 +355,22 @@ const slotReading = (facts: typeof AlarmFacts.Type): AlarmReadingValue => {
   );
 };
 
-const readerReading = (facts: typeof AlarmFacts.Type): AlarmReadingValue => {
+const readerReading = (
+  facts: typeof AlarmFacts.Type,
+  now: number
+): AlarmReadingValue => {
   if (facts.readers === null) {
     return unknown;
   }
 
   const stuck = facts.readers.seen.filter(
-    (reader) => reader.verdict === "stuck"
+    (reader) =>
+      reader.verdict === "stuck" &&
+      !readerRecovering(
+        now - reader.idleSeconds * 1000 + READER_STUCK_MS,
+        facts,
+        now
+      )
   );
 
   if (stuck.length > 0) {
@@ -687,7 +700,7 @@ export const observeAlarms = (
     "instance.down": instanceReading(facts, sources, now),
     "issuer.broken": doctorReading(facts, sources),
     "quarantine.growth": quarantineReading(facts),
-    "readers.stuck": readerReading(facts),
+    "readers.stuck": readerReading(facts, now),
     "recall.flowing-canary": recallCanaryReading(facts.recallCanary),
     "ship.churn": shipChurnReading(facts, now),
     "ship.failed": shipReading(facts),

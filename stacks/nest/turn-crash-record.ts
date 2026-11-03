@@ -3,10 +3,13 @@ import { DateTime, Option, Schema } from "effect";
 import { Turn } from "../../packages/lexicon/turns.ts";
 import type { TurnValue } from "../../packages/lexicon/turns.ts";
 import type { ReaderHeartbeatValue } from "../../packages/ratking-client/src/reader-health.ts";
+import { readerRecovering } from "./alarm-reader-windows.ts";
+import type { ReaderWindowFacts } from "./alarm-reader-windows.ts";
 
 export const crashedReader = (
   beat: ReaderHeartbeatValue,
-  now: number
+  now: number,
+  windows: ReaderWindowFacts = {}
 ): TurnValue | undefined => {
   if (
     beat.owner === undefined ||
@@ -16,19 +19,28 @@ export const crashedReader = (
     return undefined;
   }
 
-  const expired =
-    beat.leaseUntil !== undefined &&
-    beat.leaseUntil !== null &&
-    now >= DateTime.toEpochMillis(beat.leaseUntil);
+  const expiredAt =
+    beat.leaseUntil === undefined || beat.leaseUntil === null
+      ? Number.POSITIVE_INFINITY
+      : DateTime.toEpochMillis(beat.leaseUntil);
 
-  const acquiring =
+  const acquiringAt =
     beat.state === "Acquiring" &&
     beat.acquisitionSince !== undefined &&
-    beat.leaseTtlMs !== undefined &&
-    now >=
-      DateTime.toEpochMillis(beat.acquisitionSince) + beat.leaseTtlMs + 10_000;
+    beat.leaseTtlMs !== undefined
+      ? DateTime.toEpochMillis(beat.acquisitionSince) + beat.leaseTtlMs + 10_000
+      : Number.POSITIVE_INFINITY;
+
+  const expired = now >= expiredAt;
+  const acquiring = now >= acquiringAt;
 
   if (!expired && !acquiring) {
+    return undefined;
+  }
+
+  const since = expired ? expiredAt : acquiringAt;
+
+  if (readerRecovering(since, windows, now)) {
     return undefined;
   }
 

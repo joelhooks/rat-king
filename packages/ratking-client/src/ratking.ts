@@ -1276,6 +1276,25 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             ),
             Effect.asVoid
           ),
+        onRetry: (error) =>
+          Effect.gen(function* retryReader() {
+            const attempt = yield* Ref.updateAndGet(
+              attempts,
+              (count) => count + 1
+            );
+
+            yield* Ref.update(health, (current) => ({
+              ...current,
+              lastError: Option.some(errorTag(error)),
+            }));
+            yield* setState(
+              ReaderState.Retrying({
+                attempt,
+                name: Option.some(own.name),
+                reason: reasonOf(error),
+              })
+            );
+          }),
         onSkip: ({ messageId, reason, senderDid, seq }) =>
           Effect.logWarning("Rat King skipped a delivery", {
             messageId,

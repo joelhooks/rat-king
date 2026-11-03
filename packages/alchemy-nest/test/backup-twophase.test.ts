@@ -71,7 +71,7 @@ with tempfile.TemporaryDirectory() as tmp:
         raw = bytearray(staged_volume.read_bytes())
         raw[offset] ^= 0xFF
         staged_volume.write_bytes(bytes(raw))
-    if phase in ['tail', 'prefix-mismatch', 'shrunk', 'new-inode', 'recent', 'bad-manifest', 'non-volume-grow']:
+    if phase in ['append', 'interior-corruption', 'tail', 'prefix-mismatch', 'shrunk', 'new-inode', 'recent', 'bad-manifest', 'non-volume-grow']:
         if phase == 'non-volume-grow':
             for other in [data/'celld/state.db', data/'seaweedfs/filer.log']:
                 staged = staging/other.relative_to(data)
@@ -82,6 +82,8 @@ with tempfile.TemporaryDirectory() as tmp:
                     stream.write(b'grown' * 100)
         if phase == 'tail':
             tamper(0)
+        if phase == 'interior-corruption':
+            tamper(old_size // 2)
         if phase == 'prefix-mismatch':
             tamper(old_size - 10)
         if phase == 'recent':
@@ -89,7 +91,7 @@ with tempfile.TemporaryDirectory() as tmp:
         if phase == 'bad-manifest':
             (staging/'precopy.json').write_text('[1]')
             tamper(5)
-        if phase in ['tail', 'prefix-mismatch']:
+        if phase in ['append', 'interior-corruption', 'tail', 'prefix-mismatch']:
             with volume.open('ab') as stream:
                 stream.write(b'appended' * 100)
         if phase == 'shrunk':
@@ -101,14 +103,19 @@ with tempfile.TemporaryDirectory() as tmp:
             replacement.write_bytes(bytes(range(255, -1, -1)) * 900)
             os.replace(replacement, volume)
         run('snapshot', str(staging))
-        if phase == 'tail':
-            assert staged_volume.stat().st_ino == volume_inode
-            expected = bytearray(volume.read_bytes())
-            expected[0] ^= 0xFF
-            assert staged_volume.read_bytes() == bytes(expected), 'Tail path rewrote the prefix'
-            assert staged_volume.stat().st_mtime_ns == volume.stat().st_mtime_ns
+        if phase == 'interior-corruption':
+            try:
+                run('pack', str(staging))
+                raise AssertionError('Corrupt precopy prefix was archived')
+            except RuntimeError:
+                assert not (staging/'archive.json').exists()
         else:
             same(staging)
+        if phase == 'tail':
+            assert staged_volume.stat().st_ino != volume_inode
+        if phase == 'append':
+            assert staged_volume.stat().st_ino == volume_inode
+            run('pack', str(staging))
         print('TWOPHASE_PASSED')
         sys.exit(0)
     for index in range(len(payloads)):
@@ -125,8 +132,7 @@ with tempfile.TemporaryDirectory() as tmp:
         (data/'seaweedfs/keep').unlink()
         (data/'seaweedfs/keep').mkdir()
         (data/'seaweedfs/keep/inner').write_bytes(b'inner')
-        (staging/'seaweedfs/ghost').mkdir()
-        (staging/'seaweedfs/ghost/file').write_bytes(b'ghost')
+
     run('snapshot', str(staging))
     same(staging)
     if phase == 'delta':
@@ -140,6 +146,8 @@ const phases = [
   "type-change",
   "cold",
   "budget",
+  "append",
+  "interior-corruption",
   "tail",
   "prefix-mismatch",
   "shrunk",
@@ -150,7 +158,7 @@ const phases = [
 ] as const;
 
 it.effect.prop(
-  "a warm staging copy converges on the changed source after only the delta or appended tail is copied, falls back to a whole-file copy when the tail is unsafe, a cold copy still matches, and the stop budget still fires",
+  "a warm copy converges on the changed source, guarded volume tails preserve the precopy checksum, prefix corruption cannot publish, and cold-copy and stop-budget recovery still work",
   {
     payloads: Arbitrary.schema(
       Schema.Array(Schema.Uint8Array).check(Schema.isMaxLength(12))

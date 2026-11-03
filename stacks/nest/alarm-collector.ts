@@ -16,6 +16,7 @@ import { HeartbeatJson } from "../../packages/ratking-client/src/reader-health.t
 import { collectSessionsBackup } from "./alarm-backups.ts";
 import { collectInstanceHealth } from "./alarm-instances.ts";
 import { readMaintenance } from "./alarm-maintenance.ts";
+import type { ReaderWindowFacts } from "./alarm-reader-windows.ts";
 import { collectRecallCanary } from "./alarm-recall.ts";
 import type { DeployMarker, WindowReceipt } from "./alarm-sources.ts";
 import { AlarmFacts, CacheBreach, sightReaders } from "./alarm-sources.ts";
@@ -47,11 +48,14 @@ export const READER_PROBE_LIMIT = "30 seconds";
 export const collectReaderHeartbeats = Effect.fn(
   "Alarm.collectReaderHeartbeats"
 )(
-  function* readHeartbeats(source: {
-    readonly dir: string;
-    readonly host: string;
-    readonly ssh?: string;
-  }) {
+  function* readHeartbeats(
+    source: {
+      readonly dir: string;
+      readonly host: string;
+      readonly ssh?: string;
+    },
+    windows: ReaderWindowFacts = {}
+  ) {
     const fs = yield* FileSystem.FileSystem;
 
     const script = yield* fs.readFileString(
@@ -116,7 +120,7 @@ export const collectReaderHeartbeats = Effect.fn(
 
     return {
       crashes: beats.flatMap(({ beat }) => {
-        const record = crashedReader(beat, now.now);
+        const record = crashedReader(beat, now.now, windows);
 
         return record === undefined || beat.owner === undefined
           ? []
@@ -407,6 +411,7 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
         maintenance: observations.maintenance,
         quarantine: observations.quarantine,
         receipts: observations.receipts,
+        windows: observations.windows,
       }),
       ...livenessGap(observations.liveness),
       ...observations.readers.failed,

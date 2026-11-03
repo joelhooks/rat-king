@@ -1,5 +1,5 @@
 import type { Path } from "effect";
-import { Clock, Console, Effect, FileSystem, Schema } from "effect";
+import { Clock, Console, Effect, FileSystem, Ref, Schema } from "effect";
 import type { HttpClient } from "effect/http";
 import { FetchHttpClient } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -15,6 +15,7 @@ import {
   writeAlarmHeartbeat,
 } from "./alarm-heartbeat.ts";
 import { prepareAlarmDeliveries, sendAlarmDelivery } from "./alarm-mail.ts";
+import type { ReaderWindowFacts } from "./alarm-reader-windows.ts";
 import type {
   AlarmFacts,
   DeployMarker,
@@ -126,7 +127,9 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
       });
     }
 
-    yield* watchReaderCrashes(config, directory);
+    const readerWindows = yield* Ref.make<ReaderWindowFacts | null>(null);
+
+    yield* watchReaderCrashes(config, directory, Ref.get(readerWindows));
 
     const journal = `${directory}/alarms.jsonl`;
     let encoded = "";
@@ -184,6 +187,14 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           windows,
           withLiveness(liveness)
         );
+
+        if (
+          !(facts.failed ?? []).some((source) =>
+            ["health", "maintenance", "windows"].includes(source)
+          )
+        ) {
+          yield* Ref.set(readerWindows, facts);
+        }
 
         yield* reportMissing(facts);
 

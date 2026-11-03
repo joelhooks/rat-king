@@ -15,14 +15,13 @@ BACKUP_NAME = r'[0-9]{8}T[0-9]{6}\.[0-9]{6}Z-[0-9a-f]{32}'
 PUBLISH_PREFIX = '.mailbox-publish-'
 SNAPSHOT_ROOTS = ['seaweedfs', 'celld']
 SNAPSHOT_ARCHIVE = 'mailbox.tar.gz'
-# Copy and verify both stopped data directories inside this budget, or fail and restart.
 SNAPSHOT_BUDGET = 55
 PRECOPY_BUDGET = 900
 SETTLE_NS = 2000000000
 TAIL_CHECK = 65536
 FICLONE = 0x40049409
 LEGACY_STAGING_FILES = {'objects.tar', 'celld.tar', 'objects.tar.gz', 'celld.tar.gz', 'objects.tar.sqlite', 'objects.tar.sqlite-journal', 'objects.tar.data'}
-STAGING_FILES = LEGACY_STAGING_FILES | {'snapshot.json', 'precopy.json', 'archive.json', SNAPSHOT_ARCHIVE}
+STAGING_FILES = LEGACY_STAGING_FILES | {'snapshot.json', 'precopy.json', 'entries.json', 'archive.json', SNAPSHOT_ARCHIVE}
 PUBLISH_FILES = {'objects.tar', 'celld.tar', 'objects.tar.gz', 'celld.tar.gz', SNAPSHOT_ARCHIVE, 'manifest.pending', 'manifest.json'}
 def regular(path):
     return path.is_file() and not path.is_symlink()
@@ -91,14 +90,36 @@ def inactive(restoring=False, store_stopped=False):
             fail('Snapshot/restore requires its writers stopped')
         if not restoring and (fields.get('ActiveState') != 'inactive' or fields.get('Result') != 'success'):
             fail('Backup refuses a failed or timed-out shutdown')
-def digest(path):
+def stream_digest(stream, length=None):
     h = hashlib.sha256()
+    remaining = length
+    while remaining is None or remaining > 0:
+        chunk = stream.read(COPY_CHUNK if remaining is None else min(COPY_CHUNK, remaining))
+        if not chunk:
+            if remaining:
+                fail('Snapshot entry shorter than expected')
+            break
+        h.update(chunk)
+        if remaining is not None:
+            remaining -= len(chunk)
+    return h.hexdigest()
+def digest(path, length=None):
     with path.open('rb') as source:
         stream = CacheReader(source)
-        for chunk in iter(lambda: stream.read(COPY_CHUNK), b''):
-            h.update(chunk)
+        checksum = stream_digest(stream, length)
         stream.release()
-    return h.hexdigest()
+    return checksum
+def prefix_guard(path, size):
+    with path.open('rb') as stream:
+        first = stream.read(min(TAIL_CHECK, size))
+        stream.seek(max(0, size - TAIL_CHECK))
+        last = stream.read(min(TAIL_CHECK, size))
+    return hashlib.sha256(first + last).hexdigest()
+def content_matches(stream, expected):
+    if isinstance(expected, str):
+        return stream_digest(stream) == expected
+    size, prefix, tail = expected
+    return stream_digest(stream, size) == prefix and stream_digest(stream) == tail
 def entry_mode(path, tolerate):
     try:
         return path.lstat()
@@ -152,60 +173,45 @@ def copy_file(source, target):
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
-def staged_size(target):
-    try:
-        info = target.lstat()
-    except FileNotFoundError:
+def file_record(info, checksum, live, guard):
+    return [info.st_ino, info.st_size, info.st_mtime_ns, live and time.time_ns() - info.st_mtime_ns < SETTLE_NS, checksum, guard]
+def same_file(info, prior):
+    return prior is not None and not prior[3] and [info.st_ino, info.st_size, info.st_mtime_ns] == prior[:3]
+def append_tail(source, target, info, prior, key):
+    size = prior[1]
+    if not key.startswith('seaweedfs/') or source.suffix not in {'.dat', '.idx'} or info.st_ino != prior[0] or info.st_size <= size:
         return None
-    return info.st_size if stat.S_ISREG(info.st_mode) else None
-def tail_eligible(key):
-    return key.startswith('seaweedfs/') and key.endswith(('.dat', '.idx'))
-def file_plan(info, prior, key):
-    if prior is None:
-        return 'full'
-    inode, size, mtime, recent = prior
-    if info.st_ino != inode or info.st_size < size:
-        return 'full'
-    if info.st_size > size:
-        return 'tail' if tail_eligible(key) else 'full'
-    return 'full' if recent or info.st_mtime_ns != mtime else 'skip'
-def append_tail(source, target, info, size):
+    if not regular(target) or target.stat().st_size < size or prefix_guard(source, size) != prior[5] or prefix_guard(target, size) != prior[5]:
+        return None
     with source.open('rb') as src, target.open('r+b') as dst:
-        check = min(TAIL_CHECK, size)
-        src.seek(size - check)
-        dst.seek(size - check)
-        if src.read(check) != dst.read(check):
-            return False
+        src.seek(size)
         dst.truncate(size)
         dst.seek(size)
-        src.seek(size)
-        cache_copy(src, dst, hashed=False, durable=False)
+        checksum = cache_copy(src, dst, durable=False)
+    with target.open('rb') as stream:
+        stream.seek(size)
+        if stream_digest(stream) != checksum or target.stat().st_size != info.st_size:
+            fail('Appended snapshot entry does not match source')
     os.chmod(target, stat.S_IMODE(info.st_mode))
     os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
-    return staged_size(target) == info.st_size
-def sync_file(source, target, prior, key):
-    info = source.lstat()
-    if not stat.S_ISREG(info.st_mode):
-        fail('Special data file refused')
-    plan = file_plan(info, prior, key)
-    size = staged_size(target)
-    if plan == 'skip' and size != info.st_size:
-        plan = 'full'
-    if plan == 'tail' and (size is None or size < prior[1] or not append_tail(source, target, info, prior[1])):
-        plan = 'full'
-    if plan == 'full':
-        copy_file(source, target)
-    return info
-def sync_files(parent, copied, prefix, entries, known, record):
-    for name in sorted(entries):
-        try:
-            info = sync_file(parent / name, copied / name, known.get(prefix + name), prefix + name)
-        except FileNotFoundError:
-            if record is None:
-                raise
-            continue
-        if record is not None:
-            record[prefix + name] = [info.st_ino, info.st_size, info.st_mtime_ns, time.time_ns() - info.st_mtime_ns < SETTLE_NS]
+    return [size, prior[4], checksum]
+def sync_file(source, target, info, prior, live, key):
+    if same_file(info, prior):
+        return prior
+    tail = None if live or prior is None else append_tail(source, target, info, prior, key)
+    if tail is not None:
+        return file_record(info, tail, False, prior[5])
+    copy_file(source, target)
+    checksum = digest(target, info.st_size)
+    if not live and (target.stat().st_size != info.st_size or checksum != digest(source)):
+        fail('Changed snapshot entry does not match source')
+    guard = prefix_guard(target, info.st_size) if live else ''
+    return file_record(info, checksum, live, guard)
+def safe_entry(key):
+    parts = key.split('/')
+    return parts[0] in SNAPSHOT_ROOTS and not any(part in {'', '.', '..'} for part in parts)
+def valid_record(value):
+    return value is None or (isinstance(value, list) and len(value) == 6 and all(type(item) is int for item in value[:3]) and type(value[3]) is bool and isinstance(value[4], str) and re.fullmatch('[0-9a-f]{64}', value[4]) and isinstance(value[5], str) and re.fullmatch('[0-9a-f]{64}', value[5]))
 def load_precopy(staging):
     path = staging / 'precopy.json'
     if not regular(path):
@@ -214,8 +220,19 @@ def load_precopy(staging):
         known = json.loads(path.read_text())
     except ValueError:
         return {}
-    valid = isinstance(known, dict) and all(isinstance(value, list) and len(value) == 4 and all(type(item) is int for item in value[:3]) and type(value[3]) is bool for value in known.values())
+    valid = isinstance(known, dict) and all(safe_entry(key) and valid_record(value) for key, value in known.items())
     return known if valid else {}
+def remove_entry(path):
+    if path.is_dir() and not path.is_symlink():
+        shutil.rmtree(path)
+    else:
+        path.unlink(missing_ok=True)
+def prior_children(known):
+    children = {}
+    for key in known:
+        parent, _, name = key.rpartition('/')
+        children.setdefault(parent, set()).add(name)
+    return children
 def prune_stale(source, target):
     for directory, names, entries in os.walk(target, topdown=False):
         parent = pathlib.Path(directory)
@@ -233,29 +250,83 @@ def prune_stale(source, target):
                 shutil.rmtree(path)
             else:
                 path.unlink()
-def sync_tree(source, target, root, known, record=None):
+def sync_entry(source, target, key, info, known, children, record, live):
+    if key.startswith('celld/'):
+        require_safe_key(key)
+    if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
+        fail('Special data file refused')
+    if key in known and (known[key] is None) != stat.S_ISDIR(info.st_mode):
+        remove_entry(target)
+    if stat.S_ISDIR(info.st_mode):
+        scan_tree(source, target, key, known, children, record, live)
+    else:
+        record[key] = sync_file(source, target, info, known.get(key), live, key)
+def scan_tree(source, target, key, known, children, record, live):
+    target.mkdir(mode=0o700, exist_ok=True)
+    record[key] = None
+    present = set()
+    with os.scandir(source) as entries:
+        for entry in entries:
+            present.add(entry.name)
+            try:
+                info = entry.stat(follow_symlinks=False)
+                child = key + '/' + entry.name
+                prior = known.get(child)
+                if stat.S_ISREG(info.st_mode) and same_file(info, prior):
+                    record[child] = prior
+                else:
+                    sync_entry(source / entry.name, target / entry.name, child, info, known, children, record, live)
+            except FileNotFoundError:
+                if not live:
+                    raise
+    for name in children.get(key, set()) - present:
+        remove_entry(target / name)
+    shutil.copystat(source, target, follow_symlinks=False)
+def sync_tree(source, target, root, known, record=None, children=None):
     no_links(source)
+    if not source.is_dir():
+        fail('Missing data directory')
     if target.is_symlink() or (target.exists() and not target.is_dir()):
         fail('Staging tree is not a directory')
     target.mkdir(mode=0o700, exist_ok=True)
-    prune_stale(source, target)
-    directories = [(source, target)]
-    for directory, names, entries in os.walk(source):
-        parent = pathlib.Path(directory)
-        relative = parent.relative_to(source)
-        copied = target / relative
-        names.sort()
-        for name in names:
-            (copied / name).mkdir(mode=0o700, exist_ok=True)
-            directories.append((parent / name, copied / name))
-        prefix = root + '/' + ('' if str(relative) == '.' else relative.as_posix() + '/')
-        sync_files(parent, copied, prefix, entries, known, record)
-    for original, copied in reversed(directories):
-        try:
-            shutil.copystat(original, copied, follow_symlinks=False)
-        except FileNotFoundError:
-            if record is None:
-                raise
+    if not known:
+        prune_stale(source, target)
+    live = record is not None
+    captured = {} if record is None else record
+    scan_tree(source, target, root, known, prior_children(known) if children is None else children, captured, live)
+    return captured
+def entry_counts(entries):
+    counts = {name: {'bytes': 0, 'directories': 0, 'files': 0} for name in SNAPSHOT_ROOTS}
+    for key, value in entries.items():
+        root, separator, _ = key.partition('/')
+        if separator:
+            counts[root]['directories' if value is None else 'files'] += 1
+            counts[root]['bytes'] += 0 if value is None else value[1]
+    return counts
+def verify_snapshot(staging, entries, trees):
+    actual = {}
+    for root in SNAPSHOT_ROOTS:
+        for directory, names, files in os.walk(staging / root):
+            parent = pathlib.Path(directory)
+            actual[parent.relative_to(staging).as_posix()] = None
+            for name in files:
+                path = parent / name
+                info = path.lstat()
+                if not stat.S_ISREG(info.st_mode):
+                    fail('Special staged file refused')
+                key = path.relative_to(staging).as_posix()
+                expected = entries.get(key)
+                if expected is None:
+                    fail('Unexpected staged entry')
+                with path.open('rb') as stream:
+                    if not content_matches(CacheReader(stream), expected[4]):
+                        fail('Full snapshot content mismatch')
+                actual[key] = [info.st_size, info.st_mtime_ns]
+            if any((parent / name).is_symlink() for name in names):
+                fail('Staged symlink refused')
+    expected = {key: None if value is None else [value[1], value[2]] for key, value in entries.items()}
+    if actual != expected or entry_counts(entries) != trees:
+        fail('Full snapshot verification mismatch')
 def add_tree(archive, root, name):
     archive.add(root, arcname=name, recursive=False)
     for directory, names, entries in os.walk(root):
@@ -273,8 +344,7 @@ def add_tree(archive, root, name):
                 archive.addfile(info, reader)
                 reader.release()
             archive.members.clear()
-def snapshot_members(path, trees):
-    # Full inflate with CRC check; only regular files and directories under the snapshot roots.
+def snapshot_members(path, trees, entries=None):
     counts = {name: {'bytes': 0, 'directories': 0, 'files': 0} for name in SNAPSHOT_ROOTS}
     with cache_tar(path) as archive:
         for member in archive:
@@ -284,8 +354,16 @@ def snapshot_members(path, trees):
             if len(parts) > 1:
                 counts[parts[0]]['directories' if member.isdir() else 'files'] += 1
                 counts[parts[0]]['bytes'] += member.size if member.isfile() else 0
+            if entries is not None:
+                if member.name not in entries or member.isdir() != (entries[member.name] is None):
+                    fail('Snapshot archive entry mismatch')
+                expected = entries.pop(member.name)
+                if member.isfile():
+                    with archive.extractfile(member) as stream:
+                        if not content_matches(stream, expected[4]):
+                            fail('Snapshot archive content mismatch')
             archive.members.clear()
-    if counts != trees:
+    if counts != trees or entries:
         fail('Snapshot archive does not match its manifest')
 def staging_path(argument=4, prefix='.mailbox-backup-'):
     staging = pathlib.Path(sys.argv[argument])
@@ -428,18 +506,16 @@ elif operation == 'snapshot':
     signal.alarm(SNAPSHOT_BUDGET)
     inactive(store_stopped=True)
     staging = staging_path()
-    trees = {}
+    entries = {}
     known = load_precopy(staging)
+    children = prior_children(known)
     for name in SNAPSHOT_ROOTS:
-        trees[name] = tree_stats(data / name, key_names=name == 'celld')
-        sync_tree(data / name, staging / name, name, known)
-    sync_staged(staging)
-    for name in SNAPSHOT_ROOTS:
-        if tree_stats(staging / name) != trees[name]:
-            fail('Snapshot copy does not match source file count and bytes')
+        entries.update(sync_tree(data / name, staging / name, name, known, children=children))
+    trees = entry_counts(entries)
+    write_synced(staging / 'entries.json', entries)
     write_synced(staging / 'snapshot.json', trees)
     signal.alarm(0)
-    print('BACKUP_SNAPSHOT_VERIFIED ' + json.dumps(trees, sort_keys=True))
+    print('BACKUP_SNAPSHOT_CAPTURED ' + json.dumps(trees, sort_keys=True))
 elif operation == 'cgroup':
     report = {}
     try:
@@ -458,6 +534,8 @@ elif operation == 'cgroup':
 elif operation == 'pack':
     staging = staging_path()
     trees = json.loads((staging / 'snapshot.json').read_text())
+    entries = json.loads((staging / 'entries.json').read_text())
+    verify_snapshot(staging, entries, trees)
     target = staging / SNAPSHOT_ARCHIVE
     h = hashlib.sha256()
     with target.open('xb') as raw:
@@ -469,6 +547,7 @@ elif operation == 'pack':
         writer.sync()
     os.chmod(target, 0o600)
     size = target.stat().st_size
+    snapshot_members(target, trees, dict(entries))
     write_synced(staging / 'archive.json', {'bytes': size, 'sha256': h.hexdigest(), 'trees': trees})
     print(str(size))
 elif operation == 'share-open':
