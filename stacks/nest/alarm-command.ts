@@ -15,7 +15,8 @@ import {
   writeAlarmHeartbeat,
 } from "./alarm-heartbeat.ts";
 import { prepareAlarmDeliveries, sendAlarmDelivery } from "./alarm-mail.ts";
-import type { ReaderWindowFacts } from "./alarm-reader-windows.ts";
+import { updateReaderWindows } from "./alarm-reader-windows.ts";
+import type { ReaderWindowObservation } from "./alarm-reader-windows.ts";
 import type {
   AlarmFacts,
   DeployMarker,
@@ -127,7 +128,7 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
       });
     }
 
-    const readerWindows = yield* Ref.make<ReaderWindowFacts | null>(null);
+    const readerWindows = yield* Ref.make<ReaderWindowObservation | null>(null);
 
     yield* watchReaderCrashes(config, directory, Ref.get(readerWindows));
 
@@ -188,13 +189,10 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           withLiveness(liveness)
         );
 
-        if (
-          !(facts.failed ?? []).some((source) =>
-            ["health", "maintenance", "windows"].includes(source)
-          )
-        ) {
-          yield* Ref.set(readerWindows, facts);
-        }
+        const observedAt = yield* Clock.currentTimeMillis;
+        yield* Ref.update(readerWindows, (previous) =>
+          updateReaderWindows(previous, facts, observedAt)
+        );
 
         yield* reportMissing(facts);
 

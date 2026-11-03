@@ -70,6 +70,8 @@ const ATTEMPT_MS = Deadline.LEASE_MS;
 
 const RENEW_FLOOR_MS = 250;
 
+const LEASE_TTL_MS = 300_000;
+
 const attemptTimedOut = (reason: string) =>
   new MailboxClientError({ error: "MailboxUnavailable", reason });
 
@@ -77,8 +79,9 @@ const TIMED_OUT = "Renewal attempt timed out";
 
 const unavailable = (error: MailboxClientError) =>
   error.status === undefined
-    ? error.error === undefined || error.error === "MailboxUnavailable"
-    : error.status >= 500 || error.status === 429;
+    ? error.error === "MailboxUnavailable" ||
+      error.error === "SocketDisconnected"
+    : (error.status >= 500 && error.status < 600) || error.status === 429;
 
 const expiredRefusal = (error: MailboxClientError) =>
   error.error === "InvalidTransition" && error.reason === "Expired message";
@@ -106,7 +109,11 @@ export interface ConsumeOptions {
   readonly renders?: readonly string[];
   readonly resume?: LeaseFence;
   readonly afterSeq?: number;
-  readonly onLease?: (lease: Lease.MainValue) => Effect.Effect<void>;
+  readonly onLease?: (
+    lease: Lease.MainValue,
+    progress: boolean,
+    source: "acquire" | "intake" | "renew"
+  ) => Effect.Effect<void>;
   readonly onRetry?: (error: MailboxClientError) => Effect.Effect<void>;
   readonly leaseName?: string;
   readonly failOnHeld?: boolean;
@@ -140,7 +147,9 @@ export const consume = <E, R>(
 
         const input: AcquireRequest = {
           did,
-          expiresAt: DateTime.formatIso(DateTime.makeUnsafe(now + 300_000)),
+          expiresAt: DateTime.formatIso(
+            DateTime.makeUnsafe(now + LEASE_TTL_MS)
+          ),
           harness: options.harness,
         };
 
@@ -290,7 +299,7 @@ export const consume = <E, R>(
       yield* step("ACQUIRED");
 
       if (options.onLease !== undefined) {
-        yield* options.onLease(current);
+        yield* options.onLease(current, false, "acquire");
       }
 
       const fence = () => ({
@@ -343,19 +352,46 @@ export const consume = <E, R>(
           );
         });
 
-      const retrying = (error: MailboxClientError) =>
-        unavailable(error)
-          ? step("RETRYING").pipe(
-              Effect.andThen(options.onRetry?.(error) ?? Effect.void)
-            )
-          : Effect.void;
+      let intakeFailureSince: number | null = null;
+      let intakeVerifiedAt: number | null = null;
+      let checkpoint = options.afterSeq ?? 0;
+
+      const retrying = (error: MailboxClientError, intakeFailed = false) =>
+        Effect.gen(function* reportRetry() {
+          if (!unavailable(error)) {
+            return;
+          }
+
+          if (intakeFailed && intakeFailureSince === null) {
+            intakeFailureSince = yield* Clock.currentTimeMillis;
+          }
+
+          yield* step("RETRYING");
+          yield* options.onRetry?.(error) ?? Effect.void;
+        });
 
       const recovered = (renewed: boolean) =>
         Effect.gen(function* recoverReader() {
-          if (renewed || state.matches("retrying")) {
-            yield* step("ACQUIRED");
-            yield* options.onLease?.(current) ?? Effect.void;
+          const progress =
+            !renewed ||
+            (intakeFailureSince === null && intakeVerifiedAt !== null);
+
+          if (!renewed) {
+            intakeFailureSince = null;
+            intakeVerifiedAt = yield* Clock.currentTimeMillis;
           }
+
+          if (progress) {
+            yield* step("ACQUIRED");
+          }
+
+          yield* (
+            options.onLease?.(
+              current,
+              progress,
+              renewed ? "renew" : "intake"
+            ) ?? Effect.void
+          );
         });
 
       const renew = Effect.gen(function* renew() {
@@ -375,7 +411,7 @@ export const consume = <E, R>(
         const renewal = {
           ...fence(),
           expiresAt: DateTime.formatIso(
-            DateTime.makeUnsafe(renewedAt + 300_000)
+            DateTime.makeUnsafe(renewedAt + LEASE_TTL_MS)
           ),
         };
 
@@ -482,14 +518,23 @@ export const consume = <E, R>(
 
       const handed = handoffHistory();
 
-      const intake = mailbox.watch(options.afterSeq ?? 0, fence()).pipe(
+      const intake = Stream.suspend(() =>
+        mailbox.watch(checkpoint, fence(), (error) => retrying(error, true))
+      ).pipe(
         Stream.tap(() => recovered(false)),
-        Stream.tapError(retrying),
+        Stream.tapError((error) => retrying(error, true)),
         Stream.retry(
           Schedule.spaced("1 second").pipe(
             Schedule.while(
               ({ input }: { readonly input: MailboxClientError }) =>
-                unavailable(input)
+                Clock.currentTimeMillis.pipe(
+                  Effect.map(
+                    (now) =>
+                      unavailable(input) &&
+                      intakeFailureSince !== null &&
+                      now - intakeFailureSince + 1000 < LEASE_TTL_MS
+                  )
+                )
             )
           )
         ),
@@ -598,6 +643,12 @@ export const consume = <E, R>(
                 }
               }),
             { discard: true }
+          ).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                checkpoint = batch.throughSeq;
+              })
+            )
           )
         ),
         Effect.catch((error): Effect.Effect<never, E | MailboxClientError> => {

@@ -435,7 +435,9 @@ it.live.prop(
           )
         );
         expect(server.acquires).toBeGreaterThan(0);
-      }).pipe(Effect.provide(harness(state, http)));
+      }).pipe(
+        Effect.provide(Layer.provideMerge(harness(state, http), quietSocket))
+      );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 8 }, timeout: 60_000 }
 );

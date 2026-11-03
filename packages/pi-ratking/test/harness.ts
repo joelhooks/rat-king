@@ -13,7 +13,7 @@ import {
   AdmissionBackoff,
 } from "@rat-king/ratking-client/ratking";
 import { SecretStore } from "@rat-king/ratking-client/secrets";
-import { Effect, Layer, Option, Redacted, Duration } from "effect";
+import { Effect, FileSystem, Layer, Option, Redacted, Duration } from "effect";
 import { HttpClient } from "effect/http";
 
 const secrets = (values: Map<string, string>) =>
@@ -58,7 +58,8 @@ export const harness = (
     readonly relays?: readonly RelaySettingValue[];
     readonly documents?: readonly string[];
     readonly secrets?: Map<string, string>;
-  } = {}
+  } = {},
+  filesystem?: FileSystem.FileSystem
 ) =>
   ratKingLayer.pipe(
     Layer.provideMerge(Layer.succeed(AdmissionBackoff, () => Duration.zero)),
@@ -87,5 +88,12 @@ export const harness = (
       )
     ),
     Layer.provideMerge(Layer.succeed(HttpClient.HttpClient, http)),
-    Layer.provideMerge(NodeServices.layer)
+    Layer.provideMerge(
+      filesystem === undefined
+        ? NodeServices.layer
+        : Layer.merge(
+            NodeServices.layer,
+            Layer.succeed(FileSystem.FileSystem, filesystem)
+          )
+    )
   );

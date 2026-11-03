@@ -7,10 +7,12 @@ import { backupScript } from "../../../stacks/nest/backup-script.ts";
 import { localExec } from "../src/local-exec.ts";
 
 const fixture = String.raw`
-import base64, contextlib, io, json, os, pathlib, subprocess, sys, tempfile
+import base64, contextlib, io, json, os, pathlib, subprocess, sys, tempfile, time
 script, encoded, fault = sys.argv[1:4]
 payloads = [base64.b64decode(value) for value in json.loads(encoded)]
 events = []
+clock = [time.time_ns()]
+script = script.replace('    checksum = digest(target, info.st_size)', '    if live and source.name == "race":\n        clock[0] += 3 * 10**9\n        source.write_bytes(b"after!")\n        os.utime(source, ns=(info.st_atime_ns, info.st_mtime_ns))\n    checksum = digest(target, info.st_size)')
 script = script.replace('def copy_file(source, target):', 'def copy_file(source, target):\n    events.append(("copy", str(source.relative_to(data))))')
 script = script.replace('def digest(path, length=None):', 'def digest(path, length=None):\n    events.append(("digest", str(path)))')
 script = script.replace('def tree_stats(root, key_names=False, live=False):', 'def tree_stats(root, key_names=False, live=False):\n    raise AssertionError("Stopped full walk")')
@@ -30,6 +32,8 @@ with tempfile.TemporaryDirectory() as tmp:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(value)
         os.utime(target, ns=(10**18, 10**18))
+    put('celld/race', b'before')
+    os.utime(data/'celld/race', ns=(clock[0] - 1500_000_000, clock[0] - 1500_000_000))
     put('celld/keep', b'keep')
     put('celld/replace', b'before')
     put('celld/deleted/child', b'delete')
@@ -39,12 +43,18 @@ with tempfile.TemporaryDirectory() as tmp:
     def run(action, *args, source=script):
         sys.argv = ['backup', action, str(data), str(backup), *args]
         out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            exec(source, {'events': events})
+        original_clock = time.time_ns
+        try:
+            time.time_ns = lambda: clock[0]
+            with contextlib.redirect_stdout(out):
+                exec(source, {'events': events, 'clock': clock})
+        finally:
+            time.time_ns = original_clock
         return out.getvalue().strip()
     staging = pathlib.Path(run('stage'))
     run('precopy', str(staging))
-    changed = {'celld/replace', 'celld/new'}
+    assert json.loads((staging/'precopy.json').read_text())['celld/race'][3], 'Copy duration hid the recent stat race'
+    changed = {'celld/replace', 'celld/new', 'celld/race'}
     replacement = data/'celld/replacement'
     replacement.write_bytes(b'after!')
     os.utime(replacement, ns=(10**18, 10**18))

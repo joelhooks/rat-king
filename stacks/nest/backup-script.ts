@@ -173,8 +173,8 @@ def copy_file(source, target):
     except BaseException:
         temporary.unlink(missing_ok=True)
         raise
-def file_record(info, checksum, live, guard):
-    return [info.st_ino, info.st_size, info.st_mtime_ns, live and time.time_ns() - info.st_mtime_ns < SETTLE_NS, checksum, guard]
+def file_record(info, checksum, live, guard, observed_at):
+    return [info.st_ino, info.st_size, info.st_mtime_ns, live and observed_at - info.st_mtime_ns < SETTLE_NS, checksum, guard]
 def same_file(info, prior):
     return prior is not None and not prior[3] and [info.st_ino, info.st_size, info.st_mtime_ns] == prior[:3]
 def append_tail(source, target, info, prior, key):
@@ -195,18 +195,18 @@ def append_tail(source, target, info, prior, key):
     os.chmod(target, stat.S_IMODE(info.st_mode))
     os.utime(target, ns=(info.st_atime_ns, info.st_mtime_ns))
     return [size, prior[4], checksum]
-def sync_file(source, target, info, prior, live, key):
+def sync_file(source, target, info, prior, live, key, observed_at):
     if same_file(info, prior):
         return prior
     tail = None if live or prior is None else append_tail(source, target, info, prior, key)
     if tail is not None:
-        return file_record(info, tail, False, prior[5])
+        return file_record(info, tail, False, prior[5], observed_at)
     copy_file(source, target)
     checksum = digest(target, info.st_size)
     if not live and (target.stat().st_size != info.st_size or checksum != digest(source)):
         fail('Changed snapshot entry does not match source')
     guard = prefix_guard(target, info.st_size) if live else ''
-    return file_record(info, checksum, live, guard)
+    return file_record(info, checksum, live, guard, observed_at)
 def safe_entry(key):
     parts = key.split('/')
     return parts[0] in SNAPSHOT_ROOTS and not any(part in {'', '.', '..'} for part in parts)
@@ -250,7 +250,7 @@ def prune_stale(source, target):
                 shutil.rmtree(path)
             else:
                 path.unlink()
-def sync_entry(source, target, key, info, known, children, record, live):
+def sync_entry(source, target, key, info, known, children, record, live, observed_at):
     if key.startswith('celld/'):
         require_safe_key(key)
     if not (stat.S_ISREG(info.st_mode) or stat.S_ISDIR(info.st_mode)):
@@ -260,7 +260,7 @@ def sync_entry(source, target, key, info, known, children, record, live):
     if stat.S_ISDIR(info.st_mode):
         scan_tree(source, target, key, known, children, record, live)
     else:
-        record[key] = sync_file(source, target, info, known.get(key), live, key)
+        record[key] = sync_file(source, target, info, known.get(key), live, key, observed_at)
 def scan_tree(source, target, key, known, children, record, live):
     target.mkdir(mode=0o700, exist_ok=True)
     record[key] = None
@@ -269,13 +269,14 @@ def scan_tree(source, target, key, known, children, record, live):
         for entry in entries:
             present.add(entry.name)
             try:
+                observed_at = time.time_ns()
                 info = entry.stat(follow_symlinks=False)
                 child = key + '/' + entry.name
                 prior = known.get(child)
                 if stat.S_ISREG(info.st_mode) and same_file(info, prior):
                     record[child] = prior
                 else:
-                    sync_entry(source / entry.name, target / entry.name, child, info, known, children, record, live)
+                    sync_entry(source / entry.name, target / entry.name, child, info, known, children, record, live, observed_at)
             except FileNotFoundError:
                 if not live:
                     raise

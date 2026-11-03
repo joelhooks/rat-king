@@ -175,7 +175,7 @@ export declare const prepare: (options: PrepareOptions) => Effect.Effect<{
             readonly limit?: number;
         }) => Effect.Effect<import("../lexicon/mailbox.list.js").OutputValue, MailboxClientError>;
         readonly poll: (afterSeq: number) => Effect.Effect<import("./mailbox.js").Batch, MailboxClientError>;
-        readonly watch: (afterSeq: number, fence: LeaseFence) => import("effect/Stream").Stream<import("./mailbox.js").Batch, MailboxClientError>;
+        readonly watch: (afterSeq: number, fence: LeaseFence, onRetry?: (error: MailboxClientError) => Effect.Effect<void>) => import("effect/Stream").Stream<import("./mailbox.js").Batch, MailboxClientError>;
         readonly open: (envelope: Defs.EncryptedEnvelopeValue, receipt?: Defs.ReceiptValue) => Effect.Effect<OpenedMessage, MailboxClientError>;
         readonly deliver: (input: import("./mailbox.js").FencedMessage) => Effect.Effect<import("../lexicon/mailbox.deliver.js").OutputValue, MailboxClientError>;
         readonly ack: (input: import("./mailbox.js").FencedMessage) => Effect.Effect<import("../lexicon/mailbox.ack.js").OutputValue, MailboxClientError>;

@@ -6,6 +6,9 @@ declare const MailboxClientError_base: Schema.Class<MailboxClientError, Schema.T
 }>, import("effect/Cause").YieldableError>;
 export declare class MailboxClientError extends MailboxClientError_base {
 }
+export declare const connectionFailure: (failure: {
+    readonly _tag: string;
+}) => boolean;
 export declare const clientError: (failure: {
     readonly _tag: string;
 }) => MailboxClientError;

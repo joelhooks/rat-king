@@ -17,7 +17,8 @@ import {
   prepareAlarmMail,
   sendAlarmDelivery,
 } from "./alarm-mail.ts";
-import type { ReaderWindowFacts } from "./alarm-reader-windows.ts";
+import { readerSweepWindows } from "./alarm-reader-windows.ts";
+import type { ReaderWindowObservation } from "./alarm-reader-windows.ts";
 import { Delivery } from "./alarm.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
@@ -290,8 +291,12 @@ export const watchReaderCrashes = Effect.fn("Alarm.watchReaderCrashes")(
   function* watchReaderCrashes<R>(
     config: StageConfigValue,
     directory: string,
-    windows: Effect.Effect<ReaderWindowFacts | null, never, R> = Effect.succeed(
-      {}
+    windows: Effect.Effect<
+      ReaderWindowObservation | null,
+      never,
+      R
+    > = Clock.currentTimeMillis.pipe(
+      Effect.map((observedAt) => ({ facts: {}, observedAt }))
     )
   ) {
     const sources = readerCrashSources(config);
@@ -375,17 +380,28 @@ export const watchReaderCrashes = Effect.fn("Alarm.watchReaderCrashes")(
         ),
     };
 
-    const pass = Effect.gen(function* pass() {
-      const currentWindows = yield* windows;
+    const started = yield* Clock.currentTimeMillis;
+    let warnedAt = Number.NEGATIVE_INFINITY;
 
-      if (currentWindows === null) {
+    const pass = Effect.gen(function* pass() {
+      const now = yield* Clock.currentTimeMillis;
+      const currentWindows = readerSweepWindows(yield* windows, started, now);
+
+      if (currentWindows.facts === null) {
         return;
+      }
+
+      if (currentWindows.status === "stale" && now - warnedAt >= 60_000) {
+        yield* Effect.logWarning(
+          "Reader window facts missing or stale; sweeping without maintenance suppression"
+        );
+        warnedAt = now;
       }
 
       const observations = yield* Effect.forEach(
         sources,
         (source) =>
-          collectReaderHeartbeats(source, currentWindows).pipe(
+          collectReaderHeartbeats(source, currentWindows.facts).pipe(
             Effect.timeout("2 seconds"),
             Effect.catchCause(() => Effect.succeed({ crashes: [], seen: [] }))
           ),

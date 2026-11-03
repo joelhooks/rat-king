@@ -1,5 +1,6 @@
 import { it } from "@effect/vitest";
 import { Effect, Schema } from "effect";
+import { TestClock } from "effect/testing";
 import { expect, vi } from "vitest";
 
 import type { AlarmFacts } from "../../../stacks/nest/alarm-sources.ts";
@@ -100,6 +101,7 @@ it.effect(
         )
       );
 
+      yield* TestClock.setTime(2_300_000);
       const windows = yield* readWindowReceipts({ read }, "/state/deploy.json");
       const baseline = 1_000_000;
 
@@ -124,7 +126,7 @@ it.effect(
       const during = observeAlarms(
         first.sources,
         { ...facts, entered: 2_100_000, windows },
-        2_101_000
+        2_301_000
       );
 
       expect(windows).toHaveLength(1);

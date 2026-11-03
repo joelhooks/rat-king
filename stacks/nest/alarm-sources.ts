@@ -118,11 +118,11 @@ export const WindowReceipt = Schema.Struct({
   approval: Schema.NonEmptyString,
   celldAfter: Schema.NullOr(CelldSighting),
   celldBefore: CelldSighting,
-  end: Schema.Number,
+  end: Schema.Finite,
   kind: Schema.Literal("window"),
   reason: Schema.NonEmptyString,
   result: Schema.Literals(["success", "failed"]),
-  start: Schema.Number,
+  start: Schema.Finite,
 });
 
 export const AlarmFacts = Schema.Struct({

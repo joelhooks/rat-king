@@ -1205,7 +1205,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               )
             )
           ),
-        onLease: (lease) =>
+        onLease: (lease, progress, source) =>
           Ref.get(lastLease).pipe(
             Effect.tap((previous) =>
               Effect.sync(() => {
@@ -1235,7 +1235,9 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                   Effect.flatMap((now) =>
                     Ref.update(health, (current) => ({
                       ...current,
-                      lastConsumeOk: Option.some(now),
+                      lastConsumeOk: progress
+                        ? Option.some(now)
+                        : current.lastConsumeOk,
                       leaseHeldSince: Option.orElseSome(
                         current.leaseHeldSince,
                         () => now
@@ -1264,14 +1266,16 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                   generation: lease.generation,
                   leaseId: lease.leaseId,
                 }),
-                setState(
-                  ReaderState.Live({
-                    did: own.did,
-                    expiresAt: lease.expiresAt,
-                    generation: lease.generation,
-                    name: own.name,
-                  })
-                ),
+                progress || source === "acquire"
+                  ? setState(
+                      ReaderState.Live({
+                        did: own.did,
+                        expiresAt: lease.expiresAt,
+                        generation: lease.generation,
+                        name: own.name,
+                      })
+                    )
+                  : Effect.void,
               ])
             ),
             Effect.asVoid

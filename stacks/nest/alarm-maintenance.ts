@@ -1,4 +1,4 @@
-import { DateTime, Effect, FileSystem, Schema } from "effect";
+import { Clock, DateTime, Effect, FileSystem, Schema } from "effect";
 
 import { AgentName } from "../../packages/ratking-client/src/name.ts";
 
@@ -16,7 +16,9 @@ export const WINDOW_MEMORY_MS = 86_400_000;
 
 export const MaintenanceWindow = Schema.Struct({
   ended: Schema.optionalKey(Schema.Finite),
-  graceMinutes: Schema.Finite.check(Schema.isGreaterThanOrEqualTo(0)),
+  graceMinutes: Schema.Finite.check(
+    Schema.isBetween({ maximum: 999, minimum: 0 })
+  ),
   instance: Schema.NonEmptyString,
   owner: AgentName,
   reason: Schema.NonEmptyString,
@@ -45,6 +47,15 @@ export interface Cover {
   readonly start: number;
   readonly until: number;
 }
+
+export const boundedWindow = (start: number, end: number) =>
+  Number.isFinite(start) &&
+  Number.isFinite(end) &&
+  end >= start &&
+  end - start <= MAX_WINDOW_MS;
+
+export const closedWindow = (start: number, end: number, now: number) =>
+  boundedWindow(start, end) && end <= now;
 
 export const clock = (at: number) =>
   `${DateTime.formatIso(DateTime.makeUnsafe(at)).slice(11, 16)}Z`;
@@ -151,6 +162,13 @@ export const readMaintenance = Effect.fn("Alarm.readMaintenance")(
       Schema.fromJsonString(MaintenanceFile)
     )(yield* fs.readFileString(file));
 
-    return decoded.windows;
+    const now = yield* Clock.currentTimeMillis;
+
+    return decoded.windows.filter(
+      (window) =>
+        boundedWindow(window.start, window.until) &&
+        (window.ended === undefined ||
+          closedWindow(window.start, window.ended, now))
+    );
   }
 );
