@@ -57,6 +57,13 @@ export const boundedWindow = (start: number, end: number) =>
 export const closedWindow = (start: number, end: number, now: number) =>
   boundedWindow(start, end) && end <= now;
 
+export const receiptMillis = (seconds: number) => Math.round(seconds * 1000);
+
+export const closedReceiptWindow = (start: number, end: number, now: number) =>
+  end >= start &&
+  end <= now / 1000 &&
+  boundedWindow(receiptMillis(start), receiptMillis(end));
+
 export const clock = (at: number) =>
   `${DateTime.formatIso(DateTime.makeUnsafe(at)).slice(11, 16)}Z`;
 
