@@ -93,7 +93,7 @@ declare const RatKingMailbox_base: Context.ServiceClass<RatKingMailbox, "@rat-ki
         readonly limit?: number;
     }) => Effect.Effect<List.OutputValue, MailboxClientError>;
     readonly poll: (afterSeq: number) => Effect.Effect<Batch, MailboxClientError>;
-    readonly watch: (afterSeq: number, fence: LeaseFence) => Stream.Stream<Batch, MailboxClientError>;
+    readonly watch: (afterSeq: number, fence: LeaseFence, onRetry?: (error: MailboxClientError) => Effect.Effect<void>) => Stream.Stream<Batch, MailboxClientError>;
     readonly open: (envelope: Defs.EncryptedEnvelopeValue, receipt?: Defs.ReceiptValue) => Effect.Effect<OpenedMessage, MailboxClientError>;
     readonly deliver: (input: FencedMessage) => Effect.Effect<Deliver.OutputValue, MailboxClientError>;
     readonly ack: (input: FencedMessage) => Effect.Effect<Ack.OutputValue, MailboxClientError>;

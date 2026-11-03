@@ -47,11 +47,19 @@ const socketError = (error: Socket.SocketError) => {
   });
 };
 
+const socketRetry =
+  (observer?: (error: MailboxClientError) => Effect.Effect<void>) =>
+  (error: MailboxClientError) =>
+    error.error === "SocketDisconnected"
+      ? (observer?.(error) ?? Effect.void)
+      : Effect.void;
+
 export const watch = (
   config: ClientConfig,
   poll: (afterSeq: number) => Effect.Effect<Batch, MailboxClientError>,
   afterSeq: number,
-  fence: LeaseFence
+  fence: LeaseFence,
+  onRetry?: (error: MailboxClientError) => Effect.Effect<void>
 ): Stream.Stream<Batch, MailboxClientError> =>
   Stream.suspend(() => {
     let checkpoint = afterSeq;
@@ -172,12 +180,12 @@ export const watch = (
     );
 
     return connection.pipe(
-      Stream.filter((batch) => batch.events.length > 0),
       Stream.tap((batch) =>
         Effect.sync(() => {
           checkpoint = batch.throughSeq;
         })
       ),
+      Stream.tapError(socketRetry(onRetry)),
       Stream.retry(
         Schedule.exponential("100 millis").pipe(
           Schedule.jittered,
@@ -185,8 +193,13 @@ export const watch = (
             Effect.succeed(Math.min(5000, Duration.toMillis(duration)))
           ),
           Schedule.while(
-            ({ input }: { readonly input: MailboxClientError }) =>
-              input.error === "SocketDisconnected"
+            ({
+              input,
+              elapsed,
+              duration,
+            }: Schedule.Metadata<unknown, MailboxClientError>) =>
+              input.error === "SocketDisconnected" &&
+              elapsed + Duration.toMillis(duration) < 300_000
           )
         )
       )

@@ -68,7 +68,16 @@ const idleSocket = WebSocketPort.of({
       removeEventListener: (type, listener) => {
         events.removeEventListener(type, listener);
       },
-      send: () => {},
+      send: () => {
+        events.dispatchEvent(
+          new MessageEvent("message", {
+            data: JSON.stringify({
+              $type: "sh.mschf.ratking.mailbox.subscribe#notice",
+              seq: 0,
+            }),
+          })
+        );
+      },
     };
   },
 });

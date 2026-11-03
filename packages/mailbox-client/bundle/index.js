@@ -3354,24 +3354,40 @@ var signatures = Layer2.succeed(
 import { Clock as Clock5, Context as Context11, Effect as Effect28, Layer as Layer5, Option as Option4, Schema as Schema47 } from "effect";
 
 // packages/mailbox-client/src/attention.ts
-import { Effect as Effect18, Schema as Schema36 } from "effect";
+import { Effect as Effect18, Schema as Schema37 } from "effect";
+
+// packages/lexicon/src/transport-failure.ts
+import { Schema as Schema34 } from "effect";
+var TransportFailure = class extends Schema34.TaggedError()(
+  "TransportFailure",
+  { cause: Schema34.Defect(), reason: Schema34.String }
+) {
+};
 
 // packages/mailbox-client/src/error.ts
-import { Schema as Schema34 } from "effect";
-var MailboxClientError = class extends Schema34.TaggedError()(
+import { Predicate, Schema as Schema35 } from "effect";
+import { HttpClientError } from "effect/http";
+var MailboxClientError = class extends Schema35.TaggedError()(
   "MailboxClientError",
   {
-    error: Schema34.optionalKey(Schema34.String),
-    reason: Schema34.String,
-    status: Schema34.optionalKey(Schema34.Finite)
+    error: Schema35.optionalKey(Schema35.String),
+    reason: Schema35.String,
+    status: Schema35.optionalKey(Schema35.Finite)
   }
 ) {
 };
+var connectionFailure = (failure3) => HttpClientError.isHttpClientError(failure3) && Predicate.isTagged(failure3.reason, "TransportError") || Predicate.isTagged(failure3, "TimeoutError");
 var clientError = (failure3) => {
-  if (Schema34.is(MailboxClientError)(failure3)) {
+  if (Schema35.is(MailboxClientError)(failure3)) {
     return failure3;
   }
-  if (Schema34.is(XrpcFailure)(failure3)) {
+  if (connectionFailure(failure3) || Schema35.is(TransportFailure)(failure3) && failure3.reason === "Service-auth HTTP connection unavailable") {
+    return new MailboxClientError({
+      error: "MailboxUnavailable",
+      reason: "Mailbox connection failed"
+    });
+  }
+  if (Schema35.is(XrpcFailure)(failure3)) {
     return new MailboxClientError({
       error: failure3.error,
       reason: failure3.message ?? "Mailbox XRPC call failed",
@@ -3382,17 +3398,17 @@ var clientError = (failure3) => {
 };
 
 // packages/mailbox-client/src/identity.ts
-import { Schema as Schema35 } from "effect";
-var PrivateJwk = Schema35.Struct({
-  crv: Schema35.Literal("P-256"),
-  d: Schema35.String,
-  kty: Schema35.Literal("EC"),
-  x: Schema35.String,
-  y: Schema35.String
+import { Schema as Schema36 } from "effect";
+var PrivateJwk = Schema36.Struct({
+  crv: Schema36.Literal("P-256"),
+  d: Schema36.String,
+  kty: Schema36.Literal("EC"),
+  x: Schema36.String,
+  y: Schema36.String
 });
-var Identity2 = Schema35.Struct({
+var Identity2 = Schema36.Struct({
   agreement: PrivateJwk,
-  did: Schema35.String.check(Schema35.isPattern(/^did:web:/u)),
+  did: Schema36.String.check(Schema36.isPattern(/^did:web:/u)),
   signing: PrivateJwk
 });
 var importSigning = (identity) => cryptoOperation(
@@ -3418,7 +3434,7 @@ var importAgreement = (identity) => cryptoOperation(
 var attentionBytes = (did, nsid, value) => canonical({ did, nsid, value });
 var attentionClient = (client, identity) => ({
   getPreferences: Effect18.fn("AttentionClient.getPreferences")(
-    () => Schema36.decodeUnknownEffect(Params3)({
+    () => Schema37.decodeUnknownEffect(Params3)({
       did: identity.did
     }).pipe(
       Effect18.flatMap(client.getPreferences),
@@ -3427,7 +3443,7 @@ var attentionClient = (client, identity) => ({
     )
   ),
   getStatus: Effect18.fn("AttentionClient.getStatus")(
-    (did = identity.did) => Schema36.decodeUnknownEffect(Params4)({ did }).pipe(
+    (did = identity.did) => Schema37.decodeUnknownEffect(Params4)({ did }).pipe(
       Effect18.flatMap(client.getStatus),
       Effect18.map((output) => output.status),
       Effect18.mapError(clientError)
@@ -3435,14 +3451,14 @@ var attentionClient = (client, identity) => ({
   ),
   putPreferences: Effect18.fn("AttentionClient.putPreferences")(
     function* putPreferences(prefs) {
-      const validated = yield* Schema36.decodeUnknownEffect(Main2)(prefs);
+      const validated = yield* Schema37.decodeUnknownEffect(Main2)(prefs);
       const key = yield* importSigning(identity);
       const signature3 = yield* sign(
         key,
         attentionBytes(identity.did, Method4.nsid, validated)
       );
-      const input = yield* Schema36.decodeUnknownEffect(
-        Schema36.toType(Input4)
+      const input = yield* Schema37.decodeUnknownEffect(
+        Schema37.toType(Input4)
       )({
         did: identity.did,
         keyId: `${identity.did}#atproto`,
@@ -3454,14 +3470,14 @@ var attentionClient = (client, identity) => ({
     Effect18.mapError(clientError)
   ),
   putStatus: Effect18.fn("AttentionClient.putStatus")(function* putStatus(status) {
-    const validated = yield* Schema36.decodeUnknownEffect(Main3)(status);
+    const validated = yield* Schema37.decodeUnknownEffect(Main3)(status);
     const key = yield* importSigning(identity);
     const signature3 = yield* sign(
       key,
       attentionBytes(identity.did, Method5.nsid, validated)
     );
-    const input = yield* Schema36.decodeUnknownEffect(
-      Schema36.toType(Input5)
+    const input = yield* Schema37.decodeUnknownEffect(
+      Schema37.toType(Input5)
     )({
       did: identity.did,
       keyId: `${identity.did}#atproto`,
@@ -3471,7 +3487,7 @@ var attentionClient = (client, identity) => ({
     return (yield* client.putStatus(input)).status;
   }, Effect18.mapError(clientError))
 });
-var defaultPreferences = () => Schema36.decodeUnknownSync(Main2)({
+var defaultPreferences = () => Schema37.decodeUnknownSync(Main2)({
   allow: [],
   forward: [],
   log: false,
@@ -3480,7 +3496,7 @@ var defaultPreferences = () => Schema36.decodeUnknownSync(Main2)({
   refuse: [],
   version: "0.1"
 });
-var defaultStatus = () => Schema36.decodeUnknownSync(Main3)({
+var defaultStatus = () => Schema37.decodeUnknownSync(Main3)({
   $type: "sh.mschf.ratking.attention.status",
   state: "available",
   version: "0.1"
@@ -3489,17 +3505,17 @@ var toBasisPoints = (decimal) => Math.round(decimal * 1e4);
 var fromBasisPoints = (points) => points / 1e4;
 
 // packages/mailbox-client/src/auth.ts
-import { Context as Context8, Effect as Effect19, Layer as Layer3, Schema as Schema38 } from "effect";
+import { Context as Context8, Effect as Effect19, Layer as Layer3, Schema as Schema39 } from "effect";
 
 // packages/mailbox-client/src/auth-failure.ts
-import { Schema as Schema37 } from "effect";
-var ServiceAuthFailure = class extends Schema37.TaggedError()(
+import { Schema as Schema38 } from "effect";
+var ServiceAuthFailure = class extends Schema38.TaggedError()(
   "XrpcFailure",
   {
-    error: Schema37.String,
-    message: Schema37.optionalKey(Schema37.String),
-    response: Schema37.Record(Schema37.String, Schema37.Json),
-    status: Schema37.Int
+    error: Schema38.String,
+    message: Schema38.optionalKey(Schema38.String),
+    response: Schema38.Record(Schema38.String, Schema38.Json),
+    status: Schema38.Int
   }
 ) {
 };
@@ -3521,13 +3537,13 @@ var unbase64url = (text) => Uint8Array.from(
   atob(text.replaceAll("-", "+").replaceAll("_", "/")),
   (character) => character.codePointAt(0) ?? 0
 );
-var Claims = Schema38.Struct({
-  aud: Schema38.String,
-  exp: Schema38.Int,
-  iat: Schema38.Int,
-  iss: Schema38.String,
-  jti: Schema38.String.check(Schema38.isMinLength(16)),
-  lxm: Schema38.String
+var Claims = Schema39.Struct({
+  aud: Schema39.String,
+  exp: Schema39.Int,
+  iat: Schema39.Int,
+  iss: Schema39.String,
+  jti: Schema39.String.check(Schema39.isMinLength(16)),
+  lxm: Schema39.String
 });
 var authFailure = (error, status = 400, message = error) => new ServiceAuthFailure({
   error,
@@ -3535,26 +3551,26 @@ var authFailure = (error, status = 400, message = error) => new ServiceAuthFailu
   response: { error, message },
   status
 });
-var PublicJwk2 = Schema38.Struct({
-  crv: Schema38.Literal("P-256"),
-  d: Schema38.optionalKey(Schema38.Never),
-  kty: Schema38.Literal("EC"),
-  x: Schema38.String,
-  y: Schema38.String
+var PublicJwk2 = Schema39.Struct({
+  crv: Schema39.Literal("P-256"),
+  d: Schema39.optionalKey(Schema39.Never),
+  kty: Schema39.Literal("EC"),
+  x: Schema39.String,
+  y: Schema39.String
 });
-var Document = Schema38.Struct({
-  authentication: Schema38.Array(Schema38.String),
-  id: Schema38.String,
-  keyAgreement: Schema38.Array(Schema38.String),
-  verificationMethod: Schema38.Array(
-    Schema38.Struct({
-      controller: Schema38.String,
-      id: Schema38.String,
+var Document = Schema39.Struct({
+  authentication: Schema39.Array(Schema39.String),
+  id: Schema39.String,
+  keyAgreement: Schema39.Array(Schema39.String),
+  verificationMethod: Schema39.Array(
+    Schema39.Struct({
+      controller: Schema39.String,
+      id: Schema39.String,
       publicKeyJwk: PublicJwk2
     })
   )
 });
-var Documents = Schema38.Array(Document);
+var Documents = Schema39.Array(Document);
 var DidResolver = class extends Context8.Service()("mailbox/DidResolver") {
 };
 var documentResolver = (lookup) => Layer3.succeed(
@@ -3588,10 +3604,10 @@ var documentResolver = (lookup) => Layer3.succeed(
 var staticResolver = (documents) => documentResolver(
   (did) => Effect19.succeed(documents.find((candidate) => candidate.id === did))
 );
-var Header = Schema38.Struct({
-  alg: Schema38.Literal("ES256"),
-  kid: Schema38.optionalKey(Schema38.String),
-  typ: Schema38.optionalKey(Schema38.Literal("JWT"))
+var Header = Schema39.Struct({
+  alg: Schema39.Literal("ES256"),
+  kid: Schema39.optionalKey(Schema39.String),
+  typ: Schema39.optionalKey(Schema39.Literal("JWT"))
 });
 var json = (text) => Effect19.try({
   catch: () => authFailure("AuthRequired", 401),
@@ -3606,13 +3622,13 @@ var authenticateClaims = Effect19.fn("ServiceAuth.authenticateClaims")(
       return yield* Effect19.fail(authFailure("AuthRequired", 401));
     }
     const [headerText = "", claimsText = "", signatureText = ""] = token.split(".");
-    const header = yield* Schema38.decodeUnknownEffect(
-      Schema38.fromJsonString(Header)
+    const header = yield* Schema39.decodeUnknownEffect(
+      Schema39.fromJsonString(Header)
     )(yield* json(headerText)).pipe(
       Effect19.mapError(() => authFailure("AuthRequired", 401))
     );
-    const claims = yield* Schema38.decodeUnknownEffect(
-      Schema38.fromJsonString(Claims)
+    const claims = yield* Schema39.decodeUnknownEffect(
+      Schema39.fromJsonString(Claims)
     )(yield* json(claimsText)).pipe(
       Effect19.mapError(() => authFailure("AuthRequired", 401))
     );
@@ -3710,40 +3726,40 @@ var timeoutOption = (duration) => (effect) => effect.pipe(
 );
 
 // packages/mailbox-client/src/delegation.ts
-import { Effect as Effect22, Schema as Schema40 } from "effect";
+import { Effect as Effect22, Schema as Schema41 } from "effect";
 
 // packages/mailbox-client/src/payload.ts
-import { Effect as Effect21, Schema as Schema39 } from "effect";
-var AgentName = Schema39.String.check(
-  Schema39.isPattern(/^(?:[a-z0-9]+(?:-[a-z0-9]+)*\/)?[a-z][a-z0-9_-]{0,31}$/u)
+import { Effect as Effect21, Schema as Schema40 } from "effect";
+var AgentName = Schema40.String.check(
+  Schema40.isPattern(/^(?:[a-z0-9]+(?:-[a-z0-9]+)*\/)?[a-z][a-z0-9_-]{0,31}$/u)
 );
 var SUMMARY_MAX = 280;
 var SUMMARY_HARD_MAX = 400;
 var SUMMARY_WIRE_MAX = SUMMARY_MAX;
-var Kind = Schema39.Literals(["message", "ask", "reply", "data"]);
-var ReplyRef = Schema39.Struct({
-  parent: Schema39.String,
-  root: Schema39.String
+var Kind = Schema40.Literals(["message", "ask", "reply", "data"]);
+var ReplyRef = Schema40.Struct({
+  parent: Schema40.String,
+  root: Schema40.String
 });
-var Payload = Schema39.Struct({
-  body: Schema39.String,
-  cc: Schema39.optionalKey(Schema39.Array(AgentName)),
+var Payload = Schema40.Struct({
+  body: Schema40.String,
+  cc: Schema40.optionalKey(Schema40.Array(AgentName)),
   from: AgentName,
-  kind: Schema39.optionalKey(Kind),
-  label: Schema39.optionalKey(Schema39.String.check(Schema39.isMaxLength(256))),
-  quiet: Schema39.optionalKey(Schema39.Literal(true)),
-  reply: Schema39.optionalKey(ReplyRef),
-  replyTo: Schema39.optionalKey(Schema39.String),
-  summary: Schema39.optionalKey(
-    Schema39.String.check(Schema39.isMaxLength(SUMMARY_HARD_MAX))
+  kind: Schema40.optionalKey(Kind),
+  label: Schema40.optionalKey(Schema40.String.check(Schema40.isMaxLength(256))),
+  quiet: Schema40.optionalKey(Schema40.Literal(true)),
+  reply: Schema40.optionalKey(ReplyRef),
+  replyTo: Schema40.optionalKey(Schema40.String),
+  summary: Schema40.optionalKey(
+    Schema40.String.check(Schema40.isMaxLength(SUMMARY_HARD_MAX))
   ),
-  thread: Schema39.optionalKey(Schema39.String),
-  to: Schema39.optionalKey(AgentName)
+  thread: Schema40.optionalKey(Schema40.String),
+  to: Schema40.optionalKey(AgentName)
 });
-var PayloadJson = Schema39.fromJsonString(Payload);
+var PayloadJson = Schema40.fromJsonString(Payload);
 var encodePayload = Effect21.fn("RatKing.encodePayload")(
   function* encodePayload2(payload) {
-    return yield* Schema39.encodeEffect(PayloadJson)(payload);
+    return yield* Schema40.encodeEffect(PayloadJson)(payload);
   }
 );
 
@@ -3756,7 +3772,7 @@ var openDelegated = Effect22.fn("Mailbox.openDelegated")(
       });
     }
     const signed = yield* openPlaintext(envelope, resolveSigningKey);
-    const payload = yield* Schema40.decodeUnknownEffect(PayloadJson)(
+    const payload = yield* Schema41.decodeUnknownEffect(PayloadJson)(
       new TextDecoder().decode(signed.body)
     );
     if (receipt.delegatedFor === void 0 || payload.to !== receipt.delegatedFor) {
@@ -3769,52 +3785,52 @@ var openDelegated = Effect22.fn("Mailbox.openDelegated")(
 );
 
 // packages/lexicon/src/mailbox.getPresence.ts
-import { Effect as Effect23, Schema as Schema41 } from "effect";
-var Params15 = Schema41.StructWithRest(
-  Schema41.Struct({
+import { Effect as Effect23, Schema as Schema42 } from "effect";
+var Params15 = Schema42.StructWithRest(
+  Schema42.Struct({
     did: lexString({ format: "did", type: "string" }).pipe(
-      Schema41.brand("Lexicon:did")
+      Schema42.brand("Lexicon:did")
     )
   }),
-  [Schema41.Record(Schema41.String, Data)]
+  [Schema42.Record(Schema42.String, Data)]
 );
-var Input14 = Schema41.Undefined;
-var Output14 = Schema41.StructWithRest(
-  Schema41.Struct({
+var Input14 = Schema42.Undefined;
+var Output14 = Schema42.StructWithRest(
+  Schema42.Struct({
     did: lexString({ format: "did", type: "string" }).pipe(
-      Schema41.brand("Lexicon:did")
+      Schema42.brand("Lexicon:did")
     ),
-    held: Schema41.Boolean,
-    lastHeldAt: Schema41.optionalKey(
+    held: Schema42.Boolean,
+    lastHeldAt: Schema42.optionalKey(
       lexString({ format: "datetime", type: "string" }).pipe(
-        Schema41.brand("Lexicon:datetime")
+        Schema42.brand("Lexicon:datetime")
       )
     ),
-    renders: Schema41.optionalKey(
-      Schema41.Array(lexString({ type: "string" })).check(
-        Schema41.isMinLength(0),
-        Schema41.isMaxLength(9007199254740991)
+    renders: Schema42.optionalKey(
+      Schema42.Array(lexString({ type: "string" })).check(
+        Schema42.isMinLength(0),
+        Schema42.isMaxLength(9007199254740991)
       )
     )
   }),
-  [Schema41.Record(Schema41.String, Data)]
+  [Schema42.Record(Schema42.String, Data)]
 );
-var ParamsFromQuery5 = Schema41.StructWithRest(
-  Schema41.Struct({ did: Schema41.String }),
-  [Schema41.Record(Schema41.String, Data)]
-).pipe(Schema41.decodeTo(Params15));
+var ParamsFromQuery5 = Schema42.StructWithRest(
+  Schema42.Struct({ did: Schema42.String }),
+  [Schema42.Record(Schema42.String, Data)]
+).pipe(Schema42.decodeTo(Params15));
 var encodeParams9 = Effect23.fn("lexicon.encodeParams")(
   function* encodeParams10(params) {
     return entries(
-      yield* Schema41.decodeUnknownEffect(Params2)(
-        yield* Schema41.encodeEffect(ParamsFromQuery5)(params)
+      yield* Schema42.decodeUnknownEffect(Params2)(
+        yield* Schema42.encodeEffect(ParamsFromQuery5)(params)
       )
     );
   }
 );
 var decodeParams9 = Effect23.fn("lexicon.decodeParams")(
   function* decodeParams10(entries2) {
-    return yield* Schema41.decodeUnknownEffect(ParamsFromQuery5)(
+    return yield* Schema42.decodeUnknownEffect(ParamsFromQuery5)(
       parameters(entries2)
     );
   }
@@ -3834,13 +3850,13 @@ var Method14 = {
 };
 
 // packages/mailbox-client/src/record-visibility.ts
-import { Effect as Effect24, Option as Option2, Schema as Schema42 } from "effect";
+import { Effect as Effect24, Option as Option2, Schema as Schema43 } from "effect";
 var readerCannotRender = (name, type, presence) => type !== "unknown" && presence?.held === true && presence.renders !== void 0 && !presence.renders.some(
   (render) => render.endsWith(".*") ? type.startsWith(render.slice(0, -1)) : type === render
 ) ? `NOT SENT: ReaderCannotRender. ${name}'s reader doesn't render ${type} (it predates typed records or doesn't declare it). Send prose instead, or ask them to restart.` : void 0;
 var recordType = (body) => {
-  const result = Schema42.decodeUnknownOption(
-    Schema42.fromJsonString(Schema42.Struct({ $type: Schema42.String }))
+  const result = Schema43.decodeUnknownOption(
+    Schema43.fromJsonString(Schema43.Struct({ $type: Schema43.String }))
   )(body);
   return Option2.match(result, {
     onNone: () => "unknown",
@@ -3850,14 +3866,14 @@ var recordType = (body) => {
 var lookupPresence = Effect24.fn("Mailbox.lookupPresence")(
   function* lookupPresence2(did) {
     const transport = yield* Transport;
-    const params = yield* Schema42.decodeUnknownEffect(Params15)({
+    const params = yield* Schema43.decodeUnknownEffect(Params15)({
       did
     }).pipe(Effect24.mapError(clientError));
     const response = yield* transport.request({
       input: void 0,
       method: "GET",
       nsid: Method14.nsid,
-      params: yield* Schema42.encodeEffect(Params15)(params).pipe(
+      params: yield* Schema43.encodeEffect(Params15)(params).pipe(
         Effect24.mapError(clientError)
       )
     }).pipe(Effect24.mapError(clientError));
@@ -3866,7 +3882,7 @@ var lookupPresence = Effect24.fn("Mailbox.lookupPresence")(
         reason: "Presence request refused"
       });
     }
-    return yield* Schema42.decodeUnknownEffect(Output14)(
+    return yield* Schema43.decodeUnknownEffect(Output14)(
       response.body
     ).pipe(Effect24.mapError(clientError));
   }
@@ -3886,14 +3902,6 @@ var tid = (millis, clockId, micros = 0) => {
 var randomTid = (millis) => {
   const words = crypto.getRandomValues(new Uint16Array(2));
   return tid(millis, words[0] ?? 0, words[1] ?? 0);
-};
-
-// packages/lexicon/src/transport-failure.ts
-import { Schema as Schema43 } from "effect";
-var TransportFailure = class extends Schema43.TaggedError()(
-  "TransportFailure",
-  { cause: Schema43.Defect(), reason: Schema43.String }
-) {
 };
 
 // packages/mailbox-client/src/transport.ts
@@ -3965,9 +3973,9 @@ var transportLayer = (endpoint, audience, identity) => Layer4.effect(
           )
         ),
         Effect25.mapError(
-          () => new TransportFailure({
+          (failure3) => new TransportFailure({
             cause: null,
-            reason: "Service-auth HTTP call failed"
+            reason: connectionFailure(failure3) ? "Service-auth HTTP connection unavailable" : "Service-auth HTTP call failed"
           })
         )
       )
@@ -4060,7 +4068,7 @@ import {
   Duration as Duration2,
   Effect as Effect27,
   Option as Option3,
-  Predicate,
+  Predicate as Predicate2,
   Schedule as Schedule2,
   Schema as Schema46,
   Stream
@@ -4069,7 +4077,7 @@ import { Socket } from "effect/socket";
 var WebSocketPort = class extends Context10.Service()("@rat-king/mailbox-client/WebSocketPort") {
 };
 var socketError = (error) => {
-  if (Predicate.isTagged(error.reason, "SocketCloseError")) {
+  if (Predicate2.isTagged(error.reason, "SocketCloseError")) {
     if (error.reason.code === 4409) {
       return new MailboxClientError({
         error: "LeaseMismatch",
@@ -4088,7 +4096,8 @@ var socketError = (error) => {
     reason: "Mailbox subscription disconnected"
   });
 };
-var watch = (config, poll, afterSeq, fence) => Stream.suspend(() => {
+var socketRetry = (observer) => (error) => error.error === "SocketDisconnected" ? observer?.(error) ?? Effect27.void : Effect27.void;
+var watch = (config, poll, afterSeq, fence, onRetry) => Stream.suspend(() => {
   let checkpoint = afterSeq;
   let connections = 0;
   const connection = Stream.unwrap(
@@ -4180,12 +4189,12 @@ var watch = (config, poll, afterSeq, fence) => Stream.suspend(() => {
     })
   );
   return connection.pipe(
-    Stream.filter((batch) => batch.events.length > 0),
     Stream.tap(
       (batch) => Effect27.sync(() => {
         checkpoint = batch.throughSeq;
       })
     ),
+    Stream.tapError(socketRetry(onRetry)),
     Stream.retry(
       Schedule2.exponential("100 millis").pipe(
         Schedule2.jittered,
@@ -4193,7 +4202,11 @@ var watch = (config, poll, afterSeq, fence) => Stream.suspend(() => {
           ({ duration }) => Effect27.succeed(Math.min(5e3, Duration2.toMillis(duration)))
         ),
         Schedule2.while(
-          ({ input }) => input.error === "SocketDisconnected"
+          ({
+            input,
+            elapsed,
+            duration
+          }) => input.error === "SocketDisconnected" && elapsed + Duration2.toMillis(duration) < 3e5
         )
       )
     )
@@ -4564,7 +4577,7 @@ var layer = (config, resolverLayer = staticResolver(config.documents)) => Layer5
           Effect28.mapError(clientError)
         )
       ),
-      watch: (afterSeq, fence) => watch(config, poll, afterSeq, fence)
+      watch: (afterSeq, fence, onRetry) => watch(config, poll, afterSeq, fence, onRetry)
     });
   })
 ).pipe(
@@ -4639,7 +4652,7 @@ import {
   Effect as Effect35,
   Layer as Layer6,
   Match as Match4,
-  Predicate as Predicate2,
+  Predicate as Predicate3,
   Result as Result4,
   Schema as Schema58
 } from "effect";
@@ -4778,9 +4791,10 @@ var consumerMachine = createMachine({
 });
 var ATTEMPT_MS = LEASE_MS;
 var RENEW_FLOOR_MS = 250;
+var LEASE_TTL_MS = 3e5;
 var attemptTimedOut = (reason) => new MailboxClientError({ error: "MailboxUnavailable", reason });
 var TIMED_OUT = "Renewal attempt timed out";
-var unavailable = (error) => error.status === void 0 ? error.error === void 0 || error.error === "MailboxUnavailable" : error.status >= 500 || error.status === 429;
+var unavailable = (error) => error.status === void 0 ? error.error === "MailboxUnavailable" || error.error === "SocketDisconnected" : error.status >= 500 && error.status < 600 || error.status === 429;
 var expiredRefusal = (error) => error.error === "InvalidTransition" && error.reason === "Expired message";
 var settledRefusal = (error) => error.error === "InvalidTransition";
 var releasedRefusal = (error) => error.error === "LeaseMismatch";
@@ -4794,7 +4808,9 @@ var consume = (mailbox, did, handler, options) => Effect30.scoped(
       const now = yield* Clock6.currentTimeMillis;
       const input = {
         did,
-        expiresAt: DateTime2.formatIso(DateTime2.makeUnsafe(now + 3e5)),
+        expiresAt: DateTime2.formatIso(
+          DateTime2.makeUnsafe(now + LEASE_TTL_MS)
+        ),
         harness: options.harness
       };
       if (options.renders !== void 0) {
@@ -4912,7 +4928,7 @@ var consume = (mailbox, did, handler, options) => Effect30.scoped(
     );
     yield* step("ACQUIRED");
     if (options.onLease !== void 0) {
-      yield* options.onLease(current);
+      yield* options.onLease(current, false, "acquire");
     }
     const fence = () => ({
       did,
@@ -4943,14 +4959,33 @@ var consume = (mailbox, did, handler, options) => Effect30.scoped(
         new MailboxClientError({ error: reason, reason: error.reason })
       );
     });
-    const retrying = (error) => unavailable(error) ? step("RETRYING").pipe(
-      Effect30.andThen(options.onRetry?.(error) ?? Effect30.void)
-    ) : Effect30.void;
-    const recovered = (renewed) => Effect30.gen(function* recoverReader() {
-      if (renewed || state.matches("retrying")) {
-        yield* step("ACQUIRED");
-        yield* options.onLease?.(current) ?? Effect30.void;
+    let intakeFailureSince = null;
+    let intakeVerifiedAt = null;
+    let checkpoint = options.afterSeq ?? 0;
+    const retrying = (error, intakeFailed = false) => Effect30.gen(function* reportRetry() {
+      if (!unavailable(error)) {
+        return;
       }
+      if (intakeFailed && intakeFailureSince === null) {
+        intakeFailureSince = yield* Clock6.currentTimeMillis;
+      }
+      yield* step("RETRYING");
+      yield* options.onRetry?.(error) ?? Effect30.void;
+    });
+    const recovered = (renewed) => Effect30.gen(function* recoverReader() {
+      const progress = !renewed || intakeFailureSince === null && intakeVerifiedAt !== null;
+      if (!renewed) {
+        intakeFailureSince = null;
+        intakeVerifiedAt = yield* Clock6.currentTimeMillis;
+      }
+      if (progress) {
+        yield* step("ACQUIRED");
+      }
+      yield* options.onLease?.(
+        current,
+        progress,
+        renewed ? "renew" : "intake"
+      ) ?? Effect30.void;
     });
     const renew = Effect30.gen(function* renew2() {
       const now = yield* Clock6.currentTimeMillis;
@@ -4966,7 +5001,7 @@ var consume = (mailbox, did, handler, options) => Effect30.scoped(
       const renewal = {
         ...fence(),
         expiresAt: DateTime2.formatIso(
-          DateTime2.makeUnsafe(renewedAt + 3e5)
+          DateTime2.makeUnsafe(renewedAt + LEASE_TTL_MS)
         )
       };
       if (options.renders !== void 0) {
@@ -5051,13 +5086,19 @@ var consume = (mailbox, did, handler, options) => Effect30.scoped(
       return yield* Effect30.void;
     }).pipe(Effect30.repeat(Schedule3.spaced("0 millis")), Effect30.catch(lost));
     const handed = handoffHistory();
-    const intake = mailbox.watch(options.afterSeq ?? 0, fence()).pipe(
+    const intake = Stream2.suspend(
+      () => mailbox.watch(checkpoint, fence(), (error) => retrying(error, true))
+    ).pipe(
       Stream2.tap(() => recovered(false)),
-      Stream2.tapError(retrying),
+      Stream2.tapError((error) => retrying(error, true)),
       Stream2.retry(
         Schedule3.spaced("1 second").pipe(
           Schedule3.while(
-            ({ input }) => unavailable(input)
+            ({ input }) => Clock6.currentTimeMillis.pipe(
+              Effect30.map(
+                (now) => unavailable(input) && intakeFailureSince !== null && now - intakeFailureSince + 1e3 < LEASE_TTL_MS
+              )
+            )
           )
         )
       ),
@@ -5141,6 +5182,12 @@ var consume = (mailbox, did, handler, options) => Effect30.scoped(
             }
           }),
           { discard: true }
+        ).pipe(
+          Effect30.andThen(
+            Effect30.sync(() => {
+              checkpoint = batch.throughSeq;
+            })
+          )
         )
       ),
       Effect30.catch((error) => {
@@ -5791,7 +5838,7 @@ var prepare = Effect35.fn("Mailbox.prepare")(function* prepare2(options) {
       }
       const payload = payloads.get(envelope);
       const did = opts.cc;
-      if (payload === void 0 || !peers.has(did) || did === envelope.aad.recipientDid || !Predicate2.isTagged(primary, "Accepted")) {
+      if (payload === void 0 || !peers.has(did) || did === envelope.aad.recipientDid || !Predicate3.isTagged(primary, "Accepted")) {
         return {
           ...primary,
           cc: SendOutcomes.NotAttempted({

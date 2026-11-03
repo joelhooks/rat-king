@@ -163,7 +163,7 @@ export interface ConsumeOptions {
     readonly renders?: readonly string[];
     readonly resume?: LeaseFence;
     readonly afterSeq?: number;
-    readonly onLease?: (lease: Lease.MainValue) => Effect.Effect<void>;
+    readonly onLease?: (lease: Lease.MainValue, progress: boolean, source: "acquire" | "intake" | "renew") => Effect.Effect<void>;
     readonly onRetry?: (error: MailboxClientError) => Effect.Effect<void>;
     readonly leaseName?: string;
     readonly failOnHeld?: boolean;

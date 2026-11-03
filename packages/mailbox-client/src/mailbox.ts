@@ -374,7 +374,8 @@ export class RatKingMailbox extends Context.Service<
     ) => Effect.Effect<Batch, MailboxClientError>;
     readonly watch: (
       afterSeq: number,
-      fence: LeaseFence
+      fence: LeaseFence,
+      onRetry?: (error: MailboxClientError) => Effect.Effect<void>
     ) => Stream.Stream<Batch, MailboxClientError>;
     readonly open: (
       envelope: Defs.EncryptedEnvelopeValue,
@@ -720,7 +721,8 @@ export const layer = (
               Effect.mapError(clientError)
             )
         ),
-        watch: (afterSeq, fence) => watch(config, poll, afterSeq, fence),
+        watch: (afterSeq, fence, onRetry) =>
+          watch(config, poll, afterSeq, fence, onRetry),
       });
     })
   ).pipe(

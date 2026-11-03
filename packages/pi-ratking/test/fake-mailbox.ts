@@ -26,7 +26,16 @@ export const quietSocket = Layer.succeed(WebSocketPort, {
       removeEventListener: (type, listener) => {
         target.removeEventListener(type, listener);
       },
-      send: constVoid,
+      send: () => {
+        target.dispatchEvent(
+          new MessageEvent("message", {
+            data: JSON.stringify({
+              $type: "sh.mschf.ratking.mailbox.subscribe#notice",
+              seq: 0,
+            }),
+          })
+        );
+      },
     };
   },
 });

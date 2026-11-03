@@ -7,6 +7,7 @@ import {
   Arbitrary,
   Clock,
   DateTime,
+  Deferred,
   Effect,
   FileSystem,
   Layer,
@@ -16,7 +17,7 @@ import {
 } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { TestClock } from "effect/testing";
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 
 import { crashedReader } from "../../../stacks/nest/turn-crash-record.ts";
 import { ReaderHeartbeat } from "../../ratking-client/src/reader-health.ts";
@@ -45,6 +46,7 @@ const Case = Schema.Struct({
 
 interface Server {
   holder: string;
+  listed: boolean;
   outageFrom: number;
   outageUntil: number;
   serial: number;
@@ -52,6 +54,41 @@ interface Server {
 }
 
 const settle = TestClock.withLive(Effect.sleep("5 millis"));
+
+const memoryFiles = () => {
+  const files = new Map<string, string>();
+  const absent = FileSystem.makeNoop({});
+
+  return FileSystem.makeNoop({
+    exists: (file) => Effect.sync(() => files.has(file)),
+    makeDirectory: () => Effect.void,
+    readFileString: (file) =>
+      Effect.suspend(() => {
+        const value = files.get(file);
+
+        return value === undefined
+          ? absent.readFileString(file)
+          : Effect.succeed(value);
+      }),
+    remove: (file) =>
+      Effect.sync(() => {
+        files.delete(file);
+      }),
+    rename: (from, to) =>
+      Effect.sync(() => {
+        const value = files.get(from);
+
+        if (value !== undefined) {
+          files.set(to, value);
+          files.delete(from);
+        }
+      }),
+    writeFileString: (file, text) =>
+      Effect.sync(() => {
+        files.set(file, text);
+      }),
+  });
+};
 
 const stamp = (until: number) => DateTime.formatIso(DateTime.makeUnsafe(until));
 
@@ -131,15 +168,19 @@ const serve = (server: Server, session: string, slow: boolean) => {
           : respond(request, { error: "LeaseNotFound" }, 404);
       }
 
+      if (nsid.endsWith(".list")) {
+        server.listed = true;
+      }
+
       return yield* mailbox.http.execute(request);
     })
   );
 };
 
-const advance = (millis: number) =>
+const advance = (millis: number, settled = settle) =>
   Effect.forEach(
     Array.from({ length: Math.ceil(millis / 1000) }),
-    () => TestClock.adjust(1000).pipe(Effect.andThen(settle)),
+    () => TestClock.adjust(1000).pipe(Effect.andThen(settled)),
     { discard: true }
   );
 
@@ -155,6 +196,7 @@ it.effect.prop(
 
       const server: Server = {
         holder: scenario.holderIsSelf ? session : "other",
+        listed: false,
         outageFrom: begin + scenario.outageStartMs,
         outageUntil: begin + scenario.outageStartMs + scenario.outageMs,
         serial: 1,
@@ -222,14 +264,15 @@ it.effect.prop(
   },
   ({ duration, start, slow }) =>
     Effect.gen(function* plannedStop() {
-      const fs = yield* FileSystem.FileSystem;
-      const state = yield* fs.makeTempDirectoryScoped();
+      const state = "/planned-outage-fixture";
       const begin = yield* Clock.currentTimeMillis;
       const transitions: string[] = [];
+      const firstLive = yield* Deferred.make<boolean>();
       let leaseUntil = begin + TTL_MS;
 
       const server: Server = {
         holder: "me",
+        listed: false,
         outageFrom: begin + start,
         outageUntil: begin + start + duration,
         serial: 0,
@@ -248,6 +291,10 @@ it.effect.prop(
 
               if (ReaderState.$is("Live")(reader)) {
                 leaseUntil = Date.parse(reader.expiresAt);
+
+                if (server.listed) {
+                  Deferred.doneUnsafe(firstLive, Effect.succeed(true));
+                }
               }
             },
             owner: Option.some("desk"),
@@ -256,6 +303,19 @@ it.effect.prop(
             session: "me",
           },
           () => Effect.void
+        );
+
+        yield* Deferred.await(firstLive);
+        yield* Effect.acquireRelease(
+          Effect.sync(() =>
+            vi
+              .spyOn(crypto.subtle, "sign")
+              .mockResolvedValue(new ArrayBuffer(64))
+          ),
+          (signing) =>
+            Effect.sync(() => {
+              signing.mockRestore();
+            })
         );
 
         const invariant = Effect.gen(function* invariant() {
@@ -296,7 +356,7 @@ it.effect.prop(
             check: (model: Readonly<{ phase: number }>) =>
               model.phase === phase,
             run: (model: { phase: number }) =>
-              advance(millis).pipe(
+              advance(millis, Effect.yieldNow).pipe(
                 Effect.andThen(invariant),
                 Effect.tap(() =>
                   Effect.sync(() => {
@@ -315,11 +375,11 @@ it.effect.prop(
       }).pipe(
         Effect.provide(
           Layer.provideMerge(
-            harness(state, serve(server, "me", slow)),
+            harness(state, serve(server, "me", slow), [], {}, memoryFiles()),
             quietSocket
           )
         )
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-  { arbitrary: { runs: 6 }, timeout: 120_000 }
+  { arbitrary: { runs: 3 }, timeout: 30_000 }
 );

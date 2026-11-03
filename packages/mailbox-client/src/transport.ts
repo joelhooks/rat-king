@@ -6,6 +6,7 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 
 import { base64url, serviceToken } from "./auth.ts";
 import * as Deadline from "./deadline.ts";
+import { connectionFailure } from "./error.ts";
 import { importSigning } from "./identity.ts";
 import type { IdentityValue } from "./identity.ts";
 
@@ -100,10 +101,12 @@ export const transportLayer = (
               )
             ),
           Effect.mapError(
-            () =>
+            (failure) =>
               new TransportFailure({
                 cause: null,
-                reason: "Service-auth HTTP call failed",
+                reason: connectionFailure(failure)
+                  ? "Service-auth HTTP connection unavailable"
+                  : "Service-auth HTTP call failed",
               })
           )
         ),
