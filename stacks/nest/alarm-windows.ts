@@ -1,7 +1,7 @@
 import { Clock, Effect, Result, Schema } from "effect";
 
 import type { HostShell } from "../../packages/alchemy-nest/src/host-shell.ts";
-import { closedWindow } from "./alarm-maintenance.ts";
+import { closedReceiptWindow } from "./alarm-maintenance.ts";
 import { WindowReceipt } from "./alarm-sources.ts";
 
 export const windowReceiptsPath = (markerPath: string) =>
@@ -17,7 +17,7 @@ export const decodeWindowReceipts = (text: string, now: number) =>
         {
           onFailure: () => [],
           onSuccess: (receipt) =>
-            closedWindow(receipt.start * 1000, receipt.end * 1000, now)
+            closedReceiptWindow(receipt.start, receipt.end, now)
               ? [receipt]
               : [],
         }

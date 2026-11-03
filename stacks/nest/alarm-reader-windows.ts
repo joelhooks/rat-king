@@ -1,7 +1,8 @@
 import {
   MAILBOX_INSTANCE,
-  closedWindow,
+  closedReceiptWindow,
   coversOf,
+  receiptMillis,
 } from "./alarm-maintenance.ts";
 import type { MaintenanceFacts } from "./alarm-maintenance.ts";
 import type { AlarmFacts, WindowReceipt } from "./alarm-sources.ts";
@@ -53,12 +54,10 @@ export const readerRecovering = (
       start: cover.start,
     })),
     ...(facts.windows ?? [])
-      .filter((window) =>
-        closedWindow(window.start * 1000, window.end * 1000, now)
-      )
+      .filter((window) => closedReceiptWindow(window.start, window.end, now))
       .map((window) => ({
-        end: window.end * 1000,
-        start: window.start * 1000,
+        end: receiptMillis(window.end),
+        start: receiptMillis(window.start),
       })),
   ];
 

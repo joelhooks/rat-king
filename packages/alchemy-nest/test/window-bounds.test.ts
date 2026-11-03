@@ -6,7 +6,60 @@ import {
   MAX_WINDOW_MS,
   readMaintenance,
 } from "../../../stacks/nest/alarm-maintenance.ts";
+import {
+  READER_RECOVERY_GRACE_MS,
+  readerRecovering,
+} from "../../../stacks/nest/alarm-reader-windows.ts";
+import { WindowReceipt } from "../../../stacks/nest/alarm-sources.ts";
 import { decodeWindowReceipts } from "../../../stacks/nest/alarm-windows.ts";
+
+it.effect.prop(
+  "receipt seconds preserve exact millisecond close and grace boundaries without accepting future ends",
+  {
+    epoch: Schema.Int.check(
+      Schema.isBetween({ maximum: 2_000_000_000_000, minimum: 1_000_000 })
+    ),
+    span: Schema.Int.check(
+      Schema.isBetween({ maximum: MAX_WINDOW_MS, minimum: 20_000 })
+    ),
+  },
+  ({ epoch, span }) =>
+    Effect.sync(() => {
+      const end = epoch + span;
+
+      const receipt = WindowReceipt.make({
+        approval: "fixture",
+        celldAfter: null,
+        celldBefore: { entered: "before", pid: 1 },
+        end: end / 1000,
+        kind: "window",
+        reason: "planned stop",
+        result: "success",
+        start: epoch / 1000,
+      });
+
+      const facts = { windows: [receipt] };
+      const text = JSON.stringify(receipt);
+
+      for (const now of [end, end + READER_RECOVERY_GRACE_MS]) {
+        expect(decodeWindowReceipts(text, now)).toEqual([receipt]);
+        expect(readerRecovering(epoch + 1, facts, now)).toBe(true);
+      }
+
+      expect(decodeWindowReceipts(text, end - 1)).toEqual([]);
+      expect(
+        decodeWindowReceipts(
+          JSON.stringify({ ...receipt, end: receipt.end + 0.000001 }),
+          end
+        )
+      ).toEqual([]);
+      expect(readerRecovering(epoch - 1, facts, end)).toBe(false);
+      expect(
+        readerRecovering(epoch + 1, facts, end + READER_RECOVERY_GRACE_MS + 1)
+      ).toBe(false);
+    }),
+  { arbitrary: { runs: 1000 } }
+);
 
 it.effect.prop(
   "window receipt and maintenance reads reject future, inverted and overlong ends instead of hiding failures indefinitely",
