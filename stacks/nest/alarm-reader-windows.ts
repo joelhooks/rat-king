@@ -27,8 +27,8 @@ export const readerRecovering = (
   return windows.some(
     (window) =>
       since >= window.start &&
-      since <= window.end &&
-      now >= window.start &&
+      since <= window.end + READER_RECOVERY_GRACE_MS &&
+      now >= since &&
       now <= window.end + READER_RECOVERY_GRACE_MS
   );
 };

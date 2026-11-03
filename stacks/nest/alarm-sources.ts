@@ -1,6 +1,9 @@
 import { DateTime, Schema } from "effect";
 
-import { readerVerdict } from "../../packages/ratking-client/src/reader-health.ts";
+import {
+  READER_STUCK_MS,
+  readerVerdict,
+} from "../../packages/ratking-client/src/reader-health.ts";
 import type { ReaderHeartbeatValue } from "../../packages/ratking-client/src/reader-health.ts";
 import { SessionsBackupFact, sessionsBackupReading } from "./alarm-backups.ts";
 import { AlarmKey, AlarmReading } from "./alarm-config.ts";
@@ -363,7 +366,11 @@ const readerReading = (
   const stuck = facts.readers.seen.filter(
     (reader) =>
       reader.verdict === "stuck" &&
-      !readerRecovering(now - reader.idleSeconds * 1000, facts, now)
+      !readerRecovering(
+        now - reader.idleSeconds * 1000 + READER_STUCK_MS,
+        facts,
+        now
+      )
   );
 
   if (stuck.length > 0) {

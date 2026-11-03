@@ -9,7 +9,10 @@ import {
 } from "../../../stacks/nest/alarm-sources.ts";
 import type { AlarmFacts } from "../../../stacks/nest/alarm-sources.ts";
 import { crashedReader } from "../../../stacks/nest/turn-crash-record.ts";
-import { ReaderHeartbeat } from "../../ratking-client/src/reader-health.ts";
+import {
+  READER_STUCK_MS,
+  ReaderHeartbeat,
+} from "../../ratking-client/src/reader-health.ts";
 
 it.effect.prop(
   "backup, declared maintenance and receipt windows suppress only window-related reader pages and synthetic crashes through grace, then expose both lapse and acquiring failures",
@@ -104,7 +107,7 @@ it.effect.prop(
             seen: [
               {
                 host: "host.invalid",
-                idleSeconds: Math.floor((now - since) / 1000),
+                idleSeconds: Math.floor((now - since + READER_STUCK_MS) / 1000),
                 lastError: null,
                 name: "reader",
                 owner: "desk",
@@ -131,7 +134,23 @@ it.effect.prop(
         expect(reading(now, start - 1000).status).toBe("firing");
       }
 
+      const lateCutoff = deadline + READER_RECOVERY_GRACE_MS - 1000;
+
+      const late = ReaderHeartbeat.make({
+        ...beat,
+        acquisitionSince: at(lateCutoff - 310_000),
+        leaseUntil: acquiring ? null : at(lateCutoff),
+      });
+
+      expect(crashedReader(late, lateCutoff, window) === undefined).toBe(
+        kind !== "other"
+      );
+      expect(reading(lateCutoff, lateCutoff).status).toBe(
+        kind === "other" ? "firing" : "ok"
+      );
+
       const after = deadline + READER_RECOVERY_GRACE_MS + 1000;
+      expect(crashedReader(late, after, window)?.state).toBe("crashed");
       expect(crashedReader(beat, after, window)?.state).toBe("crashed");
       expect(reading(after).status).toBe("firing");
 
