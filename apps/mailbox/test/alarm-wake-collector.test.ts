@@ -62,16 +62,20 @@ it.effect.prop(
         return Effect.succeed(
           HttpClientResponse.fromWeb(
             request,
-            Response.json({
-              complete: true,
-              oldestWake: {
-                id: "2222222222222",
-                recordedAt: "1970-01-01T00:00:00.000Z",
-                sender: operator.did,
-                woke: true,
-              },
-              quietUnacked: 0,
-            })
+            Response.json(
+              request.url.includes("identity.listRetired")
+                ? { retired: [] }
+                : {
+                    complete: true,
+                    oldestWake: {
+                      id: "2222222222222",
+                      recordedAt: "1970-01-01T00:00:00.000Z",
+                      sender: operator.did,
+                      woke: true,
+                    },
+                    quietUnacked: 0,
+                  }
+            )
           )
         );
       });
@@ -117,7 +121,7 @@ it.effect.prop(
         const reading = wakeReading(sightings ?? [], now);
 
         expect(reading.status).toBe("firing");
-        expect(requests).toHaveLength(1);
+        expect(requests).toHaveLength(2);
 
         if (reading.status === "firing") {
           expect(reading.evidence).toContain("target");
@@ -134,7 +138,7 @@ it.effect.prop(
 
         expect(unresolved).toHaveLength(1);
         expect(wakeReading(unresolved ?? [], now).status).toBe("unknown");
-        expect(requests).toHaveLength(1);
+        expect(requests).toHaveLength(3);
         expect(
           yield* prepareShipNotification(
             {

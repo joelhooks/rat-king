@@ -51,6 +51,7 @@ const wake = (
         },
     quietUnacked: 0,
   },
+  lastProgressAt: at,
   lastTurnAt: at,
   name,
   owner: "reader-owner",

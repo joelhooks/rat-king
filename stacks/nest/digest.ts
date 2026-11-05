@@ -120,15 +120,20 @@ export const digest = Effect.fn("Nest.digest")(function* digest<E, R = never>(
     )
   );
 
+  const composed = composeDigest(
+    facts,
+    counts.primary,
+    counts.secondary,
+    DateTime.formatIso(DateTime.makeUnsafe(now)).replace(/\.\d{3}Z$/u, "Z"),
+    yield* configDoctor(config)
+  );
+
+  const mail = yield* waitingMail;
+
   const line = {
-    ...composeDigest(
-      facts,
-      counts.primary,
-      counts.secondary,
-      DateTime.formatIso(DateTime.makeUnsafe(now)).replace(/\.\d{3}Z$/u, "Z"),
-      yield* configDoctor(config)
-    ),
-    waitingMail: yield* waitingMail,
+    ...composed,
+    reasons: [...composed.reasons, ...mail],
+    waitingMail: mail,
   };
 
   const encoded = yield* Schema.encodeEffect(

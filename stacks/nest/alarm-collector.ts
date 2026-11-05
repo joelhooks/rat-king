@@ -127,12 +127,25 @@ export const collectReaderHeartbeats = Effect.fn(
           : [{ owner: beat.owner, record }];
       }),
       seen: sightReaders(source.host, beats, now.now),
-      targets: beats.map(({ alive, beat }) => ({
-        alive,
-        ...(beat.session === undefined ? undefined : { session: beat.session }),
-        name: beat.name,
-        owner: beat.owner ?? null,
-      })),
+      targets: beats.map(({ alive, beat }) => {
+        const progress = [
+          beat.lastConsumeOk,
+          beat.leaseHeldSince,
+          beat.leaseUntil ?? null,
+        ].flatMap((at) => (at === null ? [] : [DateTime.toEpochMillis(at)]));
+
+        return {
+          alive,
+          ...(progress.length === 0
+            ? undefined
+            : { lastProgressAt: Math.min(now.now, Math.max(...progress)) }),
+          ...(beat.session === undefined
+            ? undefined
+            : { session: beat.session }),
+          name: beat.name,
+          owner: beat.owner ?? null,
+        };
+      }),
     };
   },
   Effect.scoped,

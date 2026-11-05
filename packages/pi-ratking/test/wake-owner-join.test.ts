@@ -28,7 +28,7 @@ const settings = Schema.decodeUnknownSync(AlarmSettings)({
 });
 
 it.effect.prop(
-  "a second stranded name notifies its owner immediately and pages on its own incident",
+  "a second recently crashed reader notifies its owner without any phone page",
   [Schema.Boolean],
   ([switchboardFirst]) =>
     Effect.gen(function* joined() {
@@ -48,6 +48,7 @@ it.effect.prop(
       const board = {
         alive: false,
         health,
+        lastProgressAt: 20_000_000,
         name: "reader-a",
         owner: "board-owner",
       };
@@ -55,6 +56,7 @@ it.effect.prop(
       const worker = {
         alive: false,
         health,
+        lastProgressAt: 20_000_000,
         name: "sample/worker",
         owner: "worker-owner",
       };
@@ -129,13 +131,6 @@ it.effect.prop(
         ports
       );
 
-      expect(pages).toHaveLength(2);
-      expect(pages.every((page) => page.includes("mail.stranded/"))).toBe(true);
-      expect(pages.some((page) => page.includes("Incident 20000000"))).toBe(
-        true
-      );
-      expect(pages.some((page) => page.includes("Incident 20001000"))).toBe(
-        true
-      );
+      expect(pages).toEqual([]);
     })
 );
