@@ -36,10 +36,6 @@ export const collectWakeHealth = Effect.fn("Alarm.collectWakeHealth")(
       true
     );
 
-    const retired = yield* prepared.client
-      .retirements()
-      .pipe(Effect.orElseSucceed(() => null));
-
     const now = yield* Clock.currentTimeMillis;
 
     return yield* Effect.forEach(
@@ -50,15 +46,14 @@ export const collectWakeHealth = Effect.fn("Alarm.collectWakeHealth")(
             (item) => item.name === reader.name
           );
 
-          const retirement =
-            retired === null ? null : retired.includes(reader.name);
-
           const health =
             target === undefined
               ? null
               : yield* prepared.client
                   .health(target.did, target.name)
                   .pipe(Effect.orElseSucceed(() => null));
+
+          const retirement = health?.retired ?? null;
 
           const turn =
             target === undefined ||

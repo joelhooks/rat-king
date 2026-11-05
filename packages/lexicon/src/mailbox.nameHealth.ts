@@ -69,6 +69,7 @@ export const Output = Schema.StructWithRest(
       Schema.isGreaterThanOrEqualTo(0),
       Schema.isLessThanOrEqualTo(9_007_199_254_740_991)
     ),
+    retired: Schema.optionalKey(Schema.Boolean),
     wakesSinceAck: Schema.optionalKey(
       Schema.Int.check(
         Schema.isGreaterThanOrEqualTo(0),

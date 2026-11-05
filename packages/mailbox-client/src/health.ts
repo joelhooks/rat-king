@@ -27,6 +27,7 @@ export const MailboxHealth = Schema.Struct({
   oldestWake: Schema.NullOr(Wake),
   oldestWakeSinceAck: Schema.optionalKey(Schema.NullOr(Wake)),
   quietUnacked: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  retired: Schema.optionalKey(Schema.Boolean),
 });
 
 export type MailboxHealthValue = typeof MailboxHealth.Type;
@@ -92,6 +93,7 @@ export const readMailboxHealth = Effect.fn("Mailbox.readHealth")(
 
     const facts: typeof MailboxHealth.Encoded = {
       complete: value.complete,
+      ...(value.retired === undefined ? undefined : { retired: value.retired }),
       lastAck: value.lastAck === undefined ? null : Date.parse(value.lastAck),
       lease:
         value.lease === undefined

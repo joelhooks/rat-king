@@ -162,6 +162,9 @@ export const nameHealth = Effect.fn("Mailbox.nameHealth")(
           ),
         ],
         lease: [...sql.exec("SELECT value FROM lease WHERE singleton=1")],
+        retired:
+          [...sql.exec("SELECT value FROM metadata WHERE key='retirement'")]
+            .length > 0,
         unacked: Array.from(
           sql.exec(
             "SELECT json_extract(value,'$.current') AS value FROM messages WHERE json_extract(value,'$.current.state') IN ('accepted','queued','delivered') ORDER BY json_extract(value,'$.current.state'),json_extract(value,'$.admission.seq') ASC LIMIT 10001"
@@ -213,7 +216,12 @@ export const nameHealth = Effect.fn("Mailbox.nameHealth")(
     }
 
     const [leaseRow] = rows.lease;
-    let result: typeof closedOutput.Encoded = { complete, quietUnacked };
+
+    let result: typeof closedOutput.Encoded = {
+      complete,
+      quietUnacked,
+      retired: rows.retired,
+    };
 
     if (ack !== undefined) {
       result = { ...result, lastAck: ack.value };

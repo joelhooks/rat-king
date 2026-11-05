@@ -265,9 +265,10 @@ it.effect.prop(
               "oldestWake",
               "oldestWakeSinceAck",
               "quietUnacked",
+              "retired",
               "wakesSinceAck",
             ]
-          : ["complete", "lease", "quietUnacked"]
+          : ["complete", "lease", "quietUnacked", "retired"]
       );
       expect(Object.keys(before.lease ?? {}).toSorted()).toEqual([
         "expiresAt",
@@ -293,6 +294,7 @@ it.effect.prop(
         "oldestWake",
         "oldestWakeSinceAck",
         "quietUnacked",
+        "retired",
         "wakesSinceAck",
       ]);
 
