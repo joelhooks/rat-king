@@ -28,7 +28,7 @@ const settings = Schema.decodeUnknownSync(AlarmSettings)({
 });
 
 it.effect.prop(
-  "a second stalled name notifies its owner immediately; switchboard pages once critical even when another name opened the incident",
+  "a second stranded name notifies its owner immediately and pages on its own incident",
   [Schema.Boolean],
   ([switchboardFirst]) =>
     Effect.gen(function* joined() {
@@ -45,8 +45,20 @@ it.effect.prop(
         quietUnacked: 0,
       };
 
-      const board = { health, name: "switchboard", owner: "board-owner" };
-      const worker = { health, name: "sample/worker", owner: "worker-owner" };
+      const board = {
+        alive: false,
+        health,
+        name: "reader-a",
+        owner: "board-owner",
+      };
+
+      const worker = {
+        alive: false,
+        health,
+        name: "sample/worker",
+        owner: "worker-owner",
+      };
+
       const notices: (readonly string[])[] = [];
       const pages: string[] = [];
 
@@ -57,7 +69,7 @@ it.effect.prop(
           }),
         prepare: (key, recipients) =>
           Effect.sync(() => {
-            if (key === "wake.unacked") {
+            if (key.startsWith("mail.stranded/")) {
               notices.push(recipients);
             }
 
@@ -88,7 +100,7 @@ it.effect.prop(
       const first = yield* alarmCycle(
         emptyJournal,
         facts,
-        1_000_000,
+        20_000_000,
         settings,
         ports
       );
@@ -98,7 +110,7 @@ it.effect.prop(
       const together = yield* alarmCycle(
         first,
         { ...facts, wakes: [board, worker] },
-        1_001_000,
+        20_001_000,
         settings,
         ports
       );
@@ -112,13 +124,18 @@ it.effect.prop(
       yield* alarmCycle(
         together,
         { ...facts, wakes: [board, worker] },
-        1_860_000,
+        20_860_000,
         settings,
         ports
       );
 
-      expect(pages).toHaveLength(1);
-      expect(pages[0]).toContain("wake.unacked critical");
-      expect(pages[0]).toContain("Incident 1000000");
+      expect(pages).toHaveLength(2);
+      expect(pages.every((page) => page.includes("mail.stranded/"))).toBe(true);
+      expect(pages.some((page) => page.includes("Incident 20000000"))).toBe(
+        true
+      );
+      expect(pages.some((page) => page.includes("Incident 20001000"))).toBe(
+        true
+      );
     })
 );

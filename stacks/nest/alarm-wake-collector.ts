@@ -1,6 +1,7 @@
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 
 import { prepareAlarmMail } from "./alarm-mail.ts";
+import { needsTurnHealth } from "./alarm-stranded.ts";
 import { mergeWakeTargets } from "./alarm-wakes.ts";
 import type { WakeTarget } from "./alarm-wakes.ts";
 import type { StageConfigValue } from "./stage-config.ts";
@@ -35,6 +36,8 @@ export const collectWakeHealth = Effect.fn("Alarm.collectWakeHealth")(
       true
     );
 
+    const now = yield* Clock.currentTimeMillis;
+
     return yield* Effect.forEach(
       unique,
       (reader) =>
@@ -50,11 +53,33 @@ export const collectWakeHealth = Effect.fn("Alarm.collectWakeHealth")(
                   .health(target.did, target.name)
                   .pipe(Effect.orElseSucceed(() => null));
 
+          const turn =
+            target === undefined ||
+            health?.lease === null ||
+            health === null ||
+            !needsTurnHealth({ ...reader, health }, now)
+              ? null
+              : yield* prepared.client
+                  .turnHealth(
+                    target.did,
+                    target.name,
+                    health.lease.holder,
+                    true
+                  )
+                  .pipe(Effect.orElseSucceed(() => null));
+
           const defaultUnackedMinutes = config.alarm?.wakeUnackedMinutes;
 
-          return defaultUnackedMinutes === undefined
-            ? { ...reader, health }
-            : { ...reader, defaultUnackedMinutes, health };
+          return {
+            ...reader,
+            health,
+            ...(turn === null
+              ? undefined
+              : { lastTurnAt: Date.parse(turn.at) }),
+            ...(defaultUnackedMinutes === undefined
+              ? undefined
+              : { defaultUnackedMinutes }),
+          };
         }),
       { concurrency: 4 }
     );

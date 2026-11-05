@@ -22,6 +22,7 @@ import {
 import { billingCommand } from "./billing-command.ts";
 import { doneBar } from "./comms.ts";
 import { configDoctor } from "./config-doctor.ts";
+import { collectDigestWaitingMail } from "./digest-mail-collector.ts";
 import { commsCounts, digest } from "./digest.ts";
 import { drainCommand } from "./drain.ts";
 import { DigestJson, summarize } from "./health.ts";
@@ -228,8 +229,10 @@ const program = Effect.gen(function* launcher() {
 
         if (operation === "digest") {
           return yield* Console.log(
-            yield* digest(config, (prior) =>
-              runtime.healthDigest(prior, config)
+            yield* digest(
+              config,
+              (prior) => runtime.healthDigest(prior, config),
+              collectDigestWaitingMail(config)
             )
           );
         }

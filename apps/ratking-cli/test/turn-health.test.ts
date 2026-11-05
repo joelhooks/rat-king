@@ -9,6 +9,7 @@ import { readTurnHealth } from "../../../packages/mailbox-client/src/turn-health
 const Inputs = Schema.Struct({
   encrypted: Schema.Boolean,
   spoof: Schema.Boolean,
+  startsOnly: Schema.Boolean,
   wrapped: Schema.Boolean,
 });
 
@@ -50,10 +51,33 @@ it.effect.prop(
         Object.assign(entry, { body });
       }
 
+      const completed = {
+        ...record,
+        at: "2026-10-11T01:00:00.000Z",
+        state: "done",
+      };
+
+      const completionText = JSON.stringify(completed);
+
+      const completionBody = input.wrapped
+        ? JSON.stringify({
+            body: completionText,
+            from: "sample/worker",
+            kind: "data",
+          })
+        : completionText;
+
+      const completion = {
+        ...entry,
+        recipientSeq: 2,
+        seq: 2,
+        ...(input.encrypted ? undefined : { body: completionBody }),
+      };
+
       const transport = Transport.of({
         request: () =>
           Effect.succeed({
-            body: { cursor: "1", events: [entry] },
+            body: { cursor: "2", events: [entry, completion] },
             kind: "json",
             status: 200,
           }),
@@ -63,15 +87,16 @@ it.effect.prop(
         transport,
         "did:web:worker.example.invalid",
         "sample/worker",
-        "session"
+        "session",
+        input.startsOnly
       );
 
       if (input.encrypted || input.spoof) {
         expect(result).toBeNull();
       } else {
         expect(result).toEqual({
-          at: record.at,
-          state: "working",
+          at: input.startsOnly ? record.at : completed.at,
+          state: input.startsOnly ? "working" : "done",
           turnId: "session:1",
         });
       }

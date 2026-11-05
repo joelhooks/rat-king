@@ -1,287 +1,303 @@
 /* oxlint-disable effect-tests/no-manual-effect-runtime-in-tests, typescript/promise-function-async -- Async model commands run with the captured test context through Promise thunks. */
 // @effect-diagnostics asyncFunction:off -- fast-check async commands drive the Effect alarm cycle with fixture ports.
 import { it } from "@effect/vitest";
-import { Effect, Match, Schema } from "effect";
-import * as fc from "fast-check";
+import { Arbitrary, Effect, Schema } from "effect";
+import { asyncModelRun } from "fast-check";
+import type { AsyncCommand } from "fast-check";
 import { expect } from "vitest";
 
-import { AlarmSettings } from "../../../stacks/nest/alarm-config.ts";
-import type { AlarmFacts } from "../../../stacks/nest/alarm-sources.ts";
 import {
-  WAKE_CRITICAL_MS,
-  mergeWakeTargets,
-} from "../../../stacks/nest/alarm-wakes.ts";
+  STRANDED_MAIL_MS,
+  busyMailLines,
+} from "../../../stacks/nest/alarm-stranded.ts";
+import type { WakeSighting } from "../../../stacks/nest/alarm-wakes.ts";
 import {
   AlarmJournal,
-  PAGE_ACK_WAIT_MS,
   alarmCycle,
   emptyJournal,
 } from "../../../stacks/nest/alarm.ts";
-import type {
-  AlarmJournalValue,
-  AlarmPorts,
-} from "../../../stacks/nest/alarm.ts";
+import type { AlarmJournalValue } from "../../../stacks/nest/alarm.ts";
+import {
+  healthy,
+  recorder,
+  runTicks,
+  settings,
+} from "../../alchemy-nest/test/maintenance-fixtures.ts";
 
-const Step = Schema.Literals([
-  "wake",
-  "wait",
-  "ack",
-  "missing",
-  "expired",
-  "absent",
-]);
+const now = 1_800_000_000_000;
 
-const Inputs = Schema.Struct({
-  ackExpired: Schema.Boolean,
-  configured: Schema.Boolean,
-  steps: Schema.Array(Step).check(
-    Schema.isMinLength(1),
-    Schema.isMaxLength(30)
-  ),
-  switchboard: Schema.Boolean,
-  unackedMinutes: Schema.Int.check(
-    Schema.isBetween({ maximum: 60, minimum: 1 })
-  ),
-});
-
-const settings = Schema.decodeUnknownSync(AlarmSettings)({
-  broadcast: "observer-invalid",
-  enabled: false,
-  launchd: {
-    errorLog: "/fixture.invalid/err",
-    label: "alarm.invalid",
-    node: "node",
-    outputLog: "/fixture.invalid/out",
-    path: "/fixture.invalid/bin",
-    source: "/fixture.invalid",
+const wake = (
+  name: string,
+  alive: boolean,
+  at: number,
+  drained = false
+): typeof WakeSighting.Type => ({
+  alive,
+  health: {
+    complete: true,
+    lastAck: null,
+    lease: {
+      expiresAt: at + 60_000,
+      generation: 1,
+      holder: "session-invalid",
+      pane: null,
+    },
+    oldestWake: drained
+      ? null
+      : {
+          at: now - 2 * STRANDED_MAIL_MS,
+          id: "fixture-id",
+          sender: "sender-invalid",
+        },
+    quietUnacked: 0,
   },
-  musterDesk: "desk-invalid",
-  notify: {
-    directory: "/fixture.invalid/directory.json",
-    secret: "operator.invalid",
-  },
-  owners: {},
-  page: { node: "node", script: "/fixture.invalid/page.mjs" },
-});
-
-interface Model {
-  cleared: number;
-  firing: boolean;
-  now: number;
-  paged: number;
-  pagedIncident: number | null;
-  since: number;
-}
-
-const WAIT_MS = 11 * 60_000;
-
-interface Real {
-  readonly oldest: number;
-  readonly step: (step: typeof Step.Type) => Promise<void>;
-  readonly state: () => AlarmJournalValue;
-  readonly pages: string[];
-  readonly notices: {
-    readonly recipients: readonly string[];
-    readonly text: string;
-  }[];
-}
-
-const command = (
-  step: typeof Step.Type,
-  page: boolean,
-  configured: boolean
-): fc.AsyncCommand<Model, Real> => ({
-  check: () => true,
-  run: async (model, real) => {
-    const before = real.notices.length;
-
-    await real.step(step);
-    model.now += step === "wait" ? WAIT_MS : 1000;
-
-    const stalled =
-      step === "wake" || step === "wait" || (configured && step === "expired");
-
-    const wasFiring = model.firing;
-
-    if (stalled) {
-      model.since = wasFiring ? model.since : model.now;
-      model.firing = true;
-
-      if (
-        page &&
-        model.now - real.oldest > WAKE_CRITICAL_MS &&
-        model.now - model.since >= PAGE_ACK_WAIT_MS &&
-        model.pagedIncident !== model.since &&
-        model.paged === 0
-      ) {
-        model.paged += 1;
-        model.pagedIncident = model.since;
-      }
-    }
-
-    if (step === "ack") {
-      if (wasFiring && model.pagedIncident === model.since) {
-        model.cleared += 1;
-      }
-
-      model.firing = false;
-    }
-
-    expect(real.state().alarms["wake.unacked"]?.value === "firing").toBe(
-      model.firing
-    );
-    expect(real.pages.filter((text) => text.startsWith("🚨"))).toHaveLength(
-      model.paged
-    );
-    expect(real.pages.filter((text) => text.startsWith("✅"))).toHaveLength(
-      model.cleared
-    );
-
-    for (const notice of real.notices.slice(before)) {
-      expect(notice.recipients).toContain("owner-invalid");
-      expect(notice.text).toContain("wake.unacked");
-    }
-  },
-  toString: () => step,
+  lastTurnAt: at,
+  name,
+  owner: "reader-owner",
 });
 
 it.effect.prop(
-  "wake alarm routes to owners without paging by default, pages opted-in targets and switchboard only once critical and confirmed, pages each paged clear, and preserves incidents across missing evidence and restarts",
-  [Inputs],
-  ([input]) =>
-    Effect.gen(function* model() {
-      for (const page of [undefined, false, true]) {
-        const run = Effect.runPromiseWith(yield* Effect.context());
+  "busy live readers stay in the digest without any wake notice",
+  {
+    minutes: Arbitrary.schema(
+      Schema.Int.check(Schema.isBetween({ maximum: 600, minimum: 1 }))
+    ),
+  },
+  ({ minutes }) =>
+    Effect.gen(function* busy() {
+      const { pages, ports, sent } = recorder();
+      const at = now + minutes * 60_000;
 
-        const target = {
-          name: input.switchboard ? "switchboard" : "mischief/worker",
-          owner: "owner-invalid",
-        };
+      const sightings = [
+        wake("reader-a", true, at),
+        wake("reader-b", true, at),
+      ];
 
-        const policy = { ...target, unackedMinutes: input.unackedMinutes };
+      yield* runTicks(
+        emptyJournal,
+        [
+          { at: now, facts: { ...healthy, wakes: sightings } },
+          { at, facts: { ...healthy, wakes: sightings } },
+        ],
+        ports
+      );
+      expect(pages).toEqual([]);
+      expect(sent).toEqual([]);
+      expect(busyMailLines(sightings, at)).toHaveLength(2);
+    })
+);
 
-        const configured = page === undefined ? policy : { ...policy, page };
+it.effect.prop(
+  "legacy wake journals decode and disappear without sending queued notices",
+  {
+    recipient: Arbitrary.schema(Schema.String),
+  },
+  ({ recipient }) =>
+    Effect.gen(function* retired() {
+      const { ports, pages, sent } = recorder();
 
-        const targets =
-          mergeWakeTargets([target], input.configured ? [configured] : []) ??
-          [];
-
-        let journal = emptyJournal;
-        let now = 1_000_000;
-
-        const oldest =
-          now - (input.configured ? input.unackedMinutes : 15) * 60_000;
-
-        const notices: Real["notices"] = [];
-        const pages: string[] = [];
-
-        const ports: AlarmPorts<never> = {
-          page: (text) =>
-            Effect.sync(() => {
-              pages.push(text);
-            }),
-          prepare: (key, recipients, text) =>
-            Effect.sync(() => {
-              if (key === "wake.unacked") {
-                notices.push({ recipients, text });
-              }
-
-              return [];
-            }),
-          save: () => Effect.void,
-          send: () => Effect.void,
-          unavailable: Effect.void,
-        };
-
-        const real: Real = {
-          notices,
-          oldest,
-          pages,
-          state: () => journal,
-          step: async (step) => {
-            now += step === "wait" ? WAIT_MS : 1000;
-
-            const health = {
-              complete: true,
-              lastAck: null,
-              lease: {
-                expiresAt:
-                  step === "expired" || (step === "ack" && input.ackExpired)
-                    ? now
-                    : now + 60_000,
-                generation: 1,
-                holder: "fixture",
-                pane: null,
-              },
-              oldestWake:
-                step === "ack"
-                  ? null
-                  : {
-                      at: oldest,
-                      id: "3m7x2ka4xv22a",
-                      sender: "sender-invalid",
-                    },
-              quietUnacked: 0,
-            };
-
-            const facts: typeof AlarmFacts.Type = {
-              cacheBreaches: [],
-              deploy: null,
-              deployKnown: true,
-              digest: "ok",
-              doctor: true,
-              entered: null,
-              health: 200,
-              measurementFailed: false,
-              quarantinedHour: 0,
-              readers: null,
-              receipts: [],
-              receiptsKnown: true,
-              slots: { free: 100, max: 100 },
-              wakes: Match.value(step).pipe(
-                Match.when("missing", () => null),
-                Match.when("absent", () => []),
-                Match.orElse(() =>
-                  targets.map((entry) => ({ ...entry, health }))
-                )
-              ),
-            };
-
-            journal = await run(
-              alarmCycle(journal, facts, now, settings, ports).pipe(
-                Effect.flatMap(
-                  Schema.encodeEffect(Schema.fromJsonString(AlarmJournal))
-                ),
-                Effect.flatMap(
-                  Schema.decodeEffect(Schema.fromJsonString(AlarmJournal))
-                )
-              )
-            );
+      const legacy = yield* Schema.decodeUnknownEffect(AlarmJournal)({
+        ...emptyJournal,
+        alarms: {
+          "wake.unacked": {
+            context: {
+              lastSent: now,
+              severity: "critical",
+              since: now - STRANDED_MAIL_MS,
+            },
+            value: "firing",
           },
-        };
-
-        yield* Effect.promise(() =>
-          fc.asyncModelRun(
-            () => ({
-              model: {
-                cleared: 0,
-                firing: false,
-                now: 1_000_000,
-                paged: 0,
-                pagedIncident: null,
-                since: 0,
+        },
+        notices: [
+          {
+            incident: now,
+            key: "wake.unacked",
+            kind: "fire",
+            recipients: ["owner-invalid"],
+            text: "obsolete",
+          },
+        ],
+        pages: [
+          { at: now, incident: now - STRANDED_MAIL_MS, key: "wake.unacked" },
+        ],
+        pending: [
+          {
+            envelope: {
+              aad: {
+                messageId: "2222222222222",
+                recipientDid: "did:web:recipient.invalid",
+                recipientKeyId: "did:web:recipient.invalid#encryption",
+                senderDid: "did:web:sender.invalid",
               },
-              real,
-            }),
-            ["wake" as const, ...input.steps].map((step) =>
-              command(
-                step,
-                input.switchboard || (input.configured && page === true),
-                input.configured
-              )
-            )
-          )
-        );
+              ciphertext: { $bytes: "AQ==" },
+              enc: { $bytes: "AQ==" },
+              suite: { aeadId: 0, kdfId: 0, kemId: 0 },
+              version: 1,
+            },
+            key: "wake.unacked",
+            recipient,
+          },
+        ],
+      });
+
+      const result = yield* alarmCycle(legacy, healthy, now, settings, {
+        ...ports,
+        send: () => Effect.die("retired delivery was sent"),
+      });
+
+      expect(result.alarms["wake.unacked"]).toBeUndefined();
+      expect(result.pending).toEqual([]);
+      expect(result.notices).toEqual([]);
+      expect(pages).toEqual([]);
+      expect(sent).toEqual([]);
+    }),
+  { arbitrary: { runs: 20 } }
+);
+
+interface Action {
+  readonly reader: "reader-a" | "reader-b";
+  readonly state: "dead" | "live" | "drained";
+}
+
+interface Model {
+  states: Record<string, Action["state"]>;
+  fires: Record<string, number>;
+  clears: Record<string, number>;
+}
+
+interface Real {
+  journal: AlarmJournalValue;
+  tick: number;
+  observed: ReturnType<typeof recorder>;
+  readonly run: <A, E>(effect: Effect.Effect<A, E>) => Promise<A>;
+}
+
+const command = (action: Action): AsyncCommand<Model, Real> => ({
+  check: () => true,
+  run: Effect.fn("Test.stranded.model")(
+    function* step(model: Model, real: Real) {
+      const previous = model.states[action.reader];
+      model.states[action.reader] = action.state;
+
+      if (previous !== "dead" && action.state === "dead") {
+        model.fires[action.reader] = (model.fires[action.reader] ?? 0) + 1;
       }
+
+      if (previous === "dead" && action.state !== "dead") {
+        model.clears[action.reader] = (model.clears[action.reader] ?? 0) + 1;
+      }
+
+      const at = now + real.tick * 20 * 60_000;
+      real.tick += 1;
+
+      const sightings = Object.entries(model.states).map(([name, state]) =>
+        wake(name, state !== "dead", at, state === "drained")
+      );
+
+      real.journal = yield* runTicks(
+        real.journal,
+        [
+          { at, facts: { ...healthy, wakes: sightings } },
+          {
+            at: at + 10 * 60_000,
+            facts: {
+              ...healthy,
+              wakes: sightings.map((item) => ({
+                ...item,
+                health:
+                  item.health === null
+                    ? null
+                    : {
+                        ...item.health,
+                        lease: {
+                          expiresAt: at + 11 * 60_000,
+                          generation: 1,
+                          holder: "session-invalid",
+                          pane: null,
+                        },
+                      },
+              })),
+            },
+          },
+        ],
+        real.observed.ports
+      );
+
+      for (const [name, state] of Object.entries(model.states)) {
+        const key = `mail.stranded/${name}`;
+        expect(real.journal.alarms[key]?.value === "firing").toBe(
+          state === "dead"
+        );
+        expect(
+          new Set(
+            real.observed.sent
+              .filter(
+                (notice) => notice.key === key && notice.text.startsWith("🚨")
+              )
+              .map(
+                (notice) =>
+                  /Incident (?<incident>\d+)/u.exec(notice.text)?.groups
+                    ?.incident
+              )
+          ).size
+        ).toBe(model.fires[name] ?? 0);
+        expect(
+          real.observed.sent.filter(
+            (notice) => notice.key === key && notice.text.startsWith("✅")
+          )
+        ).toHaveLength(model.clears[name] ?? 0);
+      }
+
+      expect(
+        real.observed.sent.some((notice) => notice.key === "wake.unacked")
+      ).toBe(false);
+
+      const firedPages = real.journal.pages.filter(
+        (page) => page.kind !== "clear"
+      );
+
+      expect(
+        new Set(firedPages.map((page) => `${page.key}:${page.incident}`)).size
+      ).toBe(firedPages.length);
+
+      const encoded = yield* Schema.encodeEffect(
+        Schema.fromJsonString(AlarmJournal)
+      )(real.journal);
+
+      real.journal = yield* Schema.decodeEffect(
+        Schema.fromJsonString(AlarmJournal)
+      )(encoded);
+    },
+    async (effect, _model, real) => {
+      await real.run(effect);
+    }
+  ),
+  toString: () => `${action.reader}:${action.state}`,
+});
+
+it.effect.prop(
+  "stranded incidents open and clear independently per reader across journal restarts",
+  {
+    actions: Arbitrary.schema(
+      Schema.Array(
+        Schema.Struct({
+          reader: Schema.Literals(["reader-a", "reader-b"]),
+          state: Schema.Literals(["dead", "live", "drained"]),
+        })
+      ).check(Schema.isMinLength(1), Schema.isMaxLength(15))
+    ),
+  },
+  ({ actions }) =>
+    Effect.gen(function* model() {
+      const run = Effect.runPromiseWith(yield* Effect.context());
+
+      const setup = {
+        model: { clears: {}, fires: {}, states: {} },
+        real: { journal: emptyJournal, observed: recorder(), run, tick: 0 },
+      };
+
+      yield* Effect.promise(
+        asyncModelRun.bind(undefined, () => setup, actions.map(command))
+      );
     })
 );

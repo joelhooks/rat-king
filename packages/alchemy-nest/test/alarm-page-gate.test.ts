@@ -166,7 +166,7 @@ const stalled = (age: number, at: number) => ({
 });
 
 it.effect.prop(
-  "a stalled switchboard stays warn until 30 minutes unacked, then pages once",
+  "a busy live reader never produces a wake alarm or page",
   { from: Int(16, 20) },
   ({ from }) =>
     Effect.gen(function* promotion() {
@@ -178,7 +178,10 @@ it.effect.prop(
 
         return {
           at,
-          facts: { ...healthy, wakes: [stalled(at - born, at)] },
+          facts: {
+            ...healthy,
+            wakes: [{ ...stalled(at - born, at), alive: true, lastTurnAt: at }],
+          },
         };
       };
 
@@ -188,12 +191,11 @@ it.effect.prop(
         ports
       );
 
-      expect(young.alarms["wake.unacked"]?.value).toBe("firing");
+      expect(young.alarms["wake.unacked"]).toBeUndefined();
       expect(pages).toEqual([]);
 
       yield* runTicks(young, [tick(31), tick(32), tick(45)], ports);
 
-      expect(pages).toHaveLength(1);
-      expect(pages[0]).toContain("wake.unacked critical");
+      expect(pages).toEqual([]);
     })
 );

@@ -320,7 +320,7 @@ export declare const prepare: (options: PrepareOptions) => Effect.Effect<{
         readonly _tag: "Uncertain";
         readonly error: MailboxClientError;
     }, never, never>;
-    turnHealth: (did: string, name: string, session: string) => Effect.Effect<{
+    turnHealth: (did: string, name: string, session: string, startsOnly?: boolean) => Effect.Effect<{
         readonly at: string;
         readonly state: string;
         readonly turnId: string;

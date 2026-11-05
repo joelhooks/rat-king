@@ -20,12 +20,8 @@ import {
 import type { Cover } from "./alarm-maintenance.ts";
 import { readerRecovering } from "./alarm-reader-windows.ts";
 import { RecallCanaryFact, recallCanaryReading } from "./alarm-recall.ts";
-import {
-  WakeSighting,
-  WakeTarget,
-  wakeReading,
-  rememberWakeTargets,
-} from "./alarm-wakes.ts";
+import { mailReadings, rememberMailTargets } from "./alarm-stranded.ts";
+import { WakeSighting, WakeTarget } from "./alarm-wakes.ts";
 import { Sha, ShipReceipt } from "./ship-config.ts";
 import { sanitizeCandidateStderr } from "./ship-diagnostics.ts";
 import { StopMemory, stopMemoryChecks } from "./stop-memory.ts";
@@ -674,20 +670,9 @@ export const observeAlarms = (
   facts: typeof AlarmFacts.Type,
   now: number
 ) => {
-  const wake = wakeReading(
-    facts.wakes,
-    now,
-    (prior.wakeTargets ?? []).map((item) => item.name)
-  );
-
   const sources = {
     ...trackSources(prior, facts, now),
-    wakeTargets: rememberWakeTargets(
-      prior.wakeTargets ?? [],
-      facts.wakes,
-      wake,
-      now
-    ),
+    wakeTargets: rememberMailTargets(prior.wakeTargets ?? [], facts.wakes),
   };
 
   const readings: typeof Readings.Type = {
@@ -704,7 +689,8 @@ export const observeAlarms = (
     "recall.flowing-canary": recallCanaryReading(facts.recallCanary),
     "ship.churn": shipChurnReading(facts, now),
     "ship.failed": shipReading(facts),
-    "wake.unacked": wake,
+    "wake.unacked": ok,
+    ...mailReadings(facts.wakes, now),
   };
 
   return { readings, sources };

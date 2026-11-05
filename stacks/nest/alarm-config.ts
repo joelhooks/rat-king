@@ -2,7 +2,7 @@ import { Schema } from "effect";
 
 import { AgentName } from "../../packages/ratking-client/src/name.ts";
 
-export const AlarmKey = Schema.Literals([
+const FixedAlarmKey = Schema.Literals([
   "wake.unacked",
   "ship.failed",
   "ship.churn",
@@ -17,6 +17,12 @@ export const AlarmKey = Schema.Literals([
   "instance.down",
   "backup.sessions-index",
   "recall.flowing-canary",
+]);
+
+export const AlarmKey = Schema.Union([
+  FixedAlarmKey,
+  Schema.TemplateLiteral(["mail.stranded/", AgentName]),
+  Schema.TemplateLiteral(["mail.owner/", AgentName]),
 ]);
 
 export type AlarmKeyValue = typeof AlarmKey.Type;

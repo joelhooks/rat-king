@@ -5607,7 +5607,7 @@ var Turn = Main10.check(
 // packages/mailbox-client/src/turn-health.ts
 import { Effect as Effect34, Option as Option6, Schema as Schema57 } from "effect";
 var readTurnHealth = Effect34.fn("Mailbox.readTurnHealth")(
-  function* readTurnHealth2(transport, did, name, session) {
+  function* readTurnHealth2(transport, did, name, session, startsOnly) {
     let cursor = "0";
     let last = null;
     for (let page = 0; page < 100; page += 1) {
@@ -5636,7 +5636,7 @@ var readTurnHealth = Effect34.fn("Mailbox.readTurnHealth")(
           onSome: (value) => value.body
         });
         const record = Schema57.decodeOption(Schema57.fromJsonString(Turn))(body);
-        if (Option6.isSome(record) && record.value.agent === name && record.value.session === session && (last === null || record.value.at > last.at)) {
+        if (Option6.isSome(record) && record.value.agent === name && record.value.session === session && (startsOnly !== true || record.value.state === "working") && (last === null || record.value.at > last.at)) {
           last = {
             at: record.value.at,
             state: record.value.state,
@@ -5994,7 +5994,7 @@ var prepare = Effect35.fn("Mailbox.prepare")(function* prepare2(options) {
     sealPayload,
     send,
     sendSealed: submit,
-    turnHealth: (did, name, session) => readTurnHealth(transport, did, name, session)
+    turnHealth: (did, name, session, startsOnly = false) => readTurnHealth(transport, did, name, session, startsOnly)
   };
 });
 export {
