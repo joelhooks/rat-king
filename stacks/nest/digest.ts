@@ -3,31 +3,14 @@ import { Clock, DateTime, Effect, FileSystem, Schema } from "effect";
 import { collectComms } from "./comms.ts";
 import type { CountsValue } from "./comms.ts";
 import { configDoctor } from "./config-doctor.ts";
-import { Digest, DigestJson } from "./health.ts";
+import type { FailedHealth } from "./digest-config.ts";
+import { FleetDigest } from "./digest-config.ts";
+import { DigestJson } from "./health.ts";
 import type { HealthDigest } from "./health.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
 
-const FailedHealth = Schema.Struct({
-  reasons: Schema.Array(Schema.String),
-  status: Schema.Literal("fail"),
-});
-
-export const FleetDigest = Schema.Struct({
-  at: Schema.String,
-  comms: Schema.Struct({
-    failed_intercom_24h: Schema.optionalKey(Schema.Int),
-    fallbacks_24h: Schema.Int,
-    lost_24h: Schema.Int,
-    quarantined_24h: Schema.Int,
-    raw_intercom_24h: Schema.Int,
-    sent_24h: Schema.Int,
-    unanswered_24h: Schema.optionalKey(Schema.Int),
-  }),
-  rat_king: Schema.Union([Digest, FailedHealth]),
-  reasons: Schema.Array(Schema.String),
-  status: Schema.Literals(["ok", "warn", "fail"]),
-});
+export { FleetDigest } from "./digest-config.ts";
 
 export const composeDigest = (
   health: HealthDigest | typeof FailedHealth.Type,
@@ -97,9 +80,10 @@ export const commsCounts = (config: StageConfigValue, now: number) =>
     { concurrency: "unbounded" }
   );
 
-export const digest = Effect.fn("Nest.digest")(function* digest<E>(
+export const digest = Effect.fn("Nest.digest")(function* digest<E, R = never>(
   config: StageConfigValue,
-  health: (prior: string | undefined) => Effect.Effect<HealthDigest, E>
+  health: (prior: string | undefined) => Effect.Effect<HealthDigest, E>,
+  waitingMail: Effect.Effect<readonly string[], never, R> = Effect.succeed([])
 ) {
   const fs = yield* FileSystem.FileSystem;
   const history = `${config.runtime.RAT_KING_STATE_DIR}/health.jsonl`;
@@ -136,13 +120,16 @@ export const digest = Effect.fn("Nest.digest")(function* digest<E>(
     )
   );
 
-  const line = composeDigest(
-    facts,
-    counts.primary,
-    counts.secondary,
-    DateTime.formatIso(DateTime.makeUnsafe(now)).replace(/\.\d{3}Z$/u, "Z"),
-    yield* configDoctor(config)
-  );
+  const line = {
+    ...composeDigest(
+      facts,
+      counts.primary,
+      counts.secondary,
+      DateTime.formatIso(DateTime.makeUnsafe(now)).replace(/\.\d{3}Z$/u, "Z"),
+      yield* configDoctor(config)
+    ),
+    waitingMail: yield* waitingMail,
+  };
 
   const encoded = yield* Schema.encodeEffect(
     Schema.fromJsonString(FleetDigest)

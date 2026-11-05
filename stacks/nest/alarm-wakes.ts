@@ -5,10 +5,12 @@ import { ConfiguredWakeTarget } from "./alarm-config.ts";
 import type { AlarmReadingValue } from "./alarm-config.ts";
 
 export const WakeTarget = Schema.Struct({
+  alive: Schema.optionalKey(Schema.Boolean),
   configured: Schema.optionalKey(Schema.Literal(true)),
   name: Schema.String,
   owner: Schema.NullOr(Schema.String),
   page: ConfiguredWakeTarget.fields.page,
+  session: Schema.optionalKey(Schema.String),
   unackedMinutes: ConfiguredWakeTarget.fields.unackedMinutes,
 });
 
@@ -22,10 +24,18 @@ export const mergeWakeTargets = (
         ...new Map(
           [
             ...(readers ?? []),
-            ...configured.map((target) => ({
-              ...target,
-              configured: true as const,
-            })),
+            ...configured.map((target) => {
+              const reader = readers?.find((item) => item.name === target.name);
+              const alive = reader?.alive;
+              const session = reader?.session;
+
+              return {
+                ...(alive === undefined ? undefined : { alive }),
+                ...(session === undefined ? undefined : { session }),
+                ...target,
+                configured: true as const,
+              };
+            }),
           ].map((target) => [target.name, target])
         ).values(),
       ];
@@ -36,6 +46,7 @@ export const WakeSighting = Schema.Struct({
     Schema.Int.check(Schema.isGreaterThan(0))
   ),
   health: Schema.NullOr(MailboxHealth),
+  lastTurnAt: Schema.optionalKey(Schema.Finite),
 });
 
 export const DEFAULT_WAKE_UNACKED_MINUTES = 15;

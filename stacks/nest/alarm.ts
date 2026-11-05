@@ -17,7 +17,6 @@ import {
   observeAlarms,
 } from "./alarm-sources.ts";
 import type { AlarmFacts } from "./alarm-sources.ts";
-import { newWakeTargets } from "./alarm-wakes.ts";
 import type { FleetError } from "./stage-config.ts";
 
 export const Delivery = Schema.Struct({
@@ -44,6 +43,9 @@ const MaintenanceNoticed = Schema.Struct({
 export const AlarmJournal = Schema.Struct({
   alarms: Schema.Record(Schema.String, AlarmState),
   instanceRecipients: Schema.optionalKey(Schema.Array(Schema.String)),
+  mailRecipients: Schema.optionalKey(
+    Schema.Record(Schema.String, Schema.Array(Schema.String))
+  ),
   maintenance: Schema.optionalKey(Schema.Array(MaintenanceNoticed)),
   notices: Schema.Array(Notice),
   pages: Schema.Array(
@@ -87,7 +89,7 @@ export interface AlarmPorts<R> {
   readonly unavailable: Effect.Effect<void, never, R>;
 }
 
-const summaries: Record<AlarmKeyValue, string> = {
+const summaries: Partial<Record<AlarmKeyValue, string>> = {
   "backup.sessions-index": "Session index backup failed or is stale",
   "cache.rewrites": "Claude sessions are rebuilding their prompt cache",
   "celld.down": "Mailbox health is unavailable",
@@ -109,6 +111,10 @@ export const alarmRecipients = (
   key: AlarmKeyValue,
   downInstances: readonly string[] = []
 ) => {
+  if (key === "wake.unacked" || key.startsWith("mail.owner/")) {
+    return [];
+  }
+
   if (key === "instance.down") {
     return [
       ...new Set([
@@ -129,7 +135,8 @@ export const alarmRecipients = (
   if (
     key.startsWith("readers.") ||
     key.startsWith("issuer.") ||
-    key.startsWith("wake.")
+    key.startsWith("wake.") ||
+    key.startsWith("mail.stranded/")
   ) {
     recipients.push(settings.musterDesk);
   }
@@ -182,6 +189,8 @@ export const pageDue = (
   const incident = state.context.since;
 
   return (
+    key !== "wake.unacked" &&
+    !key.startsWith("mail.owner/") &&
     reading.status === "firing" &&
     reading.severity === "critical" &&
     state.value === "firing" &&
@@ -209,7 +218,7 @@ export const alarmText = (
 ) =>
   clear
     ? `✅ ${key} cleared after ${Math.max(0, Math.floor((now - state.context.since) / 1000))} seconds. SR 🐀`
-    : `🚨 ${key} ${state.context.severity}: ${summaries[key]}. Evidence: ${evidence}. Since ${DateTime.formatIso(DateTime.makeUnsafe(state.context.since))}. Incident ${state.context.since}. SR 🐀`;
+    : `🚨 ${key} ${state.context.severity}: ${summaries[key] ?? "Mail needs its reader"}. Evidence: ${evidence}. Since ${DateTime.formatIso(DateTime.makeUnsafe(state.context.since))}. Incident ${state.context.since}. SR 🐀`;
 
 export const maintenanceText = (key: AlarmKeyValue, evidence: string) =>
   `🛠️ ${key} quiet: ${evidence}. Not paged or broadcast; it alarms as usual if still down after the end plus grace. SR 🐀`;
@@ -286,45 +295,18 @@ const rememberInstanceRecipients = (
   };
 };
 
-const wakeRecoveryRecipients = (
-  journal: AlarmJournalValue,
-  key: AlarmKeyValue,
-  kind: string
-) =>
-  key === "wake.unacked" && kind === "clear"
-    ? (journal.wakeRecipients ?? [])
-    : [];
-
-const rememberWakeRecipients = (
-  journal: AlarmJournalValue,
-  notice: typeof Notice.Type
-): AlarmJournalValue =>
-  notice.key === "wake.unacked"
-    ? {
-        ...journal,
-        wakeRecipients:
-          notice.kind === "clear"
-            ? []
-            : [
-                ...new Set([
-                  ...(journal.wakeRecipients ?? []),
-                  ...notice.recipients,
-                ]),
-              ],
-      }
-    : journal;
-
-const renotifyAfter = (
-  key: AlarmKeyValue,
-  prior: AlarmJournalValue,
-  facts: typeof AlarmFacts.Type,
-  now: number,
-  settings: AlarmSettingsValue
-) =>
-  key === "wake.unacked" &&
-  newWakeTargets(prior.sources.wakeTargets ?? [], facts.wakes ?? [], now)
-    ? 0
-    : (settings.renotifyMinutes ?? 120) * 60_000;
+const retireWakeAlarm = (journal: AlarmJournalValue): AlarmJournalValue => ({
+  ...journal,
+  alarms: Object.fromEntries(
+    Object.entries(journal.alarms).filter(([key]) => key !== "wake.unacked")
+  ),
+  notices: journal.notices.filter((notice) => notice.key !== "wake.unacked"),
+  pages: journal.pages.filter((page) => page.key !== "wake.unacked"),
+  pending: journal.pending.filter(
+    (delivery) => delivery.key !== "wake.unacked"
+  ),
+  wakeRecipients: [],
+});
 
 const sendPending = Effect.fn("Alarm.sendPending")(function* sendPending<R>(
   start: AlarmJournalValue,
@@ -389,13 +371,59 @@ const sendPending = Effect.fn("Alarm.sendPending")(function* sendPending<R>(
   return current;
 });
 
+const mailRecoveryRecipients = (
+  journal: AlarmJournalValue,
+  key: AlarmKeyValue,
+  kind: string
+) =>
+  key.startsWith("mail.") && kind === "clear"
+    ? (journal.mailRecipients?.[key] ?? [])
+    : [];
+
+const rememberMailRecipients = (
+  journal: AlarmJournalValue,
+  notice: typeof Notice.Type
+): AlarmJournalValue =>
+  notice.key.startsWith("mail.")
+    ? {
+        ...journal,
+        mailRecipients: {
+          ...journal.mailRecipients,
+          [notice.key]:
+            notice.kind === "clear"
+              ? []
+              : [
+                  ...new Set([
+                    ...(journal.mailRecipients?.[notice.key] ?? []),
+                    ...notice.recipients,
+                  ]),
+                ],
+        },
+      }
+    : journal;
+
+const observedKeys = (
+  journal: AlarmJournalValue,
+  readings: ReturnType<typeof observeAlarms>["readings"]
+) =>
+  [
+    ...new Set([
+      ...alarmKeys,
+      ...Object.keys(journal.alarms),
+      ...Object.keys(readings),
+    ]),
+  ]
+    .filter(Schema.is(AlarmKey))
+    .filter((key) => key !== "wake.unacked");
+
 export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
-  prior: AlarmJournalValue,
+  start: AlarmJournalValue,
   facts: typeof AlarmFacts.Type,
   now: number,
   settings: AlarmSettingsValue,
   ports: AlarmPorts<R>
 ) {
+  const prior = retireWakeAlarm(start);
   const observation = observeAlarms(prior.sources, facts, now);
 
   let current: AlarmJournalValue = {
@@ -419,7 +447,7 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
 
   yield* ports.save(current);
 
-  for (const key of alarmKeys) {
+  for (const key of observedKeys(current, observation.readings)) {
     const reading = observation.readings[key];
 
     if (reading === undefined) {
@@ -437,7 +465,7 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
       before,
       reading,
       now,
-      renotifyAfter(key, prior, facts, now, settings)
+      (settings.renotifyMinutes ?? 120) * 60_000
     );
 
     const incident = next.state.context.since;
@@ -501,13 +529,13 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
           ),
           ...(reading.status === "firing" ? (reading.recipients ?? []) : []),
           ...instanceRecoveryRecipients(current, key, next.notice),
-          ...wakeRecoveryRecipients(current, key, next.notice),
+          ...mailRecoveryRecipients(current, key, next.notice),
         ]),
       ],
       text,
     };
 
-    current = rememberWakeRecipients(current, notice);
+    current = rememberMailRecipients(current, notice);
 
     const notices = current.notices.filter(
       (item) =>

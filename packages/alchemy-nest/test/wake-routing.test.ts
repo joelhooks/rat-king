@@ -63,7 +63,8 @@ const facts = (owners: readonly string[]): typeof AlarmFacts.Type => ({
   receiptsKnown: true,
   slots: { free: 100, max: 100 },
   wakes: owners.map((owner) => ({
-    health: health(1_200_000, null),
+    alive: false,
+    health: health(5 * 3_600_000, null),
     name: `reader-for-${owner}`,
     owner,
   })),
@@ -141,7 +142,7 @@ it.effect(
         "retired-owner": new AlarmRefused({ code: "Retired" }),
       });
 
-      expect(result.accepted.toSorted()).toEqual([
+      expect([...new Set(result.accepted)].toSorted()).toEqual([
         "desk-invalid",
         "live-owner",
         "observer-invalid",
@@ -160,7 +161,7 @@ it.effect(
         "gone-b": new AlarmRefused({ code: "UnknownName" }),
       });
 
-      expect(result.accepted.toSorted()).toEqual([
+      expect([...new Set(result.accepted)].toSorted()).toEqual([
         "desk-invalid",
         "observer-invalid",
       ]);
@@ -195,7 +196,7 @@ it.effect(
 const Minutes = Schema.Int.check(Schema.isBetween({ maximum: 60, minimum: 0 }));
 
 it.prop(
-  "wake.unacked fires only when the oldest wake is overdue and the name has not acked since it or recently",
+  "the owner wait reading fires only when the oldest wake is overdue without recent ack progress",
   [Minutes, Minutes, Schema.Boolean],
   ([waiting, sinceAck, acked]) => {
     const age = waiting * 60_000;

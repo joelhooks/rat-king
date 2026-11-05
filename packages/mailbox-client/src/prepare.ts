@@ -598,7 +598,11 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
     sealPayload,
     send,
     sendSealed: submit,
-    turnHealth: (did: string, name: string, session: string) =>
-      readTurnHealth(transport, did, name, session),
+    turnHealth: (
+      did: string,
+      name: string,
+      session: string,
+      startsOnly = false
+    ) => readTurnHealth(transport, did, name, session, startsOnly),
   };
 });

@@ -23,7 +23,7 @@ import { AlarmFacts, CacheBreach, sightReaders } from "./alarm-sources.ts";
 import type { WakeSighting, WakeTarget } from "./alarm-wakes.ts";
 import { collectComms } from "./comms.ts";
 import { configDoctor } from "./config-doctor.ts";
-import { FleetDigest } from "./digest.ts";
+import { FleetDigest } from "./digest-config.ts";
 import type { HealthDigest } from "./health.ts";
 import { ShipReceipt } from "./ship-config.ts";
 import { FleetError } from "./stage-config.ts";
@@ -127,7 +127,9 @@ export const collectReaderHeartbeats = Effect.fn(
           : [{ owner: beat.owner, record }];
       }),
       seen: sightReaders(source.host, beats, now.now),
-      targets: beats.map(({ beat }) => ({
+      targets: beats.map(({ alive, beat }) => ({
+        alive,
+        ...(beat.session === undefined ? undefined : { session: beat.session }),
         name: beat.name,
         owner: beat.owner ?? null,
       })),

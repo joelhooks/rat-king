@@ -12,7 +12,8 @@ export const readTurnHealth = Effect.fn("Mailbox.readTurnHealth")(
     transport: Transport["Service"],
     did: string,
     name: string,
-    session: string
+    session: string,
+    startsOnly?: boolean
   ) {
     let cursor = "0";
 
@@ -59,6 +60,7 @@ export const readTurnHealth = Effect.fn("Mailbox.readTurnHealth")(
           Option.isSome(record) &&
           record.value.agent === name &&
           record.value.session === session &&
+          (startsOnly !== true || record.value.state === "working") &&
           (last === null || record.value.at > last.at)
         ) {
           last = {
