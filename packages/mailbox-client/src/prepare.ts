@@ -35,6 +35,7 @@ import type { LeaseFence, OpenedMessage, SendOptions } from "./mailbox.ts";
 import { PayloadJson } from "./payload.ts";
 import type { PayloadValue } from "./payload.ts";
 import { lookupPresence } from "./record-visibility.ts";
+import { readRetirements } from "./retirements.ts";
 import type { RetryObserver } from "./retry-metrics.ts";
 import { randomTid } from "./tid.ts";
 import { transportLayer } from "./transport.ts";
@@ -594,6 +595,7 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
     presence,
     refresh,
     resolveLease: mailbox.lease.resolve,
+    retirements: () => readRetirements(transport),
     seal: sealEnvelopeForPeer,
     sealPayload,
     send,

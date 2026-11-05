@@ -30,13 +30,14 @@ const sightings = (now: number, restored = false) =>
       },
       quietUnacked: 0,
     },
+    lastProgressAt: now,
     lastTurnAt: now,
     name,
     owner: "reader-owner",
   }));
 
 it.effect.prop(
-  "old mail on dead readers pages once per reader and clears on drain or return",
+  "old mail on recently dead readers warns per reader and clears without any phone page",
   {
     drained: Schema.Boolean,
     repeats: Schema.Int.check(Schema.isBetween({ maximum: 8, minimum: 2 })),
@@ -52,7 +53,7 @@ it.effect.prop(
       });
 
       const journal = yield* runTicks(emptyJournal, ticks, ports);
-      expect(pages).toHaveLength(2);
+      expect(pages).toEqual([]);
       const now = at + repeats * 11 * 60_000;
 
       const wakes = sightings(now, true).map((item) =>
@@ -67,7 +68,7 @@ it.effect.prop(
         ports
       );
 
-      expect(pages).toHaveLength(4);
+      expect(pages).toEqual([]);
 
       for (const name of ["reader-a", "reader-b"]) {
         expect(recovered.alarms[`mail.stranded/${name}`]?.value).toBe(
@@ -85,7 +86,7 @@ it.effect.prop(
 );
 
 it.prop(
-  "live leases page only with observed old turn activity, not missing turn evidence",
+  "live heartbeats warn only with observed old turn activity, not missing or mismatched evidence",
   {
     minutes: Schema.Int.check(Schema.isBetween({ maximum: 480, minimum: 0 })),
   },
@@ -113,7 +114,7 @@ it.prop(
     expect(
       strandedReading({ ...item, alive: false, session: "previous-holder" }, at)
         .status
-    ).toBe("unknown");
+    ).toBe("ok");
   }
 );
 

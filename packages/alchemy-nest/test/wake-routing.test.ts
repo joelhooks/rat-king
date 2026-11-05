@@ -65,6 +65,7 @@ const facts = (owners: readonly string[]): typeof AlarmFacts.Type => ({
   wakes: owners.map((owner) => ({
     alive: false,
     health: health(5 * 3_600_000, null),
+    lastProgressAt: now,
     name: `reader-for-${owner}`,
     owner,
   })),
@@ -185,7 +186,7 @@ it.effect(
         "new-owner",
       ]);
 
-      const second = yield* run([], {}, first.after);
+      const second = yield* run(["old-owner"], {}, first.after);
 
       expect(second.accepted).toContain("new-owner");
       expect(second.after.pending).toEqual([]);

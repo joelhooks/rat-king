@@ -4,6 +4,8 @@ import type { WakeSighting, WakeTarget } from "./alarm-wakes.ts";
 
 export const STRANDED_MAIL_MS = 4 * 60 * 60_000;
 
+export const READER_EXISTENCE_MS = 24 * 60 * 60_000;
+
 export const rememberMailTargets = (
   prior: readonly (typeof WakeTarget.Type)[],
   seen: readonly (typeof WakeSighting.Type)[] | null | undefined
@@ -44,9 +46,32 @@ const readerAlive = (item: typeof WakeSighting.Type) =>
     ? undefined
     : item.alive;
 
+export const recentlyExisted = (item: typeof WakeSighting.Type, now: number) =>
+  readerAlive(item) === true ||
+  (readerAlive(item) === false &&
+    item.lastProgressAt !== undefined &&
+    now - item.lastProgressAt >= 0 &&
+    now - item.lastProgressAt < READER_EXISTENCE_MS);
+
+export const quietMailNames = (
+  seen: readonly (typeof WakeSighting.Type)[] | null | undefined,
+  now: number
+) =>
+  new Set(
+    (seen ?? []).flatMap((item) =>
+      item.retired === true ||
+      item.retired === null ||
+      (item.health !== null && !recentlyExisted(item, now))
+        ? [item.name]
+        : []
+    )
+  );
+
 export const needsTurnHealth = (item: typeof WakeSighting.Type, now: number) =>
   waitingAge(item, now) > STRANDED_MAIL_MS &&
-  readerAlive(item) !== false &&
+  readerAlive(item) === true &&
+  item.retired === false &&
+  recentlyExisted(item, now) &&
   item.health?.lease !== null;
 
 export const strandedReading = (
@@ -55,8 +80,16 @@ export const strandedReading = (
 ): AlarmReadingValue => {
   const { health } = item;
 
-  if (health === null) {
+  if (item.retired === true) {
+    return { status: "ok" };
+  }
+
+  if (health === null || item.retired === null) {
     return { status: "unknown" };
+  }
+
+  if (!recentlyExisted(item, now)) {
+    return { status: "ok" };
   }
 
   const age = waitingAge(item, now);
@@ -65,19 +98,18 @@ export const strandedReading = (
     return health.complete ? { status: "ok" } : { status: "unknown" };
   }
 
-  const gone =
-    readerAlive(item) === false ||
-    health.lease === null ||
-    health.lease.expiresAt <= now;
+  const gone = readerAlive(item) === false;
 
   const inactive =
-    item.lastTurnAt !== undefined && now - item.lastTurnAt > STRANDED_MAIL_MS;
+    readerAlive(item) === true &&
+    item.lastTurnAt !== undefined &&
+    now - item.lastTurnAt > STRANDED_MAIL_MS;
 
   if (gone || inactive) {
     return {
       evidence: `${item.name}: mail waiting ${Math.floor(age / 60_000)}m; ${gone ? "reader gone" : "no turn activity in 4h"}`,
       recipients: item.owner === null ? [] : [item.owner],
-      severity: "critical",
+      severity: "warn",
       status: "firing",
     };
   }
@@ -94,7 +126,11 @@ export const mailReadings = (
   for (const item of seen ?? []) {
     readings[`mail.stranded/${item.name}`] = strandedReading(item, now);
     readings[`mail.owner/${item.name}`] =
-      item.configured === true && stalledWakes([item], now).length > 0
+      item.retired !== true &&
+      item.retired !== null &&
+      recentlyExisted(item, now) &&
+      item.configured === true &&
+      stalledWakes([item], now).length > 0
         ? {
             evidence: `${item.name}: configured mail wait exceeded`,
             recipients: item.owner === null ? [] : [item.owner],
@@ -107,11 +143,44 @@ export const mailReadings = (
   return readings;
 };
 
+export const abandonedMailLines = (
+  seen: readonly (typeof WakeSighting.Type)[],
+  now: number
+) => {
+  const ages = seen.flatMap((item) =>
+    waitingAge(item, now) > 0 &&
+    item.retired !== true &&
+    (!recentlyExisted(item, now) || item.retired === null)
+      ? [waitingAge(item, now)]
+      : []
+  );
+
+  return ages.length === 0
+    ? []
+    : [
+        `abandoned mailboxes: ${ages.length} (oldest ${Math.floor(Math.max(...ages) / 3_600_000)}h)`,
+      ];
+};
+
+export const strandedMailLines = (
+  seen: readonly (typeof WakeSighting.Type)[],
+  now: number
+) =>
+  seen.flatMap((item) => {
+    const reading = strandedReading(item, now);
+
+    return reading.status === "firing"
+      ? [`${reading.evidence} (warn; no phone page)`]
+      : [];
+  });
+
 export const busyMailLines = (
   seen: readonly (typeof WakeSighting.Type)[],
   now: number
 ) =>
   seen.flatMap((item) =>
+    item.retired !== true &&
+    recentlyExisted(item, now) &&
     readerAlive(item) === true &&
     waitingAge(item, now) > 0 &&
     strandedReading(item, now).status !== "firing"

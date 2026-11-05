@@ -215,6 +215,7 @@ export declare const prepare: (options: PrepareOptions) => Effect.Effect<{
         }[];
     }, MailboxClientError, never>;
     resolveLease: (did: string) => Effect.Effect<import("../lexicon/runtime.lease.js").MainValue, MailboxClientError>;
+    retirements: () => Effect.Effect<string[], MailboxClientError, never>;
     seal: (to: string, body: string | ((messageId: string) => string), opts?: SendOptions | undefined) => Effect.Effect<{
         readonly [x: string]: import("../lexicon/runtime.js").LexValue;
         readonly aad: {

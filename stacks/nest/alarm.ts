@@ -17,6 +17,7 @@ import {
   observeAlarms,
 } from "./alarm-sources.ts";
 import type { AlarmFacts } from "./alarm-sources.ts";
+import { quietMailNames, recentlyExisted } from "./alarm-stranded.ts";
 import type { FleetError } from "./stage-config.ts";
 
 export const Delivery = Schema.Struct({
@@ -191,6 +192,7 @@ export const pageDue = (
   return (
     key !== "wake.unacked" &&
     !key.startsWith("mail.owner/") &&
+    !key.startsWith("mail.stranded/") &&
     reading.status === "firing" &&
     reading.severity === "critical" &&
     state.value === "firing" &&
@@ -308,9 +310,59 @@ const retireWakeAlarm = (journal: AlarmJournalValue): AlarmJournalValue => ({
   wakeRecipients: [],
 });
 
+const retireStrandedMail = (
+  journal: AlarmJournalValue,
+  facts: typeof AlarmFacts.Type,
+  now: number
+): AlarmJournalValue => {
+  const quiet = quietMailNames(facts.wakes, now);
+
+  const discard = (key: string) =>
+    (key.startsWith("mail.owner/") &&
+      quiet.has(key.slice("mail.owner/".length))) ||
+    (key.startsWith("mail.stranded/") &&
+      (quiet.has(key.slice("mail.stranded/".length)) ||
+        journal.alarms[key]?.context.severity === "critical"));
+
+  return {
+    ...journal,
+    alarms: Object.fromEntries(
+      Object.entries(journal.alarms).filter(([key]) => !discard(key))
+    ),
+    notices: journal.notices.filter((notice) => !discard(notice.key)),
+    pages: journal.pages.filter(
+      (page) => !page.key.startsWith("mail.stranded/")
+    ),
+    pending: journal.pending.filter((delivery) => !discard(delivery.key)),
+  };
+};
+
+const mailDispatchAllowed = (
+  key: AlarmKeyValue,
+  facts: typeof AlarmFacts.Type,
+  now: number
+) => {
+  if (!key.startsWith("mail.")) {
+    return true;
+  }
+
+  const item = facts.wakes?.find(
+    (seen) =>
+      key === `mail.stranded/${seen.name}` || key === `mail.owner/${seen.name}`
+  );
+
+  return (
+    item !== undefined &&
+    item.retired !== true &&
+    item.retired !== null &&
+    recentlyExisted(item, now)
+  );
+};
+
 const sendPending = Effect.fn("Alarm.sendPending")(function* sendPending<R>(
   start: AlarmJournalValue,
-  ports: AlarmPorts<R>
+  ports: AlarmPorts<R>,
+  allowed: (key: AlarmKeyValue) => boolean
 ) {
   let current = start;
   const blocked = new Set<string>();
@@ -319,7 +371,7 @@ const sendPending = Effect.fn("Alarm.sendPending")(function* sendPending<R>(
   const settled = new Set<typeof Delivery.Type>();
 
   for (const delivery of current.pending) {
-    if (blocked.has(delivery.recipient)) {
+    if (blocked.has(delivery.recipient) || !allowed(delivery.key)) {
       continue;
     }
 
@@ -423,7 +475,7 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
   settings: AlarmSettingsValue,
   ports: AlarmPorts<R>
 ) {
-  const prior = retireWakeAlarm(start);
+  const prior = retireStrandedMail(retireWakeAlarm(start), facts, now);
   const observation = observeAlarms(prior.sources, facts, now);
 
   let current: AlarmJournalValue = {
@@ -561,7 +613,10 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
   const preparing = new Set<AlarmKeyValue>();
 
   for (const notice of current.notices) {
-    if (preparing.has(notice.key)) {
+    if (
+      preparing.has(notice.key) ||
+      !mailDispatchAllowed(notice.key, facts, now)
+    ) {
       continue;
     }
 
@@ -583,7 +638,9 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
     yield* ports.save(current);
   }
 
-  current = yield* sendPending(current, ports);
+  current = yield* sendPending(current, ports, (key) =>
+    mailDispatchAllowed(key, facts, now)
+  );
 
   return current;
 });
