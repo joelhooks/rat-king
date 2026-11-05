@@ -44,5 +44,8 @@ export const readRetirements = Effect.fn("Mailbox.readRetirements")(
     });
   },
   (effect) =>
-    effect.pipe(Deadline.timeout("10 seconds"), Effect.mapError(clientError))
+    effect.pipe(
+      Deadline.timeout(Deadline.OPERATION_MS),
+      Effect.mapError(clientError)
+    )
 );

@@ -1,4 +1,9 @@
-import type { AlarmKeyValue, AlarmReadingValue } from "./alarm-config.ts";
+import type {
+  AlarmKeyValue,
+  AlarmReadingValue,
+  AlarmStateValue,
+} from "./alarm-config.ts";
+import type { AlarmFacts } from "./alarm-sources.ts";
 import { stalledWakes } from "./alarm-wakes.ts";
 import type { WakeSighting, WakeTarget } from "./alarm-wakes.ts";
 
@@ -61,11 +66,20 @@ export const quietMailNames = (
     (seen ?? []).flatMap((item) =>
       item.retired === true ||
       item.retired === null ||
-      (item.health !== null && !recentlyExisted(item, now))
+      !recentlyExisted(item, now)
         ? [item.name]
         : []
     )
   );
+
+export const strandedObservationExpired = (
+  state: AlarmStateValue | undefined,
+  facts: typeof AlarmFacts.Type,
+  now: number
+) =>
+  (facts.wakes === null || facts.wakes === undefined) &&
+  state?.value === "firing" &&
+  now - state.context.lastSent >= READER_EXISTENCE_MS;
 
 export const needsTurnHealth = (item: typeof WakeSighting.Type, now: number) =>
   waitingAge(item, now) > STRANDED_MAIL_MS &&
@@ -84,12 +98,12 @@ export const strandedReading = (
     return { status: "ok" };
   }
 
-  if (health === null || item.retired === null) {
-    return { status: "unknown" };
-  }
-
   if (!recentlyExisted(item, now)) {
     return { status: "ok" };
+  }
+
+  if (health === null || item.retired === null) {
+    return { status: "unknown" };
   }
 
   const age = waitingAge(item, now);

@@ -17,7 +17,11 @@ import {
   observeAlarms,
 } from "./alarm-sources.ts";
 import type { AlarmFacts } from "./alarm-sources.ts";
-import { quietMailNames, recentlyExisted } from "./alarm-stranded.ts";
+import {
+  quietMailNames,
+  recentlyExisted,
+  strandedObservationExpired,
+} from "./alarm-stranded.ts";
 import type { FleetError } from "./stage-config.ts";
 
 export const Delivery = Schema.Struct({
@@ -322,7 +326,8 @@ const retireStrandedMail = (
       quiet.has(key.slice("mail.owner/".length))) ||
     (key.startsWith("mail.stranded/") &&
       (quiet.has(key.slice("mail.stranded/".length)) ||
-        journal.alarms[key]?.context.severity === "critical"));
+        journal.alarms[key]?.context.severity === "critical" ||
+        strandedObservationExpired(journal.alarms[key], facts, now)));
 
   return {
     ...journal,

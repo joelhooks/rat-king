@@ -5257,6 +5257,7 @@ var Output16 = Schema52.StructWithRest(
       Schema52.isGreaterThanOrEqualTo(0),
       Schema52.isLessThanOrEqualTo(9007199254740991)
     ),
+    retired: Schema52.optionalKey(Schema52.Boolean),
     wakesSinceAck: Schema52.optionalKey(
       Schema52.Int.check(
         Schema52.isGreaterThanOrEqualTo(0),
@@ -5320,7 +5321,8 @@ var MailboxHealth = Schema53.Struct({
   ),
   oldestWake: Schema53.NullOr(Wake2),
   oldestWakeSinceAck: Schema53.optionalKey(Schema53.NullOr(Wake2)),
-  quietUnacked: Schema53.Int.check(Schema53.isGreaterThanOrEqualTo(0))
+  quietUnacked: Schema53.Int.check(Schema53.isGreaterThanOrEqualTo(0)),
+  retired: Schema53.optionalKey(Schema53.Boolean)
 });
 var readMailboxHealth = Effect32.fn("Mailbox.readHealth")(
   function* readMailboxHealth2(transport, did, name) {
@@ -5343,6 +5345,7 @@ var readMailboxHealth = Effect32.fn("Mailbox.readHealth")(
     );
     const facts = {
       complete: value.complete,
+      ...value.retired === void 0 ? void 0 : { retired: value.retired },
       lastAck: value.lastAck === void 0 ? null : Date.parse(value.lastAck),
       lease: value.lease === void 0 ? null : {
         expiresAt: Date.parse(value.lease.expiresAt),
@@ -5506,7 +5509,10 @@ var readRetirements = Effect34.fn("Mailbox.readRetirements")(
       reason: "Retirement scan exceeded 100 pages"
     });
   },
-  (effect) => effect.pipe(timeout("10 seconds"), Effect34.mapError(clientError))
+  (effect) => effect.pipe(
+    timeout(OPERATION_MS),
+    Effect34.mapError(clientError)
+  )
 );
 
 // packages/lexicon/src/mailbox.listTraffic.ts

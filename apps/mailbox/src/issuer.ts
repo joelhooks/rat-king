@@ -330,19 +330,25 @@ export const issuerHandlers = (policy: IssuerPolicy) =>
             );
 
             const page = rows.slice(0, limit);
-            const retired: ReturnType<typeof retiredOutput>[] = [];
 
-            for (const row of page) {
-              const current = yield* retirements.current(row.did);
+            const retired = yield* Effect.forEach(
+              page,
+              (row) =>
+                Effect.gen(function* validateRetirement() {
+                  const current = yield* retirements.current(row.did);
 
-              if (current?.retiredAt === row.retiredAt) {
-                retired.push(retiredOutput(row));
-              } else {
-                yield* store.transaction((tx) => {
-                  tx.unretire(row.name, row.retiredAt);
-                });
-              }
-            }
+                  if (current?.retiredAt === row.retiredAt) {
+                    return [retiredOutput(row)];
+                  }
+
+                  yield* store.transaction((tx) => {
+                    tx.unretire(row.name, row.retiredAt);
+                  });
+
+                  return [];
+                }),
+              { concurrency: 8 }
+            ).pipe(Effect.map((validated) => validated.flat()));
 
             const last = page.at(-1);
 

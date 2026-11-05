@@ -26,6 +26,7 @@ export declare const MailboxHealth: Schema.Struct<{
         readonly sender: Schema.String;
     }>>>;
     readonly quietUnacked: Schema.Int;
+    readonly retired: Schema.optionalKey<Schema.Boolean>;
 }>;
 export type MailboxHealthValue = typeof MailboxHealth.Type;
 export interface HealthFacts extends MailboxHealthValue {
@@ -55,4 +56,5 @@ export declare const readMailboxHealth: (transport: {
         readonly sender: string;
     } | null;
     readonly quietUnacked: number;
+    readonly retired?: boolean;
 }, MailboxClientError, never>;

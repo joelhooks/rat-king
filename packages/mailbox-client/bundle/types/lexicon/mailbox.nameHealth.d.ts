@@ -43,6 +43,7 @@ export declare const Output: Schema.StructWithRest<Schema.Struct<{
         readonly woke: Schema.Boolean;
     }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
     readonly quietUnacked: Schema.Int;
+    readonly retired: Schema.optionalKey<Schema.Boolean>;
     readonly wakesSinceAck: Schema.optionalKey<Schema.Int>;
 }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
 export type OutputValue = typeof Output.Type;
@@ -103,6 +104,7 @@ export declare const Method: {
             readonly woke: Schema.Boolean;
         }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
         readonly quietUnacked: Schema.Int;
+        readonly retired: Schema.optionalKey<Schema.Boolean>;
         readonly wakesSinceAck: Schema.optionalKey<Schema.Int>;
     }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
     readonly outputEncoding: "application/json";

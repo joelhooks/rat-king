@@ -53,8 +53,11 @@ it.effect.prop(
   {
     hours: Schema.Int.check(Schema.isBetween({ maximum: 240, minimum: 25 })),
     unknownFirst: Schema.Boolean,
+    unknownHours: Schema.Int.check(
+      Schema.isBetween({ maximum: 48, minimum: 0 })
+    ),
   },
-  ({ hours, unknownFirst }) =>
+  ({ hours, unknownFirst, unknownHours }) =>
     Effect.gen(function* silent() {
       const seen = names.map((name, index) => ({
         ...mailbox(name, hours),
@@ -73,9 +76,9 @@ it.effect.prop(
           `mail.stranded/${name}`,
           {
             context: {
-              lastSent: now - hour,
+              lastSent: now - unknownHours * hour,
               severity: unknownFirst ? "warn" : "critical",
-              since: now - hour,
+              since: now - unknownHours * hour,
             },
             value: "firing",
           },
@@ -132,8 +135,8 @@ it.effect.prop(
         : journal;
 
       if (unknownFirst) {
-        expect(waiting.pending).toHaveLength(6);
-        expect(waiting.notices).toHaveLength(6);
+        expect(waiting.pending).toHaveLength(unknownHours < 24 ? 6 : 0);
+        expect(waiting.notices).toHaveLength(unknownHours < 24 ? 6 : 0);
       }
 
       const result = yield* alarmCycle(

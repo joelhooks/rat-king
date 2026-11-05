@@ -12,6 +12,7 @@
       "output": { "encoding": "application/json", "schema": { "type": "object", "required": ["complete", "quietUnacked"], "properties": {
         "complete": { "type": "boolean" },
         "quietUnacked": { "type": "integer", "minimum": 0 },
+        "retired": { "type": "boolean" },
         "lastAck": { "type": "string", "format": "datetime" },
         "lease": { "type": "ref", "ref": "#lease" },
         "oldestWake": { "type": "ref", "ref": "#wake" },
