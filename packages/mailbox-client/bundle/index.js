@@ -5187,6 +5187,9 @@ var consume = (mailbox, did, handler, options) => Effect30.scoped(
             Effect30.sync(() => {
               checkpoint = batch.throughSeq;
             })
+          ),
+          Effect30.andThen(
+            () => batch.hasMore !== true && options.onDrained !== void 0 ? options.onDrained() : Effect30.void
           )
         )
       ),

@@ -458,6 +458,7 @@ export const collectFacts = (
       ),
       session,
       source: choice.source,
+      succeeds: Option.getOrUndefined(succeeds),
       successor: successor && choice.source === "env",
       via: () =>
         `${Option.fromNullishOr(sessionName?.()).pipe(

@@ -55,6 +55,7 @@ export interface AskPorts<E> {
 }
 
 export interface AsksApi<E> {
+  readonly reload: Effect.Effect<void, E>;
   readonly ack: (id: string) => Effect.Effect<void, E>;
   readonly match: (
     inbound: Inbound
@@ -161,6 +162,11 @@ export const openAsks = <E>(ports: AskPorts<E>) =>
         entries.filter((entry) => entry.state !== "closed")
       ),
       record: (ask) => lock.withPermits(1)(Effect.suspend(() => record(ask))),
+      reload: lock.withPermits(1)(
+        Effect.gen(function* reloadAsks() {
+          entries = compact(yield* ports.load);
+        })
+      ),
     } satisfies AsksApi<E>;
   });
 

@@ -1,6 +1,7 @@
 import * as AttentionReceipt from "../lexicon/attention.receipt.js";
 import * as Defs from "../lexicon/defs.js";
 import type * as Lease from "../lexicon/runtime.lease.js";
+import type { Scope } from "effect";
 import { Effect, Option } from "effect";
 import { MailboxClientError } from "./error.js";
 import type { LeaseFence, OpenedMessage, RatKingMailbox } from "./mailbox.js";
@@ -156,6 +157,7 @@ export interface Skipped {
     readonly seq: number;
 }
 export interface ConsumeOptions {
+    readonly onDrained?: () => Effect.Effect<void, MailboxClientError>;
     readonly onRetryMetric?: RetryObserver;
     readonly onAttentionReceipt?: (receipt: AttentionReceipt.MainValue) => Effect.Effect<void>;
     readonly ackOnReturn?: boolean;
@@ -163,7 +165,7 @@ export interface ConsumeOptions {
     readonly renders?: readonly string[];
     readonly resume?: LeaseFence;
     readonly afterSeq?: number;
-    readonly onLease?: (lease: Lease.MainValue, progress: boolean, source: "acquire" | "intake" | "renew") => Effect.Effect<void>;
+    readonly onLease?: (lease: Lease.MainValue, progress: boolean, source: "acquire" | "intake" | "renew") => Effect.Effect<void, MailboxClientError, Scope.Scope>;
     readonly onRetry?: (error: MailboxClientError) => Effect.Effect<void>;
     readonly leaseName?: string;
     readonly failOnHeld?: boolean;

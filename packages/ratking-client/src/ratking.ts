@@ -70,7 +70,7 @@ import { Directory, writePrivateJson } from "./directory.ts";
 import type { Listed, Resolved } from "./directory.ts";
 import { quietAsk, reasonOf } from "./errors.ts";
 import type { QuietAsk } from "./errors.ts";
-import { claimName, ensureIdentity } from "./identity.ts";
+import { claimName, ensureIdentity, publicDocument } from "./identity.ts";
 import type { SessionFacts } from "./identity.ts";
 import { Issuer } from "./issuer.ts";
 import {
@@ -118,6 +118,13 @@ import {
   HeartbeatJson,
 } from "./reader-health.ts";
 import type { ReaderHeartbeatValue } from "./reader-health.ts";
+import type { ReaderJournal } from "./reader-journal.ts";
+import {
+  pivotReceipt,
+  readerJournal,
+  sameReaderIdentity,
+} from "./reader-journal.ts";
+import { readerStore } from "./reader-store.ts";
 import { recentMap } from "./recent.ts";
 import { RENDERS } from "./record-visibility.ts";
 import {
@@ -133,12 +140,18 @@ import type { RelayOutboundValue } from "./relay.ts";
 import { awaitRestartGate } from "./restart-gate.ts";
 import { countRetry, emptyRetries } from "./retry-counters.ts";
 import { SecretStore } from "./secrets.ts";
+import { durableThreads } from "./thread-journal.ts";
 import {
   openThreadRouting,
   projectThread,
   ThreadJournal,
 } from "./thread-routing.ts";
-import { replyRecipients, Threads, threadsLayer } from "./threads.ts";
+import {
+  replyRecipients,
+  ThreadJournal as InboundThreadJournal,
+  Threads,
+  threadsLayer,
+} from "./threads.ts";
 import type { Received, Reply } from "./threads.ts";
 
 export const NotDeliveredCode = Schema.Literals([
@@ -564,6 +577,7 @@ const SavedLease = Schema.Struct({
   did: Schema.String,
   generation: Schema.Int,
   leaseId: Schema.String,
+  session: Schema.optionalKey(Schema.String),
 });
 
 const peersOf = (documents: readonly PeerDocument[]) => [
@@ -627,7 +641,45 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
   const http = yield* HttpClient.HttpClient;
   const store = yield* SecretStore;
   const issuer = yield* Issuer;
-  const threads = yield* Threads;
+
+  const refused = (code: typeof NotDeliveredCode.Type) => (reason: string) =>
+    new NotDelivered({ code, reason });
+
+  const threadMemory = yield* Threads;
+
+  const threadFile = (name: string) =>
+    path.join(settings.state, "threads", `${provisionLabel(name)}.json`);
+
+  const threads = yield* durableThreads(threadMemory, {
+    load: (name) =>
+      fs.exists(threadFile(name)).pipe(
+        Effect.flatMap((exists) =>
+          exists
+            ? fs
+                .readFileString(threadFile(name))
+                .pipe(
+                  Effect.flatMap(
+                    Schema.decodeUnknownEffect(
+                      Schema.fromJsonString(InboundThreadJournal)
+                    )
+                  ),
+                  Effect.map(Option.some)
+                )
+            : Effect.succeed(Option.none<typeof InboundThreadJournal.Type>())
+        ),
+        Effect.mapError((error) =>
+          refused("NotAttempted")(`Thread journal: ${reasonOf(error)}`)
+        )
+      ),
+    save: (name, entries) =>
+      writePrivateJson(threadFile(name), JSON.stringify(entries)).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path),
+        Effect.mapError((error) =>
+          refused("NotAttempted")(`Thread journal: ${reasonOf(error)}`)
+        )
+      ),
+  });
 
   const replyFor = Effect.fn("RatKing.replyRef")(function* replyFor(
     parent: SendOptions["replyTo"]
@@ -693,6 +745,70 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
   const attached = yield* Ref.make(false);
   const lastLease = yield* Ref.make(Option.none<LeaseFence>());
 
+  const pendingIds = Effect.gen(function* pendingIds() {
+    const outbound = (yield* Deferred.isDone(asks))
+      ? yield* (yield* Deferred.await(asks)).pending
+      : [];
+
+    return {
+      inbound: (yield* threads.pending).map((entry) => entry.id).toSorted(),
+      outbound: outbound.map((entry) => entry.id).toSorted(),
+    };
+  });
+
+  const displayed = yield* readerJournal({
+    pending: pendingIds,
+    save: (journal) =>
+      readerStore(settings.state, journal.name)
+        .save(journal)
+        .pipe(
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
+          Effect.mapError((failure) =>
+            refused("NotAttempted")(`Reader journal: ${reasonOf(failure)}`)
+          )
+        ),
+  });
+
+  let pivotParent = Option.none<typeof ReaderJournal.Type>();
+  let pivotWritten = false;
+
+  const readReader = (name: string) =>
+    readerStore(settings.state, name).load.pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
+      Effect.mapError((failure) =>
+        refused("NotAttempted")(`Reader journal: ${reasonOf(failure)}`)
+      )
+    );
+
+  const recordPivot = Effect.gen(function* recordPivot() {
+    if (pivotWritten || Option.isNone(pivotParent)) {
+      return;
+    }
+
+    const child = yield* displayed.snapshot;
+
+    if (Option.isSome(child)) {
+      const receipt = pivotReceipt(pivotParent.value, child.value);
+      yield* writePrivateJson(
+        path.join(
+          settings.state,
+          "pivots",
+          `${provisionLabel(receipt.name)}-${receipt.generation}.json`
+        ),
+        JSON.stringify(receipt)
+      ).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path),
+        Effect.mapError((error) =>
+          refused("NotAttempted")(`Pivot receipt: ${reasonOf(error)}`)
+        )
+      );
+      pivotWritten = true;
+    }
+  });
+
   const heldSince = yield* Ref.make(Option.none<number>());
 
   const front = yield* Ref.make(Option.none<FrontLoops>());
@@ -738,7 +854,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
   const leaseFile = (name: string) =>
     path.join(settings.state, "leases", `${provisionLabel(name)}.json`);
 
-  const readLease = (name: string, did: string) =>
+  const readLease = (name: string, did: string, sessionId: string) =>
     fs
       .readFileString(leaseFile(name))
       .pipe(
@@ -746,10 +862,14 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           Schema.decodeUnknownEffect(Schema.fromJsonString(SavedLease))
         ),
         Effect.option,
-        Effect.map(Option.filter((saved) => saved.did === did))
+        Effect.map(
+          Option.filter(
+            (saved) => saved.did === did && saved.session === sessionId
+          )
+        )
       );
 
-  const writeLease = (name: string, saved: LeaseFence) =>
+  const writeLease = (name: string, saved: typeof SavedLease.Type) =>
     Schema.encodeEffect(Schema.fromJsonString(SavedLease))(saved).pipe(
       Effect.flatMap((json) => writePrivateJson(leaseFile(name), json)),
       Effect.provideService(FileSystem.FileSystem, fs),
@@ -1074,6 +1194,41 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             Deferred.await(checkpoint).pipe(Effect.andThen(meta.ack))
           );
           const { inbound, payload } = yield* inboundOf(own, message);
+          const displayKey = JSON.stringify([message.senderDid, message.tid]);
+
+          const turn = (yield* decodeRecord(message.body)).pipe(
+            Option.flatMap((record) =>
+              signedTurn(record, inbound.from, inbound.verified)
+            ),
+            Option.map((value) => JSON.stringify([value.turnId, value.state])),
+            Option.getOrUndefined
+          );
+
+          acknowledgments.set(
+            message.tid,
+            Deferred.await(checkpoint).pipe(
+              Effect.andThen(
+                displayed
+                  .shown(displayKey, turn)
+                  .pipe(
+                    Effect.mapError(
+                      (failure) =>
+                        new MailboxClientError({ reason: reasonOf(failure) })
+                    )
+                  )
+              ),
+              Effect.andThen(meta.ack)
+            )
+          );
+
+          if (displayed.skips(displayKey, turn)) {
+            yield* meta.ack;
+            yield* writeCursor(own.name, meta.seq);
+            yield* Deferred.succeed(checkpoint, true);
+            acknowledgments.delete(message.tid);
+
+            return;
+          }
 
           const record = Option.isNone(payload)
             ? yield* decodeRecord(message.body)
@@ -1205,8 +1360,110 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               )
             )
           ),
+        onDrained: () =>
+          recordPivot.pipe(
+            Effect.mapError(
+              (failure) => new MailboxClientError({ reason: reasonOf(failure) })
+            )
+          ),
         onLease: (lease, progress, source) =>
-          Ref.get(lastLease).pipe(
+          Effect.gen(function* restoreReader() {
+            if (source !== "acquire") {
+              return;
+            }
+
+            const priorReader = yield* readReader(own.name);
+
+            const identity = {
+              did: own.did,
+              keyReference: JSON.stringify(publicDocument(own.identity)),
+              name: own.name,
+            };
+
+            yield* Effect.succeed(
+              facts.successor !== true ||
+                facts.succeeds === undefined ||
+                Option.isSome(priorReader)
+            ).pipe(
+              Effect.filterOrFail(
+                (valid) => valid,
+                () =>
+                  refused("Refused")(
+                    "Parent reader journal is unavailable; successor not started"
+                  )
+              )
+            );
+            yield* Effect.succeed(
+              Option.isNone(priorReader) ||
+                sameReaderIdentity(priorReader.value, identity)
+            ).pipe(
+              Effect.filterOrFail(
+                (valid) => valid,
+                () =>
+                  refused("NoIdentity")(
+                    "Reader journal identity mismatch; successor not started"
+                  )
+              )
+            );
+            yield* Effect.succeed(
+              facts.successor !== true ||
+                facts.succeeds === undefined ||
+                Option.isNone(priorReader) ||
+                priorReader.value.session === facts.succeeds ||
+                priorReader.value.session === facts.session
+            ).pipe(
+              Effect.filterOrFail(
+                (valid) => valid,
+                () =>
+                  refused("Refused")(
+                    "Reader journal belongs to an unrelated session; successor not started"
+                  )
+              )
+            );
+
+            yield* threads.open(own.name);
+            yield* (yield* Deferred.await(asks)).reload;
+
+            if (
+              facts.successor === true &&
+              Option.isSome(priorReader) &&
+              priorReader.value.session === facts.succeeds
+            ) {
+              pivotParent = priorReader;
+            }
+
+            yield* displayed.restore({
+              ...identity,
+              generation: lease.generation,
+              pending: yield* pendingIds,
+              session: facts.session,
+              shownIds: Option.isSome(priorReader)
+                ? priorReader.value.shownIds
+                : [],
+              shownTurns: Option.isSome(priorReader)
+                ? priorReader.value.shownTurns
+                : [],
+            });
+            yield* displayed.checkpoint;
+            yield* Effect.addFinalizer(() =>
+              displayed.checkpoint.pipe(Effect.ignore)
+            );
+          }).pipe(
+            Effect.tapError((failure) =>
+              Effect.logError("Reader restoration failed", failure)
+            ),
+            Effect.mapError(
+              (failure) =>
+                new MailboxClientError({
+                  error:
+                    facts.successor === true
+                      ? "SuccessorUnproven"
+                      : "MailboxUnavailable",
+                  reason: reasonOf(failure),
+                })
+            ),
+            Effect.andThen(Ref.get(lastLease)),
+
             Effect.tap((previous) =>
               Effect.sync(() => {
                 if (
@@ -1265,6 +1522,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                   did: own.did,
                   generation: lease.generation,
                   leaseId: lease.leaseId,
+                  session: facts.session,
                 }),
                 progress || source === "acquire"
                   ? setState(
@@ -1318,7 +1576,10 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           ),
       };
 
-      const savedLease = yield* readLease(own.name, own.did);
+      const savedLease =
+        facts.successor === true
+          ? Option.none<LeaseFence>()
+          : yield* readLease(own.name, own.did, facts.session);
 
       yield* client.consume(
         intake(own, route),
@@ -1391,9 +1652,6 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       return client.mailbox;
     }).pipe(Effect.scoped, Effect.provideService(HttpClient.HttpClient, http))
   );
-
-  const refused = (code: typeof NotDeliveredCode.Type) => (reason: string) =>
-    new NotDelivered({ code, reason });
 
   const foreground = Deadline.timeoutOrElse({
     duration: Deadline.OPERATION_MS,
@@ -2422,15 +2680,19 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       );
     });
 
-  const waitForClaim = (name: string, retrying = false) =>
+  const waitForClaim = (
+    name: string,
+    retrying = false,
+    reason = heldReason(name)
+  ) =>
     Effect.gen(function* awaitClaim() {
       const gate = yield* Deferred.make<boolean>();
 
       yield* Ref.set(adopting, true);
       yield* Ref.set(claimGate, Option.some(gate));
-      yield* setState(ReaderState.SendOnly({ name, reason: heldReason(name) }));
+      yield* setState(ReaderState.SendOnly({ name, reason }));
       yield* Effect.logWarning(
-        `Rat King ${name}: ${heldReason(name)}; use claim to retry now`
+        `Rat King ${name}: ${reason}; use claim to retry now`
       );
       yield* retrying ? parkUntilClaimOrRetry(gate) : Deferred.await(gate);
       yield* Ref.set(claimGate, Option.none());
@@ -2594,7 +2856,11 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       Effect.gen(function* establish() {
         yield* setState(ReaderState.Minting({ name: claimed.name }));
 
-        const identity = yield* ensureIdentity(claimed.name, facts.parent);
+        const identity = yield* ensureIdentity(
+          claimed.name,
+          facts.parent,
+          facts.successor === true && facts.succeeds !== undefined
+        );
 
         return {
           did: identity.did,
@@ -2607,6 +2873,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
     const journal = yield* supervise(Option.some(own.name), openJournal(own));
 
+    yield* supervise(Option.some(own.name), threads.open(own.name));
     yield* Deferred.succeed(asks, journal);
     yield* Ref.set(established, Option.some(own));
     yield* Deferred.succeed(self, own);
@@ -2736,6 +3003,12 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               reason: "Reader stopped; restarting",
             })
           )
+        ),
+        Effect.catchIf(
+          (failure) =>
+            Schema.is(MailboxClientError)(failure) &&
+            failure.error === "SuccessorUnproven",
+          (failure) => waitForClaim(own.name, false, reasonOf(failure))
         ),
         Effect.catchIf(
           (error) =>

@@ -2,6 +2,7 @@
 import * as AttentionReceipt from "@rat-king/lexicon/attention.receipt";
 import * as Defs from "@rat-king/lexicon/defs";
 import type * as Lease from "@rat-king/lexicon/runtime.lease";
+import type { Scope } from "effect";
 import {
   Clock,
   DateTime,
@@ -100,6 +101,7 @@ export interface Skipped {
 }
 
 export interface ConsumeOptions {
+  readonly onDrained?: () => Effect.Effect<void, MailboxClientError>;
   readonly onRetryMetric?: RetryObserver;
   readonly onAttentionReceipt?: (
     receipt: AttentionReceipt.MainValue
@@ -113,7 +115,7 @@ export interface ConsumeOptions {
     lease: Lease.MainValue,
     progress: boolean,
     source: "acquire" | "intake" | "renew"
-  ) => Effect.Effect<void>;
+  ) => Effect.Effect<void, MailboxClientError, Scope.Scope>;
   readonly onRetry?: (error: MailboxClientError) => Effect.Effect<void>;
   readonly leaseName?: string;
   readonly failOnHeld?: boolean;
@@ -648,6 +650,11 @@ export const consume = <E, R>(
               Effect.sync(() => {
                 checkpoint = batch.throughSeq;
               })
+            ),
+            Effect.andThen(() =>
+              batch.hasMore !== true && options.onDrained !== undefined
+                ? options.onDrained()
+                : Effect.void
             )
           )
         ),
