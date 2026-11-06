@@ -1,8 +1,9 @@
-import { Context, Deferred, Effect, Layer, Option } from "effect";
+import { Context, Deferred, Effect, Layer, Option, Schema } from "effect";
 
+import { ReplyRef } from "../../mailbox-client/src/payload.ts";
 import type { ReplyRefValue } from "../../mailbox-client/src/payload.ts";
 import type { PendingAskValue } from "./asks.ts";
-import { inboundReply } from "./payload.ts";
+import { inboundReply, PassSource, RelaySource } from "./payload.ts";
 import type { Inbound } from "./payload.ts";
 
 export interface Reply {
@@ -30,7 +31,28 @@ export interface Received {
   readonly thread?: string;
 }
 
+export const ThreadJournal = Schema.Array(
+  Schema.Struct({
+    answered: Schema.Boolean,
+    ask: Schema.Boolean,
+    ccNames: Schema.optionalKey(Schema.Array(Schema.String)),
+    did: Schema.String,
+    from: Schema.String,
+    id: Schema.String,
+    originalId: Schema.optionalKey(Schema.String),
+    preview: Schema.String,
+    relay: Schema.optionalKey(RelaySource),
+    reply: Schema.optionalKey(ReplyRef),
+    thread: Schema.optionalKey(Schema.String),
+    threadRouter: Schema.optionalKey(RelaySource),
+    to: Schema.optionalKey(Schema.String),
+    via: Schema.optionalKey(PassSource),
+  })
+);
+
 export interface ThreadsApi {
+  readonly snapshot: Effect.Effect<typeof ThreadJournal.Type>;
+  readonly restore: (entries: typeof ThreadJournal.Type) => Effect.Effect<void>;
   readonly wait: (
     id: string,
     did: string
@@ -143,10 +165,25 @@ const makeThreads = Effect.sync((): ThreadsApi => {
           Object.assign(record, { relay: inbound.relay });
         }
 
-        received.set(inbound.id, record);
+        received.set(inbound.id, {
+          ...record,
+          answered: received.get(inbound.id)?.answered ?? false,
+        });
 
-        for (const id of [...received.keys()].slice(0, -keep)) {
-          received.delete(id);
+        const closed = [...received.values()].filter(
+          (entry) => !entry.ask || entry.answered
+        );
+
+        for (const entry of closed.slice(0, -keep)) {
+          received.delete(entry.id);
+        }
+      }),
+    restore: (entries) =>
+      Effect.sync(() => {
+        received.clear();
+
+        for (const entry of entries) {
+          received.set(entry.id, entry);
         }
       }),
     settle: (inbound) =>
@@ -174,6 +211,7 @@ const makeThreads = Effect.sync((): ThreadsApi => {
           id: inbound.id,
         });
       }),
+    snapshot: Effect.sync(() => [...received.values()]),
     wait: (id, did) =>
       Effect.gen(function* register() {
         const reply = yield* Deferred.make<Reply>();

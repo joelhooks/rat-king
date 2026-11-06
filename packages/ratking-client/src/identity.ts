@@ -50,6 +50,7 @@ export interface SessionFacts {
   readonly via?: () => string;
   readonly reads?: boolean;
   readonly successor?: boolean;
+  readonly succeeds?: string | undefined;
   readonly owner?: Option.Option<string>;
   readonly restartGate?: string | undefined;
   readonly onState?: (reader: ReaderState) => void;
@@ -179,7 +180,11 @@ export const claimName = Effect.fn("RatKing.claimName")(function* claimName(
 });
 
 export const ensureIdentity = Effect.fn("RatKing.ensureIdentity")(
-  function* ensureIdentity(name: string, parent?: typeof ForkParent.Type) {
+  function* ensureIdentity(
+    name: string,
+    parent?: typeof ForkParent.Type,
+    requireExisting?: boolean
+  ) {
     const settings = yield* Settings;
     const store = yield* SecretStore;
     const issuer = yield* Issuer;
@@ -217,6 +222,12 @@ export const ensureIdentity = Effect.fn("RatKing.ensureIdentity")(
           }
 
           return identity;
+        }
+
+        if (requireExisting === true) {
+          return yield* fail(
+            "Successor identity is unavailable; no key was minted"
+          );
         }
 
         if (reserved) {
