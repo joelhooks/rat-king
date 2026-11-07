@@ -1308,7 +1308,8 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     own: Self,
     facts: SessionFacts,
     route: RelayRoute,
-    refreshAttention: AttentionApi["refresh"]
+    refreshAttention: AttentionApi["refresh"],
+    startedAt: number
   ) =>
     Effect.gen(function* consumeLease() {
       if (consumerStarts > 0) {
@@ -1480,6 +1481,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             ),
             Effect.andThen(
               Effect.all([
+                Ref.set(heartbeat, Option.some({ name: own.name, startedAt })),
                 Ref.update(leaseHealth, (current) => ({
                   ...current,
                   generation: lease.generation,
@@ -2680,11 +2682,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       );
     });
 
-  const waitForClaim = (
-    name: string,
-    retrying = false,
-    reason = heldReason(name)
-  ) =>
+  const waitForClaim = (name: string, reason = heldReason(name)) =>
     Effect.gen(function* awaitClaim() {
       const gate = yield* Deferred.make<boolean>();
 
@@ -2694,7 +2692,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       yield* Effect.logWarning(
         `Rat King ${name}: ${reason}; use claim to retry now`
       );
-      yield* retrying ? parkUntilClaimOrRetry(gate) : Deferred.await(gate);
+      yield* parkUntilClaimOrRetry(gate);
       yield* Ref.set(claimGate, Option.none());
     });
 
@@ -2716,7 +2714,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       const now = yield* Clock.currentTimeMillis;
 
       if (now - startedAt > SUCCESSION_WINDOW_MS) {
-        return yield* waitForClaim(name, true);
+        return yield* waitForClaim(name);
       }
 
       yield* setState(
@@ -2995,7 +2993,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
     return yield* supervise(
       Option.some(own.name),
-      consumeOnce(own, facts, route, attention.refresh).pipe(
+      consumeOnce(own, facts, route, attention.refresh, startedAt).pipe(
         Effect.andThen(
           Effect.fail(
             new NotDelivered({
@@ -3008,7 +3006,11 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           (failure) =>
             Schema.is(MailboxClientError)(failure) &&
             failure.error === "SuccessorUnproven",
-          (failure) => waitForClaim(own.name, false, reasonOf(failure))
+          (failure) =>
+            Ref.update(health, (current) => ({
+              ...current,
+              lastError: Option.some(errorTag(failure)),
+            })).pipe(Effect.andThen(waitForClaim(own.name, reasonOf(failure))))
         ),
         Effect.catchIf(
           (error) =>
@@ -3032,7 +3034,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                   park:
                     facts.successor === true
                       ? awaitSuccession(own.name, startedAt)
-                      : waitForClaim(own.name, true),
+                      : waitForClaim(own.name),
                   resolve: withClient(own, [], (client) =>
                     holderOf(client, own.did)
                   ).pipe(Effect.mapError(unreachable)),
