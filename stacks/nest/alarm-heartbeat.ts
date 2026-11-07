@@ -5,13 +5,67 @@ import type { HealthDigest } from "./health.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
 
-const Outcome = Schema.Literals([
-  "ok",
-  "Alarm measurements unavailable",
-  "Alarm cycle timed out",
-  "Alarm journal unavailable",
-  "Alarm notifications unavailable",
-  "Alarm operation unavailable",
+const AlarmStep = Schema.Literals([
+  "journal.read",
+  "journal.write",
+  "facts.collect",
+  "notifications.prepare",
+  "notifications.send",
+  "notifications.page",
+  "cycle",
+]);
+
+const ErrorTag = Schema.Literals([
+  "FleetError",
+  "PlatformError",
+  "SystemError",
+  "BadArgument",
+  "SchemaError",
+  "TimeoutError",
+  "UnknownError",
+]);
+
+const TaggedFailure = Schema.Struct({ _tag: ErrorTag });
+
+const StepOutcome = Schema.TemplateLiteral([
+  "Alarm step ",
+  AlarmStep,
+  " failed (",
+  ErrorTag,
+  ")",
+]);
+
+export const alarmStep = <A, E, R>(
+  step: typeof AlarmStep.Type,
+  effect: Effect.Effect<A, E, R>
+) =>
+  effect.pipe(
+    Effect.mapError((failure) => {
+      if (
+        Schema.is(FleetError)(failure) &&
+        Schema.is(StepOutcome)(failure.reason)
+      ) {
+        return failure;
+      }
+
+      const tag = Schema.is(TaggedFailure)(failure)
+        ? failure._tag
+        : "UnknownError";
+
+      return new FleetError({ reason: `Alarm step ${step} failed (${tag})` });
+    })
+  );
+
+const Outcome = Schema.Union([
+  StepOutcome,
+  Schema.Literals([
+    "ok",
+    "Alarm measurements unavailable",
+    "Alarm cycle timed out",
+    "Alarm journal unavailable",
+    "Alarm notifications unavailable",
+    "Alarm operation unavailable",
+  ]),
 ]);
 
 export const AlarmHeartbeat = Schema.Struct({
@@ -28,7 +82,7 @@ export const alarmFailure = (
   failure: AlarmCycleFailure
 ): typeof Outcome.Type => {
   if (Schema.is(FleetError)(failure)) {
-    if (failure.reason === "Alarm measurements unavailable") {
+    if (Schema.is(Outcome)(failure.reason)) {
       return failure.reason;
     }
 

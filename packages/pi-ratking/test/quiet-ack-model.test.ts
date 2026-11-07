@@ -4,8 +4,18 @@ import { it } from "@effect/vitest";
 import type { Inbound } from "@rat-king/ratking-client/payload";
 import { RatKing } from "@rat-king/ratking-client/ratking";
 import type { Deliver } from "@rat-king/ratking-client/ratking";
-import { Arbitrary, Effect, FileSystem, Layer, Option, Schema } from "effect";
+import {
+  Arbitrary,
+  Clock,
+  Deferred,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  Schema,
+} from "effect";
 import { HttpClient } from "effect/http";
+import { TestClock } from "effect/testing";
 import { asyncModelRun } from "fast-check";
 import type { AsyncCommand } from "fast-check";
 import { expect } from "vitest";
@@ -22,6 +32,7 @@ type Message = Parameters<PiHost["sendMessage"]>[0];
 type Delivery = Parameters<PiHost["sendMessage"]>[1];
 
 interface Mailbox {
+  readonly acknowledged: Deferred.Deferred<boolean>;
   readonly acks: Map<string, number>;
   readonly early: string[];
   readonly posted: string[];
@@ -95,13 +106,12 @@ const settle = async () => {
   await Effect.runPromise(Effect.yieldNow.pipe(Effect.repeat({ times: 3 })));
 };
 
-const tick = async () => {
-  // oxlint-disable-next-line effect-tests/no-manual-effect-runtime-in-tests -- waits out the shortened digest tick in real time.
-  await Effect.runPromise(Effect.sleep(80));
-  await settle();
-};
-
-const rig = (box: Mailbox, session: Session, drop: boolean) => {
+const rig = (
+  box: Mailbox,
+  session: Session,
+  drop: boolean,
+  clock?: Clock.Clock
+) => {
   const { state } = box;
   let streaming = false;
   let start: (facts: SessionStart) => Promise<void> = idleHandler;
@@ -193,7 +203,10 @@ const rig = (box: Mailbox, session: Session, drop: boolean) => {
           pid: 1,
           session: id,
         }),
-      layer,
+      layer:
+        clock === undefined
+          ? layer
+          : Layer.merge(layer, Layer.succeed(Clock.Clock, clock)),
       tool: Effect.succeed("ratking"),
     })(pi);
     await startSession(start, {
@@ -220,6 +233,10 @@ const rig = (box: Mailbox, session: Session, drop: boolean) => {
 
           box.unacked.delete(id);
           box.acks.set(id, (box.acks.get(id) ?? 0) + 1);
+
+          if (box.unacked.size === 0) {
+            Deferred.doneUnsafe(box.acknowledged, Effect.succeed(true));
+          }
         })
       )
     );
@@ -336,7 +353,7 @@ interface Setup {
   real: Real;
 }
 
-const fresh = async (): Promise<Setup> => {
+const fresh = async (clock?: Clock.Clock): Promise<Setup> => {
   // oxlint-disable-next-line effect-tests/no-manual-effect-runtime-in-tests -- the rig is built inside a fast-check async model, outside an Effect test body.
   const state = await Effect.runPromise(
     FileSystem.FileSystem.pipe(
@@ -346,6 +363,7 @@ const fresh = async (): Promise<Setup> => {
   );
 
   const box: Mailbox = {
+    acknowledged: Deferred.makeUnsafe<boolean>(),
     acks: new Map(),
     early: [],
     posted: [],
@@ -357,7 +375,7 @@ const fresh = async (): Promise<Setup> => {
 
   return {
     model: { ids: 0 },
-    real: { box, current: rig(box, session, false), session },
+    real: { box, current: rig(box, session, false, clock), session },
   };
 };
 
@@ -451,19 +469,27 @@ it.effect(
 it.effect(
   "an idle Pi shows and acks mail its own quiet rule held within a tick, without a turn",
   () =>
-    Effect.promise(async () => {
-      {
-        const setup = await fresh();
+    Effect.gen(function* idleAcknowledgment() {
+      const clock = yield* Clock.Clock;
+      const setup = yield* Effect.promise(async () => await fresh(clock));
+      yield* Effect.addFinalizer(() =>
+        Effect.promise(async () => {
+          await setup.real.current.stop();
+        })
+      );
+      yield* Effect.promise(async () => {
         await setup.real.current.ready();
         await setup.real.current.post("ruled", "r1");
         await setup.real.current.post("ruled", "r2");
-        expect(setup.real.box.unacked.size).toBe(2);
-        await tick();
-        await tick();
-        expect(setup.real.box.unacked.size).toBe(0);
-        expect(setup.real.session.entries).toHaveLength(1);
-        expect(setup.real.box.early).toEqual([]);
-        expect(setup.real.current.turns()).toBe(0);
-      }
-    })
+      });
+      expect(setup.real.box.unacked.size).toBe(2);
+      yield* TestClock.adjust(20);
+      yield* Deferred.await(setup.real.box.acknowledged);
+      expect(setup.real.box.unacked.size).toBe(0);
+      expect(setup.real.box.acks.get("r1")).toBe(1);
+      expect(setup.real.box.acks.get("r2")).toBe(1);
+      expect(setup.real.session.entries).toHaveLength(1);
+      expect(setup.real.box.early).toEqual([]);
+      expect(setup.real.current.turns()).toBe(0);
+    }).pipe(Effect.scoped)
 );
