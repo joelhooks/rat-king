@@ -10,6 +10,7 @@ import {
   AlarmHeartbeat,
   alarmFailure,
   alarmHeartbeatFailure,
+  alarmStep,
   nextAlarmHeartbeat,
   readAlarmHeartbeat,
   withAlarmHeartbeat,
@@ -17,6 +18,49 @@ import {
 } from "../../../stacks/nest/alarm-heartbeat.ts";
 import { Facts } from "../../../stacks/nest/health.ts";
 import { FleetError, StageConfig } from "../../../stacks/nest/stage-config.ts";
+
+it.effect.prop(
+  "step failures survive heartbeat persistence with only a safe step and error tag",
+  [
+    Schema.String,
+    Schema.Literals([
+      "SystemError",
+      "PlatformError",
+      "SchemaError",
+      "TimeoutError",
+      "FleetError",
+    ]),
+  ],
+  ([input, tag]) =>
+    Effect.gen(function* diagnostic() {
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* fs.makeTempDirectoryScoped();
+
+      const failed = alarmStep(
+        "journal.read",
+        Effect.fail({ _tag: tag, input })
+      );
+
+      const failure = yield* alarmStep("cycle", failed).pipe(Effect.flip);
+      const outcome = alarmFailure(failure);
+      expect(outcome).toBe(`Alarm step journal.read failed (${tag})`);
+      yield* writeAlarmHeartbeat(
+        directory,
+        nextAlarmHeartbeat(null, 1000, outcome)
+      );
+      expect((yield* readAlarmHeartbeat(directory))?.outcome).toBe(outcome);
+
+      const unknown = yield* alarmStep(
+        "journal.write",
+        Effect.fail({ _tag: input, input })
+      ).pipe(Effect.flip);
+
+      expect(alarmFailure(unknown)).toMatch(
+        /^Alarm step journal.write failed \((?:FleetError|PlatformError|SystemError|BadArgument|SchemaError|TimeoutError|UnknownError)\)$/u
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  { arbitrary: { runs: 10 } }
+);
 
 it.effect.prop(
   "the independent digest fails on missing, malformed, stale or five failed cycles, but not healthy or four failed cycles",

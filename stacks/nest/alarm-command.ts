@@ -10,10 +10,12 @@ import { collectAlarmFacts, withLiveness } from "./alarm-collector.ts";
 import type { AlarmHeartbeat } from "./alarm-heartbeat.ts";
 import {
   alarmFailure,
+  alarmStep,
   nextAlarmHeartbeat,
   readAlarmHeartbeat,
   writeAlarmHeartbeat,
 } from "./alarm-heartbeat.ts";
+import { readAlarmJournal, saveAlarmJournal } from "./alarm-journal.ts";
 import { prepareAlarmDeliveries, sendAlarmDelivery } from "./alarm-mail.ts";
 import { updateReaderWindows } from "./alarm-reader-windows.ts";
 import type { ReaderWindowObservation } from "./alarm-reader-windows.ts";
@@ -24,7 +26,7 @@ import type {
 } from "./alarm-sources.ts";
 import { observeAlarms } from "./alarm-sources.ts";
 import { collectWakeHealth } from "./alarm-wake-collector.ts";
-import { AlarmJournal, alarmCycle, emptyJournal } from "./alarm.ts";
+import { AlarmJournal, alarmCycle } from "./alarm.ts";
 import type { AlarmPorts, AlarmJournalValue } from "./alarm.ts";
 import type { HealthDigest } from "./health.ts";
 import { rotateLogs } from "./log-rotation.ts";
@@ -52,43 +54,7 @@ export const alarmPlist = (config: StageConfigValue, configPath: string) => {
   return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key>${string(launch.label)}<key>ProgramArguments</key><array>${[launch.node, `${launch.source}/stacks/nest/cli.ts`, "alarm"].map(string).join("")}</array><key>EnvironmentVariables</key><dict><key>RAT_KING_STAGE_CONFIG</key>${string(configPath)}<key>PATH</key>${string(launch.path)}</dict><key>WorkingDirectory</key>${string(launch.source)}<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>60</integer><key>StandardOutPath</key>${string(launch.outputLog)}<key>StandardErrorPath</key>${string(launch.errorLog)}</dict></plist>\n`;
 };
 
-export const readAlarmJournal = Effect.fn("Alarm.readJournal")(
-  function* readAlarmJournal(directory: string) {
-    const fs = yield* FileSystem.FileSystem;
-    const file = `${directory}/alarms.jsonl`;
-
-    if (!(yield* fs.exists(file))) {
-      return emptyJournal;
-    }
-
-    if (
-      (yield* fs.realPath(file)) !== file ||
-      (yield* fs.stat(file)).mode % 0o1000 !== 0o600
-    ) {
-      return yield* new FleetError({
-        reason: "Alarm journal is not a private owned file",
-      });
-    }
-
-    const last = (yield* fs.readFileString(file)).trim().split("\n").at(-1);
-
-    if (last === undefined || last === "") {
-      return emptyJournal;
-    }
-
-    return yield* Schema.decodeEffect(Schema.fromJsonString(AlarmJournal))(
-      last
-    ).pipe(
-      Effect.mapError(
-        () =>
-          new FleetError({
-            reason:
-              "Invalid alarm journal; refused to forget prior notifications",
-          })
-      )
-    );
-  }
-);
+export { readAlarmJournal } from "./alarm-journal.ts";
 
 const reportMissing = (facts: typeof AlarmFacts.Type) =>
   facts.failed === undefined || facts.failed.length === 0
@@ -132,7 +98,6 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
 
     yield* watchReaderCrashes(config, directory, Ref.get(readerWindows));
 
-    const journal = `${directory}/alarms.jsonl`;
     let encoded = "";
 
     const save = Effect.fn("Alarm.save")(function* save(
@@ -143,11 +108,7 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
       )(state);
 
       if (next !== encoded) {
-        yield* Effect.gen(function* persist() {
-          const file = yield* fs.open(journal, { flag: "a", mode: 0o600 });
-          yield* file.writeAll(new TextEncoder().encode(`${next}\n`));
-          yield* file.sync;
-        }).pipe(Effect.scoped);
+        yield* saveAlarmJournal(directory, state);
         encoded = next;
       }
     });
@@ -176,8 +137,23 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
       const started = yield* Clock.currentTimeMillis;
       let outcome: (typeof AlarmHeartbeat.Type)["outcome"] = "ok";
 
+      const notification = <A, Failure, Requirements>(
+        step: Parameters<typeof alarmStep>[0],
+        operation: Effect.Effect<A, Failure, Requirements>
+      ) =>
+        alarmStep(step, operation).pipe(
+          Effect.tapError((failure) =>
+            Effect.sync(() => {
+              outcome = alarmFailure(failure);
+            })
+          )
+        );
+
       yield* Effect.gen(function* cycle() {
-        const prior = yield* readAlarmJournal(directory);
+        const prior = yield* alarmStep(
+          "journal.read",
+          readAlarmJournal(directory)
+        );
 
         const facts = yield* collectAlarmFacts(
           config,
@@ -187,7 +163,7 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
             collectWakeHealth(config, readers, prior.sources.wakeTargets),
           windows,
           withLiveness(liveness)
-        );
+        ).pipe((effect) => alarmStep("facts.collect", effect));
 
         const observedAt = yield* Clock.currentTimeMillis;
         yield* Ref.update(readerWindows, (previous) =>
@@ -227,7 +203,8 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
               ),
               Effect.mapError(
                 () => new FleetError({ reason: "Alarm page unavailable" })
-              )
+              ),
+              (effect) => notification("notifications.page", effect)
             ),
           prepare: (key, to, text) =>
             prepareAlarmDeliveries(config, key, to, text).pipe(
@@ -237,14 +214,10 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
                   new FleetError({
                     reason: "Alarm notification preparation failed",
                   })
-              )
+              ),
+              (effect) => notification("notifications.prepare", effect)
             ),
-          save: (state) =>
-            save(state).pipe(
-              Effect.mapError(
-                () => new FleetError({ reason: "Alarm journal write failed" })
-              )
-            ),
+          save: (state) => alarmStep("journal.write", save(state)),
           send: (delivery) =>
             sendAlarmDelivery(config, delivery).pipe(
               Effect.timeout("8 seconds"),
@@ -252,12 +225,17 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
                 Effect.fail(new FleetError({ reason: "Alarm delivery failed" }))
               ),
               Effect.catchTag("FleetError", () =>
-                Effect.fail(new FleetError({ reason: "Alarm delivery failed" }))
+                notification(
+                  "notifications.send",
+                  Effect.fail(
+                    new FleetError({ reason: "Alarm delivery failed" })
+                  )
+                )
               )
             ),
-          unavailable: Effect.sync(() => {
-            outcome = "Alarm notifications unavailable";
-          }).pipe(Effect.andThen(unavailable)),
+          unavailable: Effect.suspend(() =>
+            Console.error(`${outcome}; input values withheld`)
+          ),
         };
 
         yield* alarmCycle(
@@ -269,10 +247,11 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
         );
       }).pipe(
         Effect.timeout("55 seconds"),
+        (effect) => alarmStep("cycle", effect),
         Effect.catch((error) => {
           outcome = alarmFailure(error);
 
-          return unavailable;
+          return Console.error(`${outcome}; input values withheld`);
         })
       );
       heartbeat = nextAlarmHeartbeat(
