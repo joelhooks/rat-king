@@ -1303,6 +1303,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       );
 
   let consumerStarts = 0;
+  let missingParentWarned = false;
 
   const consumeOnce = (
     own: Self,
@@ -1381,19 +1382,17 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               name: own.name,
             };
 
-            yield* Effect.succeed(
-              facts.successor !== true ||
-                facts.succeeds === undefined ||
-                Option.isSome(priorReader)
-            ).pipe(
-              Effect.filterOrFail(
-                (valid) => valid,
-                () =>
-                  refused("Refused")(
-                    "Parent reader journal is unavailable; successor not started"
-                  )
-              )
-            );
+            if (
+              facts.successor === true &&
+              Option.isNone(priorReader) &&
+              !missingParentWarned
+            ) {
+              missingParentWarned = true;
+              yield* Effect.logWarning(
+                `Parent reader journal for ${facts.succeeds ?? "unknown"} is unavailable; ${own.name} starting fresh`
+              );
+            }
+
             yield* Effect.succeed(
               Option.isNone(priorReader) ||
                 sameReaderIdentity(priorReader.value, identity)

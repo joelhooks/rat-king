@@ -8,7 +8,7 @@ import { expect } from "vitest";
 import { harness } from "./harness.ts";
 import { startReader, successorMailbox } from "./successor-fixture.ts";
 
-for (const invalid of ["missing", "unrelated", "did", "key"] as const) {
+for (const invalid of ["unrelated", "did", "key"] as const) {
   it.live(
     `an ${invalid} parent checkpoint leaves the successor send-only without rewriting it`,
     () =>
@@ -53,9 +53,7 @@ for (const invalid of ["missing", "unrelated", "did", "key"] as const) {
           session: invalid === "unrelated" ? "unrelated" : saved.session,
         };
 
-        yield* invalid === "missing"
-          ? fs.rename(file, `${file}.saved`)
-          : fs.writeFileString(file, JSON.stringify(changed));
+        yield* fs.writeFileString(file, JSON.stringify(changed));
 
         const child = yield* startReader(layer, {
           ...facts,
@@ -78,9 +76,7 @@ for (const invalid of ["missing", "unrelated", "did", "key"] as const) {
         expect(secrets.size).toBe(1);
         expect(yield* fs.exists(`${state}/pivots/tester-2.json`)).toBe(false);
 
-        if (invalid !== "missing") {
-          expect(yield* fs.readFileString(file)).toBe(JSON.stringify(changed));
-        }
+        expect(yield* fs.readFileString(file)).toBe(JSON.stringify(changed));
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
   );
 }

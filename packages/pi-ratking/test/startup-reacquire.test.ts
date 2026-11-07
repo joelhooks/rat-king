@@ -1,13 +1,16 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
+import { secretName } from "@rat-king/ratking-client/name";
 import { ReaderState } from "@rat-king/ratking-client/ratking";
 import { HeartbeatJson } from "@rat-king/ratking-client/reader-health";
+import { ReaderJournal } from "@rat-king/ratking-client/reader-journal";
 import {
   Clock,
   Duration,
   Effect,
   FileSystem,
   Layer,
+  Logger,
   Option,
   Queue,
   Schedule,
@@ -16,6 +19,7 @@ import {
 import { TestClock } from "effect/testing";
 import { expect } from "vitest";
 
+import { identity } from "../../mailbox-client/test/identity.ts";
 import { harness } from "./harness.ts";
 import {
   runModel,
@@ -65,96 +69,90 @@ const eventually = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     )
   );
 
-const Steps = Schema.Array(Schema.Literals(["wait", "restore"])).check(
-  Schema.isMaxLength(4)
-);
-
 it.effect.prop(
-  "a successor that acquired before its parent checkpoint was available retries SendOnly without claim and reads only after the checkpoint is restored",
-  [Steps],
-  ([steps]) =>
-    watchingParks((parked) =>
-      Effect.gen(function* startupRecovery() {
-        const fs = yield* FileSystem.FileSystem;
-        const state = yield* fs.makeTempDirectoryScoped();
-        const server = successorMailbox();
+  "a successor whose parent never wrote a checkpoint starts fresh without claim or inherited display state",
+  { parentWrote: Schema.Boolean },
+  ({ parentWrote }) =>
+    Effect.gen(function* freshSuccessor() {
+      const fs = yield* FileSystem.FileSystem;
+      const state = yield* fs.makeTempDirectoryScoped();
+      const server = successorMailbox();
+      const own = yield* identity("did:web:tester.agents.example.invalid");
+      const secrets = new Map([[secretName("tester"), JSON.stringify(own)]]);
+      const warnings: string[] = [];
 
-        const layer = harness(state, server.http, [], {
-          secrets: new Map<string, string>(),
-        }).pipe(Layer.provideMerge(server.socket));
+      const capture = Logger.layer([
+        Logger.make(({ logLevel, message }) => {
+          if (
+            logLevel === "Warn" &&
+            String(message).includes("Parent reader journal")
+          ) {
+            warnings.push(String(message));
+          }
+        }),
+      ]);
 
-        const facts = {
-          alive: () => false,
-          env: Option.some("tester"),
-          pane: Option.none<string>(),
-          pid: 1,
-          session: "parent",
-        };
+      const layer = harness(state, server.http, [], { secrets }).pipe(
+        Layer.provideMerge(server.socket),
+        Layer.provideMerge(capture)
+      );
 
+      const facts = {
+        alive: () => false,
+        env: Option.some("tester"),
+        pane: Option.none<string>(),
+        pid: 1,
+        session: "parent",
+      };
+
+      const file = `${state}/reader-journals/tester.json`;
+
+      if (parentWrote) {
         const parent = yield* startReader(layer, facts);
         yield* parent.live;
         yield* parent.stop;
-        const file = `${state}/reader-journals/tester.json`;
         yield* fs.rename(file, `${file}.saved`);
+      }
 
-        const child = yield* startReader(layer, {
-          ...facts,
-          pid: 2,
-          session: "child",
-          succeeds: "parent",
-          successor: true,
-        });
+      expect(yield* fs.exists(file)).toBe(false);
 
-        yield* child.held;
-        yield* parked;
+      const child = yield* startReader(layer, {
+        ...facts,
+        pid: 2,
+        session: "child",
+        succeeds: "parent",
+        successor: true,
+      });
 
-        const beat = yield* fs
-          .readFileString(`${state}/readers/tester.json`)
-          .pipe(Effect.flatMap(Schema.decodeUnknownEffect(HeartbeatJson)));
+      yield* TestClock.withLive(child.live.pipe(Effect.timeout("5 seconds")));
 
-        expect(beat.generation).toBe(0);
-        expect(beat.lastError).toBe("MailboxClientError/SuccessorUnproven");
-        expect(server.attempts).toHaveLength(2);
-        expect(server.log.slice(-2)).toEqual(["acquire:child", "release"]);
-        expect(server.requests).toHaveLength(0);
-
-        yield* runModel(
-          [...steps, "restore", "wait"],
-          { restored: false },
-          (model, step) =>
-            Effect.gen(function* command() {
-              if (step === "restore") {
-                if (!model.restored) {
-                  yield* fs.rename(`${file}.saved`, file);
-                  model.restored = true;
-                }
-
-                return;
-              }
-
-              yield* TestClock.adjust(35_000);
-
-              if (model.restored) {
-                yield* TestClock.withLive(
-                  child.live.pipe(Effect.timeout("5 seconds"))
-                );
-                expect(
-                  ReaderState.$is("Live")((yield* child.king.status).reader)
-                ).toBe(true);
-              } else {
-                expect(
-                  ReaderState.$is("Live")((yield* child.king.status).reader)
-                ).toBe(false);
-                expect(server.requests).toHaveLength(0);
-                yield* parked;
-              }
-
-              expect(server.maximum()).toBe(1);
+      yield* eventually(
+        fs.readFileString(file).pipe(
+          Effect.flatMap(
+            Schema.decodeUnknownEffect(Schema.fromJsonString(ReaderJournal))
+          ),
+          Effect.filterOrFail((journal) => journal.session === "child"),
+          Effect.tap((journal) =>
+            Effect.sync(() => {
+              expect(journal.shownIds).toEqual([]);
+              expect(journal.shownTurns).toEqual([]);
             })
-        );
-      })
-    ).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-  { arbitrary: { runs: 4 }, timeout: 40_000 }
+          )
+        )
+      );
+
+      expect(ReaderState.$is("Live")((yield* child.king.status).reader)).toBe(
+        true
+      );
+      expect(server.attempts).toHaveLength(parentWrote ? 2 : 1);
+      expect(server.attempts.at(-1)?.leaseId).toBeUndefined();
+      expect(server.attempts.at(-1)?.generation).toBeUndefined();
+      expect(server.maximum()).toBe(1);
+      expect(warnings).toHaveLength(1);
+      expect(warnings[0]).toContain("parent");
+      expect(warnings[0]).toContain("starting fresh");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  { arbitrary: { runs: 4 }, timeout: 20_000 }
 );
 
 it.effect.prop(
