@@ -85,7 +85,7 @@ it.effect.prop(
         Logger.make(({ logLevel, message }) => {
           if (
             logLevel === "Warn" &&
-            String(message).includes("Parent reader journal")
+            String(message).startsWith("started fresh:")
           ) {
             warnings.push(String(message));
           }
@@ -150,7 +150,7 @@ it.effect.prop(
       expect(server.maximum()).toBe(1);
       expect(warnings).toHaveLength(1);
       expect(warnings[0]).toContain("parent");
-      expect(warnings[0]).toContain("starting fresh");
+      expect(warnings[0]).toContain("started fresh: parent journal:");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 4 }, timeout: 20_000 }
 );
