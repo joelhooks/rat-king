@@ -48,6 +48,7 @@ export const ReaderSighting = Schema.Struct({
   lastError: Schema.NullOr(Schema.String),
   name: Schema.String,
   owner: Schema.NullOr(Schema.String),
+  session: Schema.optionalKey(Schema.String),
   state: Schema.String,
   verdict: Schema.Literals(["running", "stuck"]),
 });
@@ -80,6 +81,7 @@ export const sightReaders = (
         lastError: beat.lastError,
         name: beat.name,
         owner: beat.owner ?? null,
+        ...(beat.session === undefined ? undefined : { session: beat.session }),
         state: beat.state,
         verdict,
       },
@@ -351,6 +353,24 @@ const slotReading = (facts: typeof AlarmFacts.Type): AlarmReadingValue => {
   );
 };
 
+const duplicateReader = (
+  reader: ReaderSightingValue,
+  facts: typeof AlarmFacts.Type,
+  now: number
+) =>
+  reader.state === "SendOnly" &&
+  reader.session !== undefined &&
+  (facts.wakes ?? []).some((item) => {
+    const lease = item.name === reader.name ? item.health?.lease : null;
+
+    return (
+      lease !== null &&
+      lease !== undefined &&
+      lease.expiresAt > now &&
+      lease.holder !== reader.session
+    );
+  });
+
 const readerReading = (
   facts: typeof AlarmFacts.Type,
   now: number
@@ -362,6 +382,7 @@ const readerReading = (
   const stuck = facts.readers.seen.filter(
     (reader) =>
       reader.verdict === "stuck" &&
+      !duplicateReader(reader, facts, now) &&
       !readerRecovering(
         now - reader.idleSeconds * 1000 + READER_STUCK_MS,
         facts,
