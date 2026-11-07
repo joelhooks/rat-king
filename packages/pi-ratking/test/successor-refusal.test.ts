@@ -8,7 +8,7 @@ import { expect } from "vitest";
 import { harness } from "./harness.ts";
 import { startReader, successorMailbox } from "./successor-fixture.ts";
 
-for (const invalid of ["unrelated", "did", "key"] as const) {
+for (const invalid of ["unrelated", "did", "key", "name"] as const) {
   it.live(
     `an ${invalid} parent checkpoint leaves the successor send-only without rewriting it`,
     () =>
@@ -50,6 +50,7 @@ for (const invalid of ["unrelated", "did", "key"] as const) {
             invalid === "key"
               ? `${saved.keyReference}:different`
               : saved.keyReference,
+          name: invalid === "name" ? "other" : saved.name,
           session: invalid === "unrelated" ? "unrelated" : saved.session,
         };
 
@@ -68,7 +69,11 @@ for (const invalid of ["unrelated", "did", "key"] as const) {
         expect(ReaderState.$is("SendOnly")(status.reader)).toBe(true);
 
         if (ReaderState.$is("SendOnly")(status.reader)) {
-          expect(status.reader.reason).toContain("successor not started");
+          expect(status.reader.reason).toContain(
+            invalid === "unrelated"
+              ? "Reader journal belongs to an unrelated session"
+              : "Reader journal identity mismatch"
+          );
         }
 
         expect(server.attempts).toHaveLength(2);

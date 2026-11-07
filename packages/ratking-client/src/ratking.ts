@@ -28,6 +28,7 @@ import type {
 } from "@rat-king/mailbox-client";
 import * as Deadline from "@rat-king/mailbox-client/deadline";
 import {
+  Cause,
   Clock,
   Context,
   Data,
@@ -51,7 +52,7 @@ import { HttpClient } from "effect/http";
 
 import type { RetryEvent } from "../../mailbox-client/src/retry-metrics.ts";
 import { AskJournal, askAge, openAsks } from "./asks.ts";
-import type { AsksApi, PendingAskValue } from "./asks.ts";
+import type { AskPorts, AsksApi, PendingAskValue } from "./asks.ts";
 import { forwardNames } from "./attend.ts";
 import type { Levers } from "./attend.ts";
 import { attentionReader } from "./attention.ts";
@@ -1303,7 +1304,43 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       );
 
   let consumerStarts = 0;
-  let missingParentWarned = false;
+  let freshStartReason = Option.none<string>();
+  let freshStartWarned = false;
+
+  const startedFresh = (step: string, cause: string) =>
+    Effect.suspend(() => {
+      const reason = `started fresh: ${step}: ${cause}`;
+      freshStartReason = Option.some(reason);
+
+      if (freshStartWarned) {
+        return Effect.void;
+      }
+
+      freshStartWarned = true;
+
+      return Effect.logWarning(reason);
+    });
+
+  const restoreStep = <A, E extends { readonly _tag: string }, R, E2, R2>(
+    facts: SessionFacts | undefined,
+    step: string,
+    effect: Effect.Effect<A, E, R>,
+    fallback: Effect.Effect<A, E2, R2>
+  ) =>
+    effect.pipe(
+      Effect.catchCause((cause): Effect.Effect<A, E | E2, R2> => {
+        if (facts?.successor !== true || Cause.hasInterrupts(cause)) {
+          return Effect.failCause(cause);
+        }
+
+        const reason = Option.match(Cause.findErrorOption(cause), {
+          onNone: () => Cause.pretty(cause),
+          onSome: reasonOf,
+        });
+
+        return startedFresh(step, reason).pipe(Effect.andThen(fallback));
+      })
+    );
 
   const consumeOnce = (
     own: Self,
@@ -1374,7 +1411,12 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               return;
             }
 
-            const priorReader = yield* readReader(own.name);
+            const priorReader = yield* restoreStep(
+              facts,
+              "parent journal",
+              readReader(own.name),
+              Effect.succeed(Option.none<typeof ReaderJournal.Type>())
+            );
 
             const identity = {
               did: own.did,
@@ -1382,14 +1424,10 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               name: own.name,
             };
 
-            if (
-              facts.successor === true &&
-              Option.isNone(priorReader) &&
-              !missingParentWarned
-            ) {
-              missingParentWarned = true;
-              yield* Effect.logWarning(
-                `Parent reader journal for ${facts.succeeds ?? "unknown"} is unavailable; ${own.name} starting fresh`
+            if (facts.successor === true && Option.isNone(priorReader)) {
+              yield* startedFresh(
+                "parent journal",
+                `parent ${facts.succeeds ?? "unknown"} journal is unavailable`
               );
             }
 
@@ -1421,33 +1459,72 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               )
             );
 
-            yield* threads.open(own.name);
-            yield* (yield* Deferred.await(asks)).reload;
+            yield* restoreStep(
+              facts,
+              "threads.open",
+              threads.open(own.name),
+              Effect.void
+            );
+            yield* restoreStep(
+              facts,
+              "asks.reload",
+              (yield* Deferred.await(asks)).reload,
+              Effect.void
+            );
 
-            if (
+            const freshDisplay = Effect.suspend(() =>
+              displayed.restore({
+                ...identity,
+                generation: lease.generation,
+                pending: { inbound: [], outbound: [] },
+                session: facts.session,
+                shownIds: [],
+                shownTurns: [],
+              })
+            );
+
+            yield* restoreStep(
+              facts,
+              "displayed.restore",
+              Effect.gen(function* restoreDisplay() {
+                const inherited = Option.isNone(freshStartReason)
+                  ? priorReader
+                  : Option.none();
+
+                yield* displayed.restore({
+                  ...identity,
+                  generation: lease.generation,
+                  pending: yield* pendingIds,
+                  session: facts.session,
+                  shownIds: Option.isSome(inherited)
+                    ? inherited.value.shownIds
+                    : [],
+                  shownTurns: Option.isSome(inherited)
+                    ? inherited.value.shownTurns
+                    : [],
+                });
+              }),
+              freshDisplay
+            );
+            yield* restoreStep(
+              facts,
+              "displayed.checkpoint",
+              displayed.checkpoint,
+              freshDisplay
+            );
+
+            pivotParent =
               facts.successor === true &&
+              Option.isNone(freshStartReason) &&
               Option.isSome(priorReader) &&
               priorReader.value.session === facts.succeeds
-            ) {
-              pivotParent = priorReader;
-            }
+                ? priorReader
+                : Option.none();
 
-            yield* displayed.restore({
-              ...identity,
-              generation: lease.generation,
-              pending: yield* pendingIds,
-              session: facts.session,
-              shownIds: Option.isSome(priorReader)
-                ? priorReader.value.shownIds
-                : [],
-              shownTurns: Option.isSome(priorReader)
-                ? priorReader.value.shownTurns
-                : [],
-            });
-            yield* displayed.checkpoint;
             yield* Effect.addFinalizer(() =>
               displayed.checkpoint.pipe(Effect.ignore)
             );
+            freshStartReason = Option.none();
           }).pipe(
             Effect.tapError((failure) =>
               Effect.logError("Reader restoration failed", failure)
@@ -2594,14 +2671,14 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       } satisfies RelayRoute;
     });
 
-  const openJournal = (own: Self) => {
+  const openJournal = (own: Self, facts?: SessionFacts) => {
     const file = path.join(
       settings.state,
       "asks",
       `${provisionLabel(own.name)}.json`
     );
 
-    return openAsks({
+    const ports: AskPorts<NotDelivered> = {
       load: fs.exists(file).pipe(
         Effect.flatMap((exists) =>
           exists
@@ -2628,7 +2705,14 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             refused("NotAttempted")(`Ask journal: ${reasonOf(failure)}`)
           )
         ),
-    });
+    };
+
+    return restoreStep(
+      facts,
+      "asks.open",
+      openAsks(ports),
+      openAsks({ ...ports, load: Effect.succeed([]) })
+    );
   };
 
   type Prepared = Effect.Success<ReturnType<typeof prepare>>;
@@ -2868,9 +2952,15 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       }).pipe(services)
     );
 
-    const journal = yield* supervise(Option.some(own.name), openJournal(own));
+    const journal = yield* supervise(
+      Option.some(own.name),
+      openJournal(own, facts)
+    );
 
-    yield* supervise(Option.some(own.name), threads.open(own.name));
+    yield* supervise(
+      Option.some(own.name),
+      restoreStep(facts, "threads.open", threads.open(own.name), Effect.void)
+    );
     yield* Deferred.succeed(asks, journal);
     yield* Ref.set(established, Option.some(own));
     yield* Deferred.succeed(self, own);
