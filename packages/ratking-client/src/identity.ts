@@ -24,11 +24,11 @@ import {
   deriveName,
   didFor,
   isReserved,
-  secretName,
+  scriptSecretName,
 } from "./name.ts";
 import type { OwnName } from "./name.ts";
 import type { ReaderState } from "./ratking.ts";
-import { SecretStore } from "./secrets.ts";
+import { locateIdentitySecret, SecretStore } from "./secrets.ts";
 
 export class IdentityError extends Schema.TaggedError<IdentityError>()(
   "IdentityError",
@@ -190,7 +190,6 @@ export const ensureIdentity = Effect.fn("RatKing.ensureIdentity")(
     const issuer = yield* Issuer;
     const directory = yield* Directory;
     const path = yield* Path.Path;
-    const secret = secretName(name);
     const reserved = isReserved(settings.reserved, name);
 
     return yield* withLock(
@@ -199,12 +198,24 @@ export const ensureIdentity = Effect.fn("RatKing.ensureIdentity")(
       Effect.gen(function* provision() {
         const listed = yield* directory.resolve(name).pipe(Effect.option);
 
-        if (yield* store.exists(secret)) {
+        const { held, secret } = yield* locateIdentitySecret(name);
+
+        if (held) {
           const identity = yield* Schema.decodeEffect(
             Schema.fromJsonString(Identity)
           )(Redacted.value(yield* store.lease(secret))).pipe(
             Effect.mapError(() => fail("Identity secret is malformed"))
           );
+
+          if (
+            secret === scriptSecretName(name) &&
+            identity.did !==
+              didFor(settings.didTemplate, settings.reserved, name)
+          ) {
+            return yield* fail(
+              `Script identity does not belong to ${name}; keys not used`
+            );
+          }
 
           const registered = Option.exists(
             listed,
