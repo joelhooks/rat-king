@@ -3,6 +3,7 @@ import { Context, Effect, Layer, Redacted, Schema } from "effect";
 import { ChildProcessSpawner } from "effect/process";
 
 import { Settings } from "./config.ts";
+import { scriptSecretName, secretName } from "./name.ts";
 import { runCommand } from "./process.ts";
 
 export class SecretError extends Schema.TaggedError<SecretError>()(
@@ -23,6 +24,23 @@ export class SecretStore extends Context.Service<
     ) => Effect.Effect<void, SecretError>;
   }
 >()("pi-ratking/SecretStore") {}
+
+export const locateIdentitySecret = Effect.fn("RatKing.locateIdentitySecret")(
+  function* locateIdentitySecret(name: string) {
+    const store = yield* SecretStore;
+    const fleet = secretName(name);
+
+    if (yield* store.exists(fleet)) {
+      return { held: true, secret: fleet };
+    }
+
+    const script = scriptSecretName(name);
+
+    return (yield* store.exists(script))
+      ? { held: true, secret: script }
+      : { held: false, secret: fleet };
+  }
+);
 
 const Listing = Schema.Struct({
   ok: Schema.Literal(true),

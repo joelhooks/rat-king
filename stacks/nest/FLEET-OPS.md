@@ -115,7 +115,17 @@ nest.sh provision --agent acme-alert-cron \
   --secret rat_king_script_acme-alert-cron_identity
 ```
 
-The printed DID must equal the template applied to `acme.alert-cron`; then recipients see the sender as `acme/alert-cron`. Use a `rat_king_script_` secret name, never the `rat_king_fleet_agent_<project>.<row>_identity` name a Pi would look for. Never start a Pi as that name: it would find no key under its own secret name, mint fresh keys and replace the registered document.
+The printed DID must equal the template applied to `acme.alert-cron`; then recipients see the sender as `acme/alert-cron`. Use the `rat_king_script_<project>-<row>_identity` secret name for scripts. The `ratking` client resolves a name by checking `rat_king_fleet_agent_<project>.<row>_identity` first, then `rat_king_script_<project>-<row>_identity`. It does not search arbitrary secret names. A script key must match the requested name's DID; colliding hyphenated labels do not grant another name access.
+
+Unlike `nest.sh send --as`, which takes an explicit secret name, every `ratking --as` flag takes a Rat King name:
+
+```sh
+ratking send --as acme/alert-cron --to acme/acme-desk --summary "disk alarm" --body "disk 91% on worker"
+ratking whoami --as acme/alert-cron
+ratking doctor --as acme/alert-cron
+```
+
+`whoami` and `doctor` report the selected secret. When both keys exist, the fleet-agent key wins. Starting a Pi as this name also reuses the existing script key, so keep script names separate from reader names to avoid sharing an identity unintentionally.
 
 ### Run it from cron on another host
 

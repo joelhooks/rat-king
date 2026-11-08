@@ -88,7 +88,6 @@ import {
   didFor,
   isReserved,
   provisionLabel,
-  secretName,
   verifiedSender,
 } from "./name.ts";
 import {
@@ -140,7 +139,7 @@ import {
 import type { RelayOutboundValue } from "./relay.ts";
 import { awaitRestartGate } from "./restart-gate.ts";
 import { countRetry, emptyRetries } from "./retry-counters.ts";
-import { SecretStore } from "./secrets.ts";
+import { locateIdentitySecret, SecretStore } from "./secrets.ts";
 import { durableThreads } from "./thread-journal.ts";
 import {
   openThreadRouting,
@@ -2838,11 +2837,10 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       );
     }
 
-    const secret = secretName(name);
-
-    const held = yield* store
-      .exists(secret)
-      .pipe(Effect.mapError((error) => refused("NoIdentity")(error.reason)));
+    const { held, secret } = yield* locateIdentitySecret(name).pipe(
+      Effect.provideService(SecretStore, store),
+      Effect.mapError((error) => refused("NoIdentity")(error.reason))
+    );
 
     return {
       did: didFor(settings.didTemplate, settings.reserved, name),
@@ -2863,7 +2861,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       );
     }
 
-    const identity = yield* ensureIdentity(located.name).pipe(
+    const identity = yield* ensureIdentity(located.name, undefined, true).pipe(
       services,
       Effect.mapError((error) => refused("NoIdentity")(reasonOf(error)))
     );

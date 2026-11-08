@@ -66,6 +66,9 @@ export const provisionLabel = (name: string) => name.replace("/", ".");
 export const secretName = (name: string) =>
   `rat_king_fleet_agent_${provisionLabel(name)}_identity`;
 
+export const scriptSecretName = (name: string) =>
+  `rat_king_script_${name.replace("/", "-")}_identity`;
+
 export const didFor = (
   template: string,
   reserved: ReservedValue,
