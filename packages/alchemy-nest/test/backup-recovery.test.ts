@@ -43,13 +43,28 @@ const outputs = new Map([
 ]);
 
 interface Model {
-  readonly units: { node: boolean; store: boolean };
+  readonly units: {
+    node: boolean;
+    store: boolean;
+    grow: boolean;
+    retention: boolean;
+  };
   armed: boolean;
   disarmedAt: number;
 }
 
-const unitName = (unit: string | undefined) =>
-  unit === "rat-king-celld.service" ? "node" : "store";
+const unitName = (unit: string | undefined) => {
+  const names = new Map([
+    ["rat-king-celld.service", "node"],
+    ["rat-king-storage-grow.timer", "grow"],
+    ["rat-king-storage-retention.timer", "retention"],
+  ]);
+
+  return names.get(unit ?? "") ?? "store";
+};
+
+const unitKey = (unit: string | undefined) =>
+  unit === "node" || unit === "grow" || unit === "retention" ? unit : "store";
 
 const labelOf = (argv: readonly string[]) => {
   if (argv[0] === "systemctl") {
@@ -72,10 +87,13 @@ const publication = (label: string) =>
 
 const violationsOf = (model: Model, label: string) => {
   const [verb, unit] = label.split(" ");
-  const { node, store } = model.units;
+  const { node, store, grow, retention } = model.units;
 
   return [
     label === "snapshot" && (node || store) && "copied while a unit ran",
+    ["snapshot", "stop node"].includes(label) &&
+      [grow, retention].some(Boolean) &&
+      "maintenance timers ran in the stopped window",
     publication(label) &&
       (!node || !store || model.armed) &&
       `${label} ran in the stopped window`,
@@ -89,7 +107,7 @@ const apply = (model: Model, label: string, index: number) => {
   const [verb, unit] = label.split(" ");
 
   if (verb === "stop" || verb === "start") {
-    model.units[unit === "node" ? "node" : "store"] = verb === "start";
+    model.units[unitKey(unit)] = verb === "start";
   }
 
   if (label === "arm" || label === "disarm") {
@@ -98,7 +116,7 @@ const apply = (model: Model, label: string, index: number) => {
   }
 
   if (verb === "is-active") {
-    return model.units[unit === "node" ? "node" : "store"] ? 0 : 3;
+    return model.units[unitKey(unit)] ? 0 : 3;
   }
 
   return 0;
@@ -117,7 +135,7 @@ it.effect.prop(
       const model: Model = {
         armed: false,
         disarmedAt: -1,
-        units: { node: true, store: true },
+        units: { grow: true, node: true, retention: true, store: true },
       };
 
       const calls: string[] = [];
@@ -165,7 +183,12 @@ it.effect.prop(
       const exit = yield* Fiber.await(fiber);
 
       expect(violations).toEqual([]);
-      expect(model.units).toEqual({ node: true, store: true });
+      expect(model.units).toEqual({
+        grow: true,
+        node: true,
+        retention: true,
+        store: true,
+      });
       expect(model.armed).toBe(false);
 
       const clean =
@@ -212,20 +235,22 @@ with tempfile.TemporaryDirectory() as tmp:
         return subprocess.CompletedProcess(argv, 0)
     subprocess.run = command
     sys.argv = ['recovery', str(root)]
-    # This is the same independent hook regardless of exit reason: error,
-    # timeout/SIGTERM, OOM or SIGKILL cannot run the Node recovery handler.
     exec(script, {})
-    expected = [['systemctl','--user','start','rat-king-seaweedfs.service'], ['systemctl','--user','start','rat-king-celld.service']]
+    expected = [['systemctl','--user','start',unit] for unit in ['rat-king-seaweedfs.service', 'rat-king-celld.service', 'rat-king-storage-grow.timer', 'rat-king-storage-retention.timer']]
     assert calls == (expected if marked else [])
     assert not marker.exists()
     if marked:
         marker.write_text('restart required')
-        def refused(argv, **kwargs): raise subprocess.CalledProcessError(1, argv)
+        calls.clear()
+        def refused(argv, **kwargs):
+            calls.append(argv)
+            raise subprocess.CalledProcessError(1, argv)
         subprocess.run = refused
         try: exec(script, {})
         except subprocess.CalledProcessError: pass
         else: raise AssertionError('Failed start was swallowed')
         assert marker.exists(), 'Failed gate lost recovery marker'
+        assert calls == [expected[0], *expected[2:]], 'Mailbox failure skipped timer recovery'
     print('RECOVERY_PASSED')
 `;
 

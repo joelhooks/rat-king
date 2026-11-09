@@ -1,7 +1,7 @@
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { Effect, Schema } from "effect";
 
-import { localExec } from "../../packages/alchemy-nest/src/local-exec.ts";
+import { backupExec } from "./backup-exec.ts";
 import { BackupInput, runBackup } from "./backup.ts";
 
 const program = Effect.gen(function* backupMain() {
@@ -17,7 +17,7 @@ const program = Effect.gen(function* backupMain() {
     version,
   });
 
-  yield* runBackup(yield* localExec, input);
+  yield* runBackup(yield* backupExec, input);
 });
 
 NodeRuntime.runMain(program.pipe(Effect.provide(NodeServices.layer)));

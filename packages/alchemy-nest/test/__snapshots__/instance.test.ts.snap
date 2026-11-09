@@ -837,7 +837,7 @@ WantedBy=default.target
 ",
     "/home/example/.config/systemd/user/rat-king-storage-grow.service": "[Unit]
 Description=Rat King default-collection volume pre-grow
-Requires=rat-king-seaweedfs.service
+Requisite=rat-king-seaweedfs.service
 After=rat-king-seaweedfs.service
 
 [Service]
@@ -866,7 +866,7 @@ WantedBy=default.target
 ",
     "/home/example/.config/systemd/user/rat-king-storage-retention.service": "[Unit]
 Description=Rat King filer metadata log retention and storage alarm
-Requires=rat-king-seaweedfs.service
+Requisite=rat-king-seaweedfs.service
 After=rat-king-seaweedfs.service
 StartLimitIntervalSec=0
 

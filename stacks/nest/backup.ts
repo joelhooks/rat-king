@@ -3,6 +3,11 @@ import { transition } from "xstate";
 
 import { HostError, must } from "../../packages/alchemy-nest/src/host-shell.ts";
 import type { Interface } from "../../packages/alchemy-nest/src/host-shell.ts";
+import {
+  backupControl,
+  maintenanceTimers,
+  restartMaintenanceTimers,
+} from "./backup-control.ts";
 import { backupLifecycle } from "./backup-lifecycle.ts";
 import { backupScript } from "./backup-script.ts";
 
@@ -84,7 +89,7 @@ export const phase = <A, E, R>(name: string, effect: Effect.Effect<A, E, R>) =>
 
 export const startMailbox = (shell: Pick<Interface, "exec">) => {
   const ctl = (action: string, unit: string) =>
-    must(shell, ["systemctl", "--user", action, unit]);
+    backupControl(shell, action, unit);
 
   return Effect.gen(function* startUnits() {
     yield* phase(
@@ -148,7 +153,7 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
     });
 
   const ctl = (action: string, unit: string) =>
-    must(shell, ["systemctl", "--user", action, unit]);
+    backupControl(shell, action, unit);
 
   const script = (action: string, ...args: readonly string[]) =>
     must(shell, [
@@ -160,6 +165,11 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
       input.backupRoot,
       ...args,
     ]);
+
+  const resume = startMailbox(shell).pipe(
+    Effect.ensuring(restartMaintenanceTimers(shell)),
+    Effect.andThen(script("disarm"))
+  );
 
   const memory = (moment: string) =>
     bounded("cgroup", stepLimit, script("cgroup")).pipe(
@@ -223,6 +233,10 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
         const stoppedAt = yield* Clock.currentTimeMillis;
 
         yield* Effect.gen(function* quiesce() {
+          yield* phase(
+            "stop-maintenance-timers",
+            Effect.all(maintenanceTimers.map((unit) => ctl("stop", unit)))
+          );
           yield* phase("stop-node", ctl("stop", nodeService));
           yield* phase("stop-store", ctl("stop", storeService));
           yield* checkpoint("stopped");
@@ -233,15 +247,13 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
             )).trim()
           );
           yield* checkpoint("copied");
-          yield* startMailbox(shell);
-          yield* script("disarm");
+          yield* resume;
           yield* checkpoint("started");
         }).pipe(
           Effect.onError(() =>
             Effect.gen(function* recover() {
               yield* checkpoint("failed");
-              yield* startMailbox(shell);
-              yield* script("disarm");
+              yield* resume;
               yield* checkpoint("recovered");
             }).pipe(
               Effect.catchTag("HostError", (error) =>
