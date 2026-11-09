@@ -15,71 +15,78 @@ const token = Redacted.make("invented-fixture-token-with-32-characters");
 
 const authorization = `Bearer ${Redacted.value(token)}`;
 
+const checkSliceText = (text: string) =>
+  Effect.gen(function* fixture() {
+    const path = yield* makeSliceFixture(text);
+    const fs = yield* FileSystem.FileSystem;
+    const before = yield* fs.readFile(path);
+    yield* Effect.gen(function* checks() {
+      const source = yield* SliceSource;
+      const chunks = yield* source.slice("conversation-a", "first", "last");
+      expect(chunks.map((chunk) => chunk.chunk_id)).toEqual(["first", "last"]);
+
+      const response = yield* handleSlice(
+        {
+          authorization,
+          method: "GET",
+          url: "/slice?conversation=conversation-a&first=first&last=last",
+        },
+        token
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.body).toBe(
+        JSON.stringify({
+          chunks,
+          conversation: "conversation-a",
+          first: "first",
+          last: "last",
+          sha256: textDigest(canonicalChunks(chunks)),
+        })
+      );
+      const stored = Buffer.from(text, "utf-8").toString("utf-8");
+      expect(chunks[0]?.text).toBe(stored);
+      const end = Math.min(Array.from(stored, (point) => point).length, 280);
+
+      const quote = yield* handleSlice(
+        {
+          authorization,
+          method: "GET",
+          url: `/quote?chunk=first&start=0&end=${end}`,
+        },
+        token
+      );
+
+      const expected = Array.from(stored, (point) => point)
+        .slice(0, end)
+        .join("");
+
+      expect(quote.body).toBe(
+        JSON.stringify({
+          chunk: "first",
+          end,
+          sha256: textDigest(expected),
+          start: 0,
+          text: expected,
+        })
+      );
+    }).pipe(Effect.provide(sqliteSliceSource(path, 30)));
+    expect(yield* fs.readFile(path)).toEqual(before);
+  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
+
 it.effect.prop(
   "slice spans runs, quote offsets use code points and digests cover exact canonical bytes",
   {
     text: Arbitrary.schema(Schema.String.check(Schema.isMaxLength(500))),
   },
-  ({ text }) =>
-    Effect.gen(function* fixture() {
-      const path = yield* makeSliceFixture(text);
-      const fs = yield* FileSystem.FileSystem;
-      const before = yield* fs.readFile(path);
-      yield* Effect.gen(function* checks() {
-        const source = yield* SliceSource;
-        const chunks = yield* source.slice("conversation-a", "first", "last");
-        expect(chunks.map((chunk) => chunk.chunk_id)).toEqual([
-          "first",
-          "last",
-        ]);
+  ({ text }) => checkSliceText(text)
+);
 
-        const response = yield* handleSlice(
-          {
-            authorization,
-            method: "GET",
-            url: "/slice?conversation=conversation-a&first=first&last=last",
-          },
-          token
-        );
-
-        expect(response.status).toBe(200);
-        expect(response.body).toBe(
-          JSON.stringify({
-            chunks,
-            conversation: "conversation-a",
-            first: "first",
-            last: "last",
-            sha256: textDigest(canonicalChunks(chunks)),
-          })
-        );
-        const stored = Buffer.from(text, "utf-8").toString("utf-8");
-        const end = Math.min(Array.from(stored, (point) => point).length, 280);
-
-        const quote = yield* handleSlice(
-          {
-            authorization,
-            method: "GET",
-            url: `/quote?chunk=first&start=0&end=${end}`,
-          },
-          token
-        );
-
-        const expected = Array.from(stored, (point) => point)
-          .slice(0, end)
-          .join("");
-
-        expect(quote.body).toBe(
-          JSON.stringify({
-            chunk: "first",
-            end,
-            sha256: textDigest(expected),
-            start: 0,
-            text: expected,
-          })
-        );
-      }).pipe(Effect.provide(sqliteSliceSource(path, 30)));
-      expect(yield* fs.readFile(path)).toEqual(before);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+it.effect("NUL bytes do not truncate slice text or code-point quotes", () =>
+  Effect.gen(function* nulRegression() {
+    yield* checkSliceText("\u0000");
+    yield* checkSliceText("a\u0000😀b\u0000");
+  })
 );
 
 it.effect.prop(

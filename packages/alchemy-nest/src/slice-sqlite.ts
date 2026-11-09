@@ -1,7 +1,15 @@
 import { DatabaseSync } from "node:sqlite";
 import { pathToFileURL } from "node:url";
 
-import { Clock, Effect, Layer, Option, Schema, Semaphore } from "effect";
+import {
+  Clock,
+  Effect,
+  Layer,
+  Option,
+  Schema,
+  SchemaGetter,
+  Semaphore,
+} from "effect";
 import { ChildProcessSpawner } from "effect/process";
 
 import { absent } from "./absent.ts";
@@ -24,7 +32,7 @@ const rangeCte = `WITH ordered AS (
          (SELECT position FROM ordered WHERE chunk_id = ?) AS last
 )`;
 
-const rangeSql = `${rangeCte} SELECT chunk_id, role, started_at, text FROM ordered, bounds
+const rangeSql = `${rangeCte} SELECT chunk_id, role, started_at, CAST(text AS BLOB) AS text FROM ordered, bounds
 WHERE position BETWEEN first AND last ORDER BY position LIMIT 8193`;
 
 const budgetSql = `${rangeCte} SELECT sum(length(CAST(text AS BLOB)) + length(CAST(role AS BLOB)) + length(CAST(chunk_id AS BLOB)) + 32) AS bytes FROM ordered, bounds WHERE position BETWEEN first AND last`;
@@ -43,6 +51,20 @@ const pageSql = `WITH window AS MATERIALIZED (
 )
 SELECT rowid, chunk_id, conversation, role, started_at, token_count FROM prefix
 WHERE rowid < coalesce((SELECT min(rowid) FROM prefix WHERE latest >= ?), 9223372036854775807) ORDER BY rowid`;
+
+const storedText = Schema.Uint8Array.pipe(
+  Schema.decodeTo(Schema.String, {
+    decode: SchemaGetter.transform((bytes) =>
+      Buffer.from(bytes).toString("utf-8")
+    ),
+    encode: SchemaGetter.transform((text) => Buffer.from(text, "utf-8")),
+  })
+);
+
+const StoredChunk = Schema.Struct({
+  ...SliceChunkSchema.fields,
+  text: storedText,
+});
 
 const unavailable = () =>
   new SliceError({ reason: "Slice database unavailable.", status: 500 });
@@ -183,7 +205,9 @@ export const sqliteSliceSource = (path: string, lookbackDays: number) =>
               catch: unavailable,
               try: () =>
                 db
-                  .prepare("SELECT text FROM chunks WHERE chunk_id = ?")
+                  .prepare(
+                    "SELECT CAST(text AS BLOB) AS text FROM chunks WHERE chunk_id = ?"
+                  )
                   .get(chunk),
             });
 
@@ -195,7 +219,7 @@ export const sqliteSliceSource = (path: string, lookbackDays: number) =>
             }
 
             const valid = yield* Schema.decodeUnknownEffect(
-              Schema.Struct({ text: Schema.String })
+              Schema.Struct({ text: storedText })
             )(row).pipe(Effect.mapError(unavailable));
 
             const points = Array.from(valid.text, (point) => point);
@@ -266,7 +290,7 @@ export const sqliteSliceSource = (path: string, lookbackDays: number) =>
             let bytes = 0;
 
             for (const row of rows) {
-              const chunk = yield* Schema.decodeUnknownEffect(SliceChunkSchema)(
+              const chunk = yield* Schema.decodeUnknownEffect(StoredChunk)(
                 row
               ).pipe(Effect.mapError(unavailable));
 
