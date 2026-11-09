@@ -25,7 +25,7 @@ export const storageRetentionUnit = (
             ? "Rat King filer metadata log retention and storage alarm"
             : `${layout.instance} filer metadata log retention and storage alarm`,
         ],
-        ["Requires", layout?.storeUnit ?? "rat-king-seaweedfs.service"],
+        ["Requisite", layout?.storeUnit ?? "rat-king-seaweedfs.service"],
         ["After", layout?.storeUnit ?? "rat-king-seaweedfs.service"],
         ...(layout === undefined || layout.instance === "rat-king"
           ? [["StartLimitIntervalSec", "0"] satisfies readonly [string, string]]
@@ -117,7 +117,7 @@ export const storageGrowUnit = (
             ? "Rat King default-collection volume pre-grow"
             : `${layout.instance} default-collection volume pre-grow`,
         ],
-        ["Requires", layout?.storeUnit ?? "rat-king-seaweedfs.service"],
+        ["Requisite", layout?.storeUnit ?? "rat-king-seaweedfs.service"],
         ["After", layout?.storeUnit ?? "rat-king-seaweedfs.service"],
       ],
       name: "Unit",

@@ -125,6 +125,8 @@ it.effect.prop(
       const units = new Map([
         ["rat-king-celld.service", true],
         ["rat-king-seaweedfs.service", true],
+        ["rat-king-storage-grow.timer", true],
+        ["rat-king-storage-retention.timer", true],
       ]);
 
       let staging = "";
@@ -188,7 +190,7 @@ it.effect.prop(
       expect(Exit.isFailure(exit)).toBe(fault !== "retention");
       expect(staging).not.toBe("");
       expect(yield* fs.exists(staging)).toBe(false);
-      expect([...units.values()]).toEqual([true, true]);
+      expect([...units.values()]).toEqual([true, true, true, true]);
       expect(calls.indexOf("prune-staging")).toBeLessThan(
         calls.indexOf("preflight")
       );
@@ -222,6 +224,8 @@ it.effect.prop(
         ).toEqual([
           "start rat-king-seaweedfs.service",
           "start rat-king-celld.service",
+          "start rat-king-storage-grow.timer",
+          "start rat-king-storage-retention.timer",
         ]);
         expect(calls.indexOf("cleanup-staging")).toBeGreaterThan(
           calls.indexOf("start rat-king-celld.service")
