@@ -47,6 +47,7 @@ export interface SessionFacts {
   readonly alive: (pid: number) => boolean;
   readonly ancestors?: () => readonly number[];
   readonly nameless?: boolean;
+  readonly derived?: boolean;
   readonly via?: () => string;
   readonly reads?: boolean;
   readonly successor?: boolean;
@@ -143,6 +144,30 @@ export const claimName = Effect.fn("RatKing.claimName")(function* claimName(
           : holder.session !== facts.session && facts.alive(holder.pid);
       };
 
+      if (facts.derived === true && Option.isSome(facts.env)) {
+        const name = facts.env.value;
+        const holder = claims[name];
+
+        const rival =
+          holder !== undefined &&
+          holder.session !== facts.session &&
+          facts.alive(holder.pid);
+
+        if (
+          rival ||
+          isReserved(settings.reserved, name) ||
+          (known.has(name) && holder?.session !== facts.session)
+        ) {
+          return yield* Effect.fail(
+            fail(
+              rival
+                ? `${name} is held by session ${holder.session}; use /ratking connect with a different name`
+                : `${name} is reserved or already in the directory; use /ratking connect with a different name`
+            )
+          );
+        }
+      }
+
       const own: OwnName = yield* Result.match(
         deriveName({
           env:
@@ -160,7 +185,7 @@ export const claimName = Effect.fn("RatKing.claimName")(function* claimName(
         }
       );
 
-      if (own.source !== "env") {
+      if (own.source !== "env" || facts.derived === true) {
         yield* writePrivateJson(
           file,
           yield* Schema.encodeEffect(Schema.fromJsonString(Claims))({

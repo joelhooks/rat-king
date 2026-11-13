@@ -9,8 +9,17 @@ import { Option, Schema } from "effect";
 
 export const NAME_ENTRY = "ratking.name";
 
+export const autoName = (session: string) => `pi-${session.slice(0, 8)}`;
+
+export const interactiveSession = (ctx: {
+  readonly hasUI: boolean;
+  readonly mode: string;
+}) => ctx.hasUI && ctx.mode === "tui";
+
 export const NameSource = Schema.Literals([
   "default",
+  "interactive",
+  "connected",
   "env",
   "forked",
   "restored",
@@ -19,6 +28,7 @@ export const NameSource = Schema.Literals([
 export type NameSourceValue = typeof NameSource.Type;
 
 export const NameEntry = Schema.Struct({
+  derived: Schema.optionalKey(Schema.Boolean),
   name: AgentName,
   parent: Schema.optionalKey(ForkParent),
   session: Schema.optionalKey(Schema.String),
@@ -29,6 +39,7 @@ export type NameEntryValue = typeof NameEntry.Type;
 
 export interface NameChoice {
   readonly name: Option.Option<string>;
+  readonly derived?: boolean;
   readonly source: NameSourceValue;
   readonly fork?: ForkIdentity;
   readonly parent?: typeof ForkParent.Type;
@@ -37,6 +48,20 @@ export interface NameChoice {
 export interface NamedFacts extends SessionFacts {
   readonly source?: NameSourceValue;
 }
+
+export const connectedFacts = (
+  facts: NamedFacts,
+  name: string
+): NamedFacts => ({
+  ...facts,
+  derived: true,
+  env: Option.some(name),
+  fork: undefined,
+  nameless: false,
+  reads: true,
+  source: "connected",
+  successor: false,
+});
 
 export interface ChooseInput {
   readonly env: Option.Option<string>;
@@ -77,6 +102,10 @@ const restoredChoice = (entry: NameEntryValue): NameChoice => {
     name: Option.some(entry.name),
     source: "restored",
   };
+
+  if (entry.derived !== undefined) {
+    Object.assign(choice, { derived: entry.derived });
+  }
 
   if (entry.parent !== undefined) {
     Object.assign(choice, { parent: entry.parent });
@@ -204,4 +233,4 @@ export const heldElsewhere = (
 export { heldReason } from "@rat-king/ratking-client/reader-health";
 
 export const heldNotice = (name: string) =>
-  `🐀 SEND-ONLY: ${readerHeld(name)}; use action: claim to retry once`;
+  `🐀 SEND-ONLY: ${readerHeld(name)}; use /ratking connect or action: claim to retry once`;

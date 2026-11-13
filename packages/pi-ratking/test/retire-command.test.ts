@@ -194,7 +194,7 @@ it.live.prop(
       const box = mailbox(true);
       const pi = yield* boot(state, box, [successor, OTHER], true);
 
-      expect([...pi.commands.keys()]).toEqual([RETIRE_COMMAND]);
+      expect([...pi.commands.keys()]).toContain(RETIRE_COMMAND);
 
       expect(yield* pi.retire(` ${successor} `)).toEqual([
         retiredLine(OWN, successor),

@@ -49,7 +49,7 @@ const Env = Schema.Struct({
 });
 
 it.effect.prop(
-  "a Pi gets a name only from an explicit setting, whether interactive or headless",
+  "only interactive Pis auto-name; headless Pis still need an explicit setting",
   [Arbitrary.schema(Env), Arbitrary.schema(Schema.Boolean)],
   ([env, interactive]) =>
     Effect.gen(function* proof() {
@@ -66,8 +66,10 @@ it.effect.prop(
         )
       );
 
-      expect(collected.nameless).toBe(explicit === undefined);
-      expect(Option.getOrUndefined(collected.env)).toBe(explicit);
+      expect(collected.nameless).toBe(!interactive && explicit === undefined);
+      expect(Option.getOrUndefined(collected.env)).toBe(
+        explicit ?? (interactive ? "pi-any-sess" : undefined)
+      );
     }).pipe(Effect.provide(NodeServices.layer))
 );
 
