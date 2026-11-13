@@ -65,6 +65,7 @@ export const Action = Schema.Literals([
   "status",
   "cancel",
   "claim",
+  "connect",
   "retire",
   "thread-claim",
   "thread-release",
@@ -101,6 +102,7 @@ export const ToolParams = Schema.Struct({
   match: Schema.optionalKey(Schema.String),
   message: Schema.optionalKey(Schema.String),
   messageId: Schema.optionalKey(Schema.String),
+  name: Schema.optionalKey(Schema.String),
   note: Schema.optionalKey(Schema.String),
   offset: Schema.optionalKey(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
@@ -518,6 +520,10 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
     return loud(
       "openProjectPaneIfMissing is not available on Rat King; launch the agent first, then send."
     );
+  }
+
+  if (params.action === "connect") {
+    return loud("Use /ratking connect in an interactive Pi");
   }
 
   return yield* Match.value(params.action).pipe(

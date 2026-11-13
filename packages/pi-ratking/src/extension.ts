@@ -24,6 +24,7 @@ import {
 } from "@rat-king/ratking-client/config";
 import { deliveryReason, injects } from "@rat-king/ratking-client/delivery";
 import { directoryLayer } from "@rat-king/ratking-client/directory";
+import { claimName } from "@rat-king/ratking-client/identity";
 import type { SessionFacts } from "@rat-king/ratking-client/identity";
 import { issuerLayer } from "@rat-king/ratking-client/issuer";
 import { appendLog } from "@rat-king/ratking-client/log";
@@ -53,13 +54,10 @@ import {
   NotDelivered,
   Inbox,
   RatKing,
+  ReaderState,
   ratKingLayer,
 } from "@rat-king/ratking-client/ratking";
-import type {
-  Deliver,
-  ReaderState,
-  SendOptions,
-} from "@rat-king/ratking-client/ratking";
+import type { Deliver, SendOptions } from "@rat-king/ratking-client/ratking";
 import { recentMap } from "@rat-king/ratking-client/recent";
 import {
   CONTROL_RECORD_TYPES,
@@ -74,6 +72,7 @@ import {
   Cause,
   Clock,
   Config,
+  ConfigProvider,
   Deferred,
   Duration,
   DateTime,
@@ -101,17 +100,25 @@ import { ancestorsOf, parentOfProcess } from "./ancestry.ts";
 import { paneLabel } from "./herdr.ts";
 import { messageView } from "./message-view.ts";
 import {
+  autoName,
   chooseName,
+  connectedFacts,
   heldElsewhere,
   heldNotice,
   heldReason,
+  interactiveSession,
   NAME_ENTRY,
   parseNameEntries,
   parentEntry,
   shouldRecord,
   stateName,
 } from "./name.ts";
-import type { NamedFacts, NameEntryValue, NameSourceValue } from "./name.ts";
+import type {
+  NameChoice,
+  NamedFacts,
+  NameEntryValue,
+  NameSourceValue,
+} from "./name.ts";
 import { digestView, recordView } from "./notice-view.ts";
 import {
   applyDelivery,
@@ -397,7 +404,7 @@ export const collectFacts = (
       parentEntry(entries, parentSession)
     ).pipe(Option.map((entry) => canonicalName(reserved, entry.name)));
 
-    const choice = chooseName({
+    const selected = chooseName({
       entries: interactive ? entries : [],
       env: fork
         ? given.pipe(Option.map((name) => canonicalName(reserved, name)))
@@ -409,6 +416,24 @@ export const collectFacts = (
       session,
       succeeds: Option.getOrUndefined(succeeds),
     });
+
+    const provider = yield* ConfigProvider.ConfigProvider;
+
+    const muster = yield* provider.load(["MUSTER"]).pipe(
+      Effect.map((node) => node !== undefined),
+      Effect.orElseSucceed(() => true)
+    );
+
+    const auto =
+      interactive && !fork && Option.isNone(selected.name) && !muster;
+
+    const choice: NameChoice = auto
+      ? {
+          derived: true,
+          name: Option.some(autoName(session)),
+          source: "interactive" as const,
+        }
+      : selected;
 
     const env = choice.name;
 
@@ -435,6 +460,7 @@ export const collectFacts = (
     return {
       alive,
       ancestors: () => ancestorsOf(process.pid, parentOfProcess),
+      derived: choice.derived === true,
       disabled: Option.contains(given, "off"),
       env,
       fork: choice.fork,
@@ -537,6 +563,8 @@ export interface SessionStart {
   readonly turnCount?: number;
   readonly rememberTurn?: (n: number) => void;
   readonly interactive?: boolean;
+  readonly connectionName?: string;
+  readonly onReaderState?: (reader: ReaderState) => void;
   readonly names?: readonly NameEntryValue[];
   readonly parentSession?: string | undefined;
   readonly rememberName?: (entry: NameEntryValue) => void;
@@ -642,7 +670,7 @@ export const piHost = (pi: ExtensionAPI): PiHost => {
         }
 
         await handler({
-          interactive: ctx.hasUI,
+          interactive: interactiveSession(ctx),
           isIdle: () => ctx.isIdle(),
           names: parseNameEntries(ctx.sessionManager.getEntries()),
           parentSession: await Effect.runPromise(
@@ -733,7 +761,7 @@ export interface ExtensionOptions {
 
 const notRunning = (cause: Cause.Cause<NotConfigured>) =>
   Option.match(Cause.findErrorOption(cause), {
-    onNone: () => "Rat King is not running in this Pi",
+    onNone: () => "Rat King is not running in this Pi; use /ratking connect",
     onSome: (error) => error.reason,
   });
 
@@ -843,6 +871,7 @@ const parameters = Type.Object({
       "handled",
       "status",
       "claim",
+      "connect",
       "cancel",
       "retire",
       "thread-claim",
@@ -909,6 +938,7 @@ const parameters = Type.Object({
   messageId: Type.Optional(
     Type.String({ description: "Accepted for compatibility; unused." })
   ),
+  name: Type.Optional(Type.String()),
   note: Type.Optional(Type.String({ maxLength: 120 })),
   op: Type.Optional(
     Type.Union(["add", "remove", "list"].map((op) => Type.Literal(op)))
@@ -1061,6 +1091,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
     );
 
     let runtime = Option.none<Runtime>();
+    let currentStart: SessionStart | undefined;
     let starts = 0;
     let turns: TurnReporter | undefined;
     let turnSource = Deferred.makeUnsafe<Option.Option<TurnReporter>>();
@@ -1611,7 +1642,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
         return fallback(
           retired
             ? "Rat King reader retired; a successor session holds this name"
-            : "Rat King has not started"
+            : "Rat King has not started; use /ratking connect"
         );
       }
 
@@ -1682,107 +1713,6 @@ export const ratkingExtension = (options: ExtensionOptions) =>
 
         print(outcome.line);
       },
-    });
-
-    pi.registerTool({
-      description: description(tool),
-      execute: async (_id, params, signal, onUpdate) => {
-        const update = (progress: ToolText) => onUpdate?.(toolResult(progress));
-        const phase = idleDispatch();
-
-        const result = await executeToolWithLiveness(
-          ready() ? initialPhase(params) : STARTING_PHASE,
-          (report) =>
-            Effect.promise(async () => {
-              const outcome = await run(
-                Effect.gen(function* execute() {
-                  yield* report(initialPhase(params));
-
-                  const decoded =
-                    yield* Schema.decodeUnknownEffect(ToolParams)(params);
-
-                  const settings = yield* Settings;
-                  const context = yield* Effect.context<Services>();
-
-                  const status = yield* RatKing.use(
-                    (ratking) => ratking.status
-                  );
-
-                  ownName = Option.getOrUndefined(
-                    status.self.pipe(Option.map((self) => self.name))
-                  );
-
-                  return yield* withTurnWait(
-                    turns,
-                    decoded,
-                    runAction(
-                      tool,
-                      settings.askTimeoutMs,
-                      decoded,
-                      phase,
-                      filterHits.pipe(Effect.provideContext(context)),
-                      (sendPhase) => report(phaseText(sendPhase))
-                    )
-                  );
-                }).pipe(
-                  Effect.orElseSucceed((): ToolText => ({
-                    details: { error: true },
-                    isError: true,
-                    text: "Invalid Rat King tool parameters",
-                  }))
-                ),
-                (reason) => notConfiguredText(new NotConfigured({ reason })),
-                signal,
-                () => cancelledText(params, Ref.getUnsafe(phase))
-              );
-
-              if (
-                !outcome.isError &&
-                Schema.is(Schema.Struct({ retired: Schema.Literal(true) }))(
-                  outcome.details
-                )
-              ) {
-                await markRetired();
-              }
-
-              const sentTo = Schema.decodeUnknownOption(
-                Schema.Struct({ to: Schema.String })
-              )(outcome.details);
-
-              if (!outcome.isError && Option.isSome(sentTo)) {
-                turnMail.addressed(sentTo.value.to);
-              }
-
-              return outcome;
-            }),
-          update
-        );
-
-        return toolResult(result);
-      },
-      executionMode: "parallel",
-      label: "🐀",
-      name: tool,
-      parameters,
-      promptSnippet: promptSnippet(tool),
-      renderCall: (args, theme, context) =>
-        callView(tool, args, theme, labels, context),
-      renderResult: (result, { expanded, isPartial }, theme, context) =>
-        resultView(
-          {
-            action: context.args.action,
-            details: result.details,
-            expanded,
-            isError: context.isError,
-            isPartial,
-            text: result.content
-              .flatMap((part) => (part.type === "text" ? [part.text] : []))
-              .join("\n"),
-          },
-          theme,
-          labels,
-          context
-        ),
     });
 
     const forward = async (request: typeof SendRequest.Type) => {
@@ -2139,7 +2069,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
 
           const names = start.names ?? [];
 
-          const collected = yield* options
+          const initial = yield* options
             .facts(
               start.session,
               start.sessionName,
@@ -2153,6 +2083,11 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               ),
               Effect.withSpan("RatKing.startup.facts")
             );
+
+          const collected: NamedFacts =
+            start.connectionName === undefined
+              ? initial
+              : connectedFacts(initial, start.connectionName);
 
           const afterFacts = yield* Clock.currentTimeMillis;
 
@@ -2178,6 +2113,10 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               session: start.session,
               source,
             };
+
+            if (collected.derived === true) {
+              Object.assign(entry, { derived: true });
+            }
 
             if (collected.parent !== undefined) {
               Object.assign(entry, { parent: collected.parent });
@@ -2243,6 +2182,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               }
 
               logFirstState(reader);
+              start.onReaderState?.(reader);
 
               const named = stateName(reader);
 
@@ -2357,7 +2297,8 @@ export const ratkingExtension = (options: ExtensionOptions) =>
     };
 
     // oxlint-disable-next-line eslint/require-await -- Pi awaits session_start; Rat King starts in the background so this returns at once.
-    pi.onSessionStart(async (start) => {
+    const restartReader = async (start: SessionStart) => {
+      currentStart = start;
       retired = false;
       retirement = undefined;
       isIdle = start.isIdle ?? idle;
@@ -2398,8 +2339,261 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       runtime = Option.some(live);
 
       void boot(live, start, epoch, settle);
+    };
+
+    const connectionGate = Semaphore.makeUnsafe(1);
+
+    const connect = async (
+      name?: string
+    ): Promise<Partial<ToolText> & { text: string }> =>
+      await Effect.runPromise(
+        connectionGate.withPermit(
+          Effect.promise(async () => {
+            const start = currentStart;
+
+            if (start?.interactive !== true) {
+              return {
+                isError: true,
+                text: "Live connect needs an interactive Pi; open a UI session and use /ratking connect",
+              };
+            }
+
+            const liveName = await run(
+              RatKing.use((king) => king.status).pipe(
+                Effect.map(({ reader }) =>
+                  ReaderState.$is("Live")(reader)
+                    ? Option.some(reader.name)
+                    : Option.none<string>()
+                )
+              ),
+              () => Option.none<string>()
+            );
+
+            if (Option.isSome(liveName)) {
+              return { text: `Rat King is already live as ${liveName.value}` };
+            }
+
+            const requested = name ?? autoName(start.session);
+
+            const checked = await run(
+              Effect.gen(function* checkConnection() {
+                const facts = yield* options.facts(
+                  start.session,
+                  start.sessionName,
+                  true,
+                  start.names,
+                  start.parentSession
+                );
+
+                if (facts.disabled === true) {
+                  return {
+                    isError: true,
+                    text: "RATKING_NAME=off disables connect; enable this session and use /ratking connect",
+                  };
+                }
+
+                yield* claimName(connectedFacts(facts, requested));
+
+                return { text: "" };
+              }).pipe(
+                Effect.catch((error) =>
+                  Effect.succeed({
+                    isError: true,
+                    text: `${"reason" in error ? error.reason : error.message}; use /ratking connect with a different name`,
+                  })
+                )
+              ),
+              (reason): Partial<ToolText> & { text: string } => ({
+                isError: true,
+                text: `${reason}; use /ratking connect`,
+              })
+            );
+
+            if (checked.isError === true) {
+              return checked;
+            }
+
+            if (currentStart !== start) {
+              return {
+                isError: true,
+                text: "The Pi session changed; use /ratking connect in the current session",
+              };
+            }
+
+            const outcome = Deferred.makeUnsafe<
+              Partial<ToolText> & { text: string }
+            >();
+
+            const done = (value: Partial<ToolText> & { text: string }) => {
+              Deferred.doneUnsafe(outcome, Exit.succeed(value));
+            };
+
+            await restartReader({
+              ...start,
+              connectionName: requested,
+              onReaderState: (reader) => {
+                if (ReaderState.$is("Live")(reader)) {
+                  done({ text: `Rat King is live as ${reader.name}` });
+                } else if (
+                  ReaderState.$is("Refused")(reader) ||
+                  ReaderState.$is("SendOnly")(reader)
+                ) {
+                  done({
+                    isError: true,
+                    text: `${reader.reason}; use /ratking connect`,
+                  });
+                }
+              },
+              warn: (message) => {
+                start.warn(message);
+                done({
+                  isError: true,
+                  text: `${message}; use /ratking connect`,
+                });
+              },
+            });
+
+            return await Effect.runPromise(
+              Deferred.await(outcome).pipe(
+                Effect.timeoutOption("15 seconds"),
+                Effect.map(
+                  Option.getOrElse(() => ({
+                    text: `Rat King is connecting as ${requested}; check status or use /ratking connect`,
+                  }))
+                )
+              )
+            );
+          })
+        )
+      );
+
+    pi.registerCommand?.("ratking", {
+      description: "Connect this Pi: /ratking connect [name]",
+      handler: async (args, print) => {
+        const [action, name, extra] = args.trim().split(/\s+/u);
+
+        if (action !== "connect" || extra !== undefined) {
+          print("Use /ratking connect [name]");
+
+          return;
+        }
+
+        const result = await connect(name);
+
+        print(result.text);
+      },
     });
 
+    pi.registerTool({
+      description: description(tool),
+      execute: async (_id, params, signal, onUpdate) => {
+        if (params.action === "connect") {
+          return toolResult({
+            details: {},
+            isError: false,
+            ...(await connect(params.name)),
+          });
+        }
+
+        const update = (progress: ToolText) => onUpdate?.(toolResult(progress));
+        const phase = idleDispatch();
+
+        const result = await executeToolWithLiveness(
+          ready() ? initialPhase(params) : STARTING_PHASE,
+          (report) =>
+            Effect.promise(async () => {
+              const outcome = await run(
+                Effect.gen(function* execute() {
+                  yield* report(initialPhase(params));
+
+                  const decoded =
+                    yield* Schema.decodeUnknownEffect(ToolParams)(params);
+
+                  const settings = yield* Settings;
+                  const context = yield* Effect.context<Services>();
+
+                  const status = yield* RatKing.use(
+                    (ratking) => ratking.status
+                  );
+
+                  ownName = Option.getOrUndefined(
+                    status.self.pipe(Option.map((self) => self.name))
+                  );
+
+                  return yield* withTurnWait(
+                    turns,
+                    decoded,
+                    runAction(
+                      tool,
+                      settings.askTimeoutMs,
+                      decoded,
+                      phase,
+                      filterHits.pipe(Effect.provideContext(context)),
+                      (sendPhase) => report(phaseText(sendPhase))
+                    )
+                  );
+                }).pipe(
+                  Effect.orElseSucceed((): ToolText => ({
+                    details: { error: true },
+                    isError: true,
+                    text: "Invalid Rat King tool parameters",
+                  }))
+                ),
+                (reason) => notConfiguredText(new NotConfigured({ reason })),
+                signal,
+                () => cancelledText(params, Ref.getUnsafe(phase))
+              );
+
+              if (
+                !outcome.isError &&
+                Schema.is(Schema.Struct({ retired: Schema.Literal(true) }))(
+                  outcome.details
+                )
+              ) {
+                await markRetired();
+              }
+
+              const sentTo = Schema.decodeUnknownOption(
+                Schema.Struct({ to: Schema.String })
+              )(outcome.details);
+
+              if (!outcome.isError && Option.isSome(sentTo)) {
+                turnMail.addressed(sentTo.value.to);
+              }
+
+              return outcome;
+            }),
+          update
+        );
+
+        return toolResult(result);
+      },
+      executionMode: "parallel",
+      label: "🐀",
+      name: tool,
+      parameters,
+      promptSnippet: promptSnippet(tool),
+      renderCall: (args, theme, context) =>
+        callView(tool, args, theme, labels, context),
+      renderResult: (result, { expanded, isPartial }, theme, context) =>
+        resultView(
+          {
+            action: context.args.action,
+            details: result.details,
+            expanded,
+            isError: context.isError,
+            isPartial,
+            text: result.content
+              .flatMap((part) => (part.type === "text" ? [part.text] : []))
+              .join("\n"),
+          },
+          theme,
+          labels,
+          context
+        ),
+    });
+
+    pi.onSessionStart(restartReader);
     pi.onSessionEnd(stop);
   };
 

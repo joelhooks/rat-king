@@ -326,23 +326,36 @@ it.live(
     }).pipe(Effect.provide(NodeServices.layer))
 );
 
-it.live("a session that only ever had a default name is never restored", () =>
-  Effect.gen(function* defaults() {
-    const script: Script = { env: {}, held: Option.none(), store: [] };
+it.live(
+  "a legacy default entry does not suppress interactive auto-naming",
+  () =>
+    Effect.gen(function* defaults() {
+      const legacy: NameEntryValue = {
+        name: "pi-old",
+        session: "revived",
+        source: "default",
+      };
 
-    const first = yield* session(script);
+      const script: Script = { env: {}, held: Option.none(), store: [legacy] };
 
-    expect(first.claimed).toEqual(Option.some("pi-default"));
-    expect(script.store).toEqual([
-      { name: "pi-default", session: "revived", source: "default" },
-    ]);
+      const first = yield* session(script);
 
-    const again = yield* session({
-      ...script,
-      held: Option.some(holder("another-pi")),
-    });
+      expect(first.claimed).toEqual(Option.some("pi-revived"));
+      expect(script.store).toEqual([
+        legacy,
+        {
+          derived: true,
+          name: "pi-revived",
+          session: "revived",
+          source: "interactive",
+        },
+      ]);
 
-    expect(again.notices).toEqual([]);
-    expect(again.tool).not.toContain(heldReason("pi-default"));
-  }).pipe(Effect.provide(NodeServices.layer))
+      const again = yield* session(script);
+
+      expect(again.claimed).toEqual(Option.some("pi-revived"));
+      expect(script.store).toHaveLength(2);
+      expect(again.notices).toEqual([]);
+      expect(again.tool).not.toContain(heldReason("pi-old"));
+    }).pipe(Effect.provide(NodeServices.layer))
 );

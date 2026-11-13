@@ -386,7 +386,7 @@ const oneLineSummary = (text: string) =>
   text.replaceAll(/\s+/gu, " ").trim().slice(0, SUMMARY_MAX);
 
 const NAMELESS_REASON =
-  "This Pi has no Rat King name. Nameless Pis don't register, to stop dead mailboxes, and workers never hold their desk's key. Set RATKING_PRINT_NAME or RATKING_NAME";
+  "This Pi has no Rat King name. Nameless Pis don't register, to stop dead mailboxes, and workers never hold their desk's key. Use /ratking connect in an interactive Pi, or set RATKING_PRINT_NAME or RATKING_NAME";
 
 /* oxlint-disable typescript/no-generated-empty-object-type -- Effect TaggedEnum requires an intentionally empty payload for tag-only variants. */
 export type SendPhase = Data.TaggedEnum<{
