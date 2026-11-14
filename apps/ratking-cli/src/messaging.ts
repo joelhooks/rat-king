@@ -53,14 +53,18 @@ const readBody = Effect.fn("RatkingCli.readBody")(function* readBody(
 
 const deliveredDocument = (delivered: Delivered) =>
   withField(
-    {
-      id: delivered.id,
-      recipients: recipientsOf(delivered),
-      seq: delivered.seq,
-      to: delivered.to,
-    },
-    "presence",
-    delivered.presence
+    withField(
+      {
+        id: delivered.id,
+        recipients: recipientsOf(delivered),
+        seq: delivered.seq,
+        to: delivered.to,
+      },
+      "presence",
+      delivered.presence
+    ),
+    "resolvedTo",
+    delivered.resolvedTo
   );
 
 const presenceLines = (delivered: Delivered) =>

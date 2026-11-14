@@ -1,7 +1,7 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import { Directory } from "@rat-king/ratking-client/directory";
-import { Effect, FileSystem, Layer, Schema } from "effect";
+import { Arbitrary, Effect, FileSystem, Layer, Schema } from "effect";
 import { expect } from "vitest";
 
 import { harness } from "../../../packages/pi-ratking/test/harness.ts";
@@ -152,6 +152,7 @@ it.live.prop(
           ["ack", { ids: [slug] }],
           ["pending", {}],
           ["lookup", { name: "peer" }],
+          ["list", {}],
           ["send", { message: "body", summary: "summary", to: "peer" }],
           ["ask", { message: "body", summary: "summary", to: "peer" }],
           ["reply", { message: "body", replyTo: slug, summary: "summary" }],
@@ -223,4 +224,49 @@ it.live("ack refuses a live lease and unknown ids without settling mail", () =>
       Effect.provide(harness(state, fake.http, [], { secrets: seeded(who) }))
     );
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+);
+
+const roles = [
+  { name: "desk", role: "Project desk", target: "peer" },
+  { name: "owners", role: "Project owners", target: "other" },
+  { name: "triage", role: "Support triage", target: "peer" },
+];
+
+it.live.prop(
+  "list returns only the roles in the bot's allowlist, or every role without one",
+  [Arbitrary.schema(Schema.Boolean)],
+  ([restricted]) =>
+    Effect.gen(function* proof() {
+      const state = yield* FileSystem.FileSystem.use((fs) =>
+        fs.makeTempDirectoryScoped()
+      );
+
+      const who = yield* people;
+      const fake = fakeMailbox([], undefined, undefined, { roles });
+
+      yield* Effect.gen(function* listed() {
+        const mcp = yield* stdio("tester");
+
+        expect(yield* mcp.call("list")).toEqual({
+          roles: restricted
+            ? roles.filter((role) => ["desk", "triage"].includes(role.name))
+            : roles,
+        });
+      }).pipe(
+        Effect.provide(
+          harness(
+            state,
+            fake.http,
+            [],
+            restricted
+              ? {
+                  roleAllowlist: ["desk", "triage", "absent"],
+                  secrets: seeded(who),
+                }
+              : { secrets: seeded(who) }
+          ).pipe(Layer.provideMerge(socketLayer))
+        )
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  { arbitrary: { runs: 2 }, timeout: 120_000 }
 );

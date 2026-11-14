@@ -39,15 +39,52 @@ export const standingOf = (
 export const markRetired = (
   tx: Transaction,
   staticDocuments: readonly Defs.DidDocumentValue[],
-  retirement: RetirementValue
+  retirement: RetirementValue,
+  holderMayRetire: boolean
 ) => {
   if (!standingOf(tx, staticDocuments).exists) {
     throw failure("NameNotFound", 404);
   }
 
+  const lease = tx.lease();
+
+  if (
+    !holderMayRetire &&
+    lease !== undefined &&
+    lease.expiresAt > retirement.retiredAt
+  ) {
+    throw failure(
+      "LeaseLive",
+      409,
+      `${retirement.name} is held by a live reader until ${isoTime(lease.expiresAt)}; nothing was retired. Retire it after the reader releases or its lease expires.`
+    );
+  }
+
   tx.setRetirement(retirement);
 
   return retirement;
+};
+
+export const repointRetirement = (
+  tx: Transaction,
+  successor: string,
+  updatedAt: number
+) => {
+  const current = tx.retirement();
+
+  if (current === undefined) {
+    throw failure("NotRetired", 409);
+  }
+
+  if (current.successor === successor) {
+    return current;
+  }
+
+  const next: RetirementValue = { ...current, successor, updatedAt };
+
+  tx.setRetirement(next);
+
+  return next;
 };
 
 export interface Presence {

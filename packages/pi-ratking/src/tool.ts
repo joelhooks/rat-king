@@ -16,7 +16,7 @@ import { sendingOptions } from "@rat-king/ratking-client/compose";
 import type { NotConfigured } from "@rat-king/ratking-client/config";
 import { recipientLines } from "@rat-king/ratking-client/delivery";
 import type { RecipientLevelValue } from "@rat-king/ratking-client/delivery";
-import { listView } from "@rat-king/ratking-client/directory-view";
+import { listView, rolesView } from "@rat-king/ratking-client/directory-view";
 import type { QuietAsk } from "@rat-king/ratking-client/errors";
 import { LexiconRecord } from "@rat-king/ratking-client/payload";
 import { literalPrompt } from "@rat-king/ratking-client/prompt";
@@ -44,6 +44,7 @@ import {
   Match,
   Option,
   Ref,
+  Result,
   Schedule,
   Schema,
 } from "effect";
@@ -394,7 +395,8 @@ Usage:
   ${tool}({ action: "ask", to: "name", summary: "...", message: "..." }) → Ask and get the reply as a message; your turn is not blocked
   ${tool}({ action: "reply", replyTo: "<id>", summary: "...", message: "..." }) → Answer a message by its id
   ${tool}({ action: "pending" })                                     → Unanswered inbound asks and open outbound asks
-  ${tool}({ action: "list", match: "muster/" })                     → Matching names, bounded
+  ${tool}({ action: "list" })                                       → Directory names and roles, each with its role line
+  ${tool}({ action: "list", match: "muster/" })                     → Matching directory names and roles
   ${tool}({ action: "list", all: true, limit: 50, offset: 0 })       → Full directory page with DIDs
   ${tool}({ action: "status" })                                      → This Pi's name and reader
   ${tool}({ action: "claim" })                                       → Retry a blocked name claim once
@@ -567,12 +569,34 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
     ),
     Match.whenOr("list", "list-cwd", () =>
       Effect.gen(function* list() {
+        const roles =
+          params.action === "list" && params.all !== true
+            ? Option.some(yield* ratking.roles.pipe(Effect.result))
+            : Option.none();
+
         const status = yield* ratking.status;
-        const entries = yield* ratking.list;
 
         const own = Option.getOrUndefined(
           status.self.pipe(Option.map(({ name }) => name))
         );
+
+        if (Option.isSome(roles)) {
+          const listed = roles.value;
+
+          const entries = yield* ratking.list;
+
+          if (Result.isSuccess(listed)) {
+            return ok(
+              `${listView(entries, own, params).text}\n\n${rolesView(listed.success, own, params).text}`
+            );
+          }
+
+          return ok(
+            `Roles unavailable (${listed.failure.reason}); showing the directory instead.\n${listView(entries, own, params).text}`
+          );
+        }
+
+        const entries = yield* ratking.list;
 
         return ok(listView(entries, own, params).text);
       })

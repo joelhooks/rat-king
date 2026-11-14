@@ -22,6 +22,14 @@ export const Input = Schema.StructWithRest(
         Schema.brand("Lexicon:tid")
       )
     ),
+    resolvedFrom: Schema.optionalKey(
+      Runtime.lexString({
+        description:
+          "The name the sender addressed, from identity.resolveRecipient. The mailbox resolves it again at accept time and refuses RoleUnresolved unless it still resolves to the envelope's recipient. Recorded on the receipt and traffic entry.",
+        maxLength: 128,
+        type: "string",
+      })
+    ),
     wakeReason: Schema.optionalKey(
       Runtime.lexString({
         enum: ["to", "ask", "reply", "cc", "quiet", "data"],
@@ -53,6 +61,7 @@ export type ErrorBodyValue = typeof ErrorBody.Type;
 export const KnownErrors = [
   "LeaseMismatch",
   "Retired",
+  "RoleUnresolved",
   "InvalidRequest",
   "AuthRequired",
   "Forbidden",

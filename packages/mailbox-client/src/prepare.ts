@@ -291,6 +291,7 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
     fence?: LeaseFence,
     intent: {
       readonly critical?: boolean;
+      readonly resolvedFrom?: string;
       readonly woke: boolean;
       readonly wakeReason: Send.InputValue["wakeReason"];
     } = directIntent
@@ -345,6 +346,7 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
         readonly cc?: string;
         readonly critical?: boolean;
         readonly fence?: LeaseFence;
+        readonly resolvedFrom?: string;
         readonly woke?: boolean;
         readonly wakeReason?: Send.InputValue["wakeReason"];
       }
@@ -360,6 +362,10 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
 
       if (opts?.critical !== undefined) {
         Object.assign(intent, { critical: opts.critical });
+      }
+
+      if (opts?.resolvedFrom !== undefined) {
+        Object.assign(intent, { resolvedFrom: opts.resolvedFrom });
       }
 
       const primary = yield* submit(envelope, opts?.fence, intent);

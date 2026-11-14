@@ -92,6 +92,7 @@ export const PiConfig = Schema.Struct({
     Schema.Union([RelaySetting, Schema.Array(RelaySetting)])
   ),
   reserved: Schema.optionalKey(Reserved),
+  roleAllowlist: Schema.optionalKey(Schema.Array(AgentName)),
   secretsCommand: Schema.optionalKey(Schema.String),
   serviceDid: Did,
   state: Schema.optionalKey(Schema.String),
@@ -115,6 +116,7 @@ export interface SettingsValue {
   readonly refuse: readonly string[];
   readonly reserved: ReservedValue;
   readonly relays: readonly RelaySettingValue[];
+  readonly roleAllowlist?: readonly string[];
   readonly secretsCommand: string;
   readonly serviceDid: string;
   readonly state: string;
@@ -253,6 +255,10 @@ export const loadSettings = Effect.fn("RatKing.loadSettings")(
 
     if (config.ccDigestMinutes !== undefined) {
       Object.assign(settings, { ccDigestMinutes: config.ccDigestMinutes });
+    }
+
+    if (config.roleAllowlist !== undefined) {
+      Object.assign(settings, { roleAllowlist: config.roleAllowlist });
     }
 
     return settings;

@@ -402,6 +402,13 @@ var Receipt = Schema3.StructWithRest(
         Schema3.brand("Lexicon:datetime")
       )
     ),
+    resolvedFrom: Schema3.optionalKey(
+      lexString({
+        description: "The name the sender addressed when the issuer resolved it to this recipient through a role or a successor.",
+        maxLength: 128,
+        type: "string"
+      })
+    ),
     seq: Schema3.Int.check(
       Schema3.isGreaterThanOrEqualTo(1),
       Schema3.isLessThanOrEqualTo(9007199254740991)
@@ -1692,6 +1699,13 @@ var Input9 = Schema19.StructWithRest(
       lexString({ format: "tid", type: "string" }).pipe(
         Schema19.brand("Lexicon:tid")
       )
+    ),
+    resolvedFrom: Schema19.optionalKey(
+      lexString({
+        description: "The name the sender addressed, from identity.resolveRecipient. The mailbox resolves it again at accept time and refuses RoleUnresolved unless it still resolves to the envelope's recipient. Recorded on the receipt and traffic entry.",
+        maxLength: 128,
+        type: "string"
+      })
     ),
     wakeReason: Schema19.optionalKey(
       lexString({
@@ -5398,6 +5412,13 @@ var Retirement = Schema54.StructWithRest(
     ),
     successor: Schema54.optionalKey(
       lexString({ maxLength: 128, type: "string" })
+    ),
+    updatedAt: Schema54.optionalKey(
+      lexString({
+        description: "When identity.setSuccessor last re-pointed the retirement.",
+        format: "datetime",
+        type: "string"
+      }).pipe(Schema54.brand("Lexicon:datetime"))
     )
   }),
   [Schema54.Record(Schema54.String, Data)]
@@ -5564,6 +5585,13 @@ var Entry = Schema57.StructWithRest(
     recipientSeq: Schema57.Int.check(
       Schema57.isGreaterThanOrEqualTo(1),
       Schema57.isLessThanOrEqualTo(9007199254740991)
+    ),
+    resolvedFrom: Schema57.optionalKey(
+      lexString({
+        description: "The name the sender addressed, when it resolved to this recipient through a role or a successor.",
+        maxLength: 128,
+        type: "string"
+      })
     ),
     senderDid: lexString({ format: "did", type: "string" }).pipe(
       Schema57.brand("Lexicon:did")
@@ -5968,6 +5996,9 @@ var prepare = Effect37.fn("Mailbox.prepare")(function* prepare2(options) {
       };
       if (opts?.critical !== void 0) {
         Object.assign(intent, { critical: opts.critical });
+      }
+      if (opts?.resolvedFrom !== void 0) {
+        Object.assign(intent, { resolvedFrom: opts.resolvedFrom });
       }
       const primary = yield* submit(envelope, opts?.fence, intent);
       if (opts?.cc === void 0) {

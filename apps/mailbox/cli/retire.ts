@@ -1,5 +1,9 @@
+import * as DeleteRole from "@rat-king/lexicon/identity.deleteRole";
 import * as ListRetired from "@rat-king/lexicon/identity.listRetired";
+import * as ListRoles from "@rat-king/lexicon/identity.listRoles";
 import * as Retire from "@rat-king/lexicon/identity.retireName";
+import * as SetRole from "@rat-king/lexicon/identity.setRole";
+import * as SetSuccessor from "@rat-king/lexicon/identity.setSuccessor";
 import * as Unretire from "@rat-king/lexicon/identity.unretireName";
 import * as Runtime from "@rat-king/lexicon/runtime";
 import { Transport } from "@rat-king/lexicon/transport";
@@ -132,3 +136,75 @@ export const listRetired = Effect.fn("MailboxCli.listRetired")(
     );
   }
 );
+
+export const setSuccessor = Effect.fn("MailboxCli.setSuccessor")(
+  function* setSuccessor(
+    authority: Authority,
+    name: string,
+    successor: string
+  ) {
+    return yield* operatorCall(
+      authority,
+      yield* procedure(SetSuccessor.Method.nsid, { name, successor }),
+      SetSuccessor.Output
+    );
+  }
+);
+
+export const setRole = Effect.fn("MailboxCli.setRole")(function* setRole(
+  authority: Authority,
+  role: {
+    readonly name: string;
+    readonly target: string;
+    readonly role: string;
+  }
+) {
+  return yield* operatorCall(
+    authority,
+    yield* procedure(SetRole.Method.nsid, { ...role }),
+    SetRole.Output
+  );
+});
+
+export const deleteRole = Effect.fn("MailboxCli.deleteRole")(
+  function* deleteRole(authority: Authority, name: string) {
+    return yield* operatorCall(
+      authority,
+      yield* procedure(DeleteRole.Method.nsid, { name }),
+      DeleteRole.Output
+    );
+  }
+);
+
+const ROLE_PAGES = 100;
+
+export const listRoles = Effect.fn("MailboxCli.listRoles")(function* listRoles(
+  authority: Authority
+) {
+  const roles: (typeof ListRoles.Output.Encoded.roles)[number][] = [];
+  let cursor: string | undefined;
+
+  for (let page = 0; page < ROLE_PAGES; page += 1) {
+    const listed = yield* operatorCall(
+      authority,
+      {
+        input: undefined,
+        method: "GET",
+        nsid: ListRoles.Method.nsid,
+        params: cursor === undefined ? {} : { cursor },
+      },
+      ListRoles.Output
+    );
+
+    roles.push(...listed.roles);
+    ({ cursor } = listed);
+
+    if (cursor === undefined) {
+      return { roles };
+    }
+  }
+
+  return yield* new CliError({
+    reason: `listRoles needed more than ${ROLE_PAGES} pages`,
+  });
+});

@@ -18,6 +18,7 @@ export declare const Entry: Schema.StructWithRest<Schema.Struct<{
     readonly messageId: Schema.brand<Schema.String, "Lexicon:tid">;
     readonly recipientDid: Schema.brand<Schema.String, "Lexicon:did">;
     readonly recipientSeq: Schema.Int;
+    readonly resolvedFrom: Schema.optionalKey<Schema.String>;
     readonly senderDid: Schema.brand<Schema.String, "Lexicon:did">;
     readonly seq: Schema.Int;
     readonly state: Schema.String;
@@ -49,6 +50,7 @@ export declare const Output: Schema.StructWithRest<Schema.Struct<{
         readonly messageId: Schema.brand<Schema.String, "Lexicon:tid">;
         readonly recipientDid: Schema.brand<Schema.String, "Lexicon:did">;
         readonly recipientSeq: Schema.Int;
+        readonly resolvedFrom: Schema.optionalKey<Schema.String>;
         readonly senderDid: Schema.brand<Schema.String, "Lexicon:did">;
         readonly seq: Schema.Int;
         readonly state: Schema.String;
@@ -111,6 +113,7 @@ export declare const Method: {
             readonly messageId: Schema.brand<Schema.String, "Lexicon:tid">;
             readonly recipientDid: Schema.brand<Schema.String, "Lexicon:did">;
             readonly recipientSeq: Schema.Int;
+            readonly resolvedFrom: Schema.optionalKey<Schema.String>;
             readonly senderDid: Schema.brand<Schema.String, "Lexicon:did">;
             readonly seq: Schema.Int;
             readonly state: Schema.String;

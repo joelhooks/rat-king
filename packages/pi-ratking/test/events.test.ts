@@ -951,6 +951,11 @@ it.live.prop(
             Match.when("sh.mschf.ratking.runtime.releaseLease", () =>
               Effect.succeed({})
             ),
+            Match.when("sh.mschf.ratking.identity.resolveRecipient", () => {
+              const name = new URL(request.url).searchParams.get("name") ?? "";
+
+              return Effect.succeed({ chain: [name], name });
+            }),
             Match.when("sh.mschf.ratking.mailbox.send", () =>
               Effect.gen(function* sendStaffMail() {
                 if (!Predicate.isTagged(request.body, "Uint8Array")) {

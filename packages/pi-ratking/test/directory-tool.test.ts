@@ -21,14 +21,16 @@ import { harness } from "./harness.ts";
 const Typo = Schema.Literals(["project/desx", "project/dek", "project/deskx"]);
 
 it.live.prop(
-  "directory suggestions survive real send, ask and recalled-reply error paths; list-cwd projects the same bounded view without status DIDs",
+  "directory suggestions survive real send, ask and recalled-reply errors; list preserves directory prefix matches alongside roles, list-cwd stays bounded without DIDs, and all: true shows DIDs",
   [Arbitrary.schema(Typo)],
   ([typo]) =>
     Effect.gen(function* directoryProof() {
       const fs = yield* FileSystem.FileSystem;
       const state = yield* fs.makeTempDirectoryScoped();
 
-      const { http } = fakeMailbox("reject");
+      const { http } = fakeMailbox("reject", [
+        { name: "proj", role: "Project desk", target: "project/desk" },
+      ]);
 
       const peer = yield* identity("did:web:peer.example.invalid");
       yield* Effect.gen(function* proof() {
@@ -78,18 +80,33 @@ it.live.prop(
           expect(result.text).toContain("UnknownName");
         }
 
-        const list = yield* runAction("ratking", 1000, { action: "list" });
+        const roles = yield* runAction("ratking", 1000, { action: "list" });
+
+        expect(roles.text).toContain(
+          "- proj (row project/desk) · Project desk"
+        );
+        expect(roles.text).not.toContain("did:");
+        expect(roles.text).toContain("- project/desk");
+
+        const prefix = yield* runAction("ratking", 1000, {
+          action: "list",
+          match: "project/",
+        });
+
+        expect(prefix.text).toContain("- project/desk");
+        expect(prefix.text).not.toContain("did:");
+        expect(prefix.text).not.toContain("- reserved/desk");
+
         const cwd = yield* runAction("ratking", 1000, { action: "list-cwd" });
-        expect(cwd.text).toBe(list.text);
-        expect(list.text).not.toContain("did:");
-        expect(list.text).toContain("- project/desk");
+        expect(cwd.text).not.toContain("did:");
+        expect(cwd.text).toContain("- project/desk");
 
         const filtered = yield* runAction("ratking", 1000, {
           action: "list",
           match: "absent/",
         });
 
-        expect(filtered.text).not.toContain("- project/desk");
+        expect(filtered.text).not.toContain("- proj");
 
         const all = yield* runAction("ratking", 1000, {
           action: "list",

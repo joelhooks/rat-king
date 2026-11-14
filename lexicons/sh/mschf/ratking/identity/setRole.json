@@ -1,0 +1,36 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.identity.setRole",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Operator-only, idempotent upsert of a role: a stable name that senders address and the issuer resolves to its target row at accept time. A name that is bound, reserved or retired is refused with NameCollision, except a self-role (name equals target), which labels an existing row or reserved name as a role without redirecting it. The target must be a bound name, or a reserved name for a self-role.",
+      "input": {
+        "encoding": "application/json",
+        "schema": { "type": "ref", "ref": "#role" }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": { "type": "ref", "ref": "#role" }
+      },
+      "errors": [
+        { "name": "InvalidRequest" },
+        { "name": "InvalidName" },
+        { "name": "AuthRequired" },
+        { "name": "Forbidden" },
+        { "name": "NameCollision", "description": "The name is already bound, reserved or retired, and it is not a self-role." },
+        { "name": "UnknownName", "description": "The target is not a bound name." },
+        { "name": "MailboxUnavailable" }
+      ]
+    },
+    "role": {
+      "type": "object",
+      "required": ["name", "target", "role"],
+      "properties": {
+        "name": { "type": "string", "maxLength": 128 },
+        "target": { "type": "string", "maxLength": 128 },
+        "role": { "type": "string", "minLength": 1, "maxLength": 120, "description": "One-line description of the role." }
+      }
+    }
+  }
+}

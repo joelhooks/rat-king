@@ -63,6 +63,10 @@ export const projectTraffic = (
     Object.assign(metadata, { critical: true });
   }
 
+  if (receipt.resolvedFrom !== undefined) {
+    Object.assign(metadata, { resolvedFrom: receipt.resolvedFrom });
+  }
+
   return Schema.decodeUnknownSync(TrafficOutboxEntry)({
     ...metadata,
     ...Option.match(body, {

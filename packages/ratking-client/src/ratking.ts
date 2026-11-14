@@ -7,6 +7,7 @@ import * as Retire from "@rat-king/lexicon/identity.retireName";
 import * as Runtime from "@rat-king/lexicon/runtime";
 import type * as Lease from "@rat-king/lexicon/runtime.lease";
 import { Transport } from "@rat-king/lexicon/transport";
+import type { Request as XrpcRequest } from "@rat-king/lexicon/transport";
 import { signedTurn } from "@rat-king/lexicon/turns";
 import {
   MailboxClientError,
@@ -139,6 +140,8 @@ import {
 import type { RelayOutboundValue } from "./relay.ts";
 import { awaitRestartGate } from "./restart-gate.ts";
 import { countRetry, emptyRetries } from "./retry-counters.ts";
+import { listRoles, resolveRecipient } from "./roles.ts";
+import type { RoleEntry, Route } from "./roles.ts";
 import { locateIdentitySecret, SecretStore } from "./secrets.ts";
 import { durableThreads } from "./thread-journal.ts";
 import {
@@ -165,6 +168,7 @@ export const NotDeliveredCode = Schema.Literals([
   "Refused",
   "Partial",
   "Retired",
+  "RoleUnresolved",
   "ReaderCannotRender",
   "AskAimedAtCc",
 ]);
@@ -189,6 +193,8 @@ export class AskFailed extends Schema.TaggedError<AskFailed>()("AskFailed", {
 }) {}
 
 const SUCCESSION_WINDOW_MS = 900_000;
+
+const ROUTE_MS = "3 seconds";
 
 export class LeaseHeld extends Schema.TaggedError<LeaseHeld>()("LeaseHeld", {
   expiresAt: Schema.String,
@@ -317,10 +323,20 @@ interface Admitted {
   readonly seq: number;
   readonly to: string;
   readonly did: string;
+  readonly resolvedTo?: string;
 }
 
+type Target = Resolved & { readonly resolvedTo?: string };
+
+const targetRow = (target: Target) => target.resolvedTo ?? target.name;
+
+const routed = <I extends object>(intent: I, target: Target) =>
+  target.resolvedTo === undefined
+    ? intent
+    : { ...intent, resolvedFrom: target.name };
+
 const admissionOf = (
-  target: { readonly did: string; readonly name: string },
+  target: Pick<Target, "did" | "name" | "resolvedTo">,
   id: string,
   receipt: Defs.ReceiptValue
 ): Admitted => {
@@ -330,6 +346,10 @@ const admissionOf = (
     seq: receipt.seq,
     to: target.name,
   };
+
+  if (target.resolvedTo !== undefined) {
+    Object.assign(admitted, { resolvedTo: target.resolvedTo });
+  }
 
   if (receipt.delegated !== undefined) {
     Object.assign(admitted, { delegated: receipt.delegated });
@@ -543,6 +563,7 @@ export class RatKing extends Context.Service<
     ) => Effect.Effect<Delivered | HandledAck, NotDelivered | AskFailed>;
     readonly pending: Effect.Effect<readonly Received[]>;
     readonly list: Effect.Effect<readonly Listed[]>;
+    readonly roles: Effect.Effect<readonly RoleEntry[], NotDelivered>;
     readonly retire: (
       successor: Option.Option<string>
     ) => Effect.Effect<Retire.OutputValue, NotDelivered>;
@@ -1730,6 +1751,18 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     }).pipe(Effect.scoped, Effect.provideService(HttpClient.HttpClient, http))
   );
 
+  const issuerCall = (identity: IdentityValue) => (request: XrpcRequest) =>
+    Transport.use((transport) => transport.request(request)).pipe(
+      Effect.provide(
+        transportLayer(
+          settings.endpoint,
+          `${settings.serviceDid.replace(/#mailbox$/u, "")}#mailbox`,
+          identity
+        )
+      ),
+      Effect.provideService(HttpClient.HttpClient, http)
+    );
+
   const foreground = Deadline.timeoutOrElse({
     duration: Deadline.OPERATION_MS,
     orElse: () =>
@@ -1811,7 +1844,8 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     to: string,
     body: string | LexiconRecordValue,
     options: SendOptions,
-    before: (id: string, did: string) => Effect.Effect<B, NotDelivered>
+    before: (id: string, did: string) => Effect.Effect<B, NotDelivered>,
+    omitSelf = false
   ) {
     if (!(yield* Deferred.isDone(self))) {
       yield* reportPhase(options, SendPhase.Identity());
@@ -1837,7 +1871,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       ),
     ];
 
-    const targets: Resolved[] = [];
+    const targets: Target[] = [];
 
     const selfWake =
       !Schema.is(Schema.String)(body) &&
@@ -1846,11 +1880,27 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     for (const name of names) {
       yield* reportPhase(options, SendPhase.Resolving({ name }));
 
-      const target = yield* directory
-        .resolve(name)
+      const forwarded = (yield* resolveRecipient(
+        issuerCall(own.identity),
+        name
+      ).pipe(
+        Deadline.timeoutOrElse({
+          duration: ROUTE_MS,
+          orElse: () => Effect.succeed(Option.none<Route>()),
+        }),
+        Effect.mapError((refusal) => refused(refusal.code)(refusal.reason))
+      )).pipe(Option.filter((route) => route.chain.length > 1));
+
+      const row = Option.match(forwarded, {
+        onNone: () => name,
+        onSome: (route) => route.name,
+      });
+
+      const found = yield* directory
+        .resolve(row)
         .pipe(
           Effect.catchTag("UnknownName", (error) =>
-            lookup(own.identity, name).pipe(
+            lookup(own.identity, row).pipe(
               Effect.mapError(() =>
                 refused("UnknownName")(`${error.name}: ${error.reason}`)
               )
@@ -1858,10 +1908,18 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           )
         );
 
+      const target: Target = Option.isSome(forwarded)
+        ? { ...found, name, resolvedTo: row }
+        : found;
+
       if (
         target.did === own.did &&
         !(selfWake && name === own.name && name === names[0])
       ) {
+        if (omitSelf) {
+          continue;
+        }
+
         return yield* refused("Self")(
           "Cannot message this Pi's own name, including cc"
         );
@@ -1964,11 +2022,11 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           body: Option.getOrElse(textBody, () => ""),
           cc:
             options.copyTo === undefined
-              ? targets.slice(1).map((target) => target.name)
-              : targets.map((target) => target.name),
+              ? targets.slice(1).map(targetRow)
+              : targets.map(targetRow),
           from: own.name,
           thread: options.thread ?? id,
-          to: options.copyTo ?? primary.name,
+          to: options.copyTo ?? targetRow(primary),
         };
 
         const label = (own.label?.() ?? Option.none<string>()).pipe(
@@ -2048,12 +2106,15 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           return yield* refused("NotAttempted")("Missing sealed recipient");
         }
 
-        const intent = wakeIntent(
-          options.kind,
-          target.name === primary.name,
-          options.quiet,
-          Option.isNone(textBody),
-          options.copyTo !== undefined
+        const intent = routed(
+          wakeIntent(
+            options.kind,
+            target.name === primary.name,
+            options.quiet,
+            Option.isNone(textBody),
+            options.copyTo !== undefined
+          ),
+          target
         );
 
         if (options.critical !== undefined) {
@@ -3850,7 +3911,8 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         target,
         body,
         replyOptions,
-        () => Effect.void
+        () => Effect.void,
+        options?.replyAll !== false
       );
 
       yield* copyOut(delivered, sent);
@@ -3944,6 +4006,13 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         )
       );
     }, foreground),
+    roles: Effect.gen(function* roles() {
+      const own = yield* awaitSelf;
+
+      return yield* listRoles(issuerCall(own.identity)).pipe(
+        Effect.mapError((error) => refused("Uncertain")(error.reason))
+      );
+    }).pipe(foreground),
     run,
     send: Effect.fn("RatKing.send")(function* send(to, body, options) {
       if (options?.quiet === true && options.kind === "ask") {

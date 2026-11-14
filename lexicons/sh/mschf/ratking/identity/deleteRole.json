@@ -1,0 +1,36 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.identity.deleteRole",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Operator-only, idempotent removal of a role. deleted is false when no role had the name. Mail already accepted through the role is unaffected.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["name"],
+          "properties": { "name": { "type": "string", "maxLength": 128 } }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["name", "deleted"],
+          "properties": {
+            "name": { "type": "string", "maxLength": 128 },
+            "deleted": { "type": "boolean" }
+          }
+        }
+      },
+      "errors": [
+        { "name": "InvalidRequest" },
+        { "name": "InvalidName" },
+        { "name": "AuthRequired" },
+        { "name": "Forbidden" },
+        { "name": "MailboxUnavailable" }
+      ]
+    }
+  }
+}

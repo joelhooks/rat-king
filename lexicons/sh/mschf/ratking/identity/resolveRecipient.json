@@ -1,0 +1,42 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.identity.resolveRecipient",
+  "defs": {
+    "main": {
+      "type": "query",
+      "description": "Authenticated resolution of the name a sender addressed. A role resolves to its target; a retired name with a successor forwards to the successor. At most 3 hops are followed. name is the final row and chain lists every name from the requested one to it. did is the final row's DID when the issuer knows it; it is absent for a reserved name. A sender seals to did and sends with resolvedFrom set to the requested name; the mailbox repeats this resolution at accept time.",
+      "parameters": {
+        "type": "params",
+        "required": ["name"],
+        "properties": {
+          "name": { "type": "string", "maxLength": 128 }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["name", "chain"],
+          "properties": {
+            "name": { "type": "string", "maxLength": 128 },
+            "did": { "type": "string", "format": "did" },
+            "chain": {
+              "type": "array",
+              "minLength": 1,
+              "maxLength": 4,
+              "items": { "type": "string", "maxLength": 128 }
+            }
+          }
+        }
+      },
+      "errors": [
+        { "name": "InvalidRequest" },
+        { "name": "InvalidName" },
+        { "name": "AuthRequired" },
+        { "name": "RoleUnresolved", "description": "The chain cycles or needs more than 3 hops. The message lists the chain." },
+        { "name": "Retired", "description": "The chain ends at a retired name with no successor. The message lists the chain." },
+        { "name": "MailboxUnavailable" }
+      ]
+    }
+  }
+}

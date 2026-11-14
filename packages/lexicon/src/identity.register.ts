@@ -41,6 +41,7 @@ export const KnownErrors = [
   "InvalidName",
   "NameReserved",
   "NameTaken",
+  "NameCollision",
   "DocumentConflict",
   "MailboxUnavailable",
 ] as const;

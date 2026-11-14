@@ -355,6 +355,11 @@
         "wakeReason": {
           "type": "string"
         },
+        "resolvedFrom": {
+          "type": "string",
+          "maxLength": 128,
+          "description": "The name the sender addressed when the issuer resolved it to this recipient through a role or a successor."
+        },
         "via": {
           "type": "ref",
           "ref": "#via",

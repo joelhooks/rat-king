@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "procedure",
-      "description": "Retire a name so its mailbox refuses new mail with Retired, naming the optional successor. The caller must be an operator, the name's own DID or the host that registered it. Repeating it replaces the successor and time. The name's own identity acquiring its lease clears the retirement.",
+      "description": "Retire a name so its mailbox refuses new mail with Retired, naming the optional successor. The caller must be an operator, the name's own DID or the host that registered it. Repeating it replaces the successor and time. The successor may be a bound name or a role. Another caller is refused with LeaseLive while a reader holds the name's lease; the name's own DID may retire itself. Roles and reserved names are never retired. The name's own identity acquiring its lease clears the retirement.",
       "input": {
         "encoding": "application/json",
         "schema": {
@@ -25,8 +25,9 @@
         { "name": "InvalidName" },
         { "name": "AuthRequired" },
         { "name": "Forbidden" },
-        { "name": "NameReserved" },
+        { "name": "NameReserved", "description": "The name is reserved or a role." },
         { "name": "NameNotFound", "description": "No public document is registered for the name's DID." },
+        { "name": "LeaseLive", "description": "A reader holds the name's lease. The message names its expiry." },
         { "name": "MailboxUnavailable" }
       ]
     },
@@ -38,7 +39,8 @@
         "did": { "type": "string", "format": "did" },
         "retiredAt": { "type": "string", "format": "datetime" },
         "successor": { "type": "string", "maxLength": 128 },
-        "by": { "type": "string", "format": "did" }
+        "by": { "type": "string", "format": "did" },
+        "updatedAt": { "type": "string", "format": "datetime", "description": "When identity.setSuccessor last re-pointed the retirement." }
       }
     }
   }

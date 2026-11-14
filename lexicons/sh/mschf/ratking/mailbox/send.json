@@ -19,6 +19,7 @@
             "wakeReason": { "type": "string", "enum": ["to", "ask", "reply", "cc", "quiet", "data"] },
             "leaseId": { "type": "string", "format": "tid" },
             "generation": { "type": "integer", "minimum": 1, "maximum": 9007199254740991 },
+            "resolvedFrom": { "type": "string", "maxLength": 128, "description": "The name the sender addressed, from identity.resolveRecipient. The mailbox resolves it again at accept time and refuses RoleUnresolved unless it still resolves to the envelope's recipient. Recorded on the receipt and traffic entry." },
             "envelope": {
               "type": "ref",
               "ref": "sh.mschf.ratking.defs#encryptedEnvelope"
@@ -45,6 +46,7 @@
       "errors": [
         { "name": "LeaseMismatch", "description": "Missing or stale sender lease fence." },
         { "name": "Retired", "description": "The recipient name is retired. The message reads '<name> was retired at <datetime>; current row is <successor>' or ends '; no successor'. Nothing was admitted." },
+        { "name": "RoleUnresolved", "description": "resolvedFrom no longer resolves to the envelope's recipient, or its chain cycles or needs more than 3 hops. Resolve again and seal to the new recipient. Nothing was admitted." },
         {
           "name": "InvalidRequest",
           "description": "Invalid or unsupported operation."

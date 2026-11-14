@@ -194,3 +194,79 @@ export const suggestNames = (
     .slice(0, 3)
     .map((rank) => rank.name);
 };
+
+export interface RoleLine {
+  readonly name: string;
+  readonly target: string;
+  readonly role: string;
+}
+
+const roleText = (entry: RoleLine, self: string | undefined) =>
+  shortLine(
+    `- ${entry.name}${entry.target === entry.name ? "" : ` (row ${entry.target})`} · ${shortLine(entry.role, 120)}${entry.target === self ? " · you" : ""}`
+  );
+
+const rolePage = (
+  total: number,
+  eligible: number,
+  offset: number,
+  lines: readonly string[]
+): string => {
+  const remaining = Math.max(0, eligible - offset - lines.length);
+  const footer: string[] = [];
+
+  if (total === 0) {
+    footer.push("No roles yet. Use all: true for the full directory.");
+  } else if (remaining > 0) {
+    footer.push(
+      `… ${remaining} more · narrow with match: or page with offset: ${offset + lines.length}`
+    );
+  }
+
+  return [
+    `Roles: ${total} total · ${lines.length} shown · ${eligible} matched · all: true lists every row`,
+    ...lines,
+    ...footer,
+  ].join("\n");
+};
+
+export const rolesView = (
+  roles: readonly RoleLine[],
+  self: string | undefined,
+  params: ListParams
+): ListView => {
+  const { match } = params;
+
+  const eligible = roles
+    .filter(
+      (entry) =>
+        match === undefined ||
+        matchesName(entry.name, match) ||
+        matchesName(entry.target, match) ||
+        entry.role.toLowerCase().includes(match.toLowerCase())
+    )
+    .toSorted((a, b) => a.name.localeCompare(b.name));
+
+  const limit = Math.max(1, Math.min(50, Math.floor(params.limit ?? 50)));
+  const offset = Math.max(0, Math.floor(params.offset ?? 0));
+  const lines: string[] = [];
+
+  for (const entry of eligible.slice(offset, offset + limit)) {
+    const line = roleText(entry, self);
+
+    if (
+      bytes(rolePage(roles.length, eligible.length, offset, [...lines, line])) >
+      4096
+    ) {
+      break;
+    }
+
+    lines.push(line);
+  }
+
+  return {
+    nextOffset: offset + lines.length,
+    shown: lines.length,
+    text: rolePage(roles.length, eligible.length, offset, lines),
+  };
+};

@@ -49,6 +49,7 @@ it.effect.prop(
             return delivered;
           }),
         retire: () => unavailable,
+        roles: unavailable,
         run: () => unavailable,
         send: (to, body, options) =>
           Effect.sync(() => {

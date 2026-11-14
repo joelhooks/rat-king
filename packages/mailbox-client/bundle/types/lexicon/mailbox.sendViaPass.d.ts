@@ -77,6 +77,7 @@ export declare const Output: Schema.StructWithRest<Schema.Struct<{
         readonly originalId: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:tid">>;
         readonly recipientDid: Schema.brand<Schema.String, "Lexicon:did">;
         readonly recordedAt: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:datetime">>;
+        readonly resolvedFrom: Schema.optionalKey<Schema.String>;
         readonly seq: Schema.Int;
         readonly state: Schema.String;
         readonly via: Schema.optionalKey<Schema.StructWithRest<Schema.Struct<{
@@ -196,6 +197,7 @@ export declare const Method: {
             readonly originalId: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:tid">>;
             readonly recipientDid: Schema.brand<Schema.String, "Lexicon:did">;
             readonly recordedAt: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:datetime">>;
+            readonly resolvedFrom: Schema.optionalKey<Schema.String>;
             readonly seq: Schema.Int;
             readonly state: Schema.String;
             readonly via: Schema.optionalKey<Schema.StructWithRest<Schema.Struct<{
