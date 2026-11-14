@@ -54,7 +54,7 @@ const shortLine = (text: string, maximum = 3500): string => {
 
 const entryLine = (entry: Listed, self: string | undefined, all: boolean) =>
   shortLine(
-    `- ${entry.parent === undefined ? entry.name : `${entry.name} (child of ${entry.parent.name})`}${entry.aliases.length === 0 ? "" : ` (alias ${shortLine(entry.aliases.join(", "), 120)})`}${all ? ` · ${entry.did}` : ""}${entry.reserved ? " · reserved" : ""}${entry.name === self ? " · you" : ""}`
+    `- ${entry.parent === undefined ? entry.name : `${entry.name} (child of ${entry.parent.name})`}${entry.aliases.length === 0 ? "" : ` (alias ${shortLine(entry.aliases.join(", "), 120)})`}${all ? ` · ${entry.did}` : ""}${entry.reserved ? " · reserved" : ""}${entry.name === self ? " · you" : ""} · ${entry.status ?? "non-retired"}${entry.roleTarget === true ? " · role target" : ""}`
   );
 
 const pageText = (

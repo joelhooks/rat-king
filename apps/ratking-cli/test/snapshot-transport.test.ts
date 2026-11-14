@@ -27,7 +27,11 @@ it.effect(
             request: (request) => {
               calls.push(request.nsid);
               expect(request.method).toBe("GET");
-              expect(request.params).toEqual({ limit: 100 });
+              expect(request.params).toEqual(
+                request.nsid === Names.Method.nsid
+                  ? { all: true, limit: 100 }
+                  : { limit: 100 }
+              );
 
               return Effect.succeed({
                 body:

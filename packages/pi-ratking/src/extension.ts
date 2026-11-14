@@ -884,6 +884,9 @@ const parameters = Type.Object({
         "send, ask (returns immediately; the reply arrives as a message), reply, handled (confirm a relayed original id), pending, list, status, claim (retry a blocked lease once), retire (retire this Pi's own name, optionally naming a successor, and stop its reader). handover and cancel are refused on Rat King.",
     }
   ),
+  all: Type.Optional(
+    Type.Boolean({ description: "List all names, including retired names." })
+  ),
   attachments: Type.Optional(
     Type.Array(
       Type.Object({
@@ -913,6 +916,11 @@ const parameters = Type.Object({
     })
   ),
   critical: Type.Optional(Type.Boolean()),
+  cursor: Type.Optional(
+    Type.String({
+      description: "Continue a directory page with the same filters.",
+    })
+  ),
   cwd: Type.Optional(
     Type.String({ description: "Not supported: Rat King addresses by name." })
   ),
@@ -932,6 +940,8 @@ const parameters = Type.Object({
   exempt: Type.Optional(Type.Array(Type.String(), { maxItems: 16 })),
   focus: Type.Optional(Type.Boolean({ description: "Unused." })),
   id: Type.Optional(Type.String()),
+  limit: Type.Optional(Type.Integer({ maximum: 200, minimum: 1 })),
+  match: Type.Optional(Type.String()),
   message: Type.Optional(
     Type.String({ description: "Message text for send, ask or reply." })
   ),
@@ -940,6 +950,7 @@ const parameters = Type.Object({
   ),
   name: Type.Optional(Type.String()),
   note: Type.Optional(Type.String({ maxLength: 120 })),
+  offset: Type.Optional(Type.Integer({ minimum: 0 })),
   op: Type.Optional(
     Type.Union(["add", "remove", "list"].map((op) => Type.Literal(op)))
   ),
@@ -977,11 +988,27 @@ const parameters = Type.Object({
   ),
   rule: Type.Optional(Type.Unknown()),
   status: Type.Optional(
-    Type.Union([
-      Type.Literal("available"),
-      Type.Literal("busy"),
-      Type.Literal("dnd"),
-    ])
+    Type.Union(
+      [
+        Type.Literal("available"),
+        Type.Literal("busy"),
+        Type.Literal("dnd"),
+        Type.Literal("live"),
+        Type.Literal("idle"),
+        Type.Literal("retired"),
+        Type.Array(
+          Type.Union([
+            Type.Literal("live"),
+            Type.Literal("idle"),
+            Type.Literal("retired"),
+          ])
+        ),
+      ],
+      {
+        description:
+          "For list: live, idle, retired, or an array. Live/idle inspect up to 200 candidates per page. For attention: available, busy, dnd.",
+      }
+    )
   ),
   successor: Type.Optional(
     Type.String({

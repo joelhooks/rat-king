@@ -13,6 +13,8 @@ export interface IssuedName {
   readonly name: string;
   readonly did: string;
   readonly document: PublicDocument;
+  readonly retired: boolean;
+  readonly roleTarget: boolean;
   readonly parent?: typeof Parent.Type;
 }
 
@@ -36,7 +38,12 @@ export interface IssuerTransaction {
     document: PublicDocument,
     parent?: typeof Parent.Type
   ) => void;
-  readonly names: (after: string, limit: number) => readonly IssuedName[];
+  readonly names: (
+    after: string,
+    limit: number,
+    filter?: "active" | "retired" | "all",
+    match?: string
+  ) => readonly IssuedName[];
   readonly retire: (retired: RetiredName) => void;
   readonly unretire: (name: string, retiredAt?: number) => void;
   readonly retired: (after: string, limit: number) => readonly RetiredName[];
@@ -67,6 +74,8 @@ const NameRow = Schema.Struct({
   document: Schema.fromJsonString(Document),
   name: Schema.String,
   parent: Schema.NullOr(Schema.fromJsonString(Parent)),
+  retired: Schema.Number,
+  roleTarget: Schema.Number,
 });
 
 const RoleRow = Schema.Struct({
@@ -137,15 +146,29 @@ export const issuerStore = (sql: Sql) => {
     },
     enrolled: (host) =>
       [...sql.exec("SELECT did FROM hosts WHERE did=?", host)].length > 0,
-    names: (after, limit) =>
+    names: (after, limit, filter = "active", match = "") =>
       Array.from(
         sql.exec(
-          "SELECT names.name,did,document,parent FROM names LEFT JOIN name_parents ON names.name=name_parents.name WHERE names.name > ? ORDER BY names.name ASC LIMIT ?",
+          "SELECT names.name,names.did,document,parent,EXISTS(SELECT 1 FROM retired WHERE retired.name=names.name) AS retired,EXISTS(SELECT 1 FROM roles WHERE roles.target=names.name) AS roleTarget FROM names LEFT JOIN name_parents ON names.name=name_parents.name WHERE names.name > ? AND (? = 'all' OR (? = 'retired') = EXISTS(SELECT 1 FROM retired WHERE retired.name=names.name)) AND (? = '' OR CASE WHEN substr(?, -1) = '/' THEN substr(lower(names.name), 1, length(?)) = lower(?) ELSE instr(lower(names.name), lower(?)) > 0 END) ORDER BY names.name ASC LIMIT ?",
           after,
+          filter,
+          filter,
+          match,
+          match,
+          match,
+          match,
+          match,
           limit
         ),
         (row) => {
-          const { parent, ...entry } = Schema.decodeUnknownSync(NameRow)(row);
+          const { parent, retired, roleTarget, ...decoded } =
+            Schema.decodeUnknownSync(NameRow)(row);
+
+          const entry = {
+            ...decoded,
+            retired: retired === 1,
+            roleTarget: roleTarget === 1,
+          };
 
           return parent === null ? entry : { ...entry, parent };
         }

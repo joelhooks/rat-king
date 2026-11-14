@@ -39,6 +39,7 @@ it.effect.prop(
             };
           }),
         attention: () => Effect.die("Unexpected attention call"),
+        directory: () => unavailable,
         handled: () => unavailable,
         list: unavailable,
         pending: Effect.succeed([]),

@@ -26,6 +26,13 @@ export const Entry = Schema.StructWithRest(
     document: Defs.DidDocument,
     name: Runtime.lexString({ maxLength: 128, type: "string" }),
     parent: Schema.optionalKey(Parent),
+    roleTarget: Schema.optionalKey(Schema.Boolean),
+    status: Schema.optionalKey(
+      Runtime.lexString({
+        enum: ["live", "idle", "retired"],
+        type: "string",
+      }).pipe(Schema.decodeTo(Schema.Literals(["live", "idle", "retired"])))
+    ),
   }),
   [Schema.Record(Schema.String, Runtime.Data)]
 );
@@ -34,6 +41,7 @@ export type EntryValue = typeof Entry.Type;
 
 export const Params = Schema.StructWithRest(
   Schema.Struct({
+    all: Schema.optionalKey(Schema.Boolean),
     cursor: Schema.optionalKey(
       Runtime.lexString({ maxLength: 128, type: "string" })
     ),
@@ -41,6 +49,14 @@ export const Params = Schema.StructWithRest(
       Schema.Int.check(
         Schema.isGreaterThanOrEqualTo(1),
         Schema.isLessThanOrEqualTo(100)
+      )
+    ),
+    match: Schema.optionalKey(
+      Runtime.lexString({ maxLength: 128, type: "string" })
+    ),
+    status: Schema.optionalKey(
+      Runtime.lexString({ maxLength: 32, type: "string" }).check(
+        Schema.isPattern(/^(?:live|idle|retired)(?:,(?:live|idle|retired))*$/u)
       )
     ),
   }),
@@ -62,6 +78,12 @@ export const Output = Schema.StructWithRest(
       Schema.isMinLength(0),
       Schema.isMaxLength(100)
     ),
+    scanned: Schema.optionalKey(
+      Schema.Int.check(
+        Schema.isGreaterThanOrEqualTo(0),
+        Schema.isLessThanOrEqualTo(9_007_199_254_740_991)
+      )
+    ),
   }),
   [Schema.Record(Schema.String, Runtime.Data)]
 );
@@ -70,8 +92,11 @@ export type OutputValue = typeof Output.Type;
 
 export const ParamsFromQuery = Schema.StructWithRest(
   Schema.Struct({
+    all: Schema.optionalKey(Query.BooleanFromQuery),
     cursor: Schema.optionalKey(Schema.String),
     limit: Schema.optionalKey(Schema.FiniteFromString),
+    match: Schema.optionalKey(Schema.String),
+    status: Schema.optionalKey(Schema.String),
   }),
   [Schema.Record(Schema.String, Runtime.Data)]
 ).pipe(Schema.decodeTo(Params));

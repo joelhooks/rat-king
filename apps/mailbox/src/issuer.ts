@@ -33,6 +33,7 @@ import type {
 } from "./issuer-policy.ts";
 import { IssuerStore } from "./issuer-store.ts";
 import type { IssuerTransaction, RetiredName } from "./issuer-store.ts";
+import { namePage } from "./list-names.ts";
 import { isoTime } from "./retirement.ts";
 import { MAX_HOPS, resolveRoute } from "./roles.ts";
 import type { RouteView } from "./roles.ts";
@@ -72,6 +73,7 @@ export class RetirementRegistry extends Context.Service<
     readonly presence: (did: string) => Effect.Effect<
       {
         readonly exists: boolean;
+        readonly leaseExpiresAt?: number | undefined;
         readonly retirement?: RetirementValue;
       },
       XrpcFailure
@@ -454,42 +456,44 @@ export const issuerHandlers = (policy: IssuerPolicy) =>
           return yield* output(Enroll.Output, { did: document.id });
         }),
         listNames: Effect.fn("Issuer.listNames")(function* listNames(params) {
-          const limit = params.limit ?? ListNames.Method.defaults.limit;
+          const page = yield* namePage(params, retirements.presence, store);
 
-          const rows = yield* store.transaction((tx) =>
-            tx.names(params.cursor ?? "", limit + 1)
+          const { names: rows } = page;
+
+          const names = yield* Effect.forEach(
+            rows,
+            (row) =>
+              Effect.gen(function* encodeName() {
+                const entry = {
+                  did: row.did,
+                  document: row.document,
+                  name: row.name,
+                };
+
+                if (row.roleTarget) {
+                  Object.assign(entry, { roleTarget: true });
+                }
+
+                if (row.status !== undefined) {
+                  Object.assign(entry, { status: row.status });
+                }
+
+                if (row.parent !== undefined) {
+                  Object.assign(entry, {
+                    parent: yield* Schema.encodeEffect(ListNames.Parent)(
+                      row.parent
+                    ).pipe(
+                      Effect.mapError(() => failure("MailboxUnavailable", 503))
+                    ),
+                  });
+                }
+
+                return entry;
+              }),
+            { concurrency: 1 }
           );
 
-          const names = yield* Effect.forEach(rows.slice(0, limit), (row) =>
-            Effect.gen(function* encodeName() {
-              const entry = {
-                did: row.did,
-                document: row.document,
-                name: row.name,
-              };
-
-              if (row.parent !== undefined) {
-                Object.assign(entry, {
-                  parent: yield* Schema.encodeEffect(ListNames.Parent)(
-                    row.parent
-                  ).pipe(
-                    Effect.mapError(() => failure("MailboxUnavailable", 503))
-                  ),
-                });
-              }
-
-              return entry;
-            })
-          );
-
-          const last = names.at(-1);
-
-          return yield* output(
-            ListNames.Output,
-            rows.length > limit && last !== undefined
-              ? { cursor: last.name, names }
-              : { names }
-          );
+          return yield* output(ListNames.Output, { ...page, names });
         }),
         listRetired: Effect.fn("Issuer.listRetired")(
           function* listRetired(params) {

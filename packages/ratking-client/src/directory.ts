@@ -33,6 +33,8 @@ export interface Resolved {
   readonly did: string;
   readonly document: PeerDocument;
   readonly parent?: typeof ForkParent.Type;
+  readonly roleTarget?: boolean;
+  readonly status?: "live" | "idle" | "retired";
 }
 
 export interface Listed {
@@ -41,6 +43,8 @@ export interface Listed {
   readonly reserved: boolean;
   readonly aliases: readonly string[];
   readonly parent?: typeof ForkParent.Type;
+  readonly roleTarget?: boolean;
+  readonly status?: "live" | "idle" | "retired";
 }
 
 export class UnknownName extends Schema.TaggedError<UnknownName>()(

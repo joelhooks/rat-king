@@ -34,6 +34,7 @@ const issuer = Layer.effect(
     const directory = yield* Directory;
 
     return Issuer.of({
+      directory: () => Effect.succeed({ names: [] }),
       ensure: (name, peer) =>
         directory.record(name, peer).pipe(
           Effect.as(peer.id),
