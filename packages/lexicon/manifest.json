@@ -1,7 +1,7 @@
 {
   "effect": "4.0.5",
   "generatorVersion": "0.1.0",
-  "sourceDigest": "6b32b58d3b7b588824d430bb1d5f51873edc238f6a6a50e4e081969c44045be4",
+  "sourceDigest": "7de9b91e1e89479951884b4ec7002148c870df653aa8d96a5ba4b45d21ec6c46",
   "sources": [
     "lexicons/sh/mschf/agentgraph/checkin.json",
     "lexicons/sh/mschf/agentgraph/friction.json",
@@ -37,6 +37,7 @@
     "lexicons/sh/mschf/ratking/identity/listNames.json",
     "lexicons/sh/mschf/ratking/identity/listRetired.json",
     "lexicons/sh/mschf/ratking/identity/listRoles.json",
+    "lexicons/sh/mschf/ratking/identity/recordRetired.json",
     "lexicons/sh/mschf/ratking/identity/register.json",
     "lexicons/sh/mschf/ratking/identity/resolveRecipient.json",
     "lexicons/sh/mschf/ratking/identity/retireName.json",

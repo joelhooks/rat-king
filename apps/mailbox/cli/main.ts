@@ -27,6 +27,7 @@ import { FetchHttpClient } from "effect/http";
 import { enrollHost } from "./enroll-host.ts";
 import { CliError, readIdentity } from "./identity.ts";
 import { provision } from "./provision.ts";
+import { recordRetired, recordRetiredFile } from "./record-retired.ts";
 import { registerDocument } from "./register-document.ts";
 import { provisionAgent } from "./register.ts";
 import {
@@ -381,6 +382,30 @@ export const retireCommand = Command.make(
   })
 );
 
+export const recordRetiredCommand = Command.make(
+  "record-retired",
+  {
+    batchSize: Flag.Int("batch-size").pipe(Flag.withDefault(100)),
+    file: Flag.String("file"),
+    pauseMs: Flag.Int("pause-ms").pipe(Flag.withDefault(1000)),
+  },
+  Effect.fn("MailboxCli.recordRetiredCommand")(
+    function* recordRetiredCommand(args) {
+      const fs = yield* FileSystem.FileSystem;
+      const operator = yield* authority;
+      yield* recordRetiredFile(
+        yield* fs.readFileString(args.file),
+        args.batchSize,
+        args.pauseMs,
+        (names) =>
+          recordRetired(operator, names).pipe(
+            Effect.flatMap((result) => Console.log(JSON.stringify(result)))
+          )
+      ).pipe(Effect.provide([FetchHttpClient.layer, secretStoreLayer({})]));
+    }
+  )
+);
+
 export const unretireCommand = Command.make(
   "unretire",
   { name: Flag.String("name") },
@@ -645,6 +670,7 @@ export const command = Command.make("mailbox").pipe(
     enrollHostCommand,
     retireCommand,
     unretireCommand,
+    recordRetiredCommand,
     retiredCommand,
     successorCommand,
     roleCommand,

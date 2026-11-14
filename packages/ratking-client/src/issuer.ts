@@ -48,7 +48,10 @@ export class Issuer extends Context.Service<
   }
 >()("pi-ratking/Issuer") {}
 
-const ErrorBody = Schema.Struct({ error: Schema.String });
+const ErrorBody = Schema.Struct({
+  error: Schema.String,
+  message: Schema.optionalKey(Schema.String),
+});
 
 const maxPages = 20;
 
@@ -141,10 +144,16 @@ export const issuerLayer = Layer.effect(
         const error = Schema.decodeUnknownOption(ErrorBody)(response.body);
 
         return yield* new IssuerError({
-          reason: `Issuer refused ${request.nsid} (${Option.match(error, {
-            onNone: () => `HTTP ${response.status}`,
-            onSome: (body) => body.error,
-          })})`,
+          reason: `Issuer refused ${request.nsid} (HTTP ${response.status}; ${Option.match(
+            error,
+            {
+              onNone: () => "invalid error body",
+              onSome: (body) =>
+                body.message === undefined || body.message === body.error
+                  ? body.error
+                  : `${body.error}: ${body.message}`,
+            }
+          )})`,
         });
       }
 
@@ -198,7 +207,13 @@ export const issuerLayer = Layer.effect(
             Effect.mapError(fail("Directory filters are not encodable"))
           ),
         })
-      ).pipe(Effect.mapError(fail("Issuer answered with an invalid body")));
+      ).pipe(
+        Effect.mapError(
+          fail(
+            `Issuer answered ${ListNames.Method.nsid} with an invalid body (HTTP 200)`
+          )
+        )
+      );
     });
 
     const remoteNames = Effect.fn("Issuer.remoteNames")(

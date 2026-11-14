@@ -1,0 +1,53 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.identity.recordRetired",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Record existing names in the issuer's retired directory index without reading or changing mailboxes. Operators only. Existing index rows are preserved; unknown names are reported without a write. This does not retire a mailbox or check its lease.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["names"],
+          "properties": {
+            "names": {
+              "type": "array",
+              "minLength": 1,
+              "maxLength": 100,
+              "items": { "type": "string", "maxLength": 128 }
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": ["results"],
+          "properties": {
+            "results": {
+              "type": "array",
+              "maxLength": 100,
+              "items": { "type": "ref", "ref": "#result" }
+            }
+          }
+        }
+      },
+      "errors": [
+        { "name": "InvalidRequest" },
+        { "name": "AuthRequired" },
+        { "name": "Forbidden" },
+        { "name": "MailboxUnavailable" }
+      ]
+    },
+    "result": {
+      "type": "object",
+      "required": ["name", "outcome"],
+      "properties": {
+        "name": { "type": "string", "maxLength": 128 },
+        "outcome": { "type": "string", "enum": ["recorded", "already", "unknown"] }
+      }
+    }
+  }
+}
