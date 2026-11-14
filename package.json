@@ -28,7 +28,7 @@
     "@effect/vitest": "4.0.5",
     "@oxlint/plugins": "1.88.0",
     "@types/node": "24.19.2",
-    "@xstate/effect": "1.0.0-alpha.9",
+    "@xstate/effect": "1.0.0-beta.0",
     "alchemy": "2.0.0-beta.83",
     "effect": "4.0.5",
     "lefthook": "2.2.2",
@@ -41,7 +41,7 @@
     "ultracite": "8.0.1",
     "vitest": "5.0.5",
     "workerd": "1.20261002.1",
-    "xstate": "6.0.0-alpha.70"
+    "xstate": "6.0.0-beta.1"
   },
   "devEngines": {
     "packageManager": {

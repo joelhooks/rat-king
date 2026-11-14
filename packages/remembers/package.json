@@ -24,9 +24,9 @@
     "@effect/platform-node": "4.0.5",
     "@mischief/worker": "github:joelhooks/mischief#81f6bcf26218b5af7587020c120d872e798e3744&path:/apps/worker/bundle",
     "@rat-king/capability": "workspace:*",
-    "@xstate/effect": "1.0.0-alpha.9",
+    "@xstate/effect": "1.0.0-beta.0",
     "effect": "4.0.5",
-    "xstate": "6.0.0-alpha.70"
+    "xstate": "6.0.0-beta.1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261019.1",
