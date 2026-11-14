@@ -3,9 +3,10 @@ import { AlchemyContextLive } from "alchemy/AlchemyContext";
 import * as Apply from "alchemy/Apply";
 import { provideFreshArtifactStore } from "alchemy/Artifacts";
 import { deploy } from "alchemy/Deploy";
+import { evalStack } from "alchemy/EvalStack";
+import { onEvent } from "alchemy/Events";
 import { layerNonInteractive } from "alchemy/Interaction";
 import * as Plan from "alchemy/Plan";
-import { evalStack } from "alchemy/Stack";
 import {
   Clock,
   Config,
@@ -584,7 +585,14 @@ export const runThrowaway = Effect.fn("Throwaway.run")(function* runThrowaway(
           Plan.destroy(compiled).pipe(
             Effect.flatMap((plan) =>
               withDestroyReceipt(Object.keys(plan.deletions), (session) =>
-                Apply.apply(plan, { session })
+                Apply.apply(plan).pipe(
+                  onEvent((event) =>
+                    event.type === "apply.resource.status" ||
+                    event.type === "apply.resource.note"
+                      ? session.emit(event)
+                      : Effect.void
+                  )
+                )
               )
             )
           ),

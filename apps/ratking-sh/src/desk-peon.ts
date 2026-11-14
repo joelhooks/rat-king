@@ -1,5 +1,5 @@
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { Credential, whoami } from "@rat-king/lexicon/trust";
-import * as Cloudflare from "alchemy/Cloudflare";
 import { Clock, Effect, Schema } from "effect";
 
 import { publicDesk, trustLayer } from "./contact-session.ts";

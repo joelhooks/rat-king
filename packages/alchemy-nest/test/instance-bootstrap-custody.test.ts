@@ -1,4 +1,4 @@
-import { NodeServices } from "@effect/platform-node";
+import { NodeServices, NodeCrypto } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import { Arbitrary, Effect, Layer, Schema } from "effect";
 import { expect } from "vitest";
@@ -169,7 +169,9 @@ it.effect.prop(
             operation === "exec" && argv.includes("import")
         )
       ).toBe(false);
-    }).pipe(Effect.provide(NodeServices.layer))
+    }).pipe(
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))
+    )
 );
 
 const listingFixture = String.raw`
@@ -226,5 +228,7 @@ it.effect.prop(
       ]);
 
       expect(result.code === 0).toBe(mode === "clean");
-    }).pipe(Effect.provide(NodeServices.layer))
+    }).pipe(
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))
+    )
 );

@@ -1,5 +1,5 @@
-import { DurableObject } from "alchemy/Cloudflare";
-import type { DurableObjectLike, WorkerProps } from "alchemy/Cloudflare";
+import { DurableObject } from "@alchemy.run/cloudflare";
+import type { DurableObjectLike, WorkerProps } from "@alchemy.run/cloudflare";
 import type { Redacted } from "effect";
 import { Schema } from "effect";
 

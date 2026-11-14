@@ -1,4 +1,4 @@
-import { NodeServices } from "@effect/platform-node";
+import { NodeServices, NodeCrypto } from "@effect/platform-node";
 import { Effect, Layer, Logger } from "effect";
 import { Command } from "effect/cli";
 
@@ -46,7 +46,10 @@ export const command = Command.make("ratking").pipe(
 export const runRatking = (args: readonly string[]) =>
   Command.runWith(command, { renderErrors: false, version: "0.1.0" })(
     args
-  ).pipe(Effect.catchIf(isUsageError, refuseUsage(command, args)));
+  ).pipe(
+    Effect.catchIf(isUsageError, refuseUsage(command, args)),
+    Effect.provide(NodeCrypto.layer)
+  );
 
 export const cliLogger = Logger.layer([
   Logger.withConsoleError(Logger.formatLogFmt),

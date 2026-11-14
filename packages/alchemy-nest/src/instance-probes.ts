@@ -1,4 +1,5 @@
-import { Crypto, Effect, FileSystem, Redacted, Schema } from "effect";
+import { Effect, FileSystem, Redacted, Schema } from "effect";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import { HttpClient } from "effect/http";
 
 import { refuse } from "./files.ts";
@@ -124,7 +125,7 @@ export const diagnoseProbe = Effect.fn("Celld.diagnoseProbe")(
       readonly layout?: InstanceLayout | undefined;
     }
   ) {
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* SecureRandom.SecureRandom;
 
     const environment = yield* probeEnvironment(
       shell,
@@ -134,7 +135,7 @@ export const diagnoseProbe = Effect.fn("Celld.diagnoseProbe")(
 
     const result = yield* shell.exec(
       probeCommand(
-        `${input.layout?.instance ?? "rat-king"}-probe-${yield* crypto.randomUUIDv4()}`,
+        `${input.layout?.instance ?? "rat-king"}-probe-${yield* crypto.uuidV4()}`,
         [
           "sh",
           "-c",
@@ -179,11 +180,11 @@ export const raceProbe = Effect.fn("ObjectStore.raceProbe")(function* race(
     readonly layout?: InstanceLayout | undefined;
   }
 ) {
-  const crypto = yield* Crypto.Crypto;
+  const crypto = yield* SecureRandom.SecureRandom;
 
   const result = yield* shell.exec(
     probeCommand(
-      `${input.layout?.instance ?? "rat-king"}-probe-${yield* crypto.randomUUIDv4()}`,
+      `${input.layout?.instance ?? "rat-king"}-probe-${yield* crypto.uuidV4()}`,
       [
         "python3",
         "-c",
@@ -231,7 +232,7 @@ export const bootstrapProbe = Effect.fn("Celld.bootstrapProbe")(
       readonly layout?: InstanceLayout | undefined;
     }
   ) {
-    const crypto = yield* Crypto.Crypto;
+    const crypto = yield* SecureRandom.SecureRandom;
     const fs = yield* FileSystem.FileSystem;
 
     const source = yield* fs.readFile(
@@ -239,7 +240,7 @@ export const bootstrapProbe = Effect.fn("Celld.bootstrapProbe")(
         .pathname
     );
 
-    const directory = `${input.layout?.configuration ?? `${input.home}/.config/rat-king`}/bootstrap-${yield* crypto.randomUUIDv4()}`;
+    const directory = `${input.layout?.configuration ?? `${input.home}/.config/rat-king`}/bootstrap-${yield* crypto.uuidV4()}`;
     const entry = `${directory}/index.js`;
     const config = `${directory}/wrangler.json`;
     yield* shell.mkdir({ mode: 0o700, path: directory });
@@ -267,7 +268,7 @@ export const bootstrapProbe = Effect.fn("Celld.bootstrapProbe")(
 
       const result = yield* shell.exec(
         probeCommand(
-          `${input.layout?.instance ?? "rat-king"}-probe-${yield* crypto.randomUUIDv4()}`,
+          `${input.layout?.instance ?? "rat-king"}-probe-${yield* crypto.uuidV4()}`,
           [
             "sh",
             "-c",

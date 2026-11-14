@@ -1,5 +1,5 @@
 import type { PlanStatusSession } from "alchemy/Report";
-import { Console, Effect, Exit, Predicate, Runtime, Schema } from "effect";
+import { Console, Effect, Exit, Runtime, Schema } from "effect";
 
 import type { Interface } from "./host-shell.ts";
 import { instanceGoneScript } from "./instance-probe-scripts.ts";
@@ -21,7 +21,7 @@ export const withDestroyReceipt = <A, E, R>(
       emit: (event) =>
         Effect.sync(() => {
           if (
-            !Predicate.isTagged(event, "apply.resource.status") ||
+            event.type !== "apply.resource.status" ||
             !states.has(event.fqn)
           ) {
             return;

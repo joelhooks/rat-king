@@ -1,4 +1,4 @@
-import { NodeServices } from "@effect/platform-node";
+import { NodeCrypto, NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import { settingsLayer } from "@rat-king/ratking-client/config";
 import { directoryLayer } from "@rat-king/ratking-client/directory";
@@ -115,5 +115,8 @@ it.effect(
         total: 3,
         unresolved: [{ name: "unknown", reason: "unknown-name" }],
       });
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+    }).pipe(
+      Effect.scoped,
+      Effect.provide([NodeServices.layer, NodeCrypto.layer])
+    )
 );

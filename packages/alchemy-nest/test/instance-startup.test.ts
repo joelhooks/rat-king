@@ -1,4 +1,4 @@
-import { NodeServices } from "@effect/platform-node";
+import { NodeServices, NodeCrypto } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import { Arbitrary, Effect, Layer } from "effect";
 import { expect } from "vitest";
@@ -135,6 +135,8 @@ it.effect.prop(
           ).pipe(Layer.provide(Layer.succeed(HostShell, shell)))
         )
       );
-    }).pipe(Effect.provide(NodeServices.layer)),
+    }).pipe(
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))
+    ),
   { arbitrary: { runs: 12 } }
 );

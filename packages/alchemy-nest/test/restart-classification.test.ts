@@ -81,7 +81,6 @@ it.effect.prop(
         throw new Error("Node diff port missing");
       }
 
-      // @effect-diagnostics-next-line anyUnknownInErrorContext:off -- Alchemy provider.diff declares any; the immediate adapter maps it to HostError.
       const result = yield* provider
         .diff({
           fqn: "node.invalid",

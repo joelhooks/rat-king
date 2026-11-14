@@ -1,4 +1,4 @@
-import { NodeServices } from "@effect/platform-node";
+import { NodeServices, NodeCrypto } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import { Arbitrary, Effect, Fiber, Layer, Result, Schema } from "effect";
 import { TestClock } from "effect/testing";
@@ -352,7 +352,7 @@ it.effect.prop(
         Effect.provide(
           startupLayer(address).pipe(
             Layer.provide(testLayer(shell)),
-            Layer.provide(NodeServices.layer)
+            Layer.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))
           )
         )
       );

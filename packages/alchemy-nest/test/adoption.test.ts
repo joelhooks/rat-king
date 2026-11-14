@@ -1,9 +1,9 @@
+import * as Test from "@alchemy.run/test/Vitest";
 // @effect-diagnostics anyUnknownInErrorContext:off -- Alchemy scratch.plan exposes any errors; this test asserts its failure without publishing them.
 import * as Output from "alchemy/Output";
 import * as Plan from "alchemy/Plan";
 import { Random, RandomProvider } from "alchemy/Random";
 import { State } from "alchemy/State";
-import * as Test from "alchemy/Test/Vitest";
 import { Context, Effect, Layer, Redacted } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { expect } from "vitest";

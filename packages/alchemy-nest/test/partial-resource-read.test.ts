@@ -1,6 +1,6 @@
+import * as Test from "@alchemy.run/test/Vitest";
 import { NodeServices } from "@effect/platform-node";
 import { State } from "alchemy/State";
-import * as Test from "alchemy/Test/Vitest";
 import { Arbitrary, Cause, Context, Effect, Exit, Layer, Schema } from "effect";
 import { expect } from "vitest";
 

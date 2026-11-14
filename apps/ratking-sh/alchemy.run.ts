@@ -1,5 +1,5 @@
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { Stack, Stage, localState } from "alchemy";
-import * as Cloudflare from "alchemy/Cloudflare";
 import { Config, Effect } from "effect";
 
 import { requireZoneAccount } from "./src/deploy-target.ts";

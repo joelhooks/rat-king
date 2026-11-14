@@ -1,4 +1,4 @@
-import { NodeServices } from "@effect/platform-node";
+import { NodeCrypto, NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import { Effect, FileSystem, Path, Schema } from "effect";
 import { expect } from "vitest";
@@ -78,7 +78,10 @@ it.effect.prop(
 
       expect(error.code).toBe("ResolveWriteFailed");
       expect(yield* fs.readDirectory(root)).toEqual(["names.json"]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+    }).pipe(
+      Effect.scoped,
+      Effect.provide([NodeServices.layer, NodeCrypto.layer])
+    )
 );
 
 it.effect(
@@ -107,5 +110,8 @@ it.effect(
         "names.json",
         "out",
       ]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+    }).pipe(
+      Effect.scoped,
+      Effect.provide([NodeServices.layer, NodeCrypto.layer])
+    )
 );

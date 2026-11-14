@@ -22,14 +22,15 @@
     "test": "ALCHEMY_TELEMETRY_DISABLED=1 pnpm -C ../.. exec vitest run --config packages/alchemy-nest/vitest.config.ts"
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.5",
-    "alchemy": "2.0.0-beta.83",
-    "effect": "4.0.5",
+    "@effect/platform-node": "4.1.4",
+    "alchemy": "2.0.0-beta.87",
+    "effect": "4.1.4",
     "esbuild": "0.28.2",
     "xstate": "6.0.0-beta.1"
   },
   "devDependencies": {
-    "@effect/vitest": "4.0.5",
+    "@alchemy.run/test": "2.0.0-beta.87",
+    "@effect/vitest": "4.1.4",
     "fast-check": "4.10.2",
     "vitest": "5.0.5"
   }

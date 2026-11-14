@@ -2,7 +2,9 @@
 import type * as Names from "@rat-king/lexicon/identity.listNames";
 import type * as Retired from "@rat-king/lexicon/identity.listRetired";
 import { canonicalJson } from "@rat-king/mailbox-client/owner-queue";
-import { Crypto, Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, FileSystem, Path, Schema } from "effect";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 
 export class SnapshotError extends Schema.TaggedError<SnapshotError>()(
   "SnapshotError",
@@ -155,16 +157,9 @@ export const collectSnapshot = Effect.fn("Snapshot.collect")(
 );
 
 const sha256 = Effect.fn("Snapshot.sha256")(function* sha256(text: string) {
-  const digest = yield* (yield* Crypto.Crypto)
-    .digest("SHA-256", new TextEncoder().encode(text))
-    .pipe(
-      Effect.mapError(() =>
-        failure("HashFailed", "Could not hash snapshot files")
-      )
-    );
-
-  return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(
-    ""
+  return yield* (yield* Digest.Digest).digestHex(
+    Digest.sha256,
+    new TextEncoder().encode(text)
   );
 });
 
@@ -184,7 +179,7 @@ export const writeSnapshot = Effect.fn("Snapshot.write")(
     }
 
     const collected = yield* collectSnapshot(issuers);
-    const snapshot = yield* (yield* Crypto.Crypto).randomUUIDv4();
+    const snapshot = yield* (yield* SecureRandom.SecureRandom).uuidV4();
 
     const files = {
       "issuers.json": jsonLine(collected.issuers),

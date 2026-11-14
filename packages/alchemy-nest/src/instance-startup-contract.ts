@@ -1,5 +1,6 @@
-import type { Crypto, FileSystem, Redacted } from "effect";
+import type { FileSystem, Redacted } from "effect";
 import { Effect, Layer, Predicate, Result, Schema } from "effect";
+import type * as SecureRandom from "effect/crypto/SecureRandom";
 
 import { assertDeletePath } from "./delete-custody.ts";
 import { refuse } from "./files.ts";
@@ -223,7 +224,7 @@ export const startupLayer = (
       const shell = yield* HostShell;
 
       const context = yield* Effect.context<
-        Crypto.Crypto | FileSystem.FileSystem
+        SecureRandom.SecureRandom | FileSystem.FileSystem
       >();
 
       return {

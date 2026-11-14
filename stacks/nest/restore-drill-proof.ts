@@ -1,9 +1,10 @@
 /* oxlint-disable typescript/promise-function-async -- Lazy WebCrypto adapters. */
 import { networkInterfaces } from "node:os";
 
-import { NodeServices } from "@effect/platform-node";
-import { Clock, Crypto, Effect, Exit, FileSystem, Schema } from "effect";
+import { NodeServices, NodeCrypto } from "@effect/platform-node";
+import { Clock, Effect, Exit, FileSystem, Schema, Layer } from "effect";
 import type { Cause } from "effect";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import { FetchHttpClient, HttpBody, HttpClient } from "effect/http";
 import type { HttpClientError } from "effect/http";
 
@@ -372,7 +373,7 @@ const program = Effect.gen(function* restoreProof() {
     issuer: string = probeDid
   ) {
     const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
-    const random = yield* Crypto.Crypto;
+    const random = yield* SecureRandom.SecureRandom;
     const nonce = base64url(yield* random.randomBytes(16));
     const nsid = `sh.mschf.ratking.${method}`;
     const serviceDid = yield* binding("SERVICE_DID");
@@ -579,7 +580,10 @@ const report = Effect.fn("reportFailure")(function* reportFailure(
 
 const exit = await Effect.runPromiseExit(
   withProofCleanup(program, cleanup, report, progress.snapshot).pipe(
-    Effect.provide([NodeServices.layer, FetchHttpClient.layer])
+    Effect.provide([
+      Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
+      FetchHttpClient.layer,
+    ])
   )
 );
 

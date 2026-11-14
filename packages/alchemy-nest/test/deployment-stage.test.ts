@@ -1,4 +1,4 @@
-import * as Test from "alchemy/Test/Vitest";
+import * as Test from "@alchemy.run/test/Vitest";
 import { Arbitrary, Effect, Schema } from "effect";
 import { expect } from "vitest";
 

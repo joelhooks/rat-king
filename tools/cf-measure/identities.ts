@@ -1,4 +1,5 @@
-import { Crypto, Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, FileSystem, Path, Schema } from "effect";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 
 import * as Defs from "../../packages/lexicon/src/defs.ts";
 import { Identity } from "../../packages/mailbox-client/src/index.ts";
@@ -103,8 +104,8 @@ export const generate = Effect.fn("Measure.generate")(function* generate(
     path.basename(directory)
   );
 
-  const random = yield* Crypto.Crypto;
-  const run = yield* random.randomUUIDv4();
+  const random = yield* SecureRandom.SecureRandom;
+  const run = yield* random.uuidV4();
   const did = (name: string) => `did:web:cfpreview-${run}-${name}.test.invalid`;
 
   const inputs = {

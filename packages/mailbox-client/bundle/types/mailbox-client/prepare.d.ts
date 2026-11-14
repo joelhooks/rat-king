@@ -41,53 +41,7 @@ export type SendOutcome = {
     readonly _tag: "Uncertain";
     readonly error: MailboxClientError;
 };
-export declare const SendOutcomes: {
-    readonly $is: <Tag extends "Accepted" | "NotAttempted" | "Rejected" | "Uncertain">(tag: Tag) => (u: unknown) => u is Extract<{
-        readonly _tag: "NotAttempted";
-        readonly reason: string;
-    }, {
-        readonly _tag: Tag;
-    }> | Extract<{
-        readonly _tag: "Rejected";
-        readonly error: MailboxClientError;
-    }, {
-        readonly _tag: Tag;
-    }> | Extract<{
-        readonly _tag: "Accepted";
-        readonly receipt: Send.OutputValue["receipt"];
-    }, {
-        readonly _tag: Tag;
-    }> | Extract<{
-        readonly _tag: "Uncertain";
-        readonly error: MailboxClientError;
-    }, {
-        readonly _tag: Tag;
-    }>;
-    readonly $match: {
-        <Cases extends { readonly [Tag in "Accepted" | "NotAttempted" | "Rejected" | "Uncertain"]: (args: Extract<SendOutcome, {
-            readonly _tag: Tag;
-        }>) => any; }>(cases: Cases): (value: SendOutcome) => import("effect/Unify").Unify<ReturnType<Cases["Accepted" | "NotAttempted" | "Rejected" | "Uncertain"]>>;
-        <Cases extends { readonly [Tag in "Accepted" | "NotAttempted" | "Rejected" | "Uncertain"]: (args: Extract<SendOutcome, {
-            readonly _tag: Tag;
-        }>) => any; }>(value: SendOutcome, cases: Cases): import("effect/Unify").Unify<ReturnType<Cases["Accepted" | "NotAttempted" | "Rejected" | "Uncertain"]>>;
-    };
-    readonly Accepted: Data.TaggedEnum.ConstructorFrom<{
-        readonly _tag: "Accepted";
-        readonly receipt: Send.OutputValue["receipt"];
-    }, "_tag">;
-    readonly NotAttempted: Data.TaggedEnum.ConstructorFrom<{
-        readonly _tag: "NotAttempted";
-        readonly reason: string;
-    }, "_tag">;
-    readonly Rejected: Data.TaggedEnum.ConstructorFrom<{
-        readonly _tag: "Rejected";
-        readonly error: MailboxClientError;
-    }, "_tag">;
-    readonly Uncertain: Data.TaggedEnum.ConstructorFrom<{
-        readonly _tag: "Uncertain";
-        readonly error: MailboxClientError;
-    }, "_tag">;
-};
+export declare const SendOutcomes: Data.TaggedEnum.Constructor<SendOutcome>;
 export type SendResult = SendOutcome & {
     readonly cc?: SendOutcome;
 };

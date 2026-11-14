@@ -1,9 +1,9 @@
 // @effect-diagnostics asyncFunction:off -- WebCrypto independently verifies exported file hashes at a Promise boundary.
-import { NodeServices } from "@effect/platform-node";
+import { NodeServices, NodeCrypto } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import * as Names from "@rat-king/lexicon/identity.listNames";
 import { Retirement } from "@rat-king/lexicon/identity.retireName";
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Effect, FileSystem, Path, Schema, Layer } from "effect";
 import { expect } from "vitest";
 
 import {
@@ -167,7 +167,10 @@ it.effect.prop(
           ])
         )
       );
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))
+    ),
   { arbitrary: { runs: 5 } }
 );
 
@@ -206,7 +209,10 @@ it.effect.prop(
       yield* writeSnapshot([broken], out).pipe(Effect.flip);
       expect(yield* fs.exists(out)).toBe(false);
       expect(yield* fs.readDirectory(root)).toEqual([]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))
+    )
 );
 
 it.effect.prop(
@@ -241,7 +247,10 @@ it.effect.prop(
       expect(error.code).toBe("RepeatedCursor");
       expect(calls).toBe(period + 1);
       expect(yield* fs.readDirectory(root)).toEqual([]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))
+    )
 );
 
 it.effect(
@@ -262,7 +271,10 @@ it.effect(
 
       expect(error.code).toBe("ConflictingName");
       expect(yield* fs.readDirectory(root)).toEqual([]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))
+    )
 );
 
 it.effect.prop(
@@ -302,7 +314,10 @@ it.effect.prop(
 
       expect(error.code).toBe("SnapshotWriteFailed");
       expect(yield* fs.readDirectory(root)).toEqual([]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))
+    )
 );
 
 it.effect(
@@ -324,7 +339,10 @@ it.effect(
       );
 
       expect(second.snapshot).not.toBe(first.snapshot);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))
+    )
 );
 
 it.effect(

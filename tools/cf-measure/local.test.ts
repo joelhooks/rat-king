@@ -128,7 +128,11 @@ it.live(
       expect(totals.incomplete).toBeLessThanOrEqual(2);
       expect(totals.ackMs.count).toBeGreaterThanOrEqual(totals.attempted - 2);
     }).pipe(
-      Effect.provide([NodeHttpClient.layerUndici, NodeServices.layer]),
+      Effect.provide([
+        NodeHttpClient.layerUndici,
+        NodeServices.layer,
+        NodeCrypto.layer,
+      ]),
       Effect.scoped
     ),
   60_000

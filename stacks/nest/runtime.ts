@@ -1,12 +1,13 @@
-import { NodeServices } from "@effect/platform-node";
+import { NodeCrypto, NodeServices } from "@effect/platform-node";
 import { adopt } from "alchemy/AdoptPolicy";
 import { AlchemyContextLive } from "alchemy/AlchemyContext";
 import { provideFreshArtifactStore } from "alchemy/Artifacts";
+import { AuthProvidersLive } from "alchemy/Auth/Registry";
 import { deploy } from "alchemy/Deploy";
 import { destroy } from "alchemy/Destroy";
+import { evalStack } from "alchemy/EvalStack";
 import { layerNonInteractive } from "alchemy/Interaction";
 import * as Plan from "alchemy/Plan";
-import { evalStack } from "alchemy/Stack";
 import { localState } from "alchemy/State/LocalState";
 import { Clock, Config, Effect, FileSystem, Layer, Schema } from "effect";
 import { FetchHttpClient, HttpClient } from "effect/http";
@@ -525,14 +526,30 @@ export const run = (action: Action) =>
     provideFreshArtifactStore,
     Effect.provide(
       Layer.mergeAll(
-        NodeServices.layer,
+        Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, AuthProvidersLive),
         FetchHttpClient.layer,
-        connection.pipe(Layer.provide(NodeServices.layer)),
+        connection.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              NodeServices.layer,
+              NodeCrypto.layer,
+              AuthProvidersLive
+            )
+          )
+        ),
         Layer.mergeAll(
           AlchemyContextLive,
           localState(),
           layerNonInteractive()
-        ).pipe(Layer.provide(NodeServices.layer))
+        ).pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              NodeServices.layer,
+              NodeCrypto.layer,
+              AuthProvidersLive
+            )
+          )
+        )
       )
     )
   );
@@ -553,7 +570,17 @@ export const deploymentMarker = Effect.fn("Alarm.readDeployMarker")(
 
 export const readAlarmDeployMarker = (path: string) =>
   deploymentMarker(path).pipe(
-    Effect.provide(connection.pipe(Layer.provide(NodeServices.layer))),
+    Effect.provide(
+      connection.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            NodeCrypto.layer,
+            AuthProvidersLive
+          )
+        )
+      )
+    ),
     Effect.timeout("10 seconds"),
     Effect.mapError(
       () => new FleetError({ reason: "Live deployment marker unavailable" })
@@ -564,7 +591,17 @@ export const readAlarmWindowReceipts = (markerPath: string) =>
   Effect.gen(function* liveWindowReceipts() {
     return yield* readWindowReceipts(yield* HostShell, markerPath);
   }).pipe(
-    Effect.provide(connection.pipe(Layer.provide(NodeServices.layer))),
+    Effect.provide(
+      connection.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            NodeCrypto.layer,
+            AuthProvidersLive
+          )
+        )
+      )
+    ),
     Effect.timeout("10 seconds"),
     Effect.orElseSucceed((): readonly (typeof WindowReceipt.Type)[] => [])
   );
@@ -606,9 +643,17 @@ export const healthDigest = (previous?: string, config?: StageConfigValue) =>
   }).pipe(
     Effect.provide(
       Layer.mergeAll(
-        NodeServices.layer,
+        Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, AuthProvidersLive),
         FetchHttpClient.layer,
-        connection.pipe(Layer.provide(NodeServices.layer))
+        connection.pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              NodeServices.layer,
+              NodeCrypto.layer,
+              AuthProvidersLive
+            )
+          )
+        )
       )
     )
   );
@@ -630,7 +675,15 @@ export const mailboxStatus = Effect.gen(function* readMailboxStatus() {
   Effect.provide(
     Layer.mergeAll(
       FetchHttpClient.layer,
-      inventoryLayer.pipe(Layer.provide(NodeServices.layer))
+      inventoryLayer.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            NodeCrypto.layer,
+            AuthProvidersLive
+          )
+        )
+      )
     )
   ),
   Effect.mapError(() => new FleetError({ reason: "Mailbox health unreadable" }))
@@ -657,9 +710,17 @@ export const recoverStorage = Effect.gen(function* recoverNestStorage() {
 }).pipe(
   Effect.provide(
     Layer.mergeAll(
-      NodeServices.layer,
+      Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, AuthProvidersLive),
       FetchHttpClient.layer,
-      connection.pipe(Layer.provide(NodeServices.layer))
+      connection.pipe(
+        Layer.provide(
+          Layer.mergeAll(
+            NodeServices.layer,
+            NodeCrypto.layer,
+            AuthProvidersLive
+          )
+        )
+      )
     )
   ),
   Effect.mapError(

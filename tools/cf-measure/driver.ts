@@ -1,6 +1,5 @@
 import {
   Clock,
-  Crypto,
   DateTime,
   Deferred,
   Effect,
@@ -8,6 +7,7 @@ import {
   Schedule,
   Schema,
 } from "effect";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 
 import type * as Defs from "../../packages/lexicon/src/defs.ts";
 import { consume } from "../../packages/mailbox-client/src/consume.ts";
@@ -168,8 +168,8 @@ export const drive = Effect.fn("Measure.drive")(function* drive(
     });
   }
 
-  const random = yield* Crypto.Crypto;
-  const run = yield* random.randomUUIDv4();
+  const random = yield* SecureRandom.SecureRandom;
+  const run = yield* random.uuidV4();
   const timings = new Map<string, Timing>();
   const errors: Record<string, number> = {};
   let sequence = 0;

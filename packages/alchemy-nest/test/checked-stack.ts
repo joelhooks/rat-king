@@ -1,5 +1,5 @@
 // @effect-diagnostics anyUnknownInErrorContext:off -- Alchemy beta.79's scratch harness declares any errors; this test-only adapter turns them into test defects.
-import type { ScratchStack } from "alchemy/Test/Vitest";
+import type { ScratchStack } from "@alchemy.run/test/Vitest";
 import { Effect } from "effect";
 
 export const checkedRead = <P, A, R>(

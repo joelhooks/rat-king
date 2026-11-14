@@ -1,5 +1,6 @@
 // @effect-diagnostics asyncFunction:off -- Select the external state directory before importing Alchemy, whose local store captures cwd.
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
+import { AuthProvidersLive } from "alchemy/Auth/Registry";
 import {
   Clock,
   Config,
@@ -306,4 +307,6 @@ const main = Effect.gen(function* command() {
   return yield* scriptCommand();
 });
 
-NodeRuntime.runMain(main.pipe(Effect.provide(NodeServices.layer)));
+NodeRuntime.runMain(
+  main.pipe(Effect.provide([NodeServices.layer, AuthProvidersLive]))
+);

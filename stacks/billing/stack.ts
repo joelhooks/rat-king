@@ -1,5 +1,5 @@
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { localState, Stack } from "alchemy";
-import * as Cloudflare from "alchemy/Cloudflare";
 import * as Provider from "alchemy/Provider";
 import { Config, Effect, Path } from "effect";
 import type { Redacted } from "effect";

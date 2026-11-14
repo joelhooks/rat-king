@@ -1,6 +1,6 @@
 import { it } from "@effect/vitest";
-import type { ResourceStatusChanged } from "alchemy/Report";
-import { Arbitrary, Data, Effect, Schema } from "effect";
+import { ResourceStatusChanged } from "alchemy/Events";
+import { Arbitrary, Effect, Schema } from "effect";
 import { expect } from "vitest";
 
 import { InstanceNameSchema, instanceLayout } from "../src/instance.ts";
@@ -10,9 +10,6 @@ import {
   storageRetentionUnit,
 } from "../src/storage-maintenance.ts";
 import { renderUnit } from "../src/systemd.ts";
-
-const statusEvent =
-  Data.taggedEnum<ResourceStatusChanged>()["apply.resource.status"];
 
 it.effect.prop(
   "destroy receipt prints one terminal result for every resource even when a dependent fails",
@@ -43,11 +40,12 @@ it.effect.prop(
               }
 
               yield* session.emit(
-                statusEvent({
+                ResourceStatusChanged.make({
                   fqn: name,
                   id: name,
+                  resourceType: "Example.Resource",
                   status,
-                  type: "Example.Resource",
+                  type: "apply.resource.status",
                 })
               );
             }
