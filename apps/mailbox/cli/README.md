@@ -44,6 +44,16 @@ node /tmp/mailbox.mjs successor set --name example/row --successor example
 
 `successor set` calls `identity.setSuccessor`. It re-points a name that is already retired, keeps `retiredAt` and `by`, and stamps `updatedAt`. It never retires, unretires or takes a lease, so a batch can call it once per name. Repeating it with the same successor changes nothing. The successor may be a row or a role. It refuses `NotRetired` for a live name, `UnknownName` for a successor that is neither, and `RoleUnresolved` when the successor's chain leads back to the name or needs more than 3 hops.
 
+## Retired directory backfill
+
+```sh
+node /tmp/mailbox.mjs record-retired --file ./retired-names.txt --batch-size 100 --pause-ms 1000
+```
+
+Use this only with a separately verified list of retired mailbox names. The file contains one name per line; blank lines are ignored. The command validates the whole file before sending, then calls `identity.recordRetired` in sequential batches of at most 100 names, with a pause between batches. It prints one JSON result per batch, with each name marked `recorded`, `already` or `unknown`. A failed request stops the run; rerunning the file is safe because existing index rows are unchanged.
+
+This operator-only procedure writes the issuer's retired directory index. It never reads a mailbox, checks a lease or changes mailbox retirement. New rows use the call time and operator identity, with no successor. Unknown names are not written. It can hide a live name if the input is wrong, so it is not a replacement for `retire`. `unretire` still clears both mailbox retirement and the index. The `retired` command and recipient resolution still inspect mailbox retirement; they are not cell-free bulk verification tools.
+
 ## Roles
 
 ```sh

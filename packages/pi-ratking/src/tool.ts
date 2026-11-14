@@ -18,6 +18,7 @@ import { recipientLines } from "@rat-king/ratking-client/delivery";
 import type { RecipientLevelValue } from "@rat-king/ratking-client/delivery";
 import { listView, rolesView } from "@rat-king/ratking-client/directory-view";
 import type { QuietAsk } from "@rat-king/ratking-client/errors";
+import { IssuerError } from "@rat-king/ratking-client/issuer";
 import { LexiconRecord } from "@rat-king/ratking-client/payload";
 import { literalPrompt } from "@rat-king/ratking-client/prompt";
 import {
@@ -610,7 +611,11 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
           return yield* directoryPage(ratking, params).pipe(
             Effect.map((text) => ok(text)),
             Effect.catch((error) =>
-              Effect.succeed(loud(`Directory unavailable: ${String(error)}`))
+              Effect.succeed(
+                loud(
+                  `Directory unavailable: ${Schema.is(IssuerError)(error) ? error.reason : String(error)}`
+                )
+              )
             )
           );
         }

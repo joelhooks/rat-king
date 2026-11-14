@@ -5,6 +5,7 @@ import * as Enroll from "@rat-king/lexicon/identity.enrollHost";
 import * as ListNames from "@rat-king/lexicon/identity.listNames";
 import * as ListRetired from "@rat-king/lexicon/identity.listRetired";
 import * as ListRoles from "@rat-king/lexicon/identity.listRoles";
+import * as RecordRetired from "@rat-king/lexicon/identity.recordRetired";
 import * as Register from "@rat-king/lexicon/identity.register";
 import * as ResolveRecipient from "@rat-king/lexicon/identity.resolveRecipient";
 import * as Retire from "@rat-king/lexicon/identity.retireName";
@@ -44,6 +45,7 @@ export const issuerMethods = [
   Enroll.Method,
   ListNames.Method,
   Retire.Method,
+  RecordRetired.Method,
   Unretire.Method,
   ListRetired.Method,
   SetRole.Method,
@@ -102,6 +104,9 @@ export class IssuerHandlers extends Context.Service<
     readonly listNames: (
       params: ListNames.ParamsValue
     ) => Effect.Effect<ListNames.OutputValue, XrpcFailure>;
+    readonly recordRetired: (
+      input: RecordRetired.InputValue
+    ) => Effect.Effect<RecordRetired.OutputValue, XrpcFailure>;
     readonly retireName: (
       input: Retire.InputValue
     ) => Effect.Effect<Retire.OutputValue, XrpcFailure>;
@@ -357,7 +362,7 @@ export const issuerHandlers = (policy: IssuerPolicy) =>
 
           const current = yield* retirements.current(entry.did);
 
-          if (current?.retiredAt === entry.retiredAt) {
+          if (current !== undefined) {
             return Option.some(current);
           }
 
@@ -511,7 +516,7 @@ export const issuerHandlers = (policy: IssuerPolicy) =>
                 Effect.gen(function* validateRetirement() {
                   const current = yield* retirements.current(row.did);
 
-                  if (current?.retiredAt === row.retiredAt) {
+                  if (current !== undefined) {
                     return [retiredOutput({ ...current, did: row.did })];
                   }
 
@@ -554,6 +559,38 @@ export const issuerHandlers = (policy: IssuerPolicy) =>
               : { roles }
           );
         }),
+        recordRetired: Effect.fn("Issuer.recordRetired")(
+          function* recordRetired(input) {
+            yield* requireOperator();
+
+            const retiredAt = yield* Clock.currentTimeMillis;
+
+            const results = yield* store.transaction((tx) =>
+              input.names.map((name) => {
+                const binding = tx.binding(name);
+
+                if (binding === undefined) {
+                  return { name, outcome: "unknown" };
+                }
+
+                if (tx.retiredEntry(name) !== undefined) {
+                  return { name, outcome: "already" };
+                }
+
+                tx.retire({
+                  by: caller.did,
+                  did: binding.did,
+                  name,
+                  retiredAt,
+                });
+
+                return { name, outcome: "recorded" };
+              })
+            );
+
+            return yield* output(RecordRetired.Output, { results });
+          }
+        ),
         register: Effect.fn("Issuer.register")(function* register(input) {
           if (
             input.parent !== undefined &&
@@ -913,6 +950,15 @@ export const issuerRoute = Effect.fn("Issuer.route")(function* issuerRoute(
         ListNames.Output,
         Schema.decodeUnknownEffect(ListNames.Params)(request.params ?? {}).pipe(
           Effect.flatMap(handlers.listNames)
+        )
+      );
+    }
+
+    case RecordRetired.Method.nsid: {
+      return yield* respond(
+        RecordRetired.Output,
+        Schema.decodeUnknownEffect(RecordRetired.Input)(request.input).pipe(
+          Effect.flatMap(handlers.recordRetired)
         )
       );
     }

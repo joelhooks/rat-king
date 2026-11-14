@@ -25,7 +25,7 @@ export interface Authority {
   readonly serviceDid: string;
 }
 
-const operatorCall = Effect.fn("MailboxCli.operatorCall")(
+export const operatorCall = Effect.fn("MailboxCli.operatorCall")(
   function* operatorCall<S extends Schema.Top>(
     authority: Authority,
     request: XrpcRequest,
