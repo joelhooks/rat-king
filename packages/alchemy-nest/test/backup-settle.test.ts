@@ -29,13 +29,21 @@ const labelOf = (argv: readonly string[]) => {
 };
 
 it.effect.prop(
-  "pack waits for celld health to answer and then for the settle delay",
+  "pack waits for health and settle, then uses the captured snapshot size rather than the compressed archive size",
   {
+    bytes: Arbitrary.schema(
+      Schema.Int.check(
+        Schema.isBetween({
+          maximum: 200 * 1_073_741_824,
+          minimum: 42 * 1_073_741_824,
+        })
+      )
+    ),
     refusals: Arbitrary.schema(
       Schema.Int.check(Schema.isBetween({ maximum: 8, minimum: 0 }))
     ),
   },
-  ({ refusals }) =>
+  ({ bytes, refusals }) =>
     Effect.gen(function* settleGate() {
       const calls: { label: string; at: number }[] = [];
       let asked = 0;
@@ -51,6 +59,20 @@ it.effect.prop(
             asked += 1;
 
             return { code: asked > refusals ? 0 : 22, stdout: "" };
+          }
+
+          if (label === "snapshot") {
+            return {
+              code: 0,
+              stdout: `BACKUP_SNAPSHOT_CAPTURED ${JSON.stringify({
+                celld: { bytes: Math.floor(bytes / 2) },
+                seaweedfs: { bytes: Math.ceil(bytes / 2) },
+              })}`,
+            };
+          }
+
+          if (label === "pack") {
+            yield* Effect.sleep(Duration.minutes(46));
           }
 
           return { code: 0, stdout: outputs.get(label) ?? "" };

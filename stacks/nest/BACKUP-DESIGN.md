@@ -40,7 +40,9 @@ Publication starts after both units are running.
 8. **Share `gzip -t`** on the published archive.
 9. **Cleanup**, only after 7 and 8 pass.
 
-Every step that can touch the share runs as its own process under its own Effect timeout: 60 seconds for metadata steps, and 120 seconds plus one second per MiB for whole-archive passes. A timed-out step fails the backup in minutes instead of consuming the 2-hour unit timeout. Interruption signals the child's process group and waits at most one second. A process stuck in uninterruptible CIFS I/O can outlive that wait, but the runner no longer waits for it. Pack has a 45-minute bound. The 2-hour `TimeoutStartSec` remains the last resort.
+Every step that can touch the share runs as its own process under its own Effect timeout: 60 seconds for metadata steps, and 120 seconds plus one second per MiB for whole-archive passes. Interruption signals the child's process group and waits at most one second. A process stuck in uninterruptible CIFS I/O can outlive that wait, but the runner no longer waits for it.
+
+Pack allows 45 minutes plus one minute for each started GiB above 40 GiB, using the combined uncompressed bytes in the captured snapshot. `BACKUP_PACK_LIMIT` records those bytes and the limit in milliseconds. At 88.2 GiB this allows 94 minutes, above the observed 47–50 minute pack-to-publication runs. At 200 GiB it allows 205 minutes. Adding the 15-minute precopy, one-minute snapshot, five-minute health wait, one-minute settle and ten minutes reserved for metadata and unit control gives 237 minutes. These allowances fit inside the four-hour `TimeoutStartSec`; they do not guarantee completion. The four archive-pass limits are runaway guards, not cumulative budgets, and can individually exceed the unit timeout. The unit remains the outer cap. The backup worker uses `MemoryHigh=3G` and `MemoryMax=4G`.
 
 A failure before the commit rename leaves only a hidden directory, which is never a restore candidate. A failure after the rename (a verification mismatch) leaves a dated directory with a manifest. Cleanup preserves it for operator inspection, and the job reports failure.
 
