@@ -395,8 +395,8 @@ Usage:
   ${tool}({ action: "ask", to: "name", summary: "...", message: "..." }) → Ask and get the reply as a message; your turn is not blocked
   ${tool}({ action: "reply", replyTo: "<id>", summary: "...", message: "..." }) → Answer a message by its id
   ${tool}({ action: "pending" })                                     → Unanswered inbound asks and open outbound asks
-  ${tool}({ action: "list" })                                       → Roles: the names to address, each with its role line
-  ${tool}({ action: "list", match: "muster" })                      → Roles matching a name, row or role line
+  ${tool}({ action: "list" })                                       → Directory names and roles, each with its role line
+  ${tool}({ action: "list", match: "muster/" })                     → Matching directory names and roles
   ${tool}({ action: "list", all: true, limit: 50, offset: 0 })       → Full directory page with DIDs
   ${tool}({ action: "status" })                                      → This Pi's name and reader
   ${tool}({ action: "claim" })                                       → Retry a blocked name claim once
@@ -583,11 +583,13 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
         if (Option.isSome(roles)) {
           const listed = roles.value;
 
-          if (Result.isSuccess(listed)) {
-            return ok(rolesView(listed.success, own, params).text);
-          }
-
           const entries = yield* ratking.list;
+
+          if (Result.isSuccess(listed)) {
+            return ok(
+              `${listView(entries, own, params).text}\n\n${rolesView(listed.success, own, params).text}`
+            );
+          }
 
           return ok(
             `Roles unavailable (${listed.failure.reason}); showing the directory instead.\n${listView(entries, own, params).text}`

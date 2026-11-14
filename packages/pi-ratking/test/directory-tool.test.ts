@@ -21,7 +21,7 @@ import { harness } from "./harness.ts";
 const Typo = Schema.Literals(["project/desx", "project/dek", "project/deskx"]);
 
 it.live.prop(
-  "directory suggestions survive real send, ask and recalled-reply error paths; list shows roles with their role lines, list-cwd the bounded directory without DIDs, and all: true the full directory",
+  "directory suggestions survive real send, ask and recalled-reply errors; list preserves directory prefix matches alongside roles, list-cwd stays bounded without DIDs, and all: true shows DIDs",
   [Arbitrary.schema(Typo)],
   ([typo]) =>
     Effect.gen(function* directoryProof() {
@@ -86,6 +86,16 @@ it.live.prop(
           "- proj (row project/desk) · Project desk"
         );
         expect(roles.text).not.toContain("did:");
+        expect(roles.text).toContain("- project/desk");
+
+        const prefix = yield* runAction("ratking", 1000, {
+          action: "list",
+          match: "project/",
+        });
+
+        expect(prefix.text).toContain("- project/desk");
+        expect(prefix.text).not.toContain("did:");
+        expect(prefix.text).not.toContain("- reserved/desk");
 
         const cwd = yield* runAction("ratking", 1000, { action: "list-cwd" });
         expect(cwd.text).not.toContain("did:");

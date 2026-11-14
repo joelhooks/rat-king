@@ -328,6 +328,8 @@ interface Admitted {
 
 type Target = Resolved & { readonly resolvedTo?: string };
 
+const targetRow = (target: Target) => target.resolvedTo ?? target.name;
+
 const routed = <I extends object>(intent: I, target: Target) =>
   target.resolvedTo === undefined
     ? intent
@@ -1842,7 +1844,8 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     to: string,
     body: string | LexiconRecordValue,
     options: SendOptions,
-    before: (id: string, did: string) => Effect.Effect<B, NotDelivered>
+    before: (id: string, did: string) => Effect.Effect<B, NotDelivered>,
+    omitSelf = false
   ) {
     if (!(yield* Deferred.isDone(self))) {
       yield* reportPhase(options, SendPhase.Identity());
@@ -1913,6 +1916,10 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         target.did === own.did &&
         !(selfWake && name === own.name && name === names[0])
       ) {
+        if (omitSelf) {
+          continue;
+        }
+
         return yield* refused("Self")(
           "Cannot message this Pi's own name, including cc"
         );
@@ -2015,11 +2022,11 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           body: Option.getOrElse(textBody, () => ""),
           cc:
             options.copyTo === undefined
-              ? targets.slice(1).map((target) => target.name)
-              : targets.map((target) => target.name),
+              ? targets.slice(1).map(targetRow)
+              : targets.map(targetRow),
           from: own.name,
           thread: options.thread ?? id,
-          to: options.copyTo ?? primary.name,
+          to: options.copyTo ?? targetRow(primary),
         };
 
         const label = (own.label?.() ?? Option.none<string>()).pipe(
@@ -3904,7 +3911,8 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         target,
         body,
         replyOptions,
-        () => Effect.void
+        () => Effect.void,
+        options?.replyAll !== false
       );
 
       yield* copyOut(delivered, sent);
