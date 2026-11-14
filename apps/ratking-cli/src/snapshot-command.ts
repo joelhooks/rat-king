@@ -11,17 +11,35 @@ import { secretStoreLayer } from "../../mailbox/cli/secrets.ts";
 import { operatorConfig } from "./operator-config.ts";
 import { SnapshotError, writeSnapshot } from "./snapshot.ts";
 
+interface PageParams {
+  all?: boolean;
+  cursor?: string;
+  limit: number;
+}
+
 const page = Effect.fn("Snapshot.page")(function* page<S extends Schema.Top>(
   nsid: string,
   output: S,
   cursor?: string
 ) {
+  const params: PageParams = {
+    limit: 100,
+  };
+
+  if (nsid === Names.Method.nsid) {
+    Object.assign(params, { all: true });
+  }
+
+  if (cursor !== undefined) {
+    Object.assign(params, { cursor });
+  }
+
   const response = yield* (yield* Transport)
     .request({
       input: undefined,
       method: "GET",
       nsid,
-      params: cursor === undefined ? { limit: 100 } : { cursor, limit: 100 },
+      params: { ...params },
     })
     .pipe(
       Effect.mapError(

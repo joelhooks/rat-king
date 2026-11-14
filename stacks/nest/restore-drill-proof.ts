@@ -404,7 +404,7 @@ const program = Effect.gen(function* restoreProof() {
       const nameCursors = new Set<string>();
 
       do {
-        const params: NamePageParams = { limit: "100" };
+        const params: NamePageParams = { all: "true", limit: "100" };
 
         if (nameCursor !== undefined) {
           params.cursor = nameCursor;

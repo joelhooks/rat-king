@@ -27,11 +27,16 @@ export declare const Entry: Schema.StructWithRest<Schema.Struct<{
         readonly name: Schema.String;
         readonly session: Schema.String;
     }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
+    readonly roleTarget: Schema.optionalKey<Schema.Boolean>;
+    readonly status: Schema.optionalKey<Schema.compose<Schema.Literals<readonly ["live", "idle", "retired"]>, Schema.String>>;
 }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
 export type EntryValue = typeof Entry.Type;
 export declare const Params: Schema.StructWithRest<Schema.Struct<{
+    readonly all: Schema.optionalKey<Schema.Boolean>;
     readonly cursor: Schema.optionalKey<Schema.String>;
     readonly limit: Schema.optionalKey<Schema.Int>;
+    readonly match: Schema.optionalKey<Schema.String>;
+    readonly status: Schema.optionalKey<Schema.String>;
 }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
 export type ParamsValue = typeof Params.Type;
 export declare const Input: Schema.Undefined;
@@ -60,25 +65,40 @@ export declare const Output: Schema.StructWithRest<Schema.Struct<{
             readonly name: Schema.String;
             readonly session: Schema.String;
         }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
+        readonly roleTarget: Schema.optionalKey<Schema.Boolean>;
+        readonly status: Schema.optionalKey<Schema.compose<Schema.Literals<readonly ["live", "idle", "retired"]>, Schema.String>>;
     }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
+    readonly scanned: Schema.optionalKey<Schema.Int>;
 }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
 export type OutputValue = typeof Output.Type;
 export declare const ParamsFromQuery: Schema.compose<Schema.StructWithRest<Schema.Struct<{
+    readonly all: Schema.optionalKey<Schema.Boolean>;
     readonly cursor: Schema.optionalKey<Schema.String>;
     readonly limit: Schema.optionalKey<Schema.Int>;
+    readonly match: Schema.optionalKey<Schema.String>;
+    readonly status: Schema.optionalKey<Schema.String>;
 }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>, Schema.StructWithRest<Schema.Struct<{
+    readonly all: Schema.optionalKey<Schema.decodeTo<Schema.Boolean, Schema.Literals<readonly ["true", "false"]>, never, never>>;
     readonly cursor: Schema.optionalKey<Schema.String>;
     readonly limit: Schema.optionalKey<Schema.FiniteFromString>;
+    readonly match: Schema.optionalKey<Schema.String>;
+    readonly status: Schema.optionalKey<Schema.String>;
 }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
 export declare const encodeParams: (params: {
     readonly [x: string]: Runtime.LexValue;
+    readonly all?: boolean;
     readonly cursor?: string;
     readonly limit?: number;
+    readonly match?: string;
+    readonly status?: string;
 }) => Effect.Effect<readonly (readonly [string, string])[], Schema.SchemaError, never>;
 export declare const decodeParams: (entries: readonly (readonly [string, string])[]) => Effect.Effect<{
     readonly [x: string]: Runtime.LexValue;
+    readonly all?: boolean;
     readonly cursor?: string;
     readonly limit?: number;
+    readonly match?: string;
+    readonly status?: string;
 }, Schema.SchemaError, never>;
 export declare const ErrorBody: Schema.StructWithRest<Schema.Struct<{
     readonly error: Schema.String;
@@ -124,12 +144,18 @@ export declare const Method: {
                 readonly name: Schema.String;
                 readonly session: Schema.String;
             }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
+            readonly roleTarget: Schema.optionalKey<Schema.Boolean>;
+            readonly status: Schema.optionalKey<Schema.compose<Schema.Literals<readonly ["live", "idle", "retired"]>, Schema.String>>;
         }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
+        readonly scanned: Schema.optionalKey<Schema.Int>;
     }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
     readonly outputEncoding: "application/json";
     readonly params: Schema.StructWithRest<Schema.Struct<{
+        readonly all: Schema.optionalKey<Schema.Boolean>;
         readonly cursor: Schema.optionalKey<Schema.String>;
         readonly limit: Schema.optionalKey<Schema.Int>;
+        readonly match: Schema.optionalKey<Schema.String>;
+        readonly status: Schema.optionalKey<Schema.String>;
     }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
     readonly path: "/xrpc/sh.mschf.ratking.identity.listNames";
 };

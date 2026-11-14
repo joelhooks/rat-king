@@ -42,6 +42,9 @@ export class Issuer extends Context.Service<
       parent?: typeof ForkParent.Type
     ) => Effect.Effect<string, IssuerError>;
     readonly names: Effect.Effect<readonly Resolved[], IssuerError>;
+    readonly directory: (
+      params: ListNames.ParamsValue
+    ) => Effect.Effect<ListNames.OutputValue, IssuerError>;
   }
 >()("pi-ratking/Issuer") {}
 
@@ -184,17 +187,16 @@ export const issuerLayer = Layer.effect(
 
     const page = Effect.fn("Issuer.page")(function* page(
       service: { readonly endpoint: string; readonly host: string },
-      cursor: Option.Option<string>
+      params: ListNames.ParamsValue
     ) {
       return yield* Schema.decodeUnknownEffect(ListNames.Output)(
         yield* call(service, {
           input: undefined,
           method: "GET",
           nsid: ListNames.Method.nsid,
-          params: Option.match(cursor, {
-            onNone: () => ({}),
-            onSome: (value) => ({ cursor: value }),
-          }),
+          params: yield* Schema.encodeEffect(ListNames.Params)(params).pipe(
+            Effect.mapError(fail("Directory filters are not encodable"))
+          ),
         })
       ).pipe(Effect.mapError(fail("Issuer answered with an invalid body")));
     });
@@ -208,7 +210,13 @@ export const issuerLayer = Layer.effect(
         let cursor: Option.Option<string> = Option.none();
 
         for (let index = 0; index < maxPages; index += 1) {
-          const listed = yield* page(service, cursor);
+          const listed = yield* page(
+            service,
+            Option.match(cursor, {
+              onNone: () => ({}),
+              onSome: (value) => ({ cursor: value }),
+            })
+          );
 
           found.push(...listed.names);
           cursor = Option.fromNullishOr(listed.cursor);
@@ -238,6 +246,27 @@ export const issuerLayer = Layer.effect(
     });
 
     return Issuer.of({
+      directory: Effect.fn("Issuer.directory")(function* readDirectory(params) {
+        const setting = yield* configured;
+
+        if (Schema.is(CommandIssuer)(setting)) {
+          return yield* new IssuerError({
+            reason: "Directory status filters require a service issuer",
+          });
+        }
+
+        return yield* page(setting, params).pipe(
+          Deadline.timeoutOrElse({
+            duration: Deadline.OPERATION_MS,
+            orElse: () =>
+              Effect.fail(
+                new IssuerError({
+                  reason: "Issuer directory deadline exceeded",
+                })
+              ),
+          })
+        );
+      }),
       ensure: Effect.fn("Issuer.ensure")(
         function* ensure(name, document, parent) {
           const setting = yield* configured;

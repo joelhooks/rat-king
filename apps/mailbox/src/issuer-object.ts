@@ -111,9 +111,13 @@ export class Issuer extends DurableObject<Bindings> {
           );
 
           return standing.retirement === undefined
-            ? { exists: standing.exists }
+            ? {
+                exists: standing.exists,
+                leaseExpiresAt: standing.leaseExpiresAt,
+              }
             : {
                 exists: standing.exists,
+                leaseExpiresAt: standing.leaseExpiresAt,
                 retirement: yield* Schema.decodeUnknownEffect(
                   Schema.fromJsonString(Retirement)
                 )(standing.retirement).pipe(

@@ -54,6 +54,7 @@ it.live.prop(
             Effect.sync(() => Redacted.make(values.get(name) ?? "")),
         }),
         Layer.succeed(Issuer, {
+          directory: () => Effect.succeed({ names: [] }),
           ensure: (name, document) =>
             Effect.sync(() => {
               issued.push(name);

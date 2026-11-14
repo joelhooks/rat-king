@@ -3,6 +3,7 @@ import * as Wake from "@rat-king/lexicon/agentgraph.wake";
 import type * as Prefs from "@rat-king/lexicon/attention.prefs";
 import type * as AttentionStatus from "@rat-king/lexicon/attention.status";
 import * as Defs from "@rat-king/lexicon/defs";
+import * as ListNames from "@rat-king/lexicon/identity.listNames";
 import * as Retire from "@rat-king/lexicon/identity.retireName";
 import * as Runtime from "@rat-king/lexicon/runtime";
 import type * as Lease from "@rat-king/lexicon/runtime.lease";
@@ -63,18 +64,19 @@ import type {
   AttentionValue,
 } from "./attention.ts";
 import { AskAimedAtCc, ccLint, ccRefusal } from "./cc-lint.ts";
-import { Settings } from "./config.ts";
+import { CommandIssuer, ServiceIssuer, Settings } from "./config.ts";
 import type { ThreadRoutingValue } from "./config.ts";
 import { injects, recipientLevels } from "./delivery.ts";
 import type { RecipientLevelValue } from "./delivery.ts";
 import { digestFor } from "./digest.ts";
+import { matchesName } from "./directory-view.ts";
 import { Directory, writePrivateJson } from "./directory.ts";
 import type { Listed, Resolved } from "./directory.ts";
 import { quietAsk, reasonOf } from "./errors.ts";
 import type { QuietAsk } from "./errors.ts";
 import { claimName, ensureIdentity, publicDocument } from "./identity.ts";
 import type { SessionFacts } from "./identity.ts";
-import { Issuer } from "./issuer.ts";
+import { Issuer, IssuerError } from "./issuer.ts";
 import {
   readerRetryDelay,
   recoverHeld,
@@ -563,6 +565,9 @@ export class RatKing extends Context.Service<
     ) => Effect.Effect<Delivered | HandledAck, NotDelivered | AskFailed>;
     readonly pending: Effect.Effect<readonly Received[]>;
     readonly list: Effect.Effect<readonly Listed[]>;
+    readonly directory: (
+      params: ListNames.ParamsValue
+    ) => Effect.Effect<ListNames.OutputValue, IssuerError>;
     readonly roles: Effect.Effect<readonly RoleEntry[], NotDelivered>;
     readonly retire: (
       successor: Option.Option<string>
@@ -3792,6 +3797,40 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       );
     }),
     attention: (input) => attention.change(input).pipe(foreground),
+    directory: Effect.fn("RatKing.directory")(function* directoryPage(params) {
+      if (
+        Option.exists(settings.issuer, Schema.is(ServiceIssuer)) ||
+        params.status !== undefined
+      ) {
+        return yield* issuer.directory(params);
+      }
+
+      const limit = params.limit ?? 100;
+
+      const entries = (yield* directory.list)
+        .filter((entry) => entry.name > (params.cursor ?? ""))
+        .filter(
+          (entry) =>
+            params.match === undefined || matchesName(entry.name, params.match)
+        )
+        .toSorted((left, right) => (left.name < right.name ? -1 : 1));
+
+      const resolved = yield* Effect.forEach(entries.slice(0, limit), (entry) =>
+        directory.resolve(entry.name).pipe(Effect.option)
+      );
+
+      const names = resolved.flatMap(Option.toArray);
+
+      const page = { names };
+
+      if (entries.length > limit) {
+        Object.assign(page, { cursor: entries.at(limit - 1)?.name });
+      }
+
+      return yield* Schema.decodeUnknownEffect(ListNames.Output)(page).pipe(
+        Effect.mapError((error) => new IssuerError({ reason: String(error) }))
+      );
+    }),
     handled: (id) =>
       unlessBarred.pipe(Effect.andThen(confirmHandled(id)), foreground),
     list: Effect.gen(function* list() {
@@ -3799,12 +3838,14 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         Effect.tapError(() =>
           Effect.logWarning("Rat King issuer directory unavailable")
         ),
-        Effect.orElseSucceed((): readonly Resolved[] => [])
+        Effect.option
       );
+
+      const names = Option.getOrElse(remote, (): readonly Resolved[] => []);
 
       const known = new Set((yield* directory.list).map((entry) => entry.name));
 
-      for (const entry of remote) {
+      for (const entry of names) {
         if (
           !known.has(entry.name) &&
           !isReserved(settings.reserved, entry.name) &&
@@ -3821,7 +3862,24 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         }
       }
 
-      return yield* directory.list;
+      const listed = yield* directory.list;
+
+      if (
+        Option.isNone(remote) ||
+        Option.isNone(settings.issuer) ||
+        Option.exists(settings.issuer, Schema.is(CommandIssuer))
+      ) {
+        return listed;
+      }
+
+      const current = new Map(names.map((entry) => [entry.name, entry]));
+
+      return listed
+        .filter((entry) => entry.reserved || current.has(entry.name))
+        .map((entry) => ({
+          ...entry,
+          roleTarget: current.get(entry.name)?.roleTarget ?? false,
+        }));
     }).pipe(
       Deadline.timeoutOrElse({
         duration: Deadline.OPERATION_MS,

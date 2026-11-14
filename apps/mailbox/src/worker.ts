@@ -728,6 +728,7 @@ export class Mailbox extends DurableObject<Bindings> {
 
           return {
             exists,
+            leaseExpiresAt: tx.lease()?.expiresAt ?? 0,
             retirement:
               retirement === undefined
                 ? undefined

@@ -51,6 +51,8 @@ import {
 import type { Duration } from "effect";
 import type { PlatformError } from "effect/PlatformError";
 
+import { DirectoryStatus, directoryPage } from "./directory-page.ts";
+
 export const Action = Schema.Literals([
   "attention",
   "filter",
@@ -88,6 +90,7 @@ export const ToolParams = Schema.Struct({
   cc: Schema.optionalKey(Schema.Array(Schema.String)),
   ccOnPurpose: Schema.optionalKey(Schema.Boolean),
   critical: Schema.optionalKey(Schema.Boolean),
+  cursor: Schema.optionalKey(Schema.String),
   cwd: Schema.optionalKey(Schema.String),
   delegate: Schema.optionalKey(Schema.String),
   dueBy: Schema.optionalKey(Schema.Finite),
@@ -117,7 +120,13 @@ export const ToolParams = Schema.Struct({
   replyTo: Schema.optionalKey(Schema.String),
   retryOf: Schema.optionalKey(Schema.String),
   rule: Schema.optionalKey(Schema.Json),
-  status: Schema.optionalKey(Schema.Literals(["available", "busy", "dnd"])),
+  status: Schema.optionalKey(
+    Schema.Union([
+      Schema.Literals(["available", "busy", "dnd"]),
+      DirectoryStatus,
+      Schema.Array(DirectoryStatus),
+    ])
+  ),
   successor: Schema.optionalKey(Schema.String),
   summary: Schema.optionalKey(Schema.String),
   supersedes: Schema.optionalKey(Schema.String),
@@ -129,6 +138,15 @@ export const ToolParams = Schema.Struct({
   type: Schema.optionalKey(Schema.String),
   until: Schema.optionalKey(Schema.String),
   wait: Schema.optionalKey(Schema.Boolean),
+});
+
+const AttentionParams = Schema.Struct({
+  delegate: ToolParams.fields.delegate,
+  exempt: ToolParams.fields.exempt,
+  note: ToolParams.fields.note,
+  prefs: ToolParams.fields.prefs,
+  status: Schema.optionalKey(Schema.Literals(["available", "busy", "dnd"])),
+  until: ToolParams.fields.until,
 });
 
 export type ToolParamsValue = typeof ToolParams.Type;
@@ -376,7 +394,7 @@ export const description = (tool: string) =>
 
 Messages are signed plaintext by default, readable by operators and observers such as Joel's phone feed. Pass encrypt: true on send, ask or reply to end-to-end encrypt anything containing secrets, credentials, customer data or private transcripts. With encrypt: true, summary and attachments are sealed with the body; only the sender's local sent record stays readable.
 
-Address agents by Rat King name (for example switchboard, or project/row). list shows at most 50 names, hides session/probe/canary names, and stays under 4 KB. match filters names (a trailing / means prefix); all includes ephemeral names and DIDs. Page with limit (1–200, default 50) and offset, following the returned offset.
+Address agents by Rat King name (for example switchboard, or project/row). list defaults to non-retired names, hides session/probe/canary names, and marks role targets. match filters names (a trailing / means prefix). status: live, idle or retired (or an array) selects statuses; live means an unexpired lease, idle means no live lease. Live/idle scans inspect at most 200 candidates per call, so short or empty pages can still have more to scan. all: true includes retired and ephemeral names and DIDs without inspecting leases. Rows without lease inspection say non-retired, never guessed idle. Default pages use limit and offset; explicit status/all pages return cursor: for continuation with the same filters, up to 100 names and under 4 KB.
 
 send and ask accept cc: ["name", ...]. to: is for whoever must act, and wakes them unless quiet: true requests next-turn or digest delivery. quiet is not for asks. cc: is for whoever should know: a quiet copy that does not wake. A send whose message or summary addresses a cc'd name (@name, or an "ask for name" line) is refused; pass ccOnPurpose: true if the cc is deliberate. reply defaults to reply-all; replyAll: false answers only the sender. To answer a message that arrived before this Pi's reader last started, add to: the asker's name. handled with replyTo confirms a relayed original to its desk without replying to the sender.
 
@@ -397,7 +415,8 @@ Usage:
   ${tool}({ action: "pending" })                                     → Unanswered inbound asks and open outbound asks
   ${tool}({ action: "list" })                                       → Directory names and roles, each with its role line
   ${tool}({ action: "list", match: "muster/" })                     → Matching directory names and roles
-  ${tool}({ action: "list", all: true, limit: 50, offset: 0 })       → Full directory page with DIDs
+  ${tool}({ action: "list", all: true, limit: 50, offset: 0 })       → Full directory page with DIDs, including retired names
+  ${tool}({ action: "list", status: ["live", "idle"] })             → Lease-filtered page; follow cursor even after an empty page
   ${tool}({ action: "status" })                                      → This Pi's name and reader
   ${tool}({ action: "claim" })                                       → Retry a blocked name claim once
   ${tool}({ action: "attention" })                                   → Public status and private preferences; status/until/note sets status, prefs replaces preferences (Jev now/later use decimals 0..1)
@@ -570,7 +589,10 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
     Match.whenOr("list", "list-cwd", () =>
       Effect.gen(function* list() {
         const roles =
-          params.action === "list" && params.all !== true
+          params.action === "list" &&
+          params.all !== true &&
+          params.status === undefined &&
+          params.cursor === undefined
             ? Option.some(yield* ratking.roles.pipe(Effect.result))
             : Option.none();
 
@@ -580,14 +602,36 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
           status.self.pipe(Option.map(({ name }) => name))
         );
 
+        if (
+          params.all === true ||
+          params.status !== undefined ||
+          params.cursor !== undefined
+        ) {
+          return yield* directoryPage(ratking, params).pipe(
+            Effect.map((text) => ok(text)),
+            Effect.catch((error) =>
+              Effect.succeed(loud(`Directory unavailable: ${String(error)}`))
+            )
+          );
+        }
+
         if (Option.isSome(roles)) {
           const listed = roles.value;
 
           const entries = yield* ratking.list;
 
           if (Result.isSuccess(listed)) {
+            const targets = new Set(
+              listed.success.map((entry) => entry.target)
+            );
+
+            const marked = entries.map((entry) => ({
+              ...entry,
+              roleTarget: entry.roleTarget === true || targets.has(entry.name),
+            }));
+
             return ok(
-              `${listView(entries, own, params).text}\n\n${rolesView(listed.success, own, params).text}`
+              `${listView(marked, own, params).text}\n\n${rolesView(listed.success, own, params).text}\nRetired hidden; use status: retired or all: true.`
             );
           }
 
@@ -622,11 +666,15 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
       )
     ),
     Match.when("attention", () =>
-      ratking.attention(params).pipe(
+      Schema.decodeUnknownEffect(AttentionParams)(params).pipe(
+        Effect.flatMap((input) => ratking.attention(input)),
         Effect.map((value) =>
           ok(
             JSON.stringify(
-              { prefs: decimalPreferences(value.prefs), status: value.status },
+              {
+                prefs: decimalPreferences(value.prefs),
+                status: value.status,
+              },
               null,
               2
             )
