@@ -83,18 +83,15 @@ export const directoryPage = Effect.fn("RatKing.directoryPage")(
             Schema.Union([DirectoryStatus, Schema.Array(DirectoryStatus)])
           )(params.status);
 
-    let statuses = Schema.is(DirectoryStatus)(status)
+    const statuses = Schema.is(DirectoryStatus)(status)
       ? [status]
       : (status ?? []);
-
-    if (params.all === true) {
-      statuses = [];
-    }
 
     let offset = params.offset ?? 0;
 
     if (
       offset > 0 &&
+      params.all !== true &&
       statuses?.some((value) => value === "live" || value === "idle")
     ) {
       return "Live/idle pages use cursor: instead of offset: so each call inspects at most 200 candidates.";

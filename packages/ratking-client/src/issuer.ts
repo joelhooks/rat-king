@@ -298,6 +298,16 @@ export const issuerLayer = Layer.effect(
               )
             );
 
+          yield* directory.clearRetired(name).pipe(
+            Effect.tapError((failure) =>
+              Effect.logWarning(
+                "Registration succeeded; local retired overlay clear failed",
+                { reason: failure.reason }
+              )
+            ),
+            Effect.ignore
+          );
+
           return did;
         },
         (effect) =>

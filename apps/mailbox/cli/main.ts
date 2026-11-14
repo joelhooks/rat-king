@@ -266,26 +266,33 @@ export const identityCommand = Command.make(
   })
 );
 
-export const provisionCommand = Command.make(
-  "provision",
-  {
-    agent: Flag.String("agent"),
-    did: Flag.String("did"),
-    secret: Flag.String("secret").pipe(Flag.optional),
-    secretsConfig: Flag.String("secrets-config").pipe(Flag.optional),
-    secretsSocket: Flag.String("secrets-socket").pipe(Flag.optional),
-  },
-  Effect.fn("MailboxCli.provision")(function* provisionCommand(args) {
+export const provisionFlags = {
+  agent: Flag.String("agent"),
+  did: Flag.String("did"),
+  secret: Flag.String("secret").pipe(Flag.optional),
+  secretsConfig: Flag.String("secrets-config").pipe(Flag.optional),
+  secretsSocket: Flag.String("secrets-socket").pipe(Flag.optional),
+};
+
+export type ProvisionArgs = Command.Command.Config.Infer<typeof provisionFlags>;
+
+export const provisionServices = (args: ProvisionArgs) => {
+  const secretOptions: MutableSecretOptions = {};
+
+  if (Option.isSome(args.secretsConfig)) {
+    secretOptions.config = args.secretsConfig.value;
+  }
+
+  if (Option.isSome(args.secretsSocket)) {
+    secretOptions.socket = args.secretsSocket.value;
+  }
+
+  return Layer.merge(FetchHttpClient.layer, secretStoreLayer(secretOptions));
+};
+
+export const provisionFromFlags = Effect.fn("MailboxCli.provision")(
+  function* provisionFromFlags(args: ProvisionArgs) {
     const env = yield* environment;
-    const secretOptions: MutableSecretOptions = {};
-
-    if (Option.isSome(args.secretsConfig)) {
-      secretOptions.config = args.secretsConfig.value;
-    }
-
-    if (Option.isSome(args.secretsSocket)) {
-      secretOptions.socket = args.secretsSocket.value;
-    }
 
     const input = {
       ...env,
@@ -308,12 +315,18 @@ export const provisionCommand = Command.make(
       ? { ...input, secret: secret.value }
       : input;
 
-    yield* print(
-      yield* provisionAgent(withSecret).pipe(
-        Effect.provide([FetchHttpClient.layer, secretStoreLayer(secretOptions)])
-      )
-    );
-  })
+    return yield* provisionAgent(withSecret);
+  }
+);
+
+export const provisionCommand = Command.make(
+  "provision",
+  provisionFlags,
+  (args) =>
+    provisionFromFlags(args).pipe(
+      Effect.provide(provisionServices(args)),
+      Effect.flatMap(print)
+    )
 );
 
 const registerCommand = Command.make(

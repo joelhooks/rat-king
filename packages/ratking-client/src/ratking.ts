@@ -69,6 +69,7 @@ import type { ThreadRoutingValue } from "./config.ts";
 import { injects, recipientLevels } from "./delivery.ts";
 import type { RecipientLevelValue } from "./delivery.ts";
 import { digestFor } from "./digest.ts";
+import { projectLocalNames } from "./directory-list.ts";
 import { matchesName } from "./directory-view.ts";
 import { Directory, writePrivateJson } from "./directory.ts";
 import type { Listed, Resolved } from "./directory.ts";
@@ -1435,6 +1436,16 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             if (source !== "acquire") {
               return;
             }
+
+            yield* directory.clearRetired(own.name).pipe(
+              Effect.tapError((failure) =>
+                Effect.logWarning(
+                  "Lease acquired; local retired overlay clear failed",
+                  { reason: failure.reason }
+                )
+              ),
+              Effect.ignore
+            );
 
             const priorReader = yield* restoreStep(
               facts,
@@ -3800,14 +3811,24 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     directory: Effect.fn("RatKing.directory")(function* directoryPage(params) {
       if (
         Option.exists(settings.issuer, Schema.is(ServiceIssuer)) ||
-        params.status !== undefined
+        (params.status !== undefined &&
+          params.status.split(",").some((status) => status !== "retired"))
       ) {
         return yield* issuer.directory(params);
       }
 
       const limit = params.limit ?? 100;
 
-      const entries = (yield* directory.list)
+      const retired = yield* directory.retired;
+      let filter: "active" | "retired" | "all" = "active";
+
+      if (params.all === true) {
+        filter = "all";
+      } else if (params.status !== undefined) {
+        filter = "retired";
+      }
+
+      const entries = projectLocalNames(yield* directory.list, retired, filter)
         .filter((entry) => entry.name > (params.cursor ?? ""))
         .filter(
           (entry) =>
@@ -3819,7 +3840,11 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         directory.resolve(entry.name).pipe(Effect.option)
       );
 
-      const names = resolved.flatMap(Option.toArray);
+      const names = projectLocalNames(
+        resolved.flatMap(Option.toArray),
+        retired,
+        filter
+      );
 
       const page = { names };
 
@@ -3869,7 +3894,9 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         Option.isNone(settings.issuer) ||
         Option.exists(settings.issuer, Schema.is(CommandIssuer))
       ) {
-        return listed;
+        return Option.exists(settings.issuer, Schema.is(ServiceIssuer))
+          ? listed
+          : projectLocalNames(listed, yield* directory.retired, "active");
       }
 
       const current = new Map(names.map((entry) => [entry.name, entry]));
@@ -3883,7 +3910,14 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     }).pipe(
       Deadline.timeoutOrElse({
         duration: Deadline.OPERATION_MS,
-        orElse: () => directory.list,
+        orElse: () =>
+          Effect.gen(function* localListFallback() {
+            const listed = yield* directory.list;
+
+            return Option.exists(settings.issuer, Schema.is(ServiceIssuer))
+              ? listed
+              : projectLocalNames(listed, yield* directory.retired, "active");
+          }),
       })
     ),
     pending: Effect.gen(function* pendingAsks() {
@@ -4056,13 +4090,27 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         );
       }
 
-      return yield* Schema.decodeUnknownEffect(Retire.Output)(
+      const retirement = yield* Schema.decodeUnknownEffect(Retire.Output)(
         response.body
       ).pipe(
         Effect.mapError(() =>
           refused("Uncertain")("Name authority answered with an invalid body")
         )
       );
+
+      yield* directory
+        .recordRetired(own.name, Option.getOrUndefined(successor))
+        .pipe(
+          Effect.tapError((failure) =>
+            Effect.logWarning(
+              "Name IS retired; local retired overlay update failed",
+              { reason: failure.reason }
+            )
+          ),
+          Effect.ignore
+        );
+
+      return retirement;
     }, foreground),
     roles: Effect.gen(function* roles() {
       const own = yield* awaitSelf;

@@ -42,6 +42,7 @@ const clientCommands = [
   ["filter list", false],
   ["identity", true],
   ["provision", true],
+  ["retired-import", true],
   ["retire", true],
   ["unretire", true],
   ["retired", false],

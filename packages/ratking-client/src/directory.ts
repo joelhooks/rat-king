@@ -9,6 +9,7 @@ import {
   Layer,
   Option,
   Path,
+  Record,
   Schema,
 } from "effect";
 
@@ -27,6 +28,16 @@ export const Entry = Schema.Struct({
 export const Entries = Schema.Record(AgentName, Entry);
 
 export type EntriesValue = typeof Entries.Type;
+
+export const LocalRetirement = Schema.Struct({
+  retiredAt: Schema.optionalKey(Schema.Finite),
+  source: Schema.Literals(["import", "retire"]),
+  successor: Schema.optionalKey(AgentName),
+});
+
+export const RetiredNames = Schema.Record(AgentName, LocalRetirement);
+
+export type RetiredNamesValue = typeof RetiredNames.Type;
 
 export interface Resolved {
   readonly name: string;
@@ -64,6 +75,20 @@ export class DirectoryError extends Schema.TaggedError<DirectoryError>()(
 export class Directory extends Context.Service<
   Directory,
   {
+    readonly retired: Effect.Effect<RetiredNamesValue>;
+    readonly importRetired: (
+      names: readonly string[]
+    ) => Effect.Effect<
+      { readonly added: number; readonly already: number },
+      DirectoryError
+    >;
+    readonly recordRetired: (
+      name: string,
+      successor?: string
+    ) => Effect.Effect<void, DirectoryError>;
+    readonly clearRetired: (
+      name: string
+    ) => Effect.Effect<void, DirectoryError>;
     readonly resolve: (name: string) => Effect.Effect<Resolved, UnknownName>;
     readonly nameOf: (did: string) => Effect.Effect<Option.Option<string>>;
     readonly list: Effect.Effect<readonly Listed[]>;
@@ -102,6 +127,62 @@ export const directoryLayer = Layer.effect(
     const settings = yield* Settings;
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
+
+    const overlayFile = path.join(settings.state, "retired.json");
+
+    const readRetired = Effect.gen(function* readRetired() {
+      if (!(yield* fs.exists(overlayFile))) {
+        return {};
+      }
+
+      return yield* Schema.decodeEffect(Schema.fromJsonString(RetiredNames))(
+        yield* fs.readFileString(overlayFile)
+      );
+    }).pipe(
+      Effect.mapError(
+        () =>
+          new DirectoryError({
+            reason:
+              "Local retired overlay is unreadable; identity directory was not changed",
+          })
+      )
+    );
+
+    const modifyRetired = <A>(
+      change: (known: RetiredNamesValue) => {
+        readonly changed: boolean;
+        readonly next: RetiredNamesValue;
+        readonly result: A;
+      }
+    ) =>
+      withLock(
+        path.join(settings.state, "locks"),
+        "directory",
+        Effect.gen(function* updateRetiredOverlay() {
+          const update = change(yield* readRetired);
+
+          if (update.changed) {
+            yield* writePrivateJson(
+              overlayFile,
+              yield* Schema.encodeEffect(Schema.fromJsonString(RetiredNames))(
+                update.next
+              )
+            );
+          }
+
+          return update.result;
+        })
+      ).pipe(
+        Effect.mapError(
+          () =>
+            new DirectoryError({
+              reason:
+                "Local retired overlay update failed; identity directory was not changed",
+            })
+        ),
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path)
+      );
 
     const entries = fs.readFileString(settings.directory).pipe(
       Effect.flatMap(
@@ -169,6 +250,19 @@ export const directoryLayer = Layer.effect(
     });
 
     return Directory.of({
+      clearRetired: Effect.fn("Directory.clearRetired")(
+        function* clearRetired(name) {
+          yield* modifyRetired((known) => {
+            const next = Record.remove(known, name);
+
+            return {
+              changed: Object.hasOwn(known, name),
+              next,
+              result: undefined,
+            };
+          });
+        }
+      ),
       documents: Effect.gen(function* documents() {
         const known = yield* entries;
         const docs = yield* configured;
@@ -178,6 +272,37 @@ export const directoryLayer = Layer.effect(
           ...Object.values(known).map((entry) => entry.document),
         ];
       }),
+      importRetired: Effect.fn("Directory.importRetired")(
+        function* importRetired(names) {
+          const validated = yield* Schema.decodeUnknownEffect(
+            Schema.Array(AgentName)
+          )(names).pipe(
+            Effect.mapError(
+              () =>
+                new DirectoryError({
+                  reason: "Invalid name in retired import; nothing was written",
+                })
+            )
+          );
+
+          return yield* modifyRetired((known) => {
+            const next = { ...known };
+            let added = 0;
+            let already = 0;
+
+            for (const name of validated) {
+              if (Object.hasOwn(next, name)) {
+                already += 1;
+              } else {
+                next[name] = { source: "import" };
+                added += 1;
+              }
+            }
+
+            return { changed: added > 0, next, result: { added, already } };
+          });
+        }
+      ),
       list: Effect.gen(function* list() {
         const known = yield* entries;
 
@@ -253,7 +378,37 @@ export const directoryLayer = Layer.effect(
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.provideService(Path.Path, path)
       ),
+      recordRetired: Effect.fn("Directory.recordRetired")(
+        function* recordRetired(name, destination) {
+          const raw = {
+            retiredAt: yield* Clock.currentTimeMillis,
+            source: "retire",
+          };
+
+          if (destination !== undefined) {
+            Object.assign(raw, { successor: destination });
+          }
+
+          const record = yield* Schema.decodeUnknownEffect(
+            Schema.Struct({ name: AgentName, retirement: LocalRetirement })
+          )({ name, retirement: raw }).pipe(
+            Effect.mapError(
+              () => new DirectoryError({ reason: "Invalid local retirement" })
+            )
+          );
+
+          yield* modifyRetired((known) => ({
+            changed: true,
+            next: { ...known, [record.name]: record.retirement },
+            result: undefined,
+          }));
+        }
+      ),
       resolve,
+      retired: readRetired.pipe(
+        Effect.tapError((failure) => Effect.logWarning(failure.reason)),
+        Effect.orElseSucceed((): RetiredNamesValue => ({}))
+      ),
     });
   })
 );
