@@ -13,7 +13,7 @@
     "@rat-king/lexicon": "workspace:*",
     "@rat-king/mailbox-client": "workspace:*",
     "effect": "4.0.5",
-    "xstate": "6.0.0-alpha.70"
+    "xstate": "6.0.0-beta.1"
   },
   "devDependencies": {
     "@effect/vitest": "4.0.5",

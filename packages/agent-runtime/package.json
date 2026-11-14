@@ -18,7 +18,7 @@
     "@rat-king/envelope": "workspace:*",
     "@rat-king/lexicon": "workspace:*",
     "effect": "4.0.5",
-    "xstate": "6.0.0-alpha.70"
+    "xstate": "6.0.0-beta.1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261019.1",
