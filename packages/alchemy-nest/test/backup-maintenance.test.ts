@@ -90,6 +90,10 @@ const published = "20000102T030405.123456Z-0123456789abcdef0123456789abcdef";
 const outputs = new Map([
   ["stage", "/srv/example/.mailbox-backup-0123456789abcdef0123456789abcdef"],
   ["pack", "4096"],
+  [
+    "snapshot",
+    'BACKUP_SNAPSHOT_CAPTURED {"celld":{"bytes":2048},"seaweedfs":{"bytes":2048}}',
+  ],
   ["share-open", `.mailbox-publish-${published}`],
   ["share-commit", published],
 ]);

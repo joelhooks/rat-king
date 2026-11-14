@@ -37,6 +37,10 @@ const bounded = new Set([
 const outputs = new Map([
   ["cleanup", "BACKUP_CLEANED"],
   ["pack", "4096"],
+  [
+    "snapshot",
+    'BACKUP_SNAPSHOT_CAPTURED {"celld":{"bytes":2048},"seaweedfs":{"bytes":2048}}',
+  ],
   ["share-commit", name],
   ["share-open", `.mailbox-publish-${name}`],
   ["stage", staging],
@@ -271,10 +275,10 @@ it.effect.prop(
       yield* validateUnit(unit);
 
       const lines = unit.sections.flatMap((section) => section.lines);
-      expect(lines).toContainEqual(["MemoryHigh", "1536M"]);
-      expect(lines).toContainEqual(["MemoryMax", "2G"]);
+      expect(lines).toContainEqual(["MemoryHigh", "3G"]);
+      expect(lines).toContainEqual(["MemoryMax", "4G"]);
       expect(lines).toContainEqual(["CPUQuota", "200%"]);
-      expect(lines).toContainEqual(["TimeoutStartSec", "2h"]);
+      expect(lines).toContainEqual(["TimeoutStartSec", "4h"]);
       expect(lines).toContainEqual(["TimeoutStopSec", "90s"]);
       expect(lines).toContainEqual(["OOMPolicy", "stop"]);
       expect(lines.find(([key]) => key === "ExecStopPost")?.[1]).toContain(

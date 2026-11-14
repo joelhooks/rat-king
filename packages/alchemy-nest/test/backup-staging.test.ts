@@ -167,6 +167,10 @@ it.effect.prop(
 
           const outputs = new Map([
             ["pack", "4096"],
+            [
+              "snapshot",
+              'BACKUP_SNAPSHOT_CAPTURED {"celld":{"bytes":2048},"seaweedfs":{"bytes":2048}}',
+            ],
             ["share-open", `.mailbox-publish-${published}`],
             ["share-commit", published],
           ]);

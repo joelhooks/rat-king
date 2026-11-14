@@ -29,6 +29,14 @@ const ArchiveBytes = Schema.FiniteFromString.check(
   Schema.isGreaterThan(0)
 );
 
+const SnapshotTree = Schema.Struct({
+  bytes: Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0)),
+});
+
+const Snapshot = Schema.fromJsonString(
+  Schema.Struct({ celld: SnapshotTree, seaweedfs: SnapshotTree })
+);
+
 const PendingName = Schema.String.check(
   Schema.isPattern(/^\.mailbox-publish-\d{8}T\d{6}\.\d{6}Z-[a-f0-9]{32}$/u)
 );
@@ -43,7 +51,8 @@ export const snapshotLimit = Duration.seconds(60);
 
 export const precopyLimit = Duration.minutes(15);
 
-export const packLimit = Duration.minutes(45);
+export const packLimit = (bytes: number) =>
+  Duration.minutes(45 + Math.max(0, Math.ceil(bytes / 1_073_741_824) - 40));
 
 export const settleDelay = Duration.seconds(60);
 
@@ -232,7 +241,7 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
 
         const stoppedAt = yield* Clock.currentTimeMillis;
 
-        yield* Effect.gen(function* quiesce() {
+        const captured = yield* Effect.gen(function* quiesce() {
           yield* phase(
             "stop-maintenance-timers",
             Effect.all(maintenanceTimers.map((unit) => ctl("stop", unit)))
@@ -240,15 +249,18 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
           yield* phase("stop-node", ctl("stop", nodeService));
           yield* phase("stop-store", ctl("stop", storeService));
           yield* checkpoint("stopped");
-          yield* Effect.log(
-            (yield* phase(
-              "snapshot",
-              bounded("snapshot", snapshotLimit, script("snapshot", staging))
-            )).trim()
+
+          const report = yield* phase(
+            "snapshot",
+            bounded("snapshot", snapshotLimit, script("snapshot", staging))
           );
+
+          yield* Effect.log(report.trim());
           yield* checkpoint("copied");
           yield* resume;
           yield* checkpoint("started");
+
+          return report;
         }).pipe(
           Effect.onError(() =>
             Effect.gen(function* recover() {
@@ -263,6 +275,7 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
             )
           )
         );
+
         yield* Effect.log(
           "BACKUP_STOP_MS",
           (yield* Clock.currentTimeMillis) - stoppedAt
@@ -273,8 +286,20 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
         yield* Effect.gen(function* publish() {
           yield* memory("publish-start");
 
+          const snapshot = yield* Schema.decodeEffect(Snapshot)(
+            captured.trim().replace(/^BACKUP_SNAPSHOT_CAPTURED /u, "")
+          );
+
+          const snapshotBytes = snapshot.celld.bytes + snapshot.seaweedfs.bytes;
+          const pack = packLimit(snapshotBytes);
+          yield* Effect.log(
+            "BACKUP_PACK_LIMIT",
+            `bytes=${snapshotBytes}`,
+            `limitMs=${Duration.toMillis(pack)}`
+          );
+
           const bytes = yield* Schema.decodeEffect(ArchiveBytes)(
-            (yield* bounded("pack", packLimit, script("pack", staging))).trim()
+            (yield* bounded("pack", pack, script("pack", staging))).trim()
           );
 
           const transfer = transferLimit(bytes);
