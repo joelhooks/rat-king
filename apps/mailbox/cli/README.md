@@ -36,7 +36,25 @@ node /tmp/mailbox.mjs unretire --name example/row
 node /tmp/mailbox.mjs retired
 ```
 
-These call the issuer's `identity.retireName`, `identity.unretireName` and `identity.listRetired`, signed by `RAT_KING_OPERATOR_IDENTITY`. The issuer resolves the name through its own bindings, then its DID template, and refuses reserved names and names without a registered public document. After `retire`, the mailbox refuses mail to that DID with `Retired`, and the message names the successor. Repeating `retire` replaces the successor. The name's own identity acquiring its lease clears the retirement. `unretire` clears it by hand and reports whether anything was cleared. The name's own DID and the host that registered it may also call these methods.
+These call the issuer's `identity.retireName`, `identity.unretireName` and `identity.listRetired`, signed by `RAT_KING_OPERATOR_IDENTITY`. The issuer resolves the name through its own bindings, then its DID template, and refuses reserved names, roles and names without a registered public document. While a reader holds the name's lease, `retire` refuses `LeaseLive`; only the name's own DID may retire itself under a live lease. After `retire`, the mailbox refuses direct mail to that DID with `Retired`, and the message names the successor. Repeating `retire` replaces the successor. The name's own identity acquiring its lease clears the retirement. `unretire` clears it by hand and reports whether anything was cleared. The name's own DID and the host that registered it may also call these methods.
+
+```sh
+node /tmp/mailbox.mjs successor set --name example/row --successor example
+```
+
+`successor set` calls `identity.setSuccessor`. It re-points a name that is already retired, keeps `retiredAt` and `by`, and stamps `updatedAt`. It never retires, unretires or takes a lease, so a batch can call it once per name. Repeating it with the same successor changes nothing. The successor may be a row or a role. It refuses `NotRetired` for a live name, `UnknownName` for a successor that is neither, and `RoleUnresolved` when the successor's chain leads back to the name or needs more than 3 hops.
+
+## Roles
+
+```sh
+node /tmp/mailbox.mjs role set example --target example/row --role 'Example project desk'
+node /tmp/mailbox.mjs role delete example
+node /tmp/mailbox.mjs role list --json
+```
+
+A role is a stable name that senders address. The issuer resolves it to its target row at accept time, so the row behind it can change without senders changing. `role set` is an idempotent upsert through `identity.setRole`; the role line is one line of at most 120 characters. It refuses `NameCollision` for a bound, reserved or retired name, except a self-role (name equals target), which labels an existing row or reserved name without redirecting it. It refuses `UnknownName` for a target that is not a registered row. `role list` pages through `identity.listRoles` and prints every role.
+
+Senders call `identity.resolveRecipient` before sealing. A role forwards to its target and a retired name with a successor forwards to the successor, for at most 3 hops. The client seals to the final row and sends `resolvedFrom`, which the mailbox checks again at accept time and records on the receipt and the traffic entry. A cycle or a longer chain refuses `RoleUnresolved`; a chain that ends at a retired name with no successor refuses `Retired`. Both name the chain.
 
 ## File identities for existing proofs
 

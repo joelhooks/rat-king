@@ -34,7 +34,7 @@ export declare const ErrorBody: Schema.StructWithRest<Schema.Struct<{
     readonly message: Schema.optionalKey<Schema.String>;
 }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
 export type ErrorBodyValue = typeof ErrorBody.Type;
-export declare const KnownErrors: readonly ["InvalidRequest", "AuthRequired", "Forbidden", "InvalidName", "NameReserved", "NameTaken", "DocumentConflict", "MailboxUnavailable"];
+export declare const KnownErrors: readonly ["InvalidRequest", "AuthRequired", "Forbidden", "InvalidName", "NameReserved", "NameTaken", "NameCollision", "DocumentConflict", "MailboxUnavailable"];
 export type KnownError = (typeof KnownErrors)[number];
 export declare const isKnownError: (value: string) => value is KnownError;
 export declare const Method: {

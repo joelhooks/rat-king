@@ -23,12 +23,13 @@ This app calls `@rat-king/ratking-client` directly. It does not shell out to the
 | `ack` | Nonempty `ids` array | Settle only selected unsettled ids under a short lease. Refuse `LeaseHeld` when another reader owns the name. |
 | `pending` | `{}` | Open outbound asks and unanswered inbound asks. |
 | `lookup` | `name` | One configured-directory lookup with name, DID and existence. No full directory dump or remote identity creation. |
+| `list` | `{}` | Roles from the issuer: name, target row and role line. With `roleAllowlist` (role names) in the private config, only those roles. |
 
 Outputs are compact JSON in MCP structured content and text content. Expected client refusals carry `failed`, `why`, and `next`. Messages expose body, sender, id, sequence, state and thread metadata. Typed record bodies use `recordJson` to preserve their wire value without pretending lexicon data is plain JSON.
 
 Peeking, reading, lookup and sending do not start a reader. Only `ack` takes a lease. The underlying client's short hold delivers the page backlog before settling selected ids: other unsettled mail may become `delivered`, never `acked`. Unknown or already-settled ids are refused before a lease attempt. The caller must acknowledge only ids it actually handled. Keep deferred ids and revisit the inbox from an earlier cursor when needed.
 
-There are no relay, attention-write, filter-write, directory-dump or retirement tools. The app does not install a wake bridge or deploy services.
+There are no relay, attention-write, filter-write, directory-dump or retirement tools. `list` returns roles, not rows. The app does not install a wake bridge or deploy services.
 
 ## Checks
 

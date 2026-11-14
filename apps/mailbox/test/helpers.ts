@@ -11,7 +11,7 @@ import {
 } from "../../../packages/envelope/test/helpers.ts";
 import { Documents } from "../src/auth.ts";
 import { RetirementRegistry } from "../src/issuer.ts";
-import { markRetired } from "../src/retirement.ts";
+import { markRetired, repointRetirement } from "../src/retirement.ts";
 import { SenderFence } from "../src/sender-fence.ts";
 import { sqliteStore } from "../src/sqlite.ts";
 import type { Sql } from "../src/sqlite.ts";
@@ -131,11 +131,19 @@ export const storeRetirements = (
             })
           )
         ),
-      retire: (did, retirement) =>
+      repoint: (did, successor, updatedAt) =>
+        mailbox(did).pipe(
+          Effect.flatMap((store) =>
+            store.transaction((tx) =>
+              repointRetirement(tx, successor, updatedAt)
+            )
+          )
+        ),
+      retire: (did, retirement, holderMayRetire) =>
         mailbox(did).pipe(
           Effect.flatMap((store) =>
             store.transaction((tx) => {
-              markRetired(tx, [], retirement);
+              markRetired(tx, [], retirement, holderMayRetire);
             })
           )
         ),

@@ -21,7 +21,7 @@ import {
   Option,
   Schema,
 } from "effect";
-import { Command, Flag } from "effect/cli";
+import { Argument, Command, Flag } from "effect/cli";
 import { FetchHttpClient } from "effect/http";
 
 import { enrollHost } from "./enroll-host.ts";
@@ -29,7 +29,15 @@ import { CliError, readIdentity } from "./identity.ts";
 import { provision } from "./provision.ts";
 import { registerDocument } from "./register-document.ts";
 import { provisionAgent } from "./register.ts";
-import { listRetired, retireName, unretireName } from "./retire.ts";
+import {
+  deleteRole,
+  listRetired,
+  listRoles,
+  retireName,
+  setRole,
+  setSuccessor,
+  unretireName,
+} from "./retire.ts";
 import { secretStoreLayer } from "./secrets.ts";
 import { sendBody } from "./send-body.ts";
 import { traffic } from "./traffic.ts";
@@ -97,6 +105,9 @@ type CliOutput =
   | Effect.Success<ReturnType<typeof retireName>>
   | Effect.Success<ReturnType<typeof unretireName>>
   | Effect.Success<ReturnType<typeof listRetired>>
+  | Effect.Success<ReturnType<typeof setRole>>
+  | Effect.Success<ReturnType<typeof deleteRole>>
+  | Effect.Success<ReturnType<typeof listRoles>>
   | OpenedMessage
   | { released: true };
 
@@ -394,6 +405,74 @@ export const retiredCommand = Command.make(
   })
 );
 
+export const successorCommand = Command.make("successor").pipe(
+  Command.withSubcommands([
+    Command.make(
+      "set",
+      { name: Flag.String("name"), successor: Flag.String("successor") },
+      Effect.fn("MailboxCli.successorSet")(function* successorSet(args) {
+        yield* print(
+          yield* setSuccessor(yield* authority, args.name, args.successor).pipe(
+            Effect.provide([FetchHttpClient.layer, secretStoreLayer({})])
+          )
+        );
+      })
+    ).pipe(
+      Command.withDescription(
+        "Operator: re-point an already retired name to a row or role. Keeps retiredAt and by; takes no lease."
+      )
+    ),
+  ])
+);
+
+export const roleCommand = Command.make("role").pipe(
+  Command.withSubcommands([
+    Command.make(
+      "set",
+      {
+        name: Argument.String("name"),
+        role: Flag.String("role"),
+        target: Flag.String("target"),
+      },
+      Effect.fn("MailboxCli.roleSet")(function* roleSet(args) {
+        yield* print(
+          yield* setRole(yield* authority, {
+            name: args.name,
+            role: args.role,
+            target: args.target,
+          }).pipe(Effect.provide([FetchHttpClient.layer, secretStoreLayer({})]))
+        );
+      })
+    ).pipe(
+      Command.withDescription(
+        "Operator: create or replace a role that delivers to --target, with a one-line --role."
+      )
+    ),
+    Command.make(
+      "delete",
+      { name: Argument.String("name") },
+      Effect.fn("MailboxCli.roleDelete")(function* roleDelete(args) {
+        yield* print(
+          yield* deleteRole(yield* authority, args.name).pipe(
+            Effect.provide([FetchHttpClient.layer, secretStoreLayer({})])
+          )
+        );
+      })
+    ).pipe(Command.withDescription("Operator: delete a role.")),
+    Command.make(
+      "list",
+      { json: Flag.Boolean("json").pipe(Flag.withDefault(true)) },
+      Effect.fn("MailboxCli.roleList")(function* roleList() {
+        yield* print(
+          yield* listRoles(yield* authority).pipe(
+            Effect.provide([FetchHttpClient.layer, secretStoreLayer({})])
+          )
+        );
+      })
+    ).pipe(Command.withDescription("Operator: list every role as JSON.")),
+  ])
+);
+
 const acquireCommand = Command.make(
   "acquire",
   {
@@ -567,6 +646,8 @@ export const command = Command.make("mailbox").pipe(
     retireCommand,
     unretireCommand,
     retiredCommand,
+    successorCommand,
+    roleCommand,
     leaseCommand,
     deliverCommand,
     ackCommand,

@@ -73,6 +73,7 @@ it.effect.prop(
               );
             }),
           presence: () => Effect.die("unexpected presence"),
+          repoint: () => Effect.die("unexpected repoint"),
           retire: () => Effect.die("unexpected retire"),
         })
       );

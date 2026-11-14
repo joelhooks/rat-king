@@ -50,6 +50,7 @@ export const Retirement = Schema.Struct({
   name: Schema.String,
   retiredAt: Schema.Int,
   successor: Schema.optionalKey(Schema.String),
+  updatedAt: Schema.optionalKey(Schema.Int),
 });
 
 export type RetirementValue = typeof Retirement.Type;

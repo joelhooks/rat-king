@@ -32,6 +32,7 @@
         { "name": "InvalidName" },
         { "name": "NameReserved" },
         { "name": "NameTaken" },
+        { "name": "NameCollision", "description": "The name is a role." },
         { "name": "DocumentConflict" },
         { "name": "MailboxUnavailable" }
       ]

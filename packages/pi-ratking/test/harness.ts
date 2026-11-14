@@ -53,6 +53,7 @@ export const harness = (
     readonly encrypt?: boolean;
     readonly ccDigestMinutes?: Readonly<Record<string, number>>;
     readonly reserved?: ReservedValue;
+    readonly roleAllowlist?: readonly string[];
     readonly turnRecords?: boolean;
     readonly threadRouting?: readonly ThreadRoutingValue[];
     readonly relays?: readonly RelaySettingValue[];

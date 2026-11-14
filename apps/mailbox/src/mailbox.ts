@@ -518,6 +518,10 @@ export const mailboxHandlers = (policy: MailboxPolicy) =>
               Object.assign(receipt, { wakeReason: input.wakeReason });
             }
 
+            if (input.resolvedFrom !== undefined) {
+              Object.assign(receipt, { resolvedFrom: input.resolvedFrom });
+            }
+
             tx.append({
               $type: "sh.mschf.ratking.defs#messageEvent",
               envelope,

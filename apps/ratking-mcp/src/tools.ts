@@ -1,5 +1,6 @@
 /* oxlint-disable rat-stack-boundaries/no-hand-rolled-surface -- MCP projects the existing RatKing/Inbox client contracts; no defineContract/toToolkit package exists in this repository. */
 import { sendingOptions } from "@rat-king/ratking-client/compose";
+import { Settings } from "@rat-king/ratking-client/config";
 import { Directory } from "@rat-king/ratking-client/directory";
 import { Inbox, NotDelivered, RatKing } from "@rat-king/ratking-client/ratking";
 import type {
@@ -89,6 +90,12 @@ export const tools = Toolkit.make(
       "Look up one name in the configured directory. Never dumps the directory or mints an identity.",
     parameters: Schema.Struct({ name: Text }),
     success: Schema.Json,
+  }),
+  Tool.make("list", {
+    description:
+      "List the roles this bot may address: each role name, the row it delivers to and its role line. Address a role by its name.",
+    parameters: Tool.EmptyParams,
+    success: Schema.Json,
   })
 );
 
@@ -126,6 +133,7 @@ const delivery = (sent: Delivered) => ({
   id: sent.id,
   presence: sent.presence ?? null,
   recipients: sent.recipients?.map((recipient) => ({ ...recipient })) ?? [],
+  resolvedTo: sent.resolvedTo ?? null,
   seq: sent.seq,
   to: sent.to,
 });
@@ -175,6 +183,7 @@ const makeHandlers = Effect.fn("RatkingMcp.makeHandlers")(
     const inbox = yield* Inbox;
     const ratking = yield* RatKing;
     const directory = yield* Directory;
+    const settings = yield* Settings;
     const attached = yield* Effect.cached(inbox.attach(name));
 
     const named = <A extends Schema.Json, E extends Fault, R>(
@@ -291,6 +300,24 @@ const makeHandlers = Effect.fn("RatkingMcp.makeHandlers")(
               messages: peek.messages.map(entry),
               throughSeq: peek.throughSeq,
               unreadable: peek.unreadable.map((item) => ({ ...item })),
+            }))
+          )
+        ),
+      list: () =>
+        named(
+          ratking.roles.pipe(
+            Effect.map((roles) => ({
+              roles: roles
+                .filter(
+                  (role) =>
+                    settings.roleAllowlist === undefined ||
+                    settings.roleAllowlist.includes(role.name)
+                )
+                .map(({ name: role, role: line, target }) => ({
+                  name: role,
+                  role: line,
+                  target,
+                })),
             }))
           )
         ),

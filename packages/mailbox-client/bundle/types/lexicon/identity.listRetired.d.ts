@@ -15,6 +15,7 @@ export declare const Output: Schema.StructWithRest<Schema.Struct<{
         readonly name: Schema.String;
         readonly retiredAt: Schema.brand<Schema.String, "Lexicon:datetime">;
         readonly successor: Schema.optionalKey<Schema.String>;
+        readonly updatedAt: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:datetime">>;
     }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
 }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
 export type OutputValue = typeof Output.Type;
@@ -63,6 +64,7 @@ export declare const Method: {
             readonly name: Schema.String;
             readonly retiredAt: Schema.brand<Schema.String, "Lexicon:datetime">;
             readonly successor: Schema.optionalKey<Schema.String>;
+            readonly updatedAt: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:datetime">>;
         }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
     }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
     readonly outputEncoding: "application/json";
