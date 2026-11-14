@@ -217,10 +217,13 @@ it.live.prop(
         Layer.succeed(
           Directory,
           Directory.of({
+            clearRetired: () => Effect.void,
             documents: Effect.succeed([...documents.values()]),
+            importRetired: () => Effect.succeed({ added: 0, already: 0 }),
             list: Effect.succeed([]),
             nameOf: () => Effect.succeed(Option.none()),
             record: () => Effect.void,
+            recordRetired: () => Effect.void,
             resolve: (name) => {
               const doc = documents.get(did(name));
 
@@ -233,6 +236,7 @@ it.live.prop(
                   )
                 : Effect.succeed({ did: doc.id, document: doc, name });
             },
+            retired: Effect.succeed({}),
           })
         ),
         Layer.succeed(
@@ -544,16 +548,20 @@ it.effect.prop(
         Layer.succeed(
           Directory,
           Directory.of({
+            clearRetired: () => Effect.void,
             documents: Effect.succeed(docs),
+            importRetired: () => Effect.succeed({ added: 0, already: 0 }),
             list: Effect.succeed([]),
             nameOf: () => Effect.succeed(Option.none()),
             record: () => Effect.void,
+            recordRetired: () => Effect.void,
             resolve: () =>
               Effect.succeed({
                 did: inbox.did,
                 document: yieldDoc,
                 name: PRIMARY,
               }),
+            retired: Effect.succeed({}),
           })
         ),
         Layer.succeed(

@@ -16,6 +16,7 @@ import {
 } from "./messaging.ts";
 import { operatorCommands } from "./operator.ts";
 import { resolveCommand } from "./resolve-command.ts";
+import { retiredImportCommand } from "./retired-import.ts";
 import { roleCommand } from "./roles.ts";
 import { snapshotCommand } from "./snapshot-command.ts";
 
@@ -37,6 +38,7 @@ export const command = Command.make("ratking").pipe(
     attentionCommand,
     filterCommand,
     ...operatorCommands,
+    retiredImportCommand,
     snapshotCommand,
     resolveCommand,
     roleCommand,

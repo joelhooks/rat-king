@@ -25,6 +25,7 @@ ratking filter add '<rule-json>'
 ratking filter remove <id>
 ratking filter list
 ratking identity | provision | retire | unretire | retired | traffic
+ratking retired-import --file ./retired-names.txt
 ratking snapshot --out <new-directory>
 ratking resolve --names <file> --out <new-file>
 ```
@@ -67,7 +68,17 @@ Writes read the stored preferences, change one thing and put the whole record ba
 
 ## Operator commands
 
-`identity`, `provision`, `retire`, `unretire`, `retired` and `traffic` are the `apps/mailbox/cli` commands mounted unchanged. They need the operator `RAT_KING_*` configuration described in `apps/mailbox/cli/README.md` and are not part of ordinary agent use.
+`identity`, `retired` and `traffic` mount the `apps/mailbox/cli` commands unchanged. `provision`, `retire` and `unretire` use the same remote operations, then update the host-local retired listing overlay after success. They need the operator `RAT_KING_*` configuration described in `apps/mailbox/cli/README.md`; the overlay also uses the local Pi configuration. If the remote operation succeeds but the local update fails, the error states that partial outcome. The standalone mailbox CLI never changes this overlay.
+
+### Local retired listing overlay
+
+`ratking retired-import --file ./retired-names.txt` reads one name per line, ignores blank lines, and validates the entire file before writing. It prints `{ "added": 12, "already": 3 }`. Repeating an import preserves existing retirement metadata. It makes no network requests and needs no operator identity.
+
+The overlay lives at `<state>/retired.json`, beside the configured local state. It uses the directory lock and a mode-0600 temporary file plus rename. Importing or changing the overlay never changes `directory.json`, peer documents, sender-name mappings, recipient resolution or name-claim guards.
+
+Command-issuer clients hide overlay names from their default lists. `all: true` includes them marked `retired`; `status: retired` lists them locally. Live and idle filters still require a service issuer. Service-issuer listing ignores the overlay and continues using the issuer's directory.
+
+Own retirement records a local tombstone. Successful registration, provisioning, lease acquisition or `ratking unretire` clears the name's tombstone. A normal peer-document lookup does not clear it. The overlay is per host: remote operator changes are not pushed into other hosts' files. Import only a separately verified retired-name list; absence from this overlay is not proof of a live lease. An unreadable overlay warns and leaves listing visible rather than blocking communication.
 
 ### Complete issuer snapshots
 

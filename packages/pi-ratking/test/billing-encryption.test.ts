@@ -43,16 +43,20 @@ it.effect.prop(
         Layer.succeed(
           Directory,
           Directory.of({
+            clearRetired: () => Effect.void,
             documents: Effect.succeed([target]),
+            importRetired: () => Effect.succeed({ added: 0, already: 0 }),
             list: Effect.succeed([]),
             nameOf: () => Effect.succeed(Option.none()),
             record: () => Effect.void,
+            recordRetired: () => Effect.void,
             resolve: () =>
               Effect.succeed({
                 did: recipient.did,
                 document: target,
                 name: "switchboard",
               }),
+            retired: Effect.succeed({}),
           })
         ),
         Layer.succeed(
