@@ -7,14 +7,14 @@
   },
   "type": "module",
   "dependencies": {
-    "@effect/platform-node": "4.0.5",
+    "@effect/platform-node": "4.1.4",
     "@rat-king/lexicon": "workspace:*",
     "@rat-king/mailbox-client": "workspace:*",
     "@rat-king/ratking-client": "workspace:*",
-    "effect": "4.0.5"
+    "effect": "4.1.4"
   },
   "devDependencies": {
-    "@effect/vitest": "4.0.5",
+    "@effect/vitest": "4.1.4",
     "fast-check": "4.10.2",
     "vitest": "5.0.5"
   }

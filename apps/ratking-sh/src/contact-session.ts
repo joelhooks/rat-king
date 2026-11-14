@@ -1,5 +1,5 @@
+import * as Cloudflare from "@alchemy.run/cloudflare";
 import { signatures } from "@rat-king/lexicon/webcrypto";
-import * as Cloudflare from "alchemy/Cloudflare";
 import { Config, Effect, Layer, Schema } from "effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";

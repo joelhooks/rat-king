@@ -1,10 +1,10 @@
+import * as Test from "@alchemy.run/test/Vitest";
 import { NodePath, NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import * as Plan from "alchemy/Plan";
 import * as Provider from "alchemy/Provider";
 import { Cli } from "alchemy/Report";
 import { State } from "alchemy/State";
-import * as Test from "alchemy/Test/Vitest";
 import {
   Arbitrary,
   Cause,
@@ -13,7 +13,6 @@ import {
   Exit,
   Layer,
   Match,
-  Predicate,
   Schema,
 } from "effect";
 import { HttpClient, HttpClientError, HttpClientResponse } from "effect/http";
@@ -1021,12 +1020,7 @@ test.provider(
                           done: session.done,
                           emit: (event) =>
                             Effect.gen(function* emit() {
-                              if (
-                                Predicate.isTagged(
-                                  event,
-                                  "apply.resource.status"
-                                )
-                              ) {
+                              if (event.type === "apply.resource.status") {
                                 events.push(`${event.status} ${event.fqn}`);
                               }
 

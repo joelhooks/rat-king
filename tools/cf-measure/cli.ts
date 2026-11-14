@@ -2,8 +2,9 @@ import {
   NodeHttpClient,
   NodeRuntime,
   NodeServices,
+  NodeCrypto,
 } from "@effect/platform-node";
-import { Console, Effect, FileSystem, Path } from "effect";
+import { Console, Effect, FileSystem, Path, Layer } from "effect";
 import { Command, Flag } from "effect/cli";
 
 import { readCost } from "./cost.ts";
@@ -133,6 +134,9 @@ const command = Command.make("cf-measure").pipe(
 
 NodeRuntime.runMain(
   Command.runWith(command, { version: "0.1.0" })(process.argv.slice(2)).pipe(
-    Effect.provide([NodeHttpClient.layerUndici, NodeServices.layer])
+    Effect.provide([
+      NodeHttpClient.layerUndici,
+      Layer.mergeAll(NodeServices.layer, NodeCrypto.layer),
+    ])
   )
 );

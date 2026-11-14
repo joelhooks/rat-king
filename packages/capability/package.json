@@ -12,6 +12,6 @@
     "./read-only": "./src/read-only.ts"
   },
   "dependencies": {
-    "effect": "4.0.5"
+    "effect": "4.1.4"
   }
 }

@@ -1,8 +1,16 @@
 // @effect-diagnostics asyncFunction:off -- WebCrypto independently checks the receipt hash.
-import { NodeServices } from "@effect/platform-node";
+import { NodeServices, NodeCrypto } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import { resolveName } from "@rat-king/ratking-client/resolve";
-import { Deferred, Effect, Fiber, FileSystem, Path, Schema } from "effect";
+import {
+  Deferred,
+  Effect,
+  Fiber,
+  FileSystem,
+  Path,
+  Schema,
+  Layer,
+} from "effect";
 import { TestClock } from "effect/testing";
 import { expect } from "vitest";
 
@@ -277,7 +285,10 @@ it.effect.prop(
         "names.json",
         "resolved.json",
       ]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))
+    ),
   { arbitrary: { runs: 5 } }
 );
 
@@ -306,5 +317,8 @@ it.effect.prop(
 
       expect(error.code).toBe("InvalidNames");
       expect(yield* fs.readDirectory(root)).toEqual(["names.json"]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))
+    )
 );

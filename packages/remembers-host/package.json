@@ -9,17 +9,17 @@
     "./deployment": "./src/deployment.ts"
   },
   "dependencies": {
-    "@effect/platform-node": "4.0.5",
+    "@effect/platform-node": "4.1.4",
     "@rat-king/alchemy-nest": "workspace:*",
     "@rat-king/lexicon": "workspace:*",
     "@rat-king/mailbox-client": "workspace:*",
     "@rat-king/remembers": "workspace:*",
-    "alchemy": "2.0.0-beta.83",
-    "effect": "4.0.5",
+    "alchemy": "2.0.0-beta.87",
+    "effect": "4.1.4",
     "xstate": "6.0.0-beta.1"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "5.20261019.1",
-    "@effect/vitest": "4.0.5"
+    "@effect/vitest": "4.1.4"
   }
 }

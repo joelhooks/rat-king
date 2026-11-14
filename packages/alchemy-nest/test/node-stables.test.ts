@@ -1,5 +1,5 @@
+import * as Test from "@alchemy.run/test/Vitest";
 import * as Output from "alchemy/Output";
-import * as Test from "alchemy/Test/Vitest";
 import { Context, Effect, Layer } from "effect";
 import { expect } from "vitest";
 

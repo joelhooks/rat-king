@@ -1,4 +1,4 @@
-import { NodeServices } from "@effect/platform-node";
+import { NodeCrypto, NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import * as Names from "@rat-king/lexicon/identity.listNames";
 import * as Retired from "@rat-king/lexicon/identity.listRetired";
@@ -51,7 +51,10 @@ it.effect(
       expect(receipt.pages).toEqual([
         { issuer: "configured-placement", names: 1, retired: 1 },
       ]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+    }).pipe(
+      Effect.scoped,
+      Effect.provide([NodeServices.layer, NodeCrypto.layer])
+    )
 );
 
 it.effect.prop(
@@ -89,5 +92,8 @@ it.effect.prop(
       expect(error.code).toBe(status === 200 ? "InvalidPage" : "PageRefused");
       expect(JSON.stringify(error)).not.toContain("private-remote-body");
       expect(yield* fs.readDirectory(root)).toEqual([]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+    }).pipe(
+      Effect.scoped,
+      Effect.provide([NodeServices.layer, NodeCrypto.layer])
+    )
 );

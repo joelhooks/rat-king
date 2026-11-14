@@ -8,14 +8,14 @@ import { operatorBundle } from "../src/operator-build.ts";
 import { nodeUnit, storeUnit } from "../src/service-units.ts";
 import { renderUnit } from "../src/systemd.ts";
 
-it.live("mailbox restart gate pins Effect 4.0.5 bundle bytes", () =>
+it.live("mailbox restart gate pins Effect 4.1.4 bundle bytes", () =>
   Effect.gen(function* baseline() {
     const bundle = yield* operatorBundle(
       new URL("../../../stacks/nest/restart-gate.ts", import.meta.url).pathname
     );
 
     expect(textDigest(bundle)).toBe(
-      "ca6d4c496631353ef6c7fd8711c5f2521e4e8367621b7acbfaf4aa0b2af63bf7"
+      "b67537a7f07afc15277606c4050980eeff1b21bad2ddd3fbd15ddf3f9e267c2b"
     );
   }).pipe(Effect.provide(NodePath.layer))
 );

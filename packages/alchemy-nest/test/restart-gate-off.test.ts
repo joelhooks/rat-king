@@ -1,6 +1,6 @@
+import * as Test from "@alchemy.run/test/Vitest";
 import { NodePath } from "@effect/platform-node";
 import { offlineLayer } from "@rat-king/alchemy-nest/offline";
-import * as Test from "alchemy/Test/Vitest";
 import { Effect, Layer } from "effect";
 import { expect } from "vitest";
 

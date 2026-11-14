@@ -1,12 +1,14 @@
-import { NodeServices } from "@effect/platform-node";
+import { NodeCrypto, NodeServices } from "@effect/platform-node";
 import { Stack, localState } from "alchemy";
 import { AlchemyContextLive } from "alchemy/AlchemyContext";
 import * as Apply from "alchemy/Apply";
 import { provideFreshArtifactStore } from "alchemy/Artifacts";
+import { AuthProvidersLive } from "alchemy/Auth/Registry";
 import { deploy } from "alchemy/Deploy";
+import { evalStack } from "alchemy/EvalStack";
+import { onEvent } from "alchemy/Events";
 import { layerNonInteractive } from "alchemy/Interaction";
 import * as Plan from "alchemy/Plan";
-import { evalStack } from "alchemy/Stack";
 import { Config, Console, Effect, FileSystem, Layer, Schema } from "effect";
 import {
   FetchHttpClient,
@@ -307,7 +309,14 @@ export const runInstanceProbe = (
           Plan.destroy(compiled).pipe(
             Effect.flatMap((plan) =>
               withDestroyReceipt(Object.keys(plan.deletions), (session) =>
-                Apply.apply(plan, { session })
+                Apply.apply(plan).pipe(
+                  onEvent((event) =>
+                    event.type === "apply.resource.status" ||
+                    event.type === "apply.resource.note"
+                      ? session.emit(event)
+                      : Effect.void
+                  )
+                )
               )
             )
           ),
@@ -326,6 +335,14 @@ export const runInstanceProbe = (
         AlchemyContextLive,
         localState(),
         layerNonInteractive()
-      ).pipe(Layer.provideMerge(NodeServices.layer))
+      ).pipe(
+        Layer.provideMerge(
+          Layer.mergeAll(
+            NodeServices.layer,
+            NodeCrypto.layer,
+            AuthProvidersLive
+          )
+        )
+      )
     )
   );

@@ -13,7 +13,7 @@
   "dependencies": {
     "@rat-king/envelope": "workspace:*",
     "@rat-king/lexicon": "workspace:*",
-    "effect": "4.0.5",
+    "effect": "4.1.4",
     "xstate": "6.0.0-beta.1"
   }
 }

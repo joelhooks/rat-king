@@ -4,8 +4,8 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@effect/platform-node": "4.0.5",
+    "@effect/platform-node": "4.1.4",
     "@hpke/core": "1.9.0",
-    "effect": "4.0.5"
+    "effect": "4.1.4"
   }
 }

@@ -4,15 +4,9 @@ import type {
   Resolution,
   UnresolvedReason,
 } from "@rat-king/ratking-client/resolve";
-import {
-  Cause,
-  Crypto,
-  Effect,
-  FileSystem,
-  Option,
-  Path,
-  Schema,
-} from "effect";
+import { Cause, Effect, FileSystem, Option, Path, Schema } from "effect";
+import * as Digest from "effect/crypto/Digest";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 
 export class ResolveError extends Schema.TaggedError<ResolveError>()(
   "ResolveError",
@@ -105,17 +99,13 @@ export const writeResolutions = Effect.fn("Resolve.write")(
     );
 
     const collected = yield* collectResolutions(names, lookup);
-    const run = yield* (yield* Crypto.Crypto).randomUUIDv4();
+    const run = yield* (yield* SecureRandom.SecureRandom).uuidV4();
     const text = `${JSON.stringify({ ...collected, run })}\n`;
 
-    const digest = yield* (yield* Crypto.Crypto).digest(
-      "SHA-256",
+    const sha256 = yield* (yield* Digest.Digest).digestHex(
+      Digest.sha256,
       new TextEncoder().encode(text)
     );
-
-    const sha256 = Array.from(digest, (byte) =>
-      byte.toString(16).padStart(2, "0")
-    ).join("");
 
     yield* Effect.gen(function* publish() {
       const stage = yield* fs.makeTempDirectoryScoped({

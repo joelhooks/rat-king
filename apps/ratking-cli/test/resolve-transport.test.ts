@@ -1,4 +1,4 @@
-import { NodeServices } from "@effect/platform-node";
+import { NodeCrypto, NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import { ownIdentity, prepare } from "@rat-king/mailbox-client";
 import {
@@ -136,5 +136,8 @@ it.effect(
       expect(Schema.is(ResolveError)(error)).toBe(true);
       expect(error).toMatchObject({ code: "ResolveConfiguration" });
       expect(yield* fs.readDirectory(root)).toEqual([]);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+    }).pipe(
+      Effect.scoped,
+      Effect.provide([NodeServices.layer, NodeCrypto.layer])
+    )
 );

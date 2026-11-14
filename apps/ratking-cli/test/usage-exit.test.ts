@@ -131,12 +131,20 @@ const paths = (value: Command.Command.Any, prefix = ""): readonly string[] => [
 
 const parserOnly = (
   value: Command.Command.Any
-): Command.Command<string, never, unknown> =>
+): Command.Command<string, never, unknown, unknown> =>
   value.pipe(
     Command.withHandler(() => Effect.void),
     Command.withSubcommands(
       value.subcommands.flatMap((group) => group.commands.map(parserOnly))
     )
+  );
+
+const parse = <E>(
+  value: Command.Command<string, never, unknown, E>,
+  args: readonly string[]
+) =>
+  Command.runWith(value, { version: "0.1.0" })(args).pipe(
+    Effect.mapError(String)
   );
 
 const boundary = Effect.fn("UsageTest.boundary")(function* boundary<E>(
@@ -183,9 +191,9 @@ for (const client of clients) {
             expectUsage(yield* run(args), fullPath);
           } else {
             const parsed = yield* boundary(
-              Command.runWith(parserOnly(client.root), { version: "0.1.0" })(
-                args
-              ).pipe(Effect.provide(NodeServices.layer))
+              parse(parserOnly(client.root), args).pipe(
+                Effect.provide(NodeServices.layer)
+              )
             );
 
             expect(parsed.status).toBe(0);

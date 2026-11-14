@@ -1,4 +1,4 @@
-import * as Test from "alchemy/Test/Vitest";
+import * as Test from "@alchemy.run/test/Vitest";
 import { Context, Effect, Layer } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { expect } from "vitest";

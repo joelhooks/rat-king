@@ -1,7 +1,7 @@
+import * as Test from "@alchemy.run/test/Vitest";
 import * as Output from "alchemy/Output";
 import { State } from "alchemy/State";
 import { encodeState } from "alchemy/State/StateEncoding";
-import * as Test from "alchemy/Test/Vitest";
 import { Context, Effect, Layer, Redacted } from "effect";
 import { expect } from "vitest";
 

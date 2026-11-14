@@ -1,6 +1,6 @@
-import { NodeServices } from "@effect/platform-node";
+import { NodeServices, NodeCrypto } from "@effect/platform-node";
 import { expect, it } from "@effect/vitest";
-import { Effect, FileSystem, Path, Result, Schema } from "effect";
+import { Effect, FileSystem, Path, Result, Schema, Layer } from "effect";
 
 import {
   Documents,
@@ -51,7 +51,9 @@ it.effect(
 
       expect(Result.isFailure(duplicate)).toBe(true);
       expect(Result.isFailure(repo)).toBe(true);
-    }).pipe(Effect.provide(NodeServices.layer))
+    }).pipe(
+      Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer))
+    )
 );
 
 it.effect("private decode failures do not disclose key material", () =>
@@ -76,5 +78,5 @@ it.effect("private decode failures do not disclose key material", () =>
 
     expect(Result.isFailure(result)).toBe(true);
     expect(JSON.stringify(result)).not.toContain("private-marker");
-  }).pipe(Effect.provide(NodeServices.layer))
+  }).pipe(Effect.provide(Layer.mergeAll(NodeServices.layer, NodeCrypto.layer)))
 );

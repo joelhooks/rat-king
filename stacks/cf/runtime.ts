@@ -1,13 +1,14 @@
-import { NodeServices } from "@effect/platform-node";
+import * as Cloudflare from "@alchemy.run/cloudflare";
+import { NodeCrypto, NodeServices } from "@effect/platform-node";
 import { AlchemyContextLive } from "alchemy/AlchemyContext";
 import { provideFreshArtifactStore } from "alchemy/Artifacts";
 import { AuthProviders } from "alchemy/Auth/AuthProvider";
-import * as Cloudflare from "alchemy/Cloudflare";
+import { AuthProvidersLive } from "alchemy/Auth/Registry";
 import { deploy } from "alchemy/Deploy";
 import { destroy } from "alchemy/Destroy";
+import { evalStack } from "alchemy/EvalStack";
 import { layerNonInteractive } from "alchemy/Interaction";
 import * as Plan from "alchemy/Plan";
-import { evalStack } from "alchemy/Stack";
 import { localState } from "alchemy/State/LocalState";
 import { Config, Effect, Layer, Redacted } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -128,13 +129,21 @@ export const run = (action: Action, offline: boolean) =>
     provideFreshArtifactStore,
     Effect.provide(
       Layer.mergeAll(
-        NodeServices.layer,
+        Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, AuthProvidersLive),
         FetchHttpClient.layer,
         Layer.mergeAll(
           AlchemyContextLive,
           localState(),
           layerNonInteractive()
-        ).pipe(Layer.provide(NodeServices.layer))
+        ).pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              NodeServices.layer,
+              NodeCrypto.layer,
+              AuthProvidersLive
+            )
+          )
+        )
       )
     ),
     Effect.provideService(FetchHttpClient.Fetch, offline ? offlineFetch : fetch)

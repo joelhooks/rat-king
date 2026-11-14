@@ -1,5 +1,6 @@
-import type { Crypto, FileSystem, Redacted } from "effect";
+import type { FileSystem, Redacted } from "effect";
 import { Effect, Layer, Predicate, Result, Schema } from "effect";
+import type * as SecureRandom from "effect/crypto/SecureRandom";
 
 import { refuse } from "./files.ts";
 import { HostShell } from "./host-shell.ts";
@@ -205,7 +206,7 @@ export const startupLayer = (
       const shell = yield* HostShell;
 
       const context = yield* Effect.context<
-        Crypto.Crypto | FileSystem.FileSystem
+        SecureRandom.SecureRandom | FileSystem.FileSystem
       >();
 
       return {

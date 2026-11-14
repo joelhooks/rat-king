@@ -1,12 +1,13 @@
 // @effect-diagnostics globalFetch:off -- The sole operator transport is explicitly selected at the composition root.
-import { NodeServices } from "@effect/platform-node";
+import { NodeCrypto, NodeServices } from "@effect/platform-node";
 import { AlchemyContextLive } from "alchemy/AlchemyContext";
 import { provideFreshArtifactStore } from "alchemy/Artifacts";
+import { AuthProvidersLive } from "alchemy/Auth/Registry";
 import { deploy } from "alchemy/Deploy";
 import { destroy } from "alchemy/Destroy";
+import { evalStack } from "alchemy/EvalStack";
 import { layerNonInteractive } from "alchemy/Interaction";
 import * as Plan from "alchemy/Plan";
-import { evalStack } from "alchemy/Stack";
 import { localState } from "alchemy/State/LocalState";
 import { Config, ConfigProvider, Console, Effect, Layer } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -98,13 +99,21 @@ export const run = (action: Action, offline: boolean) =>
     provideFreshArtifactStore,
     Effect.provide(
       Layer.mergeAll(
-        NodeServices.layer,
+        Layer.mergeAll(NodeServices.layer, NodeCrypto.layer, AuthProvidersLive),
         FetchHttpClient.layer,
         Layer.mergeAll(
           AlchemyContextLive,
           localState(),
           layerNonInteractive()
-        ).pipe(Layer.provide(NodeServices.layer))
+        ).pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              NodeServices.layer,
+              NodeCrypto.layer,
+              AuthProvidersLive
+            )
+          )
+        )
       )
     ),
     Effect.provideService(
