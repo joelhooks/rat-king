@@ -4,8 +4,10 @@ import UIKit
 @MainActor
 enum TUITheme {
     // Palette Deck: coordinated semantic roles in Pi dark and light presets.
-    private static func colour(_ dark: UInt32, _ light: UInt32) -> Color {
-        Color(uiColor: UIColor { traits in
+    // Nonisolated with a @Sendable provider: UIKit resolves dynamic colours on SwiftUI's render threads, and a
+    // main-actor provider traps in Swift 6's runtime isolation check there.
+    private nonisolated static func colour(_ dark: UInt32, _ light: UInt32) -> Color {
+        Color(uiColor: UIColor { @Sendable traits in
             let hex = traits.userInterfaceStyle == .dark ? dark : light
             return UIColor(red: CGFloat((hex >> 16) & 255) / 255, green: CGFloat((hex >> 8) & 255) / 255, blue: CGFloat(hex & 255) / 255, alpha: 1)
         })
