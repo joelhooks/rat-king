@@ -166,6 +166,10 @@ it.effect.prop(
           }
 
           const outputs = new Map([
+            [
+              "preflight",
+              'BACKUP_PREFLIGHT_PASSED {"celld":{"bytes":2048},"seaweedfs":{"bytes":2048}}',
+            ],
             ["pack", "4096"],
             [
               "snapshot",

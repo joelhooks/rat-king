@@ -1,6 +1,13 @@
+import { Duration } from "effect";
+
 import { backupRetentionScript } from "../../packages/alchemy-nest/src/backup-retention-script.ts";
 import { cacheIoScript } from "../../packages/alchemy-nest/src/cache-io-script.ts";
 import { objectArchiveScript } from "../../packages/alchemy-nest/src/object-archive-script.ts";
+import {
+  armSlack,
+  backupStopBudgetMs,
+  stopRestartLimit,
+} from "./backup-limits.ts";
 import { unitMemoryScript } from "./memory-script.ts";
 
 export const backupScript = String.raw`
@@ -16,12 +23,14 @@ PUBLISH_PREFIX = '.mailbox-publish-'
 SNAPSHOT_ROOTS = ['seaweedfs', 'celld']
 SNAPSHOT_ARCHIVE = 'mailbox.tar.gz'
 SNAPSHOT_BUDGET = 55
-PRECOPY_BUDGET = 900
+ARM_SLACK_US = ${Duration.toMillis(armSlack) * 1000}
+STOP_RESTART_US = ${Duration.toMillis(stopRestartLimit) * 1000}
+STOP_COVER_US = ${backupStopBudgetMs * 1000}
 SETTLE_NS = 2000000000
 TAIL_CHECK = 65536
 FICLONE = 0x40049409
 LEGACY_STAGING_FILES = {'objects.tar', 'celld.tar', 'objects.tar.gz', 'celld.tar.gz', 'objects.tar.sqlite', 'objects.tar.sqlite-journal', 'objects.tar.data'}
-STAGING_FILES = LEGACY_STAGING_FILES | {'snapshot.json', 'precopy.json', 'entries.json', 'archive.json', SNAPSHOT_ARCHIVE}
+STAGING_FILES = LEGACY_STAGING_FILES | {'snapshot.json', 'precopy.json', 'precopy-ready.json', 'entries.json', 'archive.json', SNAPSHOT_ARCHIVE}
 PUBLISH_FILES = {'objects.tar', 'celld.tar', 'objects.tar.gz', 'celld.tar.gz', SNAPSHOT_ARCHIVE, 'manifest.pending', 'manifest.json'}
 def regular(path):
     return path.is_file() and not path.is_symlink()
@@ -466,9 +475,17 @@ if operation == 'preflight':
 elif operation == 'arm':
     result = subprocess.run(['systemctl', '--user', 'show', 'rat-king-mailbox-backup.service', '--property=ExecMainStartTimestampMonotonic', '--value'], capture_output=True, text=True, check=True)
     started = int(result.stdout.strip())
-    age = time.monotonic_ns() // 1000 - started
-    if started <= 0 or age < 0 or age >= 20 * 60 * 1000000:
-        fail('Refusing late celld stop: unit age must be below 20 minutes')
+    ready = staging_path() / 'precopy-ready.json'
+    if not regular(ready):
+        fail('Missing precopy completion; mailbox left running. Retry the backup')
+    completed = json.loads(ready.read_text())
+    def check_stop_deadline():
+        now = time.monotonic_ns() // 1000
+        if started <= 0 or type(completed) is not int or completed < started or now < completed or now - completed >= ARM_SLACK_US:
+            fail('Refusing late celld stop: precopy completion must be valid and below 20 minutes old; retry the backup')
+        if now + STOP_RESTART_US > started + STOP_COVER_US:
+            fail('Backup stop cannot finish inside its maintenance cover; mailbox left running. Retry the backup')
+    check_stop_deadline()
     for unit in ['rat-king-celld.service', 'rat-king-seaweedfs.service', 'rat-king.slice']:
         print('BACKUP_STOP_MEMORY ' + unit + ' ' + json.dumps(unit_memory(unit), sort_keys=True), flush=True)
     marker = data / '.mailbox-backup-restart-required'
@@ -476,8 +493,7 @@ elif operation == 'arm':
         stream.write('restart required\n')
         stream.flush()
         os.fsync(stream.fileno())
-    if time.monotonic_ns() // 1000 - started >= 20 * 60 * 1000000:
-        fail('Restart marker sync exhausted early-stop budget')
+    check_stop_deadline()
     print('BACKUP_RECOVERY_ARMED')
 elif operation == 'disarm':
     (data / '.mailbox-backup-restart-required').unlink(missing_ok=True)
@@ -493,13 +509,17 @@ elif operation == 'stage':
     print(str(staging))
 elif operation == 'precopy':
     signal.signal(signal.SIGALRM, lambda *_: fail('Warm-up copy exceeded its budget'))
-    signal.alarm(PRECOPY_BUDGET)
+    budget = int(sys.argv[5])
+    if budget <= 0:
+        fail('Precopy budget must be positive; retry with a valid limit')
+    signal.alarm(budget)
     staging = staging_path()
     record = {}
     for name in SNAPSHOT_ROOTS:
         sync_tree(data / name, staging / name, name, {}, record)
     sync_staged(staging)
     write_synced(staging / 'precopy.json', record)
+    write_synced(staging / 'precopy-ready.json', time.monotonic_ns() // 1000)
     signal.alarm(0)
     print('BACKUP_PRECOPY_DONE')
 elif operation == 'snapshot':

@@ -48,7 +48,7 @@ export const backupUnit = (input: {
         ["TasksMax", "64"],
         ["Nice", "10"],
         ["UMask", "0077"],
-        ["TimeoutStartSec", "4h"],
+        ["TimeoutStartSec", "10h"],
         ["TimeoutStopSec", "90s"],
       ],
       name: "Service",

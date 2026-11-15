@@ -5,6 +5,7 @@ import { expect } from "vitest";
 import {
   BACKUP_STOP_BUDGET_MS,
   MAILBOX_INSTANCE,
+  backupCover,
   clock,
 } from "../../../stacks/nest/alarm-maintenance.ts";
 import type { MaintenanceWindowValue } from "../../../stacks/nest/alarm-maintenance.ts";
@@ -23,6 +24,24 @@ import {
   recorder,
   runTicks,
 } from "./maintenance-fixtures.ts";
+
+it.prop(
+  "invalid backup timestamps never create implicit maintenance cover",
+  [
+    Schema.Int.check(
+      Schema.isBetween({ maximum: 2_000_000_000_000, minimum: 1 })
+    ),
+  ],
+  ([start]) => {
+    for (const invalid of [0, -start, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(backupCover({ end: null, start: invalid })).toBeUndefined();
+    }
+
+    for (const end of [start - 1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(backupCover({ end, start })).toBeUndefined();
+    }
+  }
+);
 
 const T0 = 1_800_000_000_000;
 

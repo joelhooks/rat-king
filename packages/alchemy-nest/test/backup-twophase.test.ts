@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory() as tmp:
         return subprocess.CompletedProcess(argv, 0, 'ActiveState=inactive\nResult=success\n', '')
     subprocess.run = command
     def run(action, *args, source=script):
-        sys.argv = ['backup', action, str(data), str(backup), *args]
+        sys.argv = ['backup', action, str(data), str(backup), *args, *(['1490'] if action == 'precopy' else [])]
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             exec(source, {})

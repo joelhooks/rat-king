@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory() as tmp:
     os.fsync, os.syncfs, os.sync = fsync, syncfs, lambda: events.append('sync')
     instrumented = script.replace('def copy_file(source, target):', 'def copy_file(source, target):\n    events.append("copy")').replace('def tree_stats(root, key_names=False, live=False):', 'def tree_stats(root, key_names=False, live=False):\n    events.append("stats")')
     def run(action, *args):
-        sys.argv = ['backup', action, str(data), str(backup), *args]
+        sys.argv = ['backup', action, str(data), str(backup), *args, *(['1490'] if action == 'precopy' else [])]
         with contextlib.redirect_stdout(io.StringIO()):
             exec(instrumented, {'events': events})
     def tree(base):
@@ -50,7 +50,7 @@ with tempfile.TemporaryDirectory() as tmp:
         run(action, str(staging))
         if action == 'precopy':
             assert events.count('sync') == 1, events
-            assert events.count('file') == 1, events
+            assert events.count('file') == 2, events
             assert events.count('dir') == 1, events
             assert 'copy' not in events[events.index('sync'):], events
         else:
