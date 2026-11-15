@@ -421,7 +421,6 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
       ...unavailable({
         deploy: observations.deploy,
         digest: observations.digest,
-        doctor: observations.doctor,
         health: observations.health,
         maintenance: observations.maintenance,
         quarantine: observations.quarantine,

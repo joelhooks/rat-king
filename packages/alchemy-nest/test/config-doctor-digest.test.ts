@@ -3,7 +3,36 @@ import { Effect, Schema } from "effect";
 import { expect } from "vitest";
 
 import { composeDigest } from "../../../stacks/nest/digest.ts";
-import { Digest } from "../../../stacks/nest/health.ts";
+import {
+  Digest,
+  doctorUnavailableSummary,
+} from "../../../stacks/nest/health.ts";
+
+it.prop(
+  "doctor digest counts new readings, handles resets and stays silent without new readings",
+  [
+    Schema.Int.check(Schema.isBetween({ maximum: 100_000, minimum: 0 })),
+    Schema.Int.check(Schema.isBetween({ maximum: 100_000, minimum: 0 })),
+    Schema.String,
+  ],
+  ([current, previous, reason]) => {
+    const expected = current < previous ? current : current - previous;
+    expect(doctorUnavailableSummary(current, previous, reason)).toEqual(
+      expected === 0
+        ? []
+        : [
+            `Configuration doctor unavailable: ${expected} readings since previous digest; last reason: ${reason}`,
+          ]
+    );
+    expect(doctorUnavailableSummary(current, current, reason)).toEqual([]);
+
+    if (current > 0) {
+      expect(
+        doctorUnavailableSummary(current, current + 1, reason)[0]
+      ).toContain(`${current} readings`);
+    }
+  }
+);
 
 const Healthy = Schema.Struct({
   ...Digest.fields,

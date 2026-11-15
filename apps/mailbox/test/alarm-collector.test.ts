@@ -1,17 +1,22 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Schema } from "effect";
+import { Effect, Fiber, FileSystem, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
+import { TestClock } from "effect/testing";
 import { expect } from "vitest";
 
 import { collectAlarmFacts } from "../../../stacks/nest/alarm-collector.ts";
 import { AlarmSettings } from "../../../stacks/nest/alarm-config.ts";
+import {
+  emptySources,
+  observeAlarms,
+} from "../../../stacks/nest/alarm-sources.ts";
 import { Counts } from "../../../stacks/nest/comms.ts";
 import { ShipSettings } from "../../../stacks/nest/ship-config.ts";
 import { FleetError, StageConfig } from "../../../stacks/nest/stage-config.ts";
 
 it.effect.prop(
-  "collector decodes facts and omits an absent churn limit, preserving configured limits",
+  "collector preserves churn limits and routes doctor timeouts only to the sustained availability alarm",
   [StageConfig, ShipSettings, AlarmSettings, Schema.Int, Counts],
   ([base, ship, alarm, limit, counts]) =>
     Effect.gen(function* proof() {
@@ -50,15 +55,25 @@ it.effect.prop(
           undefined,
           {
             comms: () => Effect.succeed(counts),
-            doctor: () =>
-              Effect.succeed({ reasons: [], status: "ok" as const }),
+            doctor: () => Effect.never,
           }
-        );
+        ).pipe(Effect.forkChild);
 
-        expect(Object.hasOwn(facts, "churnLimit")).toBe(
+        yield* TestClock.adjust("31 seconds");
+        const measured = yield* Fiber.join(facts);
+        const first = observeAlarms(emptySources, measured, 0);
+        const sustained = observeAlarms(first.sources, measured, 900_000);
+
+        expect(measured.failed).not.toContain("doctor");
+        expect(measured.doctorFinished).toBe(false);
+        expect(first.readings["doctor.unavailable"].status).toBe("ok");
+        expect(sustained.readings["doctor.unavailable"].status).toBe("firing");
+        expect(sustained.readings["issuer.broken"].status).toBe("ok");
+
+        expect(Object.hasOwn(measured, "churnLimit")).toBe(
           churnLimit !== undefined
         );
-        expect(facts.churnLimit).toBe(churnLimit);
+        expect(measured.churnLimit).toBe(churnLimit);
       }
     }).pipe(
       Effect.provide(

@@ -349,6 +349,20 @@ export const assess = (facts: HealthFacts, previous?: HealthDigest) => {
   };
 };
 
+export const doctorUnavailableSummary = (
+  count: number,
+  previous: number,
+  lastReason: string | undefined
+): readonly string[] => {
+  const delta = count < previous ? count : count - previous;
+
+  return delta > 0
+    ? [
+        `Configuration doctor unavailable: ${delta} readings since previous digest; last reason: ${lastReason ?? "no reason reported"}`,
+      ]
+    : [];
+};
+
 const gib = (bytes: number) => `${(bytes / 1_073_741_824).toFixed(2)} GiB`;
 
 export const summarize = (digest: HealthDigest) =>
