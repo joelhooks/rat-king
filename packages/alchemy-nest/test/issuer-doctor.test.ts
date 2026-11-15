@@ -1,24 +1,22 @@
-import { describe, expect, it } from "vitest";
+import { it } from "@effect/vitest";
+import { Effect, Schema } from "effect";
+import { asyncModelRun } from "fast-check";
+import type { AsyncCommand } from "fast-check";
+import { expect } from "vitest";
 
-import type { AlarmFacts } from "../../../stacks/nest/alarm-sources.ts";
 import {
   emptySources,
   observeAlarms,
 } from "../../../stacks/nest/alarm-sources.ts";
+import type { AlarmFacts } from "../../../stacks/nest/alarm-sources.ts";
 
-const now = 1_000_000;
-
-const facts = (
-  doctor: boolean,
-  doctorReasons: readonly string[]
-): typeof AlarmFacts.Type => ({
+const healthy: typeof AlarmFacts.Type = {
   cacheBreaches: null,
   deploy: null,
   deployKnown: true,
   digest: "ok",
-  doctor,
-  doctorReasons,
-  entered: now,
+  doctor: true,
+  entered: null,
   health: 200,
   measurementFailed: false,
   quarantinedHour: 0,
@@ -26,47 +24,118 @@ const facts = (
   receipts: [],
   receiptsKnown: true,
   slots: { free: 50, max: 100 },
+};
+
+const DoctorSample = Schema.Struct({
+  elapsed: Schema.Int.check(Schema.isBetween({ maximum: 180_000, minimum: 0 })),
+  status: Schema.Literals(["ok", "fail", "unavailable"]),
 });
 
-const REASON =
-  "secondary: service issuer host identity is unavailable or malformed";
+interface Model {
+  now: number;
+  failures: number;
+  since: number | undefined;
+}
 
-describe("issuer.broken", () => {
-  it("one failed doctor run is not a page; the second in a row fires and names the failing check", () => {
-    const first = observeAlarms(emptySources, facts(false, [REASON]), now);
+interface Real {
+  sources: typeof emptySources;
+}
+
+const runModel: (effect: Effect.Effect<void>) => Promise<void> =
+  Effect.runPromise;
+
+const sampleCommand = (
+  sample: typeof DoctorSample.Type
+): AsyncCommand<Model, Real> => ({
+  check: () => true,
+  run: Effect.fn("Test.issuer.model")(function* run(model: Model, real: Real) {
+    model.now += sample.elapsed;
+
+    if (sample.status === "fail") {
+      model.since ??= model.now;
+      model.failures += 1;
+    } else {
+      model.since = undefined;
+      model.failures = 0;
+    }
+
+    const result = yield* Effect.sync(() =>
+      observeAlarms(
+        real.sources,
+        {
+          ...healthy,
+          doctor: sample.status === "ok",
+          doctorFinished: sample.status !== "unavailable",
+        },
+        model.now
+      )
+    );
+
+    real.sources = result.sources;
+
+    const reading = result.readings["issuer.broken"];
+
+    if (sample.status === "unavailable") {
+      expect(reading).toMatchObject({ severity: "warn", status: "firing" });
+    } else if (sample.status === "ok") {
+      expect(reading.status).toBe("ok");
+    } else {
+      const sustained =
+        model.failures >= 3 && model.now - (model.since ?? model.now) > 120_000;
+
+      expect(reading.status).toBe(sustained ? "firing" : "unknown");
+    }
+  }, runModel),
+  toString: () => JSON.stringify(sample),
+});
+
+it.effect.prop(
+  "unavailable and healthy samples break a consecutive issuer failure streak",
+  [Schema.Array(DoctorSample)],
+  ([samples]) =>
+    Effect.promise(
+      asyncModelRun.bind(
+        undefined,
+        () => ({
+          model: { failures: 0, now: 0, since: undefined },
+          real: { sources: emptySources },
+        }),
+        samples.map(sampleCommand)
+      )
+    )
+);
+
+it.prop(
+  "issuer requires both three consecutive failures and more than two minutes",
+  [Schema.Int.check(Schema.isBetween({ maximum: 240_000, minimum: 0 }))],
+  ([span]) => {
+    const facts = {
+      ...healthy,
+      doctor: false,
+      doctorReasons: ["invalid identity"],
+    };
+
+    const first = observeAlarms(emptySources, facts, 0);
+    const second = observeAlarms(first.sources, facts, span);
+    const third = observeAlarms(second.sources, facts, span);
 
     expect(first.readings["issuer.broken"].status).toBe("unknown");
+    expect(second.readings["issuer.broken"].status).toBe("unknown");
+    expect(third.readings["issuer.broken"].status).toBe(
+      span > 120_000 ? "firing" : "unknown"
+    );
 
-    const second = observeAlarms(first.sources, facts(false, [REASON]), now);
-    const reading = second.readings["issuer.broken"];
-
-    expect(reading.status).toBe("firing");
-
-    if (reading.status === "firing") {
-      expect(reading.severity).toBe("critical");
-      expect(reading.evidence).toContain(REASON);
+    if (third.readings["issuer.broken"].status === "firing") {
+      expect(third.readings["issuer.broken"].severity).toBe("critical");
+      expect(third.readings["issuer.broken"].evidence).toContain(
+        "invalid identity"
+      );
     }
-  });
 
-  it("a passing run in between resets the count", () => {
-    const first = observeAlarms(emptySources, facts(false, [REASON]), now);
-    const passed = observeAlarms(first.sources, facts(true, []), now);
-    const again = observeAlarms(passed.sources, facts(false, [REASON]), now);
+    const pass = observeAlarms(third.sources, healthy, span + 1);
+    const again = observeAlarms(pass.sources, facts, span + 240_000);
 
-    expect(passed.readings["issuer.broken"].status).toBe("ok");
+    expect(pass.readings["issuer.broken"].status).toBe("ok");
     expect(again.readings["issuer.broken"].status).toBe("unknown");
-  });
-
-  it("a doctor that never reported still fires on the second miss, saying so", () => {
-    const missing = "config doctor did not finish within 30 seconds";
-    const first = observeAlarms(emptySources, facts(false, [missing]), now);
-    const second = observeAlarms(first.sources, facts(false, [missing]), now);
-    const reading = second.readings["issuer.broken"];
-
-    expect(reading.status).toBe("firing");
-
-    if (reading.status === "firing") {
-      expect(reading.evidence).toContain(missing);
-    }
-  });
-});
+  }
+);

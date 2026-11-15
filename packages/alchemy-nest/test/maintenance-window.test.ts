@@ -201,14 +201,13 @@ it.effect.prop(
       const plain = down(healthy, ["instance-b"]);
       const at = T0 + MINUTE;
 
-      const covered = observeAlarms(
-        emptySources,
-        { ...both, maintenance: [a] },
-        at
-      ).readings["instance.down"];
+      const prior = observeAlarms(emptySources, both, at - MINUTE).sources;
+
+      const covered = observeAlarms(prior, { ...both, maintenance: [a] }, at)
+        .readings["instance.down"];
 
       expect(covered).toEqual(
-        observeAlarms(emptySources, plain, at).readings["instance.down"]
+        observeAlarms(prior, plain, at).readings["instance.down"]
       );
       expect(covered.status).toBe("firing");
       expect(JSON.stringify(covered)).not.toContain("instance-a");

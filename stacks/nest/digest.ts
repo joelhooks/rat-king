@@ -19,7 +19,7 @@ export const composeDigest = (
   at: string,
   doctor?: {
     readonly reasons: readonly string[];
-    readonly status: "ok" | "fail";
+    readonly status: "ok" | "warn" | "fail";
   }
 ) => {
   const { sent } = local;
@@ -47,6 +47,7 @@ export const composeDigest = (
     status = "fail";
   } else if (
     health.status === "warn" ||
+    doctor?.status === "warn" ||
     fallbacks > 0 ||
     quarantined > 0 ||
     raw > 0

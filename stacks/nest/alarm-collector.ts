@@ -442,7 +442,9 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
       deployKnown: Option.isSome(observations.deploy),
       digest: Option.getOrNull(observations.digest)?.status ?? null,
       doctor: Option.getOrNull(observations.doctor)?.status === "ok",
-      doctorFinished: Option.isSome(observations.doctor),
+      doctorFinished:
+        Option.isSome(observations.doctor) &&
+        observations.doctor.value.status !== "warn",
       doctorReasons: Option.match(observations.doctor, {
         onNone: () => ["config doctor did not finish within 30 seconds"],
         onSome: (result) => result.reasons,

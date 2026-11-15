@@ -76,7 +76,7 @@ it.effect.prop(
         input.quarantine > 20 ? "firing" : "ok"
       );
       expect(second.readings["issuer.broken"].status).toBe(
-        input.doctor ? "ok" : "firing"
+        input.doctor ? "ok" : "unknown"
       );
       const later = now + 600_000;
 

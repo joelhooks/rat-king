@@ -2,6 +2,12 @@ import { Schema } from "effect";
 
 import { AgentName } from "../../packages/ratking-client/src/name.ts";
 
+export const ISSUER_FAILURE_CHECKS = 3;
+
+export const ISSUER_FAILURE_SPAN_MS = 120_000;
+
+export const INSTANCE_DOWN_CHECKS = 2;
+
 const FixedAlarmKey = Schema.Literals([
   "wake.unacked",
   "ship.failed",

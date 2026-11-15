@@ -54,11 +54,7 @@ describe("instance paging", () => {
     expect(
       cycles([[down("mischief", true)], [down("mischief", true)]])
     ).toEqual([
-      {
-        evidence: "mischief: transport error",
-        severity: "warn",
-        status: "firing",
-      },
+      { status: "unknown" },
       {
         evidence: "mischief: transport error",
         severity: "critical",
@@ -78,7 +74,7 @@ describe("instance paging", () => {
       readings.map((reading) =>
         reading?.status === "firing" ? reading.severity : reading?.status
       )
-    ).toEqual(["warn", "ok", "warn"]);
+    ).toEqual(["unknown", "ok", "unknown"]);
   });
 
   it("instances without page stay warn however long they are down", () => {
@@ -89,9 +85,12 @@ describe("instance paging", () => {
     ]);
 
     expect(
-      readings.every(
-        (reading) => reading?.status === "firing" && reading.severity === "warn"
-      )
+      readings
+        .slice(1)
+        .every(
+          (reading) =>
+            reading?.status === "firing" && reading.severity === "warn"
+        )
     ).toBe(true);
   });
 
@@ -105,7 +104,7 @@ describe("instance paging", () => {
       readings.map((reading) =>
         reading?.status === "firing" ? reading.severity : reading?.status
       )
-    ).toEqual(["warn", "warn"]);
+    ).toEqual(["unknown", "warn"]);
   });
 
   it("leaves the source state shape unchanged when no instances are configured", () => {
