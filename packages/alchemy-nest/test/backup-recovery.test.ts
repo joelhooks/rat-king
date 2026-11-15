@@ -18,6 +18,7 @@ const staging = "/srv/example/.mailbox-backup-0123456789abcdef0123456789abcdef";
 const name = "20000102T030405.123456Z-0123456789abcdef0123456789abcdef";
 
 const bounded = new Set([
+  "precopy",
   "preflight",
   "stage",
   "snapshot",
@@ -35,6 +36,10 @@ const bounded = new Set([
 ]);
 
 const outputs = new Map([
+  [
+    "preflight",
+    'BACKUP_PREFLIGHT_PASSED {"celld":{"bytes":2048},"seaweedfs":{"bytes":2048}}',
+  ],
   ["cleanup", "BACKUP_CLEANED"],
   ["pack", "4096"],
   [
@@ -278,7 +283,7 @@ it.effect.prop(
       expect(lines).toContainEqual(["MemoryHigh", "3G"]);
       expect(lines).toContainEqual(["MemoryMax", "4G"]);
       expect(lines).toContainEqual(["CPUQuota", "200%"]);
-      expect(lines).toContainEqual(["TimeoutStartSec", "4h"]);
+      expect(lines).toContainEqual(["TimeoutStartSec", "10h"]);
       expect(lines).toContainEqual(["TimeoutStopSec", "90s"]);
       expect(lines).toContainEqual(["OOMPolicy", "stop"]);
       expect(lines.find(([key]) => key === "ExecStopPost")?.[1]).toContain(

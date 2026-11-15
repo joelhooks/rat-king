@@ -41,7 +41,7 @@ with tempfile.TemporaryDirectory() as tmp:
     for index, payload in enumerate(payloads):
         put('seaweedfs/f' + str(index), payload)
     def run(action, *args, source=script):
-        sys.argv = ['backup', action, str(data), str(backup), *args]
+        sys.argv = ['backup', action, str(data), str(backup), *args, *(['1490'] if action == 'precopy' else [])]
         out = io.StringIO()
         original_clock = time.time_ns
         try:
