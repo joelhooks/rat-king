@@ -88,10 +88,6 @@ const timerStart = (unit: UnitProps): AsyncCommand<Model, Scheduler> => ({
 const published = "20000102T030405.123456Z-0123456789abcdef0123456789abcdef";
 
 const outputs = new Map([
-  [
-    "preflight",
-    'BACKUP_PREFLIGHT_PASSED {"celld":{"bytes":2048},"seaweedfs":{"bytes":2048}}',
-  ],
   ["stage", "/srv/example/.mailbox-backup-0123456789abcdef0123456789abcdef"],
   ["pack", "4096"],
   [

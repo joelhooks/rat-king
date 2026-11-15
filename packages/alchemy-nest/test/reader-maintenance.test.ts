@@ -2,7 +2,6 @@ import { it } from "@effect/vitest";
 import { DateTime, Effect, Schema } from "effect";
 import { expect } from "vitest";
 
-import { BACKUP_STOP_BUDGET_MS } from "../../../stacks/nest/alarm-maintenance.ts";
 import { READER_RECOVERY_GRACE_MS } from "../../../stacks/nest/alarm-reader-windows.ts";
 import {
   emptySources,
@@ -70,9 +69,7 @@ it.effect.prop(
           : undefined),
       };
 
-      const deadline =
-        kind === "backup" && !closed ? start + BACKUP_STOP_BUDGET_MS : end;
-
+      const deadline = kind === "backup" && !closed ? start + 25 * 60_000 : end;
       const cutoff = start + 1000;
       const at = DateTime.makeUnsafe;
 

@@ -1,7 +1,6 @@
 import { Clock, DateTime, Effect, FileSystem, Schema } from "effect";
 
 import { AgentName } from "../../packages/ratking-client/src/name.ts";
-import { backupStopBudgetMs } from "./backup-limits.ts";
 
 export const MAILBOX_INSTANCE = "mailbox";
 
@@ -9,7 +8,7 @@ export const BACKUP_OWNER = "backup";
 
 export const DEFAULT_GRACE_MINUTES = 5;
 
-export const BACKUP_STOP_BUDGET_MS = backupStopBudgetMs;
+export const BACKUP_STOP_BUDGET_MS = 25 * 60_000;
 
 export const MAX_WINDOW_MS = 12 * 3_600_000;
 
@@ -86,13 +85,7 @@ const declared = (window: MaintenanceWindowValue): Cover => ({
 export const backupCover = (
   backup: { readonly end: number | null; readonly start: number } | null
 ): Cover | undefined => {
-  if (
-    backup === null ||
-    !Number.isFinite(backup.start) ||
-    backup.start <= 0 ||
-    (backup.end !== null &&
-      (!Number.isFinite(backup.end) || backup.end < backup.start))
-  ) {
+  if (backup === null) {
     return undefined;
   }
 

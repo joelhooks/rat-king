@@ -47,10 +47,7 @@ with tempfile.TemporaryDirectory() as tmp:
     pathlib.Path.read_text = read
     subprocess.run = command
     time.monotonic_ns = lambda: 2000000000
-    staging = data / ('.mailbox-backup-' + 'a'*32)
-    staging.mkdir()
-    (staging/'precopy-ready.json').write_text('1000000')
-    sys.argv = ['backup', 'arm', str(data), str(data/'unused'), str(staging)]
+    sys.argv = ['backup', 'arm', str(data), str(data/'unused')]
     with contextlib.redirect_stdout(io.StringIO()) as output:
         exec(backup_script, {})
     assert (data/'.mailbox-backup-restart-required').exists(), 'Memory sample prevented arming'

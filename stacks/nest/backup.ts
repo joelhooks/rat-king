@@ -9,15 +9,7 @@ import {
   restartMaintenanceTimers,
 } from "./backup-control.ts";
 import { backupLifecycle } from "./backup-lifecycle.ts";
-import {
-  precopyAlarmSeconds,
-  precopyLimit,
-  precopyMaxLimit,
-  precopyRequestedMinutes,
-} from "./backup-limits.ts";
 import { backupScript } from "./backup-script.ts";
-
-export { precopyLimit } from "./backup-limits.ts";
 
 export const BackupInput = Schema.Struct({
   backupRoot: Schema.String,
@@ -56,6 +48,8 @@ const BackupName = Schema.String.check(
 export const stepLimit = Duration.seconds(60);
 
 export const snapshotLimit = Duration.seconds(60);
+
+export const precopyLimit = Duration.minutes(15);
 
 export const packLimit = (bytes: number) =>
   Duration.minutes(45 + Math.max(0, Math.ceil(bytes / 1_073_741_824) - 40));
@@ -199,30 +193,8 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
   yield* Effect.log(
     (yield* bounded("prune-staging", stepLimit, script("prune-staging"))).trim()
   );
-  const preflight = yield* bounded("preflight", stepLimit, script("preflight"));
-  yield* Effect.log(preflight.trim());
-
-  const trees = yield* Schema.decodeEffect(Snapshot)(
-    preflight.trim().replace(/^BACKUP_PREFLIGHT_PASSED /u, "")
-  );
-
-  const sourceBytes = trees.celld.bytes + trees.seaweedfs.bytes;
-  const precopy = precopyLimit(sourceBytes);
-
-  if (
-    precopyRequestedMinutes(sourceBytes) > Duration.toMinutes(precopyMaxLimit)
-  ) {
-    yield* Effect.logWarning(
-      "BACKUP_PRECOPY_CAPACITY",
-      `bytes=${sourceBytes}`,
-      "Required precopy budget exceeds 90 minutes; inspect storage throughput before the next backup"
-    );
-  }
-
   yield* Effect.log(
-    "BACKUP_PRECOPY_LIMIT",
-    `bytes=${sourceBytes}`,
-    `limitMs=${Duration.toMillis(precopy)}`
+    (yield* bounded("preflight", stepLimit, script("preflight"))).trim()
   );
   yield* ctl("is-active", storeService);
   yield* ctl("is-active", nodeService);
@@ -235,11 +207,7 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
       Effect.gen(function* stagedBackup() {
         yield* phase(
           "precopy",
-          bounded(
-            "precopy",
-            precopy,
-            script("precopy", staging, String(precopyAlarmSeconds(precopy)))
-          )
+          bounded("precopy", precopyLimit, script("precopy", staging))
         );
         yield* checkpoint("ready");
         yield* memory("before-stop");
@@ -254,7 +222,6 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
             "arm",
             input.dataRoot,
             input.backupRoot,
-            staging,
           ])
         );
 

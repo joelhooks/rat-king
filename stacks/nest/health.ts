@@ -62,7 +62,6 @@ export const Facts = Schema.Struct({
       Schema.Struct({
         ...Run.fields,
         memoryPeak: Schema.NullOr(Count),
-        precopyCapacity: Schema.optionalKey(Schema.Boolean),
         retentionRefused: Schema.optionalKey(Schema.Boolean),
         stopMs: Schema.NullOr(Count),
       })
@@ -255,12 +254,6 @@ const backupFindings = (facts: HealthFacts): Findings => {
 
   if (lastRun !== null && lastRun.result !== "success") {
     warnings.push(`last backup run ${lastRun.result}`);
-  }
-
-  if (lastRun?.precopyCapacity === true) {
-    warnings.push(
-      "backup precopy capacity exceeded; inspect storage throughput"
-    );
   }
 
   if (lastRun?.retentionRefused === true) {
@@ -660,7 +653,6 @@ export const collectHealth = Effect.fn("Nest.health")(function* collectHealth(
     return {
       ...run(props),
       memoryPeak: count(props.get("MemoryPeak")),
-      precopyCapacity: /\bBACKUP_PRECOPY_CAPACITY\b/u.test(journal),
       retentionRefused: retentionRefusedFrom(journal),
       stopMs: stopMsFrom(journal),
     };

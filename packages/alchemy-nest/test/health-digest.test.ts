@@ -476,51 +476,6 @@ it.effect.prop(
     })
 );
 
-it.effect.prop(
-  "a precopy capacity alarm reaches the health digest even when the backup succeeds",
-  [Schema.Boolean],
-  ([capacity]) =>
-    Effect.gen(function* precopyCapacityWarning() {
-      yield* TestClock.setTime(DateTime.toEpochMillis(at(observedAt)));
-
-      const shell = {
-        exec: (argv: readonly string[]) => {
-          const command = argv.slice(4);
-
-          return Effect.succeed({
-            code: 0,
-            stdout:
-              command[0] === "journalctl"
-                ? `${capacity ? "BACKUP_PRECOPY_CAPACITY bytes=322122547200\n" : ""}BACKUP_PUBLISHED example`
-                : reply(command),
-          });
-        },
-      };
-
-      const client = HttpClient.make((request) =>
-        Effect.succeed(HttpClientResponse.fromWeb(request, new Response("ok")))
-      );
-
-      const facts = yield* collectHealth(shell, {
-        backupRoot: "/srv/backups",
-        bucket: "rat-king-cells",
-        dataRoot: "/data",
-        healthUrl: "http://192.0.2.10:18787/.well-known/celld/health",
-        home: "/home/example",
-        publicIPv4: "192.0.2.10",
-        sidecar: false,
-      }).pipe(Effect.provideService(HttpClient.HttpClient, client));
-
-      expect(facts.backup.lastRun?.result).toBe("success");
-      expect(facts.backup.lastRun?.precopyCapacity).toBe(capacity);
-      expect(
-        assess(facts).reasons.includes(
-          "backup precopy capacity exceeded; inspect storage throughput"
-        )
-      ).toBe(capacity);
-    })
-);
-
 const shareFixture = String.raw`
 import contextlib, io, json, os, pathlib, sys, tempfile
 script, entries = sys.argv[1], json.loads(sys.argv[2])
