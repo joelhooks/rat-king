@@ -33,8 +33,11 @@ const facts = (
 
 const twice = (input: typeof AlarmFacts.Type) => {
   const first = observeAlarms(emptySources, input, now);
+  const second = observeAlarms(first.sources, input, now + 60_000);
 
-  return observeAlarms(first.sources, input, now).readings["issuer.broken"];
+  return observeAlarms(second.sources, input, now + 120_001).readings[
+    "issuer.broken"
+  ];
 };
 
 describe("issuer.broken on a doctor that never reported", () => {
@@ -50,7 +53,7 @@ describe("issuer.broken on a doctor that never reported", () => {
     }
   });
 
-  it("a doctor that finished and found a fault stays critical", () => {
+  it("a doctor that finished and found a sustained fault stays critical", () => {
     const reading = twice(
       facts(true, ["secondary: service issuer host identity is malformed"])
     );

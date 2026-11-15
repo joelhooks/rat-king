@@ -6,7 +6,13 @@ import {
 } from "../../packages/ratking-client/src/reader-health.ts";
 import type { ReaderHeartbeatValue } from "../../packages/ratking-client/src/reader-health.ts";
 import { SessionsBackupFact, sessionsBackupReading } from "./alarm-backups.ts";
-import { AlarmKey, AlarmReading } from "./alarm-config.ts";
+import {
+  AlarmKey,
+  AlarmReading,
+  INSTANCE_DOWN_CHECKS,
+  ISSUER_FAILURE_CHECKS,
+  ISSUER_FAILURE_SPAN_MS,
+} from "./alarm-config.ts";
 import type { AlarmReadingValue } from "./alarm-config.ts";
 import {
   MAILBOX_INSTANCE,
@@ -161,6 +167,7 @@ export const AlarmFacts = Schema.Struct({
 });
 
 export const SourceState = Schema.Struct({
+  doctorFailureSince: Schema.optionalKey(Schema.Finite),
   doctorMisses: Schema.optionalKey(Count),
   downChecks: Count,
   entered: Schema.NullOr(Schema.Finite),
@@ -267,12 +274,17 @@ const trackSources = (
       }
     : base;
 
-  const tracked: typeof SourceState.Type = facts.doctor
-    ? measured
-    : {
-        ...measured,
-        doctorMisses: Math.min((prior.doctorMisses ?? 0) + 1, 2),
-      };
+  const tracked: typeof SourceState.Type =
+    facts.doctor || facts.doctorFinished === false
+      ? measured
+      : {
+          ...measured,
+          doctorFailureSince: prior.doctorFailureSince ?? now,
+          doctorMisses: Math.min(
+            (prior.doctorMisses ?? 0) + 1,
+            ISSUER_FAILURE_CHECKS
+          ),
+        };
 
   return facts.instances === undefined || facts.instances.length === 0
     ? tracked
@@ -284,7 +296,7 @@ const trackSources = (
             instance.status === "down"
               ? Math.min(
                   (prior.instanceDownChecks?.[instance.name] ?? 0) + 1,
-                  2
+                  INSTANCE_DOWN_CHECKS
                 )
               : 0,
           ])
@@ -472,15 +484,24 @@ const instanceReading = (
     );
   }
 
-  const pages = exposed.some(
+  const confirmed = exposed.filter(
+    (instance) =>
+      (sources.instanceDownChecks?.[instance.name] ?? 0) >= INSTANCE_DOWN_CHECKS
+  );
+
+  if (confirmed.length === 0) {
+    return unknown;
+  }
+
+  const pages = confirmed.some(
     (instance) =>
       instance.page === true &&
-      (sources.instanceDownChecks?.[instance.name] ?? 0) >= 2
+      (sources.instanceDownChecks?.[instance.name] ?? 0) >= INSTANCE_DOWN_CHECKS
   );
 
   return firing(
     pages ? "critical" : "warn",
-    exposed
+    confirmed
       .map((instance) =>
         overrun(
           `${instance.name}: ${instance.reason}`,
@@ -621,14 +642,11 @@ const digestEvidence = (facts: typeof AlarmFacts.Type) => {
 
 const doctorReading = (
   facts: typeof AlarmFacts.Type,
-  sources: typeof SourceState.Type
+  sources: typeof SourceState.Type,
+  now: number
 ): AlarmReadingValue => {
   if (facts.doctor) {
     return ok;
-  }
-
-  if ((sources.doctorMisses ?? 0) < 2) {
-    return unknown;
   }
 
   const named = (facts.doctorReasons ?? []).join("; ");
@@ -636,15 +654,20 @@ const doctorReading = (
   if (facts.doctorFinished === false) {
     return firing(
       "warn",
-      `Configuration doctor did not report twice in a row, so identity was not checked; the alarm host may be overloaded: ${named}`
+      `Configuration doctor unavailable, so identity was not checked: ${named}`
     );
+  }
+
+  if (
+    (sources.doctorMisses ?? 0) < ISSUER_FAILURE_CHECKS ||
+    now - (sources.doctorFailureSince ?? now) <= ISSUER_FAILURE_SPAN_MS
+  ) {
+    return unknown;
   }
 
   return firing(
     "critical",
-    named === ""
-      ? "Configuration doctor failed twice in a row; it gave no reason"
-      : `Configuration doctor failed twice in a row: ${named}`
+    `Configuration doctor failed at least 3 consecutive checks spanning more than 2 minutes: ${named || "no reason reported"}`
   );
 };
 
@@ -704,7 +727,7 @@ export const observeAlarms = (
     "digest.fail": digestReading(facts, sources, now),
     "filer.slots": slotReading(facts),
     "instance.down": instanceReading(facts, sources, now),
-    "issuer.broken": doctorReading(facts, sources),
+    "issuer.broken": doctorReading(facts, sources, now),
     "quarantine.growth": quarantineReading(facts),
     "readers.stuck": readerReading(facts, now),
     "recall.flowing-canary": recallCanaryReading(facts.recallCanary),

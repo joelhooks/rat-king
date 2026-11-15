@@ -12,9 +12,13 @@ const Healthy = Schema.Struct({
 });
 
 it.effect.prop(
-  "config doctor misses fail an otherwise healthy fleet digest and preserve every reason",
-  [Healthy, Schema.Array(Schema.String)],
-  ([health, reasons]) =>
+  "config doctor outcomes set an otherwise healthy fleet digest and preserve every reason",
+  [
+    Healthy,
+    Schema.Array(Schema.String),
+    Schema.Literals(["ok", "warn", "fail"]),
+  ],
+  ([health, reasons, status]) =>
     Effect.sync(() => {
       const counts = {
         failed: 0,
@@ -32,10 +36,10 @@ it.effect.prop(
         counts,
         counts,
         "2026-01-01T00:00:00Z",
-        { reasons, status: reasons.length === 0 ? "ok" : "fail" }
+        { reasons, status }
       );
 
-      expect(result.status).toBe(reasons.length === 0 ? "ok" : "fail");
+      expect(result.status).toBe(status);
       expect(result.reasons).toEqual(reasons);
     })
 );

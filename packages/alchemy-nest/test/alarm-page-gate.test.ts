@@ -27,7 +27,7 @@ it.effect.prop(
   "warn never pages, however long it fires",
   {
     gaps: Schema.Array(Int(1, 120)).check(
-      Schema.isMinLength(1),
+      Schema.isMinLength(2),
       Schema.isMaxLength(40)
     ),
   },

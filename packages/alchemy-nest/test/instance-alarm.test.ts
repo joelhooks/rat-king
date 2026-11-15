@@ -56,6 +56,17 @@ const restart = (journal: typeof AlarmJournal.Type) =>
     Effect.flatMap(Schema.decodeEffect(Schema.fromJsonString(AlarmJournal)))
   );
 
+const confirmedInstanceCycle: typeof alarmCycle = (
+  journal,
+  facts,
+  now,
+  config,
+  ports
+) =>
+  alarmCycle(journal, facts, now, config, ports).pipe(
+    Effect.flatMap((first) => alarmCycle(first, facts, now + 1, config, ports))
+  );
+
 const healthy: typeof AlarmFacts.Type = {
   cacheBreaches: [],
   deploy: null,
@@ -159,9 +170,11 @@ it.effect.prop(
         ).toEqual(expectedDown);
         const facts = { ...healthy, instances };
 
-        const reading = observeAlarms(emptySources, facts, 1000).readings[
-          "instance.down"
-        ];
+        const reading = observeAlarms(
+          observeAlarms(emptySources, facts, 999).sources,
+          facts,
+          1000
+        ).readings["instance.down"];
 
         const recipients: {
           key: string;
@@ -187,7 +200,13 @@ it.effect.prop(
           unavailable: Effect.die("test ports are available"),
         };
 
-        yield* alarmCycle(emptyJournal, facts, 1000, decoded, ports);
+        yield* confirmedInstanceCycle(
+          emptyJournal,
+          facts,
+          1000,
+          decoded,
+          ports
+        );
         expect(pages).toEqual([]);
 
         if (expectedDown.length === 0) {
@@ -300,7 +319,7 @@ it.effect.prop(
       const legacy = yield* restart(emptyJournal);
       expect(legacy.instanceRecipients).toBeUndefined();
 
-      let journal = yield* alarmCycle(
+      let journal = yield* confirmedInstanceCycle(
         legacy,
         {
           ...healthy,
@@ -324,7 +343,7 @@ it.effect.prop(
       ]);
 
       if (renotify) {
-        journal = yield* alarmCycle(
+        journal = yield* confirmedInstanceCycle(
           journal,
           {
             ...healthy,
@@ -384,7 +403,7 @@ it.effect.prop(
       expect(queuedClear?.instanceRecipients).toEqual([]);
       notices.length = 0;
       journal = yield* restart(journal);
-      journal = yield* alarmCycle(
+      journal = yield* confirmedInstanceCycle(
         journal,
         {
           ...healthy,
@@ -510,7 +529,7 @@ it.effect.prop(
       expect(yield* Ref.get(cancelled)).toBe(true);
 
       const reading = observeAlarms(
-        emptySources,
+        observeAlarms(emptySources, { ...healthy, instances }, 999).sources,
         { ...healthy, instances },
         1000
       ).readings["instance.down"];

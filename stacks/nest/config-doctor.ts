@@ -1,14 +1,16 @@
-import { Effect, Path, Schema, Stream } from "effect";
+import { Effect, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { operatorBundle } from "../../packages/alchemy-nest/src/operator-build.ts";
 import { shellQuote } from "../../packages/alchemy-nest/src/ssh.ts";
+import {
+  decodeInspection,
+  inspectionDeadline,
+  retryDoctorInspection,
+} from "./config-doctor-inspection.ts";
 import type { StageConfigValue } from "./stage-config.ts";
 
-export const DoctorResult = Schema.Struct({
-  reasons: Schema.Array(Schema.String),
-  status: Schema.Literals(["ok", "fail"]),
-});
+export { DoctorResult } from "./config-doctor-inspection.ts";
 
 export const configDoctor = Effect.fn("Nest.configDoctor")(
   function* configDoctor(config: StageConfigValue) {
@@ -36,8 +38,10 @@ export const configDoctor = Effect.fn("Nest.configDoctor")(
           ssh: config.doctor.secondary.ssh,
         },
       ],
-      ({ label, host, ssh }) =>
-        Effect.gen(function* inspectHost() {
+      ({ label, host, ssh }) => {
+        let diagnostic = "";
+
+        return Effect.gen(function* inspectHost() {
           const args = [
             host.node ?? "node",
             "--input-type=module",
@@ -63,60 +67,70 @@ export const configDoctor = Effect.fn("Nest.configDoctor")(
                   args.map(shellQuote).join(" "),
                 ];
 
-          const handle = yield* spawner.spawn(
-            ChildProcess.make(command, argv, {
-              stdin: Stream.succeed(new TextEncoder().encode(source)),
-            })
+          const attempt = Effect.fn("Nest.inspectAttempt")(function* attempt(
+            solo: boolean
+          ) {
+            diagnostic = "";
+
+            const handle = yield* spawner.spawn(
+              ChildProcess.make(
+                command,
+                solo ? ["-o", "ControlPath=none", ...argv] : argv,
+                { stdin: Stream.succeed(new TextEncoder().encode(source)) }
+              )
+            );
+
+            const [output, code, stderr] = yield* Effect.all(
+              [
+                Stream.runCollect(handle.stdout.pipe(Stream.decodeText())),
+                handle.exitCode,
+                Stream.runForEach(
+                  handle.stderr.pipe(Stream.decodeText()),
+                  (chunk) =>
+                    Effect.sync(() => {
+                      diagnostic = (diagnostic + chunk).slice(-65_536);
+                    })
+                ).pipe(Effect.map(() => diagnostic)),
+              ],
+              { concurrency: "unbounded" }
+            );
+
+            return { code: Number(code), output: output.join(""), stderr };
+          });
+
+          const result = yield* retryDoctorInspection(remote, attempt);
+
+          return yield* decodeInspection(
+            label,
+            remote,
+            result.output,
+            result.code,
+            result.stderr
           );
-
-          const [output, code] = yield* Effect.all(
-            [
-              Stream.runCollect(handle.stdout.pipe(Stream.decodeText())),
-              handle.exitCode,
-              Stream.runDrain(handle.stderr),
-            ],
-            { concurrency: "unbounded" }
-          );
-
-          if (code !== 0) {
-            return {
-              reasons: [`${label}: Pi configuration inspection failed`],
-              status: "fail" as const,
-            };
-          }
-
-          const facts = yield* Schema.decodeUnknownEffect(
-            Schema.fromJsonString(DoctorResult)
-          )(output.join(""));
-
-          return {
-            reasons: facts.reasons.map((reason) => `${label}: ${reason}`),
-            status: facts.status,
-          };
-        }).pipe(
-          Effect.scoped,
-          Effect.timeout("30 seconds"),
-          Effect.catch(() =>
-            Effect.succeed({
-              reasons: [`${label}: Pi configuration inspection unavailable`],
-              status: "fail" as const,
-            })
-          )
-        )
+        }).pipe(Effect.scoped, (inspection) =>
+          inspectionDeadline(label, inspection, () => diagnostic)
+        );
+      }
     );
+
+    let status: "ok" | "warn" | "fail" = "ok";
+
+    if (results.some((result) => result.status === "fail")) {
+      status = "fail";
+    } else if (results.some((result) => result.status === "warn")) {
+      status = "warn";
+    }
 
     return {
       reasons: results.flatMap((result) => result.reasons),
-      status: results.some((result) => result.status === "fail")
-        ? ("fail" as const)
-        : ("ok" as const),
+      status,
     };
   },
   (effect) =>
     effect.pipe(
       Effect.orElseSucceed(() => ({
         reasons: ["Pi configuration inspection unavailable"],
-        status: "fail" as const,
+        status: "warn" as const,
       }))
     )
 );
