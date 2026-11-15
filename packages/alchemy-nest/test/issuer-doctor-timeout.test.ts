@@ -41,16 +41,8 @@ const twice = (input: typeof AlarmFacts.Type) => {
 };
 
 describe("issuer.broken on a doctor that never reported", () => {
-  it("fires as a warning that says identity was not checked", () => {
-    const reading = twice(facts(false, [missing]));
-
-    expect(reading.status).toBe("firing");
-
-    if (reading.status === "firing") {
-      expect(reading.severity).toBe("warn");
-      expect(reading.evidence).toContain(missing);
-      expect(reading.evidence).toContain("not checked");
-    }
+  it("does not report broken identity when the doctor never checked it", () => {
+    expect(twice(facts(false, [missing]))).toEqual({ status: "ok" });
   });
 
   it("a doctor that finished and found a sustained fault stays critical", () => {

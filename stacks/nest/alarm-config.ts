@@ -6,6 +6,8 @@ export const ISSUER_FAILURE_CHECKS = 3;
 
 export const ISSUER_FAILURE_SPAN_MS = 120_000;
 
+export const DOCTOR_UNAVAILABLE_SPAN_MS = 900_000;
+
 export const INSTANCE_DOWN_CHECKS = 2;
 
 const FixedAlarmKey = Schema.Literals([
@@ -15,6 +17,7 @@ const FixedAlarmKey = Schema.Literals([
   "celld.down",
   "celld.restarted",
   "issuer.broken",
+  "doctor.unavailable",
   "readers.stuck",
   "filer.slots",
   "quarantine.growth",
@@ -155,6 +158,7 @@ export const alarmKeys: readonly AlarmKeyValue[] = [
   "celld.down",
   "celld.restarted",
   "issuer.broken",
+  "doctor.unavailable",
   "readers.stuck",
   "filer.slots",
   "quarantine.growth",

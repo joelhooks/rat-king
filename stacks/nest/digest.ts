@@ -1,11 +1,12 @@
 import { Clock, DateTime, Effect, FileSystem, Schema } from "effect";
 
+import { readAlarmJournal } from "./alarm-journal.ts";
 import { collectComms } from "./comms.ts";
 import type { CountsValue } from "./comms.ts";
 import { configDoctor } from "./config-doctor.ts";
 import type { FailedHealth } from "./digest-config.ts";
 import { FleetDigest } from "./digest-config.ts";
-import { DigestJson } from "./health.ts";
+import { DigestJson, doctorUnavailableSummary } from "./health.ts";
 import type { HealthDigest } from "./health.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
@@ -89,6 +90,7 @@ export const digest = Effect.fn("Nest.digest")(function* digest<E, R = never>(
   const fs = yield* FileSystem.FileSystem;
   const history = `${config.runtime.RAT_KING_STATE_DIR}/health.jsonl`;
   let prior: string | undefined;
+  let previousDoctorCount = 0;
 
   if (yield* fs.exists(history)) {
     const lines = (yield* fs.readFileString(history)).trim().split("\n");
@@ -102,6 +104,8 @@ export const digest = Effect.fn("Nest.digest")(function* digest<E, R = never>(
           () => new FleetError({ reason: "Invalid digest history" })
         )
       );
+
+      previousDoctorCount = previous.doctorUnavailableCount ?? 0;
 
       if ("observedAt" in previous.rat_king) {
         prior = yield* Schema.encodeEffect(DigestJson)(previous.rat_king);
@@ -130,10 +134,19 @@ export const digest = Effect.fn("Nest.digest")(function* digest<E, R = never>(
   );
 
   const mail = yield* waitingMail;
+  const journal = yield* readAlarmJournal(config.runtime.RAT_KING_STATE_DIR);
+  const doctorCount = journal.sources.doctorUnavailableCount ?? 0;
+
+  const doctorSummary = doctorUnavailableSummary(
+    doctorCount,
+    previousDoctorCount,
+    journal.sources.doctorUnavailableReason
+  );
 
   const line = {
     ...composed,
-    reasons: [...composed.reasons, ...mail],
+    doctorUnavailableCount: doctorCount,
+    reasons: [...composed.reasons, ...doctorSummary, ...mail],
     waitingMail: mail,
   };
 

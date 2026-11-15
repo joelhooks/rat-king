@@ -9,6 +9,7 @@ import { SessionsBackupFact, sessionsBackupReading } from "./alarm-backups.ts";
 import {
   AlarmKey,
   AlarmReading,
+  DOCTOR_UNAVAILABLE_SPAN_MS,
   INSTANCE_DOWN_CHECKS,
   ISSUER_FAILURE_CHECKS,
   ISSUER_FAILURE_SPAN_MS,
@@ -169,6 +170,9 @@ export const AlarmFacts = Schema.Struct({
 export const SourceState = Schema.Struct({
   doctorFailureSince: Schema.optionalKey(Schema.Finite),
   doctorMisses: Schema.optionalKey(Count),
+  doctorUnavailableCount: Schema.optionalKey(Count),
+  doctorUnavailableReason: Schema.optionalKey(Schema.String),
+  doctorUnavailableSince: Schema.optionalKey(Schema.Finite),
   downChecks: Count,
   entered: Schema.NullOr(Schema.Finite),
   instanceDownChecks: Schema.optionalKey(Schema.Record(Schema.String, Count)),
@@ -209,6 +213,29 @@ export const deployWindow = (facts: typeof AlarmFacts.Type, now: number) => {
       (receipt) => receipt.sha === deploy.sha && receipt.end >= deploy.started
     )
   );
+};
+
+const trackDoctorAvailability = (
+  prior: typeof SourceState.Type,
+  facts: typeof AlarmFacts.Type,
+  now: number
+) => {
+  if (facts.doctorFinished === false && !facts.doctor) {
+    return {
+      doctorUnavailableCount: (prior.doctorUnavailableCount ?? 0) + 1,
+      doctorUnavailableReason:
+        (facts.doctorReasons ?? []).join("; ") || "no reason reported",
+      doctorUnavailableSince: prior.doctorUnavailableSince ?? now,
+    };
+  }
+
+  return prior.doctorUnavailableCount === undefined
+    ? {}
+    : {
+        doctorUnavailableCount: prior.doctorUnavailableCount,
+        doctorUnavailableReason:
+          prior.doctorUnavailableReason ?? "no reason reported",
+      };
 };
 
 const trackSources = (
@@ -258,6 +285,7 @@ const trackSources = (
   );
 
   const base = {
+    ...trackDoctorAvailability(prior, facts, now),
     downChecks:
       !facts.deployKnown || deployWindow(facts, now) || facts.health === 200
         ? 0
@@ -645,18 +673,11 @@ const doctorReading = (
   sources: typeof SourceState.Type,
   now: number
 ): AlarmReadingValue => {
-  if (facts.doctor) {
+  if (facts.doctor || facts.doctorFinished === false) {
     return ok;
   }
 
   const named = (facts.doctorReasons ?? []).join("; ");
-
-  if (facts.doctorFinished === false) {
-    return firing(
-      "warn",
-      `Configuration doctor unavailable, so identity was not checked: ${named}`
-    );
-  }
 
   if (
     (sources.doctorMisses ?? 0) < ISSUER_FAILURE_CHECKS ||
@@ -670,6 +691,18 @@ const doctorReading = (
     `Configuration doctor failed at least 3 consecutive checks spanning more than 2 minutes: ${named || "no reason reported"}`
   );
 };
+
+const doctorUnavailableReading = (
+  sources: typeof SourceState.Type,
+  now: number
+): AlarmReadingValue =>
+  sources.doctorUnavailableSince !== undefined &&
+  now - sources.doctorUnavailableSince >= DOCTOR_UNAVAILABLE_SPAN_MS
+    ? firing(
+        "warn",
+        `Configuration doctor unavailable for at least 15 minutes; identity not checked: ${sources.doctorUnavailableReason}`
+      )
+    : ok;
 
 const digestReading = (
   facts: typeof AlarmFacts.Type,
@@ -725,6 +758,7 @@ export const observeAlarms = (
     "celld.down": downReading(facts, sources, now),
     "celld.restarted": restartReading(facts, sources, now),
     "digest.fail": digestReading(facts, sources, now),
+    "doctor.unavailable": doctorUnavailableReading(sources, now),
     "filer.slots": slotReading(facts),
     "instance.down": instanceReading(facts, sources, now),
     "issuer.broken": doctorReading(facts, sources, now),

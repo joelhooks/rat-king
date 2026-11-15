@@ -100,6 +100,8 @@ const summaries: Partial<Record<AlarmKeyValue, string>> = {
   "celld.down": "Mailbox health is unavailable",
   "celld.restarted": "Unexplained process restart",
   "digest.fail": "Fleet digest failed",
+  "doctor.unavailable":
+    "Configuration doctor unavailable; identity not checked",
   "filer.slots": "Storage free slots are low",
   "instance.down": "Named celld instance health is unavailable",
   "issuer.broken": "Identity configuration is broken",

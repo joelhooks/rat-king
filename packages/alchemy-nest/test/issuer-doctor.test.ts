@@ -26,8 +26,60 @@ const healthy: typeof AlarmFacts.Type = {
   slots: { free: 50, max: 100 },
 };
 
+it.prop(
+  "doctor timeouts page at fifteen minutes and clear on either completed outcome",
+  [Schema.Int.check(Schema.isBetween({ maximum: 1_800_000, minimum: 0 }))],
+  ([elapsed]) => {
+    const unavailable = {
+      ...healthy,
+      doctor: false,
+      doctorFinished: false,
+      doctorReasons: ["doctor probe timed out"],
+    };
+
+    const first = observeAlarms(emptySources, unavailable, 0);
+    const before = observeAlarms(first.sources, unavailable, 899_999);
+    const boundary = observeAlarms(before.sources, unavailable, 900_000);
+    const later = observeAlarms(first.sources, unavailable, elapsed);
+
+    expect(before.readings["doctor.unavailable"].status).toBe("ok");
+    const reading = boundary.readings["doctor.unavailable"];
+
+    expect(reading.status).toBe("firing");
+
+    if (reading.status === "firing") {
+      expect(reading.severity).toBe("warn");
+      expect(reading.evidence).toContain("doctor probe timed out");
+    }
+
+    expect(later.readings["doctor.unavailable"].status).toBe(
+      elapsed >= 900_000 ? "firing" : "ok"
+    );
+    expect(boundary.readings["issuer.broken"].status).toBe("ok");
+    expect(boundary.readings["digest.fail"].status).toBe("ok");
+
+    for (const doctor of [true, false]) {
+      const completed = observeAlarms(
+        boundary.sources,
+        {
+          ...healthy,
+          doctor,
+          doctorFinished: true,
+        },
+        900_001
+      );
+
+      expect(completed.readings["doctor.unavailable"].status).toBe("ok");
+      const next = observeAlarms(completed.sources, unavailable, 1_800_000);
+      expect(next.readings["doctor.unavailable"].status).toBe("ok");
+    }
+  }
+);
+
 const DoctorSample = Schema.Struct({
-  elapsed: Schema.Int.check(Schema.isBetween({ maximum: 180_000, minimum: 0 })),
+  elapsed: Schema.Int.check(
+    Schema.isBetween({ maximum: 1_000_000, minimum: 0 })
+  ),
   status: Schema.Literals(["ok", "fail", "unavailable"]),
 });
 
@@ -35,6 +87,8 @@ interface Model {
   now: number;
   failures: number;
   since: number | undefined;
+  unavailableSince: number | undefined;
+  unavailableCount: number;
 }
 
 interface Real {
@@ -59,6 +113,13 @@ const sampleCommand = (
       model.failures = 0;
     }
 
+    if (sample.status === "unavailable") {
+      model.unavailableSince ??= model.now;
+      model.unavailableCount += 1;
+    } else {
+      model.unavailableSince = undefined;
+    }
+
     const result = yield* Effect.sync(() =>
       observeAlarms(
         real.sources,
@@ -75,15 +136,26 @@ const sampleCommand = (
 
     const reading = result.readings["issuer.broken"];
 
-    if (sample.status === "unavailable") {
-      expect(reading).toMatchObject({ severity: "warn", status: "firing" });
-    } else if (sample.status === "ok") {
-      expect(reading.status).toBe("ok");
-    } else {
+    expect(result.sources.doctorUnavailableCount ?? 0).toBe(
+      model.unavailableCount
+    );
+
+    const unavailableSpan =
+      model.unavailableSince === undefined
+        ? 0
+        : model.now - model.unavailableSince;
+
+    expect(result.readings["doctor.unavailable"].status).toBe(
+      unavailableSpan >= 900_000 ? "firing" : "ok"
+    );
+
+    if (sample.status === "fail") {
       const sustained =
         model.failures >= 3 && model.now - (model.since ?? model.now) > 120_000;
 
       expect(reading.status).toBe(sustained ? "firing" : "unknown");
+    } else {
+      expect(reading.status).toBe("ok");
     }
   }, runModel),
   toString: () => JSON.stringify(sample),
@@ -97,7 +169,13 @@ it.effect.prop(
       asyncModelRun.bind(
         undefined,
         () => ({
-          model: { failures: 0, now: 0, since: undefined },
+          model: {
+            failures: 0,
+            now: 0,
+            since: undefined,
+            unavailableCount: 0,
+            unavailableSince: undefined,
+          },
           real: { sources: emptySources },
         }),
         samples.map(sampleCommand)
