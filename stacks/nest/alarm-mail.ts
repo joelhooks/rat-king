@@ -1,4 +1,6 @@
+import { NodeHttpClient } from "@effect/platform-node";
 import { Effect, Schema } from "effect";
+import type { HttpClient } from "effect/http";
 
 import { SendOutcomes } from "../../packages/mailbox-client/src/index.ts";
 import { encodePayload } from "../../packages/ratking-client/src/payload.ts";
@@ -9,6 +11,14 @@ import { ShipSettings } from "./ship-config.ts";
 import { prepareShipNotification } from "./ship-notify.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
+
+export const withAlarmMailTransport = <A, E, R>(
+  operation: Effect.Effect<A, E, R | HttpClient.HttpClient>
+) =>
+  operation.pipe(
+    Effect.provide(NodeHttpClient.layerUndiciOptions()),
+    Effect.scoped
+  );
 
 export const prepareAlarmMail = Effect.fn("Alarm.prepareMail")(
   function* prepareAlarmMail(
