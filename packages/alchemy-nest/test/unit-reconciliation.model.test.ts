@@ -23,6 +23,7 @@ const Cycle = Schema.Struct({
   cascade: Schema.Boolean,
   inputs: Revision,
   known: Schema.Boolean,
+  oneshot: Schema.Boolean,
   proved: Schema.Boolean,
   reload: Schema.Boolean,
   staged: Schema.Boolean,
@@ -33,14 +34,21 @@ const Cycle = Schema.Struct({
 const props = (
   version: number,
   inputs: number,
-  started: boolean
+  started: boolean,
+  oneshot = false
 ): UnitProps => ({
   home: "/home/example",
   name: "fixture.invalid.service",
   restartOn: [`input-${inputs}`],
   scope: "user",
   sections: [
-    { lines: [["ExecStart", `/opt/version-${version}`]], name: "Service" },
+    {
+      lines: [
+        ...(oneshot ? [["Type", "oneshot"] as const] : []),
+        ["ExecStart", `/opt/version-${version}`],
+      ],
+      name: "Service",
+    },
   ],
   started,
 });
@@ -49,12 +57,17 @@ interface Model {
   active: boolean;
   inputs: number;
   known: boolean;
+  oneshot: boolean;
   version: number;
 }
 
+const declarationMatches = (model: Model, cycle: typeof Cycle.Type) =>
+  model.version === cycle.version && model.oneshot === cycle.oneshot;
+
 const expectedReconciliation = (model: Model, cycle: typeof Cycle.Type) => {
   const liveActive = model.active || cycle.cascade;
-  const declarationChanged = model.version !== cycle.version;
+  const declarationChanged = !declarationMatches(model, cycle);
+
   const wrote = declarationChanged && !cycle.staged;
   const unloaded = declarationChanged && cycle.staged && !cycle.reload;
 
@@ -79,7 +92,7 @@ const expectedReconciliation = (model: Model, cycle: typeof Cycle.Type) => {
     expected.push("restart");
   }
 
-  if (!cycle.started && liveActive) {
+  if (!cycle.started && liveActive && !cycle.oneshot) {
     expected.push("stop");
   }
 
@@ -87,7 +100,7 @@ const expectedReconciliation = (model: Model, cycle: typeof Cycle.Type) => {
 };
 
 it.effect.prop(
-  "repeated reconciliation starts and stops to declaration, and coalesces only a proven loaded cascade",
+  "repeated reconciliation preserves unmanaged oneshots and coalesces only a proven loaded cascade",
   [Arbitrary.schema(Schema.Array(Cycle).check(Schema.isMaxLength(30)))],
   ([cycles]) =>
     Effect.gen(function* reconciliationModel() {
@@ -134,7 +147,17 @@ it.effect.prop(
             Effect.runPromiseWith(context)(
               Effect.gen(function* step() {
                 ({ known } = cycle);
-                const next = props(cycle.version, cycle.inputs, cycle.started);
+
+                const next = props(
+                  cycle.version,
+                  cycle.inputs,
+                  cycle.started,
+                  cycle.oneshot
+                );
+
+                const active =
+                  cycle.started ||
+                  ((model.active || cycle.cascade) && cycle.oneshot);
 
                 if (cycle.staged) {
                   yield* stageOwnedUnit(shell, next, { attr: actual.output });
@@ -181,12 +204,13 @@ it.effect.prop(
                 expect(
                   calls.filter((call) => call.operation === "write")
                 ).toHaveLength(wrote ? 1 : 0);
-                expect(actual.output.active).toBe(cycle.started);
+                expect(actual.output.active).toBe(active);
                 expect(actual.output.needDaemonReload).toBe(false);
                 expect(actual.output.enabled).toBe(false);
-                model.active = cycle.started;
+                model.active = active;
                 model.inputs = cycle.inputs;
                 model.known = cycle.known;
+                model.oneshot = cycle.oneshot;
                 model.version = cycle.version;
               })
             ),
@@ -197,7 +221,13 @@ it.effect.prop(
       yield* Effect.promise(() =>
         fc.asyncModelRun(
           () => ({
-            model: { active: true, inputs: 0, known: true, version: 0 },
+            model: {
+              active: true,
+              inputs: 0,
+              known: true,
+              oneshot: false,
+              version: 0,
+            },
             real,
           }),
           commands
