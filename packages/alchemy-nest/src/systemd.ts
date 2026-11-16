@@ -64,6 +64,13 @@ const enabled = (props: UnitProps): boolean =>
 const configDigest = (props: UnitProps): string =>
   textDigest((props.restartOn ?? []).join("\n"));
 
+const isOneshot = (props: UnitProps): boolean =>
+  props.sections
+    .filter((s) => s.name === "Service")
+    .flatMap((s) => s.lines)
+    .findLast(([key]) => key === "Type")?.[1]
+    .trim() === "oneshot";
+
 export const withoutLegacyHelperInputs = <A extends UnitAttributes>(
   olds: UnitProps | undefined,
   news: UnitProps,
@@ -498,6 +505,9 @@ export const reconcileUnit = Effect.fn("SystemdUnit.reconcile")(
 
     const wrote = before?.sha256 !== sha256;
 
+    const spareRunning =
+      valid.started === false && live.active && isOneshot(valid);
+
     const cascadeApplied =
       cascadeChanged(output, live, wrote) && (yield* processMatches);
 
@@ -533,7 +543,7 @@ export const reconcileUnit = Effect.fn("SystemdUnit.reconcile")(
           yield* settled(shell, valid.name);
           yield* ctl(shell, "restart", valid.name);
         }
-      } else if (live.active) {
+      } else if (live.active && !spareRunning) {
         yield* ctl(shell, "stop", valid.name);
       }
 
@@ -542,7 +552,7 @@ export const reconcileUnit = Effect.fn("SystemdUnit.reconcile")(
       if (
         after === undefined ||
         after.sha256 !== sha256 ||
-        after.active !== (valid.started ?? true) ||
+        (!spareRunning && after.active !== (valid.started ?? true)) ||
         after.enabled !== enabled(valid) ||
         after.needDaemonReload
       ) {
