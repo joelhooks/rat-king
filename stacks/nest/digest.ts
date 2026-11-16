@@ -1,6 +1,7 @@
 import { Clock, DateTime, Effect, FileSystem, Schema } from "effect";
 
 import { readAlarmJournal } from "./alarm-journal.ts";
+import type { SourceState } from "./alarm-sources.ts";
 import { collectComms } from "./comms.ts";
 import type { CountsValue } from "./comms.ts";
 import { configDoctor } from "./config-doctor.ts";
@@ -12,6 +13,20 @@ import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
 
 export { FleetDigest } from "./digest-config.ts";
+
+export const digestMaintenanceReasons = (
+  sources: typeof SourceState.Type,
+  now: number
+): readonly string[] => {
+  const cover = sources.measurementMaintenance;
+
+  return cover !== undefined &&
+    cover !== null &&
+    cover.at <= now &&
+    now <= cover.until
+    ? [cover.evidence]
+    : [];
+};
 
 export const composeDigest = (
   health: HealthDigest | typeof FailedHealth.Type,
@@ -146,7 +161,12 @@ export const digest = Effect.fn("Nest.digest")(function* digest<E, R = never>(
   const line = {
     ...composed,
     doctorUnavailableCount: doctorCount,
-    reasons: [...composed.reasons, ...doctorSummary, ...mail],
+    reasons: [
+      ...composed.reasons,
+      ...doctorSummary,
+      ...digestMaintenanceReasons(journal.sources, now),
+      ...mail,
+    ],
     waitingMail: mail,
   };
 

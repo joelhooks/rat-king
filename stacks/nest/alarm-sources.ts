@@ -18,6 +18,7 @@ import type { AlarmReadingValue } from "./alarm-config.ts";
 import {
   MAILBOX_INSTANCE,
   MaintenanceWindow,
+  backupCover,
   coveringWindow,
   coversOf,
   maintenanceEvidence,
@@ -177,6 +178,15 @@ export const SourceState = Schema.Struct({
   entered: Schema.NullOr(Schema.Finite),
   instanceDownChecks: Schema.optionalKey(Schema.Record(Schema.String, Count)),
   lastUp: Schema.optionalKey(Schema.Record(Schema.String, Schema.Finite)),
+  measurementMaintenance: Schema.optionalKey(
+    Schema.NullOr(
+      Schema.Struct({
+        at: Schema.Finite,
+        evidence: Schema.String,
+        until: Schema.Finite,
+      })
+    )
+  ),
   measurementMisses: Schema.optionalKey(Count),
   unexplained: Schema.Array(Schema.Finite),
   wakeTargets: Schema.optionalKey(Schema.Array(WakeTarget)),
@@ -451,7 +461,9 @@ const readerReading = (
   return facts.readers.complete ? ok : unknown;
 };
 
-const maintenance = (covers: readonly Cover[]): AlarmReadingValue => ({
+const maintenance = (
+  covers: readonly Cover[]
+): Extract<AlarmReadingValue, { readonly status: "maintenance" }> => ({
   evidence: covers.map(maintenanceEvidence).join("; "),
   recipients: [...new Set(covers.flatMap((cover) => cover.recipients))],
   status: "maintenance",
@@ -720,15 +732,32 @@ const digestReading = (
     .filter((check) => stopped === undefined || check.kind !== "unavailable")
     .map((check) => check.text);
 
+  const backup = backupCover(facts.backup ?? null);
+
+  const coveredMeasurements =
+    facts.measurementFailed &&
+    backup !== undefined &&
+    backup.start <= now &&
+    now <= backup.end;
+
   const digestFailed =
     facts.digest === "fail" ||
-    (facts.measurementFailed && (sources.measurementMisses ?? 0) >= 2);
+    (facts.measurementFailed &&
+      !coveredMeasurements &&
+      (sources.measurementMisses ?? 0) >= 2);
 
   if (memory.length > 0 || digestFailed) {
     return firing(
       "warn",
       [...(digestFailed ? [digestEvidence(facts)] : []), ...memory].join("; ")
     );
+  }
+
+  if (coveredMeasurements) {
+    return {
+      ...maintenance([backup]),
+      evidence: `${maintenanceEvidence(backup)}; ${digestEvidence(facts)}`,
+    };
   }
 
   if (stopped !== undefined && checks.length > memory.length) {
@@ -771,5 +800,22 @@ export const observeAlarms = (
     ...mailReadings(facts.wakes, now),
   };
 
-  return { readings, sources };
+  const cover = backupCover(facts.backup ?? null);
+  const digest = readings["digest.fail"];
+
+  const measurementMaintenance =
+    facts.measurementFailed &&
+    digest.status === "maintenance" &&
+    cover !== undefined
+      ? { at: now, evidence: digest.evidence, until: cover.end }
+      : null;
+
+  if (
+    measurementMaintenance === null &&
+    prior.measurementMaintenance === undefined
+  ) {
+    return { readings, sources };
+  }
+
+  return { readings, sources: { ...sources, measurementMaintenance } };
 };

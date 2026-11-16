@@ -11,12 +11,17 @@ import type { AlarmHeartbeat } from "./alarm-heartbeat.ts";
 import {
   alarmFailure,
   alarmStep,
+  checkAlarmWorkerHealth,
   nextAlarmHeartbeat,
   readAlarmHeartbeat,
   writeAlarmHeartbeat,
 } from "./alarm-heartbeat.ts";
 import { readAlarmJournal, saveAlarmJournal } from "./alarm-journal.ts";
-import { prepareAlarmDeliveries, sendAlarmDelivery } from "./alarm-mail.ts";
+import {
+  prepareAlarmDeliveries,
+  sendAlarmDelivery,
+  withAlarmMailTransport,
+} from "./alarm-mail.ts";
 import { updateReaderWindows } from "./alarm-reader-windows.ts";
 import type { ReaderWindowObservation } from "./alarm-reader-windows.ts";
 import type {
@@ -246,6 +251,7 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           ports
         );
       }).pipe(
+        withAlarmMailTransport,
         Effect.timeout("55 seconds"),
         (effect) => alarmStep("cycle", effect),
         Effect.catch((error) => {
@@ -262,6 +268,8 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
       yield* writeAlarmHeartbeat(directory, heartbeat).pipe(
         Effect.catch(() => unavailable)
       );
+
+      yield* checkAlarmWorkerHealth(heartbeat);
 
       const elapsed = (yield* Clock.currentTimeMillis) - started;
       yield* Effect.sleep(Math.max(0, 60_000 - elapsed));

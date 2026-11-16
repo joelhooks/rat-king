@@ -107,6 +107,17 @@ export const nextAlarmHeartbeat = (
   outcome,
 });
 
+export const checkAlarmWorkerHealth = (
+  heartbeat: typeof AlarmHeartbeat.Type
+) =>
+  heartbeat.consecutiveFailures >= 5
+    ? Effect.fail(
+        new FleetError({
+          reason: "Alarm worker failed 5 consecutive cycles; restarting",
+        })
+      )
+    : Effect.void;
+
 export const readAlarmHeartbeat = Effect.fn("Alarm.readHeartbeat")(
   function* readAlarmHeartbeat(directory: string) {
     const fs = yield* FileSystem.FileSystem;
