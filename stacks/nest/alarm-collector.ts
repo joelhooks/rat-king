@@ -279,6 +279,23 @@ export const withLiveness = (liveness?: Effect.Effect<number, FleetError>) =>
 const stopMemoryOf = (health: HealthDigest | null) =>
   health?.stopMemory ?? null;
 
+const wakeFacts = (
+  targets: NonNullable<StageConfigValue["alarm"]>["wakeOnMail"],
+  sightings: readonly (typeof WakeSighting.Type)[] | null
+) => {
+  const desks = new Set(targets?.map(({ name }) => name));
+
+  return {
+    ...(desks.size === 0
+      ? undefined
+      : {
+          deskWakes: sightings?.filter(({ name }) => desks.has(name)) ?? null,
+        }),
+    wakes:
+      sightings?.filter(({ deskWakeOnly }) => deskWakeOnly !== true) ?? null,
+  };
+};
+
 export const collectAlarmFacts = Effect.fn("Alarm.collect")(
   function* collectAlarmFacts<E, R, E2, R2, R3 = never, E4 = never, R4 = never>(
     config: StageConfigValue,
@@ -413,7 +430,7 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
       { concurrency: "unbounded" }
     );
 
-    const wakes = yield* wakeHealth(observations.readers.targets);
+    const sightings = yield* wakeHealth(observations.readers.targets);
 
     const healthy = Option.getOrNull(observations.health);
 
@@ -466,7 +483,7 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
       sessionsBackup: observations.sessionsBackup,
       slots: healthy?.storage.slots ?? null,
       stopMemory: stopMemoryOf(healthy),
-      wakes,
+      ...wakeFacts(config.alarm.wakeOnMail, sightings),
       windows: Option.getOrElse(observations.windows, () => []),
     }).pipe(
       Effect.mapError(

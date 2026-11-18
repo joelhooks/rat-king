@@ -109,11 +109,13 @@ export declare const prepare: (options: PrepareOptions) => Effect.Effect<{
             readonly at: number;
             readonly id: string;
             readonly sender: string;
+            readonly seq?: number;
         } | null;
         readonly oldestWakeSinceAck?: {
             readonly at: number;
             readonly id: string;
             readonly sender: string;
+            readonly seq?: number;
         } | null;
         readonly quietUnacked: number;
         readonly retired?: boolean;

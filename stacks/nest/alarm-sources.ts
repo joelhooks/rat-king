@@ -141,6 +141,7 @@ export const AlarmFacts = Schema.Struct({
   churnLimit: Schema.optionalKey(Schema.Int),
   deploy: Schema.NullOr(DeployMarker),
   deployKnown: Schema.Boolean,
+  deskWakes: Schema.optionalKey(Schema.NullOr(Schema.Array(WakeSighting))),
   digest: Schema.NullOr(Schema.Literals(["ok", "warn", "fail"])),
   doctor: Schema.Boolean,
   doctorFinished: Schema.optionalKey(Schema.Boolean),

@@ -5,6 +5,7 @@ export declare const Wake: Schema.Struct<{
     readonly at: Schema.Finite;
     readonly id: Schema.String;
     readonly sender: Schema.String;
+    readonly seq: Schema.optionalKey<Schema.Int>;
 }>;
 export declare const MailboxHealth: Schema.Struct<{
     readonly complete: Schema.Boolean;
@@ -19,11 +20,13 @@ export declare const MailboxHealth: Schema.Struct<{
         readonly at: Schema.Finite;
         readonly id: Schema.String;
         readonly sender: Schema.String;
+        readonly seq: Schema.optionalKey<Schema.Int>;
     }>>;
     readonly oldestWakeSinceAck: Schema.optionalKey<Schema.NullOr<Schema.Struct<{
         readonly at: Schema.Finite;
         readonly id: Schema.String;
         readonly sender: Schema.String;
+        readonly seq: Schema.optionalKey<Schema.Int>;
     }>>>;
     readonly quietUnacked: Schema.Int;
     readonly retired: Schema.optionalKey<Schema.Boolean>;
@@ -49,11 +52,13 @@ export declare const readMailboxHealth: (transport: {
         readonly at: number;
         readonly id: string;
         readonly sender: string;
+        readonly seq?: number;
     } | null;
     readonly oldestWakeSinceAck?: {
         readonly at: number;
         readonly id: string;
         readonly sender: string;
+        readonly seq?: number;
     } | null;
     readonly quietUnacked: number;
     readonly retired?: boolean;

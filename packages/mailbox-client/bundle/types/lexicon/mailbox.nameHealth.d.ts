@@ -11,6 +11,7 @@ export declare const Wake: Schema.StructWithRest<Schema.Struct<{
     readonly id: Schema.brand<Schema.String, "Lexicon:tid">;
     readonly recordedAt: Schema.brand<Schema.String, "Lexicon:datetime">;
     readonly sender: Schema.brand<Schema.String, "Lexicon:did">;
+    readonly seq: Schema.optionalKey<Schema.Int>;
     readonly woke: Schema.Boolean;
 }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
 export type WakeValue = typeof Wake.Type;
@@ -34,12 +35,14 @@ export declare const Output: Schema.StructWithRest<Schema.Struct<{
         readonly id: Schema.brand<Schema.String, "Lexicon:tid">;
         readonly recordedAt: Schema.brand<Schema.String, "Lexicon:datetime">;
         readonly sender: Schema.brand<Schema.String, "Lexicon:did">;
+        readonly seq: Schema.optionalKey<Schema.Int>;
         readonly woke: Schema.Boolean;
     }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
     readonly oldestWakeSinceAck: Schema.optionalKey<Schema.StructWithRest<Schema.Struct<{
         readonly id: Schema.brand<Schema.String, "Lexicon:tid">;
         readonly recordedAt: Schema.brand<Schema.String, "Lexicon:datetime">;
         readonly sender: Schema.brand<Schema.String, "Lexicon:did">;
+        readonly seq: Schema.optionalKey<Schema.Int>;
         readonly woke: Schema.Boolean;
     }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
     readonly quietUnacked: Schema.Int;
@@ -95,12 +98,14 @@ export declare const Method: {
             readonly id: Schema.brand<Schema.String, "Lexicon:tid">;
             readonly recordedAt: Schema.brand<Schema.String, "Lexicon:datetime">;
             readonly sender: Schema.brand<Schema.String, "Lexicon:did">;
+            readonly seq: Schema.optionalKey<Schema.Int>;
             readonly woke: Schema.Boolean;
         }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
         readonly oldestWakeSinceAck: Schema.optionalKey<Schema.StructWithRest<Schema.Struct<{
             readonly id: Schema.brand<Schema.String, "Lexicon:tid">;
             readonly recordedAt: Schema.brand<Schema.String, "Lexicon:datetime">;
             readonly sender: Schema.brand<Schema.String, "Lexicon:did">;
+            readonly seq: Schema.optionalKey<Schema.Int>;
             readonly woke: Schema.Boolean;
         }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
         readonly quietUnacked: Schema.Int;

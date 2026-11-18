@@ -11,6 +11,7 @@ export const Wake = Schema.Struct({
   at: Schema.Finite,
   id: Schema.String,
   sender: Schema.String,
+  seq: Health.Wake.schema.fields.seq,
 });
 
 export const MailboxHealth = Schema.Struct({
@@ -130,6 +131,7 @@ export const readMailboxHealth = Effect.fn("Mailbox.readHealth")(
               at: Date.parse(since.recordedAt),
               id: since.id,
               sender: since.sender,
+              ...(since.seq === undefined ? undefined : { seq: since.seq }),
             },
     });
   },

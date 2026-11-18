@@ -30,6 +30,7 @@
     "wake": { "type": "object", "required": ["id", "sender", "woke", "recordedAt"], "properties": {
       "id": { "type": "string", "format": "tid" },
       "sender": { "type": "string", "format": "did" },
+      "seq": { "type": "integer", "minimum": 1, "description": "The message admission sequence, not the latest receipt event sequence." },
       "woke": { "type": "boolean" },
       "recordedAt": { "type": "string", "format": "datetime" }
     } }

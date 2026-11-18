@@ -31,6 +31,12 @@ export const Wake = Schema.StructWithRest(
     sender: Runtime.lexString({ format: "did", type: "string" }).pipe(
       Schema.brand("Lexicon:did")
     ),
+    seq: Schema.optionalKey(
+      Schema.Int.check(
+        Schema.isGreaterThanOrEqualTo(1),
+        Schema.isLessThanOrEqualTo(9_007_199_254_740_991)
+      )
+    ),
     woke: Schema.Boolean,
   }),
   [Schema.Record(Schema.String, Runtime.Data)]

@@ -1,0 +1,22 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.desk.wake",
+  "defs": {
+    "main": {
+      "type": "record",
+      "key": "tid",
+      "description": "An operator request to wake a desk for unacknowledged mail.",
+      "record": {
+        "type": "object",
+        "required": ["wake", "name", "messageId", "recordedAt"],
+        "properties": {
+          "wake": { "type": "boolean", "const": true },
+          "name": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "messageId": { "type": "string", "format": "tid" },
+          "seq": { "type": "integer", "minimum": 1 },
+          "recordedAt": { "type": "string", "format": "datetime" }
+        }
+      }
+    }
+  }
+}

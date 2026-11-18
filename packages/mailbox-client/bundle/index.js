@@ -5245,6 +5245,12 @@ var Wake = Schema52.StructWithRest(
     sender: lexString({ format: "did", type: "string" }).pipe(
       Schema52.brand("Lexicon:did")
     ),
+    seq: Schema52.optionalKey(
+      Schema52.Int.check(
+        Schema52.isGreaterThanOrEqualTo(1),
+        Schema52.isLessThanOrEqualTo(9007199254740991)
+      )
+    ),
     woke: Schema52.Boolean
   }),
   [Schema52.Record(Schema52.String, Data)]
@@ -5323,7 +5329,8 @@ import { Effect as Effect32, Schema as Schema53 } from "effect";
 var Wake2 = Schema53.Struct({
   at: Schema53.Finite,
   id: Schema53.String,
-  sender: Schema53.String
+  sender: Schema53.String,
+  seq: Wake.schema.fields.seq
 });
 var MailboxHealth = Schema53.Struct({
   complete: Schema53.Boolean,
@@ -5386,7 +5393,8 @@ var readMailboxHealth = Effect32.fn("Mailbox.readHealth")(
       oldestWakeSinceAck: since === void 0 ? null : {
         at: Date.parse(since.recordedAt),
         id: since.id,
-        sender: since.sender
+        sender: since.sender,
+        ...since.seq === void 0 ? void 0 : { seq: since.seq }
       }
     });
   },

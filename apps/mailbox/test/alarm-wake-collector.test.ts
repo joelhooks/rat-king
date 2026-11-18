@@ -70,7 +70,15 @@ it.effect.prop(
                 sender: operator.did,
                 woke: true,
               },
+              oldestWakeSinceAck: {
+                id: "2222222222222",
+                recordedAt: "1970-01-01T00:00:00.000Z",
+                sender: operator.did,
+                seq: 12,
+                woke: true,
+              },
               quietUnacked: 0,
+              wakesSinceAck: 1,
             })
           )
         );
@@ -155,6 +163,28 @@ it.effect.prop(
             ""
           ).pipe(Effect.scoped, Effect.isFailure)
         ).toBe(true);
+
+        const optedIn = {
+          ...config,
+          alarm: {
+            ...config.alarm,
+            wakeOnMail: [{ name: "target" }],
+            wakeTargets: [],
+          },
+        };
+
+        expect(yield* collectWakeHealth(optedIn)).toBeNull();
+
+        const desk = yield* collectWakeHealth(optedIn, undefined, [], true);
+
+        expect(desk).toMatchObject([
+          {
+            deskWakeOnly: true,
+            health: { oldestWakeSinceAck: { seq: 12 } },
+            name: "target",
+          },
+        ]);
+        expect(requests).toHaveLength(2);
       }).pipe(
         Effect.provide(fs),
         Effect.provideService(HttpClient.HttpClient, http),
