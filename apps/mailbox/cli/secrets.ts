@@ -1,7 +1,7 @@
 // @effect-diagnostics nodeBuiltinImport:off -- The operator CLI is the process boundary to agent-secrets.
 import { spawn } from "node:child_process";
 
-import { Context, Effect, Layer, Schema } from "effect";
+import { Context, Effect, Layer, Predicate, Schema } from "effect";
 
 import { CliError } from "./identity.ts";
 
@@ -27,7 +27,7 @@ export const secretCommand = (args: readonly string[], input?: string) =>
     child.stdout.on("data", (chunk: Buffer) => {
       output += chunk.toString();
 
-      if (output.length > 1_048_576) {
+      if (output.length > 16_777_216) {
         child.kill("SIGTERM");
         resume(
           Effect.fail(new CliError({ reason: "Secret-store output too large" }))
@@ -99,7 +99,10 @@ export const secretStoreLayer = (options: SecretOptions = {}) => {
             listing.result.secrets.some((secret) => secret.name === name)
           ),
           Effect.mapError(
-            () => new CliError({ reason: "Cannot list agent-secrets" })
+            (failure) =>
+              new CliError({
+                reason: `Cannot list agent-secrets: ${Predicate.isTagged(failure, "CliError") ? failure.reason : "listing did not decode"}`,
+              })
           )
         )
       ),
