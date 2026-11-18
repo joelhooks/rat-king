@@ -11,7 +11,7 @@ export interface CommandResult {
   readonly stdout: string;
 }
 
-export const COMMAND_OUTPUT_BYTES = 1_048_576;
+export const COMMAND_OUTPUT_BYTES = 16_777_216;
 
 export const runCommand = Effect.fn("RatKing.runCommand")(function* runCommand(
   argv: readonly [string, ...string[]],

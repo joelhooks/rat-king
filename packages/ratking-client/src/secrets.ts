@@ -61,7 +61,10 @@ export const secretStoreLayer = Layer.effect(
         input === undefined ? undefined : new TextEncoder().encode(input)
       ).pipe(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
-        Effect.mapError(() => new SecretError({ reason })),
+        Effect.mapError(
+          (failure) =>
+            new SecretError({ reason: `${reason}: ${failure.reason}` })
+        ),
         Effect.flatMap((result) =>
           result.code === 0
             ? Effect.succeed(result.stdout)
