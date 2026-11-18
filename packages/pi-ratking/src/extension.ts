@@ -1063,6 +1063,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
     const tool = await Effect.runPromise(options.tool);
 
     const knownLabels = recentMap<string, string>(2048);
+    const identityNotices = new Set<string>();
     let ownName: string | undefined;
     let ownLabel: () => Option.Option<string> = Option.none;
 
@@ -2210,6 +2211,15 @@ export const ratkingExtension = (options: ExtensionOptions) =>
 
               logFirstState(reader);
               start.onReaderState?.(reader);
+
+              if (
+                Predicate.isTagged(reader, "Retrying") &&
+                reader.notice !== undefined &&
+                !identityNotices.has(reader.reason)
+              ) {
+                identityNotices.add(reader.reason);
+                start.warn(reader.notice);
+              }
 
               const named = stateName(reader);
 

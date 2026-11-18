@@ -18,6 +18,7 @@ export const ReaderHeartbeat = Schema.Struct({
   generation: Schema.optionalKey(Schema.Int),
   lastConsumeOk: Schema.NullOr(At),
   lastError: Schema.NullOr(ErrorTag),
+  lastReason: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(240))),
   leaseHeldSince: Schema.NullOr(At),
   leaseTtlMs: Schema.optionalKey(Schema.Int),
   leaseUntil: Schema.optionalKey(Schema.NullOr(At)),

@@ -60,13 +60,18 @@ export const harness = (
     readonly relays?: readonly RelaySettingValue[];
     readonly documents?: readonly string[];
     readonly secrets?: Map<string, string>;
+    readonly secretStore?: typeof SecretStore.Service;
   } = {},
   filesystem?: FileSystem.FileSystem
 ) =>
   ratKingLayer.pipe(
     Layer.provideMerge(Layer.succeed(AdmissionBackoff, () => Duration.zero)),
     Layer.provideMerge(issuer),
-    Layer.provideMerge(secrets(overrides.secrets ?? new Map<string, string>())),
+    Layer.provideMerge(
+      overrides.secretStore === undefined
+        ? secrets(overrides.secrets ?? new Map<string, string>())
+        : Layer.succeed(SecretStore, overrides.secretStore)
+    ),
     Layer.provideMerge(directoryLayer),
     Layer.provideMerge(
       Layer.succeed(
