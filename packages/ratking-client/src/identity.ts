@@ -260,7 +260,11 @@ export const ensureIdentity = Effect.fn("RatKing.ensureIdentity")(
           return identity;
         }
 
-        if (requireExisting === true) {
+        const known =
+          Option.isSome(listed) ||
+          (yield* directory.list).some((entry) => entry.name === name);
+
+        if (requireExisting === true && known) {
           return yield* fail(
             "Successor identity is unavailable; no key was minted"
           );
@@ -272,7 +276,7 @@ export const ensureIdentity = Effect.fn("RatKing.ensureIdentity")(
           );
         }
 
-        if (Option.isSome(listed)) {
+        if (known) {
           return yield* fail(
             `Name ${name} already has an identity elsewhere; not minting`
           );

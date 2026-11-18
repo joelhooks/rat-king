@@ -1,5 +1,6 @@
 /* oxlint-disable effect-tests/no-manual-effect-runtime-in-tests -- Each runtime call bridges an asyncModelRun command using the test context and its TestClock. */
 /* oxlint-disable typescript/promise-function-async -- fast-check commands are Promise boundaries; the HttpClient adapter takes a callback. */
+import { createEventBus } from "@earendil-works/pi-coding-agent";
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import { RatKing, ReaderState } from "@rat-king/ratking-client/ratking";
@@ -8,7 +9,20 @@ import {
   READER_STUCK_MS,
 } from "@rat-king/ratking-client/reader-health";
 import type { ReaderHeartbeatValue } from "@rat-king/ratking-client/reader-health";
-import { Clock, Effect, FileSystem, Option, Predicate, Schema } from "effect";
+import { SecretError, SecretStore } from "@rat-king/ratking-client/secrets";
+import {
+  Clock,
+  Deferred,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  Predicate,
+  Queue,
+  Redacted,
+  Schema,
+  Schedule,
+} from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { TestClock } from "effect/testing";
 import { asyncModelRun } from "fast-check";
@@ -22,7 +36,13 @@ import {
   sightReaders,
 } from "../../../stacks/nest/alarm-sources.ts";
 import { WebSocketPort } from "../../mailbox-client/src/watch.ts";
+import { ratkingExtension } from "../src/extension.ts";
+import type { PiHost, SessionStart } from "../src/extension.ts";
 import { readerFooter } from "../src/tool.ts";
+import {
+  fakeMailbox as acceptingMailbox,
+  quietSocket,
+} from "./fake-mailbox.ts";
 import { harness } from "./harness.ts";
 
 const Step = Schema.Union([
@@ -328,4 +348,280 @@ it.effect.prop(
       }).pipe(Effect.provide(harness(state, fakeMailbox(control))));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 4 }, timeout: 240_000 }
+);
+
+interface IdentityModel {
+  attempts: number;
+  warned: Set<string>;
+}
+
+interface IdentityHooks {
+  start?: (start: SessionStart) => Promise<void>;
+  end?: () => Promise<void>;
+}
+
+it.effect.prop(
+  "identity failures publish the real cause, warn once per cause after three failures, and recover without a connect or restart",
+  [
+    Schema.Array(Schema.Literals(["first failure", "second failure"])),
+    Schema.String,
+  ],
+  ([reasons, detail]) =>
+    Effect.gen(function* identityRecoveryModel() {
+      const fs = yield* FileSystem.FileSystem;
+      const clock = yield* Clock.Clock;
+      const state = yield* fs.makeTempDirectoryScoped();
+
+      const requests =
+        yield* Queue.unbounded<Deferred.Deferred<boolean, SecretError>>();
+
+      const changes = yield* Queue.unbounded<ReaderState>();
+      const warnings: string[] = [];
+      const secrets = new Map<string, string>();
+      let healthy = false;
+      let pending: Deferred.Deferred<boolean, SecretError>;
+
+      const secretStore = SecretStore.of({
+        add: (name, value) =>
+          Effect.sync(() => {
+            secrets.set(name, Redacted.value(value));
+          }),
+        exists: (name) =>
+          Effect.gen(function* exists() {
+            if (healthy) {
+              return secrets.has(name);
+            }
+
+            const gate = yield* Deferred.make<boolean, SecretError>();
+            yield* Queue.offer(requests, gate);
+
+            return yield* Deferred.await(gate);
+          }),
+        lease: (name) => Effect.succeed(Redacted.make(secrets.get(name) ?? "")),
+      });
+
+      const mailbox = acceptingMailbox("accept");
+
+      const layer = Layer.merge(
+        harness(state, mailbox.http, [], { secretStore }).pipe(
+          Layer.provideMerge(quietSocket)
+        ),
+        Layer.succeed(Clock.Clock, clock)
+      );
+
+      const hooks: IdentityHooks = {};
+
+      const host: PiHost = {
+        events: createEventBus(),
+        onSessionEnd: (handler) => {
+          hooks.end = handler;
+        },
+        onSessionStart: (handler) => {
+          hooks.start = handler;
+        },
+        registerMessageRenderer: () => {},
+        registerTool: () => {},
+        sendMessage: () => {},
+      };
+
+      yield* Effect.promise(() =>
+        ratkingExtension({
+          facts: (session) =>
+            Effect.succeed({
+              alive: () => false,
+              env: Option.some("tester"),
+              pane: Option.none(),
+              pid: 1,
+              session,
+              succeeds: "never-started",
+              successor: true,
+            }),
+          layer,
+          tool: Effect.succeed("ratking"),
+        })(host)
+      );
+      const start = yield* Effect.fromOption(Option.fromNullishOr(hooks.start));
+      const end = yield* Effect.fromOption(Option.fromNullishOr(hooks.end));
+      yield* Effect.addFinalizer(() => Effect.promise(end));
+      yield* Effect.promise(() =>
+        start({
+          onReaderState: (reader) => {
+            Queue.offerUnsafe(changes, reader);
+          },
+          session: "identity-recovery",
+          warn: (notice) => {
+            warnings.push(notice);
+          },
+        })
+      );
+      pending = yield* TestClock.withLive(
+        Queue.take(requests).pipe(Effect.timeout("3 seconds"))
+      );
+
+      const retry = Queue.take(changes).pipe(
+        Effect.repeat({ until: ReaderState.$is("Retrying") })
+      );
+
+      const context = yield* Effect.context();
+
+      const command = (
+        reason: string
+      ): AsyncCommand<IdentityModel, object> => ({
+        check: () => true,
+        run: (model) =>
+          Effect.runPromiseWith(context)(
+            Effect.gen(function* failAttempt() {
+              yield* Deferred.fail(pending, new SecretError({ reason }));
+
+              const reader = yield* TestClock.withLive(
+                retry.pipe(Effect.timeout("3 seconds"))
+              );
+
+              model.attempts += 1;
+              expect(ReaderState.$is("Retrying")(reader)).toBe(true);
+
+              if (ReaderState.$is("Retrying")(reader)) {
+                expect(reader.reason).toBe(reason);
+                expect(reader.attempt).toBe(model.attempts);
+                expect(reader.notice !== undefined).toBe(model.attempts >= 3);
+              }
+
+              const heartbeat = yield* TestClock.withLive(
+                fs.readFileString(`${state}/readers/tester.json`).pipe(
+                  Effect.flatMap(Schema.decodeUnknownEffect(HeartbeatJson)),
+                  Effect.repeat({
+                    schedule: Schedule.spaced("1 millis"),
+                    until: (value) =>
+                      value.state === "Retrying" &&
+                      value.lastReason ===
+                        reason.replaceAll(/\s+/gu, " ").trim().slice(0, 240),
+                  }),
+                  Effect.timeout("3 seconds")
+                )
+              );
+
+              pending = yield* Effect.gen(function* advanceToRequest() {
+                yield* TestClock.adjust("5 seconds");
+                yield* realTick;
+
+                return yield* Queue.poll(requests);
+              }).pipe(
+                Effect.repeat({
+                  schedule: Schedule.recurs(20),
+                  until: Option.isSome,
+                }),
+                Effect.flatMap(Effect.fromOption)
+              );
+              expect(heartbeat.state).toBe("Retrying");
+              expect(heartbeat.lastError).toBe("IdentityError");
+              expect(heartbeat.lastReason).toBe(
+                reason.replaceAll(/\s+/gu, " ").trim().slice(0, 240)
+              );
+
+              if (model.attempts >= 3) {
+                model.warned.add(reason);
+              }
+
+              expect(warnings).toHaveLength(model.warned.size);
+
+              for (const cause of model.warned) {
+                expect(
+                  warnings.filter((notice) => notice.includes(cause))
+                ).toHaveLength(1);
+              }
+
+              expect(
+                warnings.every(
+                  (notice) =>
+                    notice.includes("/ratking connect") &&
+                    notice.includes("restart") &&
+                    notice.includes("Retrying automatically")
+                )
+              ).toBe(true);
+              expect(secrets.size).toBe(0);
+              expect(mailbox.calls).toHaveLength(0);
+            })
+          ),
+        toString: () => reason,
+      });
+
+      yield* Effect.promise(() =>
+        asyncModelRun(
+          () => ({
+            model: { attempts: 0, warned: new Set<string>() },
+            real: {},
+          }),
+          [
+            "first failure",
+            "first failure",
+            "first failure",
+            "first failure",
+            "second failure",
+            "first failure",
+            `long failure\n${detail}\t${"x".repeat(250)}`,
+            ...reasons.slice(0, 8),
+          ].map(command)
+        )
+      );
+      healthy = true;
+      yield* Deferred.succeed(pending, false);
+      yield* TestClock.withLive(
+        Queue.take(changes).pipe(
+          Effect.repeat({ until: ReaderState.$is("Live") }),
+          Effect.timeout("3 seconds")
+        )
+      );
+      expect(secrets.size).toBe(1);
+      expect(
+        mailbox.calls.filter((call) => call.endsWith(".acquireLease"))
+      ).toHaveLength(1);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  { arbitrary: { runs: 4 }, timeout: 60_000 }
+);
+
+it.effect.prop(
+  "old heartbeat files still decode and new reason text reaches the stuck-reader alarm",
+  [Schema.String],
+  ([detail]) =>
+    Effect.gen(function* heartbeatCompatibility() {
+      const legacy = {
+        lastConsumeOk: null,
+        lastError: "IdentityError",
+        leaseHeldSince: null,
+        name: "tester",
+        owner: "owner-invalid",
+        pid: 1,
+        startedAt: "2000-01-01T00:00:00.000Z",
+        state: "Retrying",
+        updatedAt: "2000-01-01T00:06:00.000Z",
+      };
+
+      const decode = Schema.decodeUnknownEffect(HeartbeatJson);
+      const old = yield* decode(JSON.stringify(legacy));
+      expect(old.lastReason).toBeUndefined();
+
+      const lastReason = `cause ${detail}`
+        .replaceAll(/\s+/gu, " ")
+        .trim()
+        .slice(0, 240);
+
+      const beat = yield* decode(JSON.stringify({ ...legacy, lastReason }));
+      const now = Date.parse(legacy.updatedAt);
+      const seen = sightReaders("host-invalid", [{ alive: true, beat }], now);
+
+      const reading = observeAlarms(
+        emptySources,
+        {
+          ...baseFacts,
+          readers: { complete: true, seen },
+        },
+        now
+      ).readings["readers.stuck"];
+
+      expect(reading.status).toBe("firing");
+
+      if (reading.status === "firing") {
+        expect(reading.evidence).toContain(`(IdentityError): ${lastReason}`);
+      }
+    })
 );

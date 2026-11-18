@@ -43,6 +43,7 @@ import {
   Match,
   Option,
   Path,
+  Predicate,
   Ref,
   Result,
   Schedule,
@@ -282,6 +283,7 @@ export type ReaderState = Data.TaggedEnum<{
     readonly name: Option.Option<string>;
     readonly attempt: number;
     readonly reason: string;
+    readonly notice?: string;
   };
   Refused: { readonly name: string; readonly reason: string };
   SendOnly: { readonly name: string; readonly reason: string };
@@ -735,6 +737,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
   const health = yield* Ref.make({
     lastConsumeOk: Option.none<number>(),
     lastError: Option.none<string>(),
+    lastReason: Option.none<string>(),
     leaseHeldSince: Option.none<number>(),
   });
 
@@ -967,6 +970,15 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           updatedAt: instant(now),
         };
 
+        if (Option.isSome(current.lastReason)) {
+          Object.assign(value, {
+            lastReason: current.lastReason.value
+              .replaceAll(/\s+/gu, " ")
+              .trim()
+              .slice(0, 240),
+          });
+        }
+
         const owner = (facts.value.owner ?? Option.none()).pipe(
           Option.filter(Schema.is(AgentName))
         );
@@ -1066,7 +1078,8 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
   const supervise = <A, E extends { readonly _tag: string }, R>(
     name: Option.Option<string>,
-    effect: Effect.Effect<A, E, R>
+    effect: Effect.Effect<A, E, R>,
+    identityFailures = 0
   ): Effect.Effect<A, never, R> =>
     Effect.gen(function* loop() {
       const result = yield* Effect.result(effect);
@@ -1076,23 +1089,31 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       }
 
       const attempt = yield* Ref.updateAndGet(attempts, (count) => count + 1);
+      const reason = reasonOf(result.failure);
+
+      const consecutive = Predicate.isTagged(result.failure, "IdentityError")
+        ? identityFailures + 1
+        : 0;
 
       yield* Ref.update(health, (current) => ({
         ...current,
         lastError: Option.some(errorTag(result.failure)),
+        lastReason: Option.some(reason),
       }));
 
-      yield* setState(
-        ReaderState.Retrying({
-          attempt,
-          name,
-          reason: reasonOf(result.failure),
-        })
-      );
+      const next = ReaderState.Retrying({ attempt, name, reason });
+
+      if (consecutive >= 3) {
+        Object.assign(next, {
+          notice: `Rat King cannot get its identity: ${reason}. Retrying automatically; fix the cause, then use /ratking connect or restart.`,
+        });
+      }
+
+      yield* setState(next);
 
       yield* readerRetryDelay(attempt).pipe(Effect.flatMap(Effect.sleep));
 
-      return yield* supervise(name, effect);
+      return yield* supervise(name, effect, consecutive);
     });
 
   const senderOf = Effect.fn("RatKing.replySender")(function* senderOf(
@@ -1662,6 +1683,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             yield* Ref.update(health, (current) => ({
               ...current,
               lastError: Option.some(errorTag(error)),
+              lastReason: Option.some(reasonOf(error)),
             }));
             yield* setState(
               ReaderState.Retrying({
@@ -3174,6 +3196,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             Ref.update(health, (current) => ({
               ...current,
               lastError: Option.some(errorTag(failure)),
+              lastReason: Option.some(reasonOf(failure)),
             })).pipe(Effect.andThen(waitForClaim(own.name, reasonOf(failure))))
         ),
         Effect.catchIf(

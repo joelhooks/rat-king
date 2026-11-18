@@ -54,6 +54,7 @@ export const ReaderSighting = Schema.Struct({
   host: Schema.String,
   idleSeconds: Count,
   lastError: Schema.NullOr(Schema.String),
+  lastReason: Schema.optionalKey(Schema.String),
   name: Schema.String,
   owner: Schema.NullOr(Schema.String),
   session: Schema.optionalKey(Schema.String),
@@ -87,6 +88,9 @@ export const sightReaders = (
         host,
         idleSeconds: Math.max(0, Math.floor((now - progress) / 1000)),
         lastError: beat.lastError,
+        ...(beat.lastReason === undefined
+          ? undefined
+          : { lastReason: beat.lastReason }),
         name: beat.name,
         owner: beat.owner ?? null,
         ...(beat.session === undefined ? undefined : { session: beat.session }),
@@ -449,7 +453,7 @@ const readerReading = (
       evidence: `${stuck.length} live Pi readers made no lease or consume progress for over 5 minutes: ${stuck
         .map(
           (reader) =>
-            `${reader.name} on ${reader.host} ${reader.state}${reader.lastError === null ? "" : ` (${reader.lastError})`} idle ${Math.floor(reader.idleSeconds / 60)}m`
+            `${reader.name} on ${reader.host} ${reader.state}${reader.lastError === null ? "" : ` (${reader.lastError})`}${reader.lastReason === undefined ? "" : `: ${reader.lastReason}`} idle ${Math.floor(reader.idleSeconds / 60)}m`
         )
         .join("; ")}`,
       recipients: [...new Set(owners)],
