@@ -2,9 +2,11 @@ import { NodeHttpClient } from "@effect/platform-node";
 import { Effect, Schema } from "effect";
 import type { HttpClient } from "effect/http";
 
+import * as Wake from "../../packages/lexicon/src/desk.wake.ts";
 import { SendOutcomes } from "../../packages/mailbox-client/src/index.ts";
 import { encodePayload } from "../../packages/ratking-client/src/payload.ts";
 import type { AlarmKeyValue } from "./alarm-config.ts";
+import type { PendingWake } from "./alarm-desk-wake.ts";
 import { terminalRefusal } from "./alarm-refusal.ts";
 import type { Delivery } from "./alarm.ts";
 import { ShipSettings } from "./ship-config.ts";
@@ -153,5 +155,72 @@ export const sendAlarmDelivery = Effect.fn("Alarm.sendDelivery")(
   },
   Effect.scoped
 );
+
+const prepareDeskWake = Effect.fn("Alarm.prepareDeskWake")(
+  function* prepareDeskWake(
+    config: StageConfigValue,
+    recipient: string,
+    record: typeof Wake.Main.Encoded
+  ) {
+    const prepared = yield* prepareAlarmMail(config, [recipient], "");
+    const target = prepared.targets.find((item) => item.name === recipient);
+
+    if (target === undefined) {
+      return yield* new FleetError({
+        reason: "Desk waker could not be resolved",
+      });
+    }
+
+    const typed = yield* Schema.decodeEffect(Wake.Main)(record);
+
+    const body = yield* encodePayload({
+      body: yield* Schema.encodeEffect(Schema.fromJsonString(Wake.Main))(typed),
+      from: "operator",
+      kind: "data",
+      summary: `wake ${record.name} for ${record.messageId}`,
+      to: recipient,
+    });
+
+    const envelope = yield* prepared.client.seal(target.did, body, {
+      encrypt: false,
+    });
+
+    return { envelope, recipient };
+  },
+  Effect.scoped
+);
+
+const sendDeskWake = Effect.fn("Alarm.sendDeskWake")(function* sendDeskWake(
+  config: StageConfigValue,
+  delivery: PendingWake
+) {
+  const prepared = yield* prepareAlarmMail(config, [delivery.recipient], "");
+
+  const result = yield* prepared.client.send(delivery.envelope, {
+    wakeReason: "data",
+    woke: false,
+  });
+
+  if (!SendOutcomes.$is("Accepted")(result)) {
+    return yield* new FleetError({ reason: "Desk wake delivery not accepted" });
+  }
+
+  return yield* Effect.void;
+}, Effect.scoped);
+
+const withDeskWakeDeadline = <A, E, R>(operation: Effect.Effect<A, E, R>) =>
+  operation.pipe(
+    Effect.timeout("8 seconds"),
+    Effect.mapError(
+      () => new FleetError({ reason: "Desk wake operation unavailable" })
+    )
+  );
+
+export const deskWakeMail = (config: StageConfigValue) => ({
+  prepare: (recipient: string, record: typeof Wake.Main.Encoded) =>
+    withDeskWakeDeadline(prepareDeskWake(config, recipient, record)),
+  send: (delivery: PendingWake) =>
+    withDeskWakeDeadline(sendDeskWake(config, delivery)),
+});
 
 export { AlarmRefused, terminalRefusal } from "./alarm-refusal.ts";

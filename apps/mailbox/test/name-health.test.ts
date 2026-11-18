@@ -257,6 +257,9 @@ it.effect.prop(
           ? admitted.receipt.message.messageId
           : undefined
       );
+      expect(before.oldestWakeSinceAck?.seq).toBe(
+        input.declared && intent.woke ? admitted.receipt.seq : undefined
+      );
       expect(Object.keys(before).toSorted()).toEqual(
         input.declared && intent.woke
           ? [

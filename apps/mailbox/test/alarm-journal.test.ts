@@ -10,6 +10,12 @@ const Journal = Arbitrary.schema(
   Schema.Struct({
     ...AlarmJournal.fields,
     pending: Schema.Array(Schema.Never),
+    wakeOnMail: Schema.optionalKey(
+      Schema.Struct({
+        ...AlarmJournal.fields.wakeOnMail.schema.fields,
+        pending: Schema.Record(Schema.String, Schema.Never),
+      })
+    ),
   })
 );
 

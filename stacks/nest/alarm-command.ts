@@ -18,6 +18,7 @@ import {
 } from "./alarm-heartbeat.ts";
 import { readAlarmJournal, saveAlarmJournal } from "./alarm-journal.ts";
 import {
+  deskWakeMail,
   prepareAlarmDeliveries,
   sendAlarmDelivery,
   withAlarmMailTransport,
@@ -165,7 +166,7 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           health,
           deploy,
           (readers) =>
-            collectWakeHealth(config, readers, prior.sources.wakeTargets),
+            collectWakeHealth(config, readers, prior.sources.wakeTargets, true),
           windows,
           withLiveness(liveness)
         ).pipe((effect) => alarmStep("facts.collect", effect));
@@ -184,6 +185,7 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           | SecretStore
           | ChildProcessSpawner.ChildProcessSpawner
         > = {
+          deskWake: deskWakeMail(config),
           page: (text) =>
             execute(
               settings.page.node,

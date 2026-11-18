@@ -12,6 +12,11 @@ import { Lease, storageOperation } from "./store.ts";
 
 const Row = Schema.Struct({ value: Schema.String });
 
+const WakeRow = Schema.Struct({
+  seq: Schema.NullOr(Defs.Receipt.schema.fields.seq),
+  value: Schema.String,
+});
+
 const Harness = Schema.Struct({
   harness: Schema.Struct({
     paneId: Schema.optionalKey(Schema.String),
@@ -80,6 +85,7 @@ const wakeOf = Effect.fn("Mailbox.wakeOf")(function* wakeOf(
 
 interface Waking {
   readonly receipt: Defs.ReceiptValue;
+  readonly seq: number | null;
   readonly time: number;
 }
 
@@ -111,7 +117,8 @@ const wakeFields = (wakes: readonly Waking[], ackedAt: number) => {
   );
 
   const oldest = wakeJson(earliest(wakes));
-  const oldestSinceAck = wakeJson(earliest(since));
+  const firstSinceAck = earliest(since);
+  const oldestSinceAck = wakeJson(firstSinceAck);
   let fields: Partial<typeof closedOutput.Encoded> = {};
 
   if (oldest !== undefined) {
@@ -119,7 +126,15 @@ const wakeFields = (wakes: readonly Waking[], ackedAt: number) => {
   }
 
   if (oldestSinceAck !== undefined) {
-    fields = { ...fields, oldestWakeSinceAck: oldestSinceAck };
+    const seq = firstSinceAck?.seq;
+
+    fields = {
+      ...fields,
+      oldestWakeSinceAck: {
+        ...oldestSinceAck,
+        ...(seq === null || seq === undefined ? undefined : { seq }),
+      },
+    };
   }
 
   return fields;
@@ -167,12 +182,18 @@ export const nameHealth = Effect.fn("Mailbox.nameHealth")(
             .length > 0,
         unacked: Array.from(
           sql.exec(
-            "SELECT json_extract(value,'$.current') AS value FROM messages WHERE json_extract(value,'$.current.state') IN ('accepted','queued','delivered') ORDER BY json_extract(value,'$.current.state'),json_extract(value,'$.admission.seq') ASC LIMIT 10001"
+            "SELECT json_extract(value,'$.current') AS value, json_extract(value,'$.admission.seq') AS seq FROM messages WHERE json_extract(value,'$.current.state') IN ('accepted','queued','delivered') ORDER BY json_extract(value,'$.current.state'),seq ASC LIMIT 10001"
           ),
-          (row) =>
-            Schema.decodeUnknownSync(Schema.fromJsonString(Defs.Receipt))(
-              Schema.decodeUnknownSync(Row)(row).value
-            )
+          (row) => {
+            const { seq, value } = Schema.decodeUnknownSync(WakeRow)(row);
+
+            return {
+              receipt: Schema.decodeSync(Schema.fromJsonString(Defs.Receipt))(
+                value
+              ),
+              seq,
+            };
+          }
         ),
       }))
     );
@@ -190,7 +211,7 @@ export const nameHealth = Effect.fn("Mailbox.nameHealth")(
     let quietUnacked = 0;
     let legacyRemaining = 128;
 
-    for (const receipt of rows.unacked.slice(0, 10_000)) {
+    for (const { receipt, seq } of rows.unacked.slice(0, 10_000)) {
       const intent = Option.getOrUndefined(
         yield* wakeOf(sql, receipt, params.name, legacyRemaining > 0)
       );
@@ -211,7 +232,7 @@ export const nameHealth = Effect.fn("Mailbox.nameHealth")(
       }
 
       if (woke === true && Number.isFinite(time)) {
-        wakes.push({ receipt, time });
+        wakes.push({ receipt, seq, time });
       }
     }
 

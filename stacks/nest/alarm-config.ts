@@ -32,6 +32,7 @@ export const AlarmKey = Schema.Union([
   FixedAlarmKey,
   Schema.TemplateLiteral(["mail.stranded/", AgentName]),
   Schema.TemplateLiteral(["mail.owner/", AgentName]),
+  Schema.TemplateLiteral(["mail.wake/", AgentName]),
 ]);
 
 export type AlarmKeyValue = typeof AlarmKey.Type;
@@ -109,6 +110,11 @@ export const AlarmSettings = Schema.Struct({
     })
   ),
   turnRecords: Schema.optionalKey(Schema.Boolean),
+  wakeOnMail: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({ name: AgentName, waker: Schema.optionalKey(AgentName) })
+    )
+  ),
   wakeTargets: Schema.optionalKey(Schema.Array(ConfiguredWakeTarget)),
   wakeUnackedMinutes: Schema.optionalKey(
     Schema.Int.check(Schema.isGreaterThan(0))

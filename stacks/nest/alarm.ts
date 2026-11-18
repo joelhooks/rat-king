@@ -8,6 +8,8 @@ import type {
   AlarmSettingsValue,
   AlarmStateValue,
 } from "./alarm-config.ts";
+import { DeskWakeState, collectDeskWake } from "./alarm-desk-wake.ts";
+import type { DeskWakePorts } from "./alarm-desk-wake.ts";
 import { advanceAlarm, emptyAlarm } from "./alarm-machine.ts";
 import type { AlarmRefused } from "./alarm-refusal.ts";
 import {
@@ -64,6 +66,7 @@ export const AlarmJournal = Schema.Struct({
   pending: Schema.Array(Delivery),
   sources: SourceState,
   version: Schema.Literal(1),
+  wakeOnMail: Schema.optionalKey(DeskWakeState),
   wakeRecipients: Schema.optionalKey(Schema.Array(Schema.String)),
 });
 
@@ -79,6 +82,7 @@ export const emptyJournal: AlarmJournalValue = {
 };
 
 export interface AlarmPorts<R> {
+  readonly deskWake?: DeskWakePorts<R>;
   readonly save: (
     state: AlarmJournalValue
   ) => Effect.Effect<void, FleetError, R>;
@@ -143,7 +147,8 @@ export const alarmRecipients = (
     key.startsWith("readers.") ||
     key.startsWith("issuer.") ||
     key.startsWith("wake.") ||
-    key.startsWith("mail.stranded/")
+    key.startsWith("mail.stranded/") ||
+    key.startsWith("mail.wake/")
   ) {
     recipients.push(settings.musterDesk);
   }
@@ -463,7 +468,7 @@ const rememberMailRecipients = (
 
 const observedKeys = (
   journal: AlarmJournalValue,
-  readings: ReturnType<typeof observeAlarms>["readings"]
+  readings: Partial<Record<AlarmKeyValue, AlarmReadingValue>>
 ) =>
   [
     ...new Set([
@@ -474,6 +479,34 @@ const observedKeys = (
   ]
     .filter(Schema.is(AlarmKey))
     .filter((key) => key !== "wake.unacked");
+
+const observeDeskWake = Effect.fn("Alarm.observeDeskWake")(
+  function* observeDeskWake<R>(
+    journal: AlarmJournalValue,
+    facts: typeof AlarmFacts.Type,
+    now: number,
+    settings: AlarmSettingsValue,
+    ports: AlarmPorts<R>
+  ) {
+    const configured = settings.wakeOnMail ?? [];
+
+    if (configured.length === 0 || ports.deskWake === undefined) {
+      return { journal, readings: {} };
+    }
+
+    const { state, readings } = yield* collectDeskWake(
+      configured,
+      facts.deskWakes,
+      journal.wakeOnMail,
+      now,
+      ports.deskWake,
+      (wakeOnMail) => ports.save({ ...journal, wakeOnMail }),
+      ports.unavailable
+    );
+
+    return { journal: { ...journal, wakeOnMail: state }, readings };
+  }
+);
 
 export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
   start: AlarmJournalValue,
@@ -504,10 +537,19 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
     sources: observation.sources,
   };
 
+  const deskWake = yield* observeDeskWake(current, facts, now, settings, ports);
+
+  const readings: Partial<Record<AlarmKeyValue, AlarmReadingValue>> = {
+    ...observation.readings,
+    ...deskWake.readings,
+  };
+
+  current = deskWake.journal;
+
   yield* ports.save(current);
 
-  for (const key of observedKeys(current, observation.readings)) {
-    const reading = observation.readings[key];
+  for (const key of observedKeys(current, readings)) {
+    const reading = readings[key];
 
     if (reading === undefined) {
       continue;
