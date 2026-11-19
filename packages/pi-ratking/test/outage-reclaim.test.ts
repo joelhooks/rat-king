@@ -1,6 +1,7 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import * as Acquire from "@rat-king/lexicon/runtime.acquireLease";
+import * as Release from "@rat-king/lexicon/runtime.releaseLease";
 import * as Renew from "@rat-king/lexicon/runtime.renewLease";
 import { WebSocketPort } from "@rat-king/mailbox-client";
 import { RatKing, ReaderState } from "@rat-king/ratking-client/ratking";
@@ -112,6 +113,18 @@ const decode = <A, I>(
       ).pipe(Effect.orDie)
     : Effect.die("no body");
 
+const LEASE_ID = "3mxcx45mn7sxx";
+
+const matchesLease = (
+  server: Server,
+  fence: { readonly generation?: number; readonly leaseId?: string }
+) => fence.generation === server.serial && fence.leaseId === LEASE_ID;
+
+const resumesLease = (server: Server, input: typeof Acquire.Input.Type) =>
+  matchesLease(server, input) &&
+  "sessionId" in input.harness &&
+  input.harness.sessionId === server.holder;
+
 const lease = (server: Server, did: string) => ({
   did,
   expiresAt: stamp(server.until),
@@ -120,10 +133,15 @@ const lease = (server: Server, did: string) => ({
     $type: "sh.mschf.ratking.runtime.lease#pi",
     sessionId: server.holder,
   },
-  leaseId: "3mxcx45mn7sxx",
+  leaseId: LEASE_ID,
 });
 
-const serve = (server: Server, session: string, slow: boolean) => {
+const serve = (
+  server: Server,
+  session: string,
+  slow: boolean,
+  beforeList?: (now: number) => void
+) => {
   const mailbox = fakeMailbox("accept");
 
   return HttpClient.make((request) =>
@@ -131,6 +149,10 @@ const serve = (server: Server, session: string, slow: boolean) => {
       const nsid = new URL(request.url).pathname;
       const now = yield* Clock.currentTimeMillis;
       const held = server.until > now;
+
+      if (nsid.endsWith(".list")) {
+        beforeList?.(now);
+      }
 
       if (now >= server.outageFrom && now < server.outageUntil) {
         return slow
@@ -141,12 +163,15 @@ const serve = (server: Server, session: string, slow: boolean) => {
       if (nsid.endsWith(".acquireLease")) {
         const input = yield* decode(Acquire.Input, request);
 
-        if (held) {
+        if (held && !resumesLease(server, input)) {
           return respond(request, { error: "LeaseHeld" }, 409);
         }
 
-        server.serial += 1;
-        server.holder = session;
+        if (!held) {
+          server.serial += 1;
+          server.holder = session;
+        }
+
         server.until = now + TTL_MS;
 
         return respond(request, { lease: lease(server, input.did) });
@@ -155,13 +180,25 @@ const serve = (server: Server, session: string, slow: boolean) => {
       if (nsid.endsWith(".renewLease")) {
         const input = yield* decode(Renew.Input, request);
 
-        if (!held || input.generation !== server.serial) {
+        if (!held || !matchesLease(server, input)) {
           return respond(request, { error: "LeaseExpired" }, 409);
         }
 
         server.until = now + TTL_MS;
 
         return respond(request, { lease: lease(server, input.did) });
+      }
+
+      if (nsid.endsWith(".releaseLease")) {
+        const input = yield* decode(Release.Input, request);
+
+        if (!held || !matchesLease(server, input)) {
+          return respond(request, { error: "LeaseMismatch" }, 409);
+        }
+
+        server.until = now;
+
+        return respond(request, { released: true });
       }
 
       if (nsid.endsWith(".resolveLease")) {
@@ -253,6 +290,75 @@ it.effect.prop(
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 12 }, timeout: 600_000 }
+);
+
+it.effect.prop(
+  "after reconnect exhaustion during an outage, an unexpired lease can be resumed using its fence",
+  {
+    duration: Schema.Int.check(
+      Schema.isBetween({ maximum: 24_000, minimum: 20_000 })
+    ),
+  },
+  ({ duration }) =>
+    Effect.gen(function* resumeLease() {
+      const state = "/reader-resume-fixture";
+      const session = "resume";
+
+      const server: Server = {
+        holder: session,
+        listed: false,
+        outageFrom: 0,
+        outageUntil: 0,
+        serial: 0,
+        until: 0,
+      };
+
+      const outageStarted = yield* Deferred.make<number>();
+      const drained = yield* Deferred.make<boolean>();
+
+      const http = serve(server, session, false, (now) => {
+        if (server.serial !== 1 || server.outageUntil !== 0) {
+          return;
+        }
+
+        server.outageFrom = now;
+        server.outageUntil = now + duration;
+        Deferred.doneUnsafe(outageStarted, Effect.succeed(server.until));
+      });
+
+      yield* Effect.gen(function* proof() {
+        yield* (yield* RatKing).run(
+          {
+            alive: () => false,
+            env: Option.some("tester"),
+            pane: Option.none(),
+            pid: 1,
+            session,
+          },
+          () => Effect.void,
+          (caughtUp) => {
+            if (caughtUp) {
+              Deferred.doneUnsafe(drained, Effect.succeed(true));
+            }
+          }
+        );
+
+        const expiry = yield* Deferred.await(outageStarted);
+
+        yield* advance(duration + 10_000);
+        expect(yield* Deferred.isDone(drained)).toBe(true);
+        expect(server.serial).toBe(1);
+        expect(server.until).toBeGreaterThan(expiry);
+      }).pipe(
+        Effect.provide(
+          Layer.provideMerge(
+            harness(state, http, [], {}, memoryFiles()),
+            quietSocket
+          )
+        )
+      );
+    }).pipe(Effect.scoped),
+  { arbitrary: { runs: 3 } }
 );
 
 const Reconnect = Schema.Literals(["hang", "exhaust", "silent"]);
