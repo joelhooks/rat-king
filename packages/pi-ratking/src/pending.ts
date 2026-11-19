@@ -199,6 +199,7 @@ export const inbox = (host: MailHost) => {
       digested.clear();
       last = Option.none();
     },
+    empty: () => pending.size === 0,
     flushNext: (delivery: FlushDelivery = NEXT_TURN_DELIVERY) => {
       const due = [...pending.values()].filter(
         (mail) =>
