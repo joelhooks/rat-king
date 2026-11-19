@@ -80,6 +80,7 @@ import { claimName, ensureIdentity, publicDocument } from "./identity.ts";
 import type { SessionFacts } from "./identity.ts";
 import { Issuer, IssuerError } from "./issuer.ts";
 import {
+  LEASE_TTL_MS,
   readerRetryDelay,
   recoverHeld,
   parkUntilClaimOrRetry,
@@ -129,6 +130,13 @@ import {
   readerJournal,
   sameReaderIdentity,
 } from "./reader-journal.ts";
+import {
+  boundIntake,
+  intakeTimeout,
+  readerProgress,
+  watchReader,
+} from "./reader-liveness.ts";
+import type { IntakeBudget } from "./reader-liveness.ts";
 import { readerStore } from "./reader-store.ts";
 import { recentMap } from "./recent.ts";
 import { RENDERS } from "./record-visibility.ts";
@@ -765,6 +773,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     );
 
   const beatLock = yield* Semaphore.make(1);
+  const activity = yield* readerProgress;
   let closing = false;
 
   const attempts = yield* Ref.make(0);
@@ -941,6 +950,21 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         Effect.option
       );
 
+  const readerAt = (now: number) =>
+    Ref.get(state).pipe(
+      Effect.map((reader) =>
+        ReaderState.$is("Live")(reader) && Date.parse(reader.expiresAt) <= now
+          ? ReaderState.Retrying({
+              attempt: 0,
+              name: Option.some(reader.name),
+              reason: "Reader lease expired",
+            })
+          : reader
+      )
+    );
+
+  const currentReader = Clock.currentTimeMillis.pipe(Effect.flatMap(readerAt));
+
   const publish = beatLock
     .withPermits(1)(
       Effect.gen(function* publishHeartbeat() {
@@ -952,7 +976,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         }
 
         const now = yield* Clock.currentTimeMillis;
-        const reader = yield* Ref.get(state);
+        const reader = yield* readerAt(now);
         const current = yield* Ref.get(health);
         const lease = yield* Ref.get(leaseHealth);
 
@@ -968,7 +992,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             Option.map(instant),
             Option.getOrNull
           ),
-          leaseTtlMs: 300_000,
+          leaseTtlMs: LEASE_TTL_MS,
           leaseUntil: lease.leaseUntil.pipe(
             Option.map(DateTime.makeUnsafe),
             Option.getOrNull
@@ -1020,6 +1044,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       })
     )
     .pipe(
+      Deadline.timeout(Deadline.LEASE_MS),
       Effect.tapError(() =>
         Effect.logWarning("Rat King reader heartbeat not written")
       ),
@@ -1056,6 +1081,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
   const setState = (next: ReaderState) =>
     Ref.set(state, next).pipe(
+      Effect.andThen(activity.mark),
       Effect.andThen(Ref.get(session)),
       Effect.flatMap((facts) =>
         Effect.try(() => {
@@ -1073,7 +1099,8 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         ...current,
         lastConsumeOk: Option.some(now),
       }))
-    )
+    ),
+    Effect.andThen(activity.mark)
   );
 
   const quarantineDir = (name: string) =>
@@ -1408,7 +1435,8 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     facts: SessionFacts,
     route: RelayRoute,
     refreshAttention: AttentionApi["refresh"],
-    startedAt: number
+    startedAt: number,
+    budget: IntakeBudget
   ) =>
     Effect.gen(function* consumeLease() {
       if (consumerStarts > 0) {
@@ -1462,6 +1490,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           ),
         onDrained: () =>
           recordPivot.pipe(
+            Deadline.timeout(Deadline.REQUEST_MS),
             Effect.tap(() =>
               Effect.sync(() => {
                 caughtUp = true;
@@ -1601,7 +1630,10 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                 : Option.none();
 
             yield* Effect.addFinalizer(() =>
-              displayed.checkpoint.pipe(Effect.ignore)
+              displayed.checkpoint.pipe(
+                Deadline.timeout(Deadline.LEASE_MS),
+                Effect.ignore
+              )
             );
             freshStartReason = Option.none();
           }).pipe(
@@ -1693,9 +1725,11 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                   : Effect.void,
               ])
             ),
+            Effect.andThen(activity.mark),
+            Effect.andThen(progress ? budget.verified : Effect.void),
             Effect.asVoid
           ),
-        onRetry: (error) =>
+        onRetry: (failure) =>
           Effect.gen(function* retryReader() {
             catchingUp();
 
@@ -1706,16 +1740,17 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
             yield* Ref.update(health, (current) => ({
               ...current,
-              lastError: Option.some(errorTag(error)),
-              lastReason: Option.some(reasonOf(error)),
+              lastError: Option.some(errorTag(failure)),
+              lastReason: Option.some(reasonOf(failure)),
             }));
             yield* setState(
               ReaderState.Retrying({
                 attempt,
                 name: Option.some(own.name),
-                reason: reasonOf(error),
+                reason: reasonOf(failure),
               })
             );
+            yield* budget.failed;
           }),
         onSkip: ({ messageId, reason, senderDid, seq }) =>
           Effect.logWarning("Rat King skipped a delivery", {
@@ -1743,7 +1778,14 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           : yield* readLease(own.name, own.did, facts.session);
 
       yield* client.consume(
-        intake(own, route),
+        (message, meta) =>
+          intake(own, route)(message, meta).pipe(
+            Deadline.timeoutOrElse({
+              duration: Deadline.REQUEST_MS,
+              orElse: () =>
+                Effect.fail(intakeTimeout("Reader delivery timed out")),
+            })
+          ),
         Option.match(
           Option.orElse(yield* Ref.get(lastLease), () => savedLease),
           {
@@ -3202,9 +3244,13 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       Effect.forkScoped
     );
 
-    return yield* supervise(
+    const consumeAttempt = boundIntake((budget) =>
+      consumeOnce(own, facts, route, attention.refresh, startedAt, budget)
+    );
+
+    const worker = supervise(
       Option.some(own.name),
-      consumeOnce(own, facts, route, attention.refresh, startedAt).pipe(
+      consumeAttempt.pipe(
         Effect.andThen(
           Effect.fail(
             new NotDelivered({
@@ -3260,6 +3306,16 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         )
       )
     ).pipe(Effect.forever);
+
+    return yield* watchReader(worker, activity, (reason) =>
+      setState(
+        ReaderState.Retrying({
+          attempt: 0,
+          name: Option.some(own.name),
+          reason,
+        })
+      )
+    );
   });
 
   const run = (
@@ -3621,7 +3677,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     );
   });
 
-  const awaitReader = Ref.get(state).pipe(
+  const awaitReader = currentReader.pipe(
     Effect.flatMap((reader) =>
       ReaderState.$is("Live")(reader)
         ? Effect.void
@@ -4213,7 +4269,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               Effect.provideService(Path.Path, path)
             ),
         }),
-        reader: yield* Ref.get(state),
+        reader: yield* currentReader,
         self: current.pipe(Option.map(({ did, name }) => ({ did, name }))),
       };
     }),
