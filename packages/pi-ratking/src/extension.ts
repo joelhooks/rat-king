@@ -97,6 +97,8 @@ import { FetchHttpClient } from "effect/http";
 import { Type } from "typebox";
 
 import { ancestorsOf, parentOfProcess } from "./ancestry.ts";
+import { drainSetting, drainWindow, watchDrain } from "./drained.ts";
+import type { DrainClock } from "./drained.ts";
 import { paneLabel } from "./herdr.ts";
 import { messageView } from "./message-view.ts";
 import {
@@ -556,8 +558,12 @@ type Services = Layer.Success<typeof appLayer>;
 
 type Runtime = ManagedRuntime.ManagedRuntime<Services, NotConfigured>;
 
+type DrainedReader = "live" | "send-only";
+
 export interface SessionStart {
   readonly digestTickMillis?: number;
+  readonly exitDrained?: (reader: DrainedReader) => void;
+  readonly hasPendingMessages?: () => boolean;
   readonly isIdle?: () => boolean;
   readonly onStarted?: () => void;
   readonly turnCount?: number;
@@ -580,6 +586,7 @@ export interface PiHost {
   readonly noteSettledRecord?: (id: string, type: string) => void;
   readonly onBeforeAgentStart?: (handler: () => void) => void;
   readonly onAgentStart?: (handler: () => Promise<void>) => void;
+  readonly onAgentSettled?: (handler: () => void) => void;
   readonly onAgentEnd?: (
     handler: (messages: readonly unknown[]) => Promise<void>
   ) => void;
@@ -628,6 +635,9 @@ export const piHost = (pi: ExtensionAPI): PiHost => {
         await handler(event.messages);
       });
     },
+    onAgentSettled: (handler) => {
+      pi.on("agent_settled", handler);
+    },
     onAgentStart: (handler) => {
       pi.on("agent_start", handler);
     },
@@ -669,7 +679,8 @@ export const piHost = (pi: ExtensionAPI): PiHost => {
           }
         }
 
-        await handler({
+        const start: SessionStart = {
+          hasPendingMessages: () => ctx.hasPendingMessages(),
           interactive: interactiveSession(ctx),
           isIdle: () => ctx.isIdle(),
           names: parseNameEntries(ctx.sessionManager.getEntries()),
@@ -698,7 +709,21 @@ export const piHost = (pi: ExtensionAPI): PiHost => {
           warn: (message) => {
             ctx.ui.notify(message, "warning");
           },
-        });
+        };
+
+        if (ctx.mode !== "print") {
+          Object.assign(start, {
+            exitDrained: (reader: DrainedReader) => {
+              pi.appendEntry("ratking.reader.exit", {
+                reader,
+                reason: "drained",
+              });
+              ctx.shutdown();
+            },
+          });
+        }
+
+        await handler(start);
       });
     },
     onTurnEnd: (handler) => {
@@ -748,6 +773,8 @@ export const withTurnWait = <A, E, R>(
     : action;
 
 export interface ExtensionOptions {
+  readonly drainClock?: DrainClock;
+  readonly drainSetting?: Effect.Effect<string>;
   readonly layer: Layer.Layer<Services, NotConfigured>;
   readonly facts: (
     session: string,
@@ -1055,12 +1082,21 @@ const parameters = Type.Object({
 
 const idle = () => true;
 
+const piIdle = (start: SessionStart) =>
+  (start.isIdle?.() ?? true) && start.hasPendingMessages?.() !== true;
+
 const ignoreFilterHit = (_verdict: Verdict | undefined): Effect.Effect<void> =>
   Effect.void;
 
 export const ratkingExtension = (options: ExtensionOptions) =>
   async function piRatking(pi: PiHost) {
     const tool = await Effect.runPromise(options.tool);
+
+    const exitSetting = await Effect.runPromise(
+      options.drainSetting ?? Effect.succeed("")
+    );
+
+    let exitWindow: number | null | undefined;
 
     const knownLabels = recentMap<string, string>(2048);
     const identityNotices = new Set<string>();
@@ -1155,6 +1191,34 @@ export const ratkingExtension = (options: ExtensionOptions) =>
     let digestTick = DIGEST_TICK;
     let flushing = false;
     const sweeps: (() => void)[] = [];
+    let drain: ReturnType<typeof watchDrain> | undefined;
+    let drainRelease: Promise<void> | undefined;
+    let drainReader: DrainedReader | undefined;
+    let inboxDrained = false;
+    let hadLease = false;
+    let activity = 0;
+
+    const resetDrain = () => {
+      activity += 1;
+      drain?.reset();
+    };
+
+    const updateDrainReader = (reader: ReaderState) => {
+      if (ReaderState.$is("Live")(reader)) {
+        hadLease = true;
+        drainReader = "live";
+      } else {
+        inboxDrained = false;
+        drainReader =
+          !hadLease &&
+          ReaderState.$is("SendOnly")(reader) &&
+          reader.reason === heldReason(reader.name)
+            ? "send-only"
+            : undefined;
+      }
+
+      drain?.check();
+    };
 
     const consume = (id: string) => {
       const type = controlRecords.get(id);
@@ -1170,6 +1234,8 @@ export const ratkingExtension = (options: ExtensionOptions) =>
         acknowledgments.delete(id);
         void runtime.value.runPromiseExit(ack);
       }
+
+      drain?.check();
     };
 
     const dispatch: MailDispatch = {
@@ -1219,7 +1285,12 @@ export const ratkingExtension = (options: ExtensionOptions) =>
           }
         }
 
+        if (delivery?.triggerTurn === true) {
+          resetDrain();
+        }
+
         pi.sendMessage(message, delivery);
+        drain?.check();
 
         for (const run of sweeps) {
           run();
@@ -1308,6 +1379,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
     });
 
     pi.onAgentStart?.(async () => {
+      resetDrain();
       sweep();
       busy = true;
       flushing = true;
@@ -1328,7 +1400,10 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       await reportTurn((reporter) => reporter.done(stopReason(messages)));
     });
 
+    pi.onAgentSettled?.(() => drain?.check());
+
     pi.onBeforeAgentStart?.(() => {
+      resetDrain();
       sweep();
       busy = true;
       mail.flushNext();
@@ -1346,6 +1421,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
           Effect.sync(() => {
             mail.tick(now);
             wakes.tick(now);
+            drain?.check();
           })
         ),
         Effect.repeat(Schedule.spaced(digestTick)),
@@ -1524,6 +1600,8 @@ export const ratkingExtension = (options: ExtensionOptions) =>
           acknowledgments.set(inbound.id, ack);
         }
 
+        resetDrain();
+
         if (inSession().has(inbound.id)) {
           consume(inbound.id);
 
@@ -1690,9 +1768,11 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       });
     };
 
-    const stop = async () => {
+    const stop = async (awaitRelease = false) => {
       const previous = runtime;
 
+      drain?.stop();
+      drain = undefined;
       runtime = Option.none();
 
       await Effect.runPromise(
@@ -1710,15 +1790,78 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       );
 
       if (Option.isSome(previous)) {
+        const dispose = Effect.promise(async () => {
+          await previous.value.dispose();
+        });
+
         await Effect.runPromise(
-          Effect.promise(async () => {
-            await previous.value.dispose();
-          }).pipe(
-            Effect.timeoutOption(Duration.millis(RELEASE_WAIT_MS)),
-            Effect.asVoid
-          )
+          awaitRelease
+            ? dispose
+            : dispose.pipe(
+                Effect.timeoutOption(Duration.millis(RELEASE_WAIT_MS)),
+                Effect.asVoid
+              )
         );
       }
+    };
+
+    const quitDrained = async (
+      start: SessionStart,
+      reader: DrainedReader,
+      restart: (start: SessionStart) => Promise<void>
+    ) => {
+      const stamp = activity;
+      const release = stop(true);
+
+      drainRelease = release;
+
+      try {
+        await release;
+      } finally {
+        drainRelease = undefined;
+      }
+
+      if (currentStart !== start) {
+        return;
+      }
+
+      if (stamp !== activity || !piIdle(start)) {
+        await restart(start);
+
+        return;
+      }
+
+      start.exitDrained?.(reader);
+    };
+
+    const armDrain = (
+      start: SessionStart,
+      restart: (start: SessionStart) => Promise<void>
+    ) => {
+      if (exitWindow === undefined) {
+        exitWindow = drainWindow(exitSetting, start.warn);
+      }
+
+      if (exitWindow === null || start.exitDrained === undefined) {
+        return;
+      }
+
+      drain = watchDrain(
+        exitWindow,
+        () =>
+          drainReader !== undefined &&
+          (drainReader === "send-only" || inboxDrained) &&
+          acknowledgments.size === 0 &&
+          mail.empty() &&
+          wakes.empty() &&
+          piIdle(start),
+        () => {
+          if (drainReader !== undefined) {
+            void quitDrained(start, drainReader, restart);
+          }
+        },
+        options.drainClock
+      );
     };
 
     const markRetired = async () => {
@@ -2082,6 +2225,13 @@ export const ratkingExtension = (options: ExtensionOptions) =>
     ) => {
       const current = () => epoch === starts && Option.isSome(runtime);
 
+      const onInboxDrained = (drained: boolean) => {
+        if (current()) {
+          inboxDrained = drained;
+          drain?.check();
+        }
+      };
+
       return Layer.unwrap(
         Effect.gen(function* bootRatKing() {
           const began = yield* Clock.currentTimeMillis;
@@ -2209,6 +2359,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
                 return;
               }
 
+              updateDrainReader(reader);
               logFirstState(reader);
               start.onReaderState?.(reader);
 
@@ -2298,7 +2449,13 @@ export const ratkingExtension = (options: ExtensionOptions) =>
                 );
               yield* digestTicks;
               yield* idleFlush;
-              yield* RatKing.use((ratking) => ratking.run(facts, deliver));
+              yield* RatKing.use((ratking) =>
+                ratking.run(
+                  facts,
+                  deliver,
+                  drain === undefined ? undefined : onInboxDrained
+                )
+              );
             })
           ).pipe(
             Layer.provideMerge(
@@ -2344,9 +2501,12 @@ export const ratkingExtension = (options: ExtensionOptions) =>
           ? DIGEST_TICK
           : Duration.millis(start.digestTickMillis);
 
-      const stopped = stop();
+      const stopped = drainRelease ?? stop();
 
       starts += 1;
+      hadLease = false;
+      drainReader = undefined;
+      inboxDrained = false;
 
       const epoch = starts;
 
@@ -2374,6 +2534,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       );
 
       runtime = Option.some(live);
+      armDrain(start, restartReader);
 
       void boot(live, start, epoch, settle);
     };
@@ -2631,10 +2792,14 @@ export const ratkingExtension = (options: ExtensionOptions) =>
     });
 
     pi.onSessionStart(restartReader);
-    pi.onSessionEnd(stop);
+    pi.onSessionEnd(async () => {
+      currentStart = undefined;
+      await (drainRelease ?? stop());
+    });
   };
 
 const production = ratkingExtension({
+  drainSetting,
   facts: collectFacts,
   layer: appLayer,
   tool: toolName.pipe(Effect.provide(NodeServices.layer)),

@@ -533,7 +533,8 @@ export class RatKing extends Context.Service<
     readonly attention: AttentionApi["change"];
     readonly run: (
       facts: SessionFacts,
-      deliver: Deliver
+      deliver: Deliver,
+      onInboxDrained?: (drained: boolean) => void
     ) => Effect.Effect<void, never, Scope.Scope>;
     readonly send: (
       to: string,
@@ -844,12 +845,23 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
   const front = yield* Ref.make(Option.none<FrontLoops>());
   const seen = recentMap<string, true>(4096);
   const acknowledgments = new Map<string, MessageMeta["ack"]>();
+  let observeDrain: ((drained: boolean) => void) | undefined;
+  let caughtUp = false;
+
+  const reportDrain = () =>
+    observeDrain?.(caughtUp && acknowledgments.size === 0);
+
+  const catchingUp = () => {
+    caughtUp = false;
+    reportDrain();
+  };
 
   const displayAck = (id: string) =>
     acknowledgments.get(id)?.pipe(
       Effect.tap(() =>
         Effect.sync(() => {
           acknowledgments.delete(id);
+          reportDrain();
         })
       ),
       Effect.catchTag("MailboxClientError", (failure) =>
@@ -1231,6 +1243,8 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     (own: Self, route: RelayRoute) =>
     (message: OpenedMessage, meta: MessageMeta) =>
       Effect.gen(function* takeIn() {
+        catchingUp();
+
         const checkpoint = yield* Deferred.make<boolean>();
 
         if (
@@ -1448,6 +1462,12 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           ),
         onDrained: () =>
           recordPivot.pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                caughtUp = true;
+                reportDrain();
+              })
+            ),
             Effect.mapError(
               (failure) => new MailboxClientError({ reason: reasonOf(failure) })
             )
@@ -1457,6 +1477,8 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             if (source !== "acquire") {
               return;
             }
+
+            catchingUp();
 
             yield* directory.clearRetired(own.name).pipe(
               Effect.tapError((failure) =>
@@ -1675,6 +1697,8 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           ),
         onRetry: (error) =>
           Effect.gen(function* retryReader() {
+            catchingUp();
+
             const attempt = yield* Ref.updateAndGet(
               attempts,
               (count) => count + 1
@@ -1701,6 +1725,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             senderDid,
             seq,
           }).pipe(
+            Effect.tap(() => Effect.sync(catchingUp)),
             Effect.andThen(writeCursor(own.name, seq)),
             Effect.andThen(consumed)
           ),
@@ -3237,8 +3262,15 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     ).pipe(Effect.forever);
   });
 
-  const run = (facts: SessionFacts, deliver: Deliver) =>
+  const run = (
+    facts: SessionFacts,
+    deliver: Deliver,
+    onInboxDrained?: (drained: boolean) => void
+  ) =>
     Effect.gen(function* start() {
+      observeDrain = onInboxDrained;
+      catchingUp();
+
       const startedAt = yield* Clock.currentTimeMillis;
 
       yield* Ref.set(session, Option.some(facts));
