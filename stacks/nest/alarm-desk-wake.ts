@@ -1,10 +1,10 @@
-import { DateTime, Effect, Option, Schema } from "effect";
+import { Console, DateTime, Effect, Option, Schema } from "effect";
 
 import { EncryptedEnvelope } from "../../packages/lexicon/src/defs.ts";
 import * as Wake from "../../packages/lexicon/src/desk.wake.ts";
 import type { MailboxHealthValue } from "../../packages/mailbox-client/src/health.ts";
+import { AlarmReading } from "./alarm-config.ts";
 import type { AlarmReadingValue, AlarmSettingsValue } from "./alarm-config.ts";
-import type { WakeSighting } from "./alarm-wakes.ts";
 import type { FleetError } from "./stage-config.ts";
 
 const Pending = Schema.Struct({
@@ -19,6 +19,7 @@ const Wait = Schema.Struct({
 
 export const DeskWakeState = Schema.Struct({
   pending: Schema.Record(Schema.String, Pending),
+  readings: Schema.optionalKey(Schema.Record(Schema.String, AlarmReading)),
   sent: Schema.Array(Schema.String),
   waiting: Schema.Record(Schema.String, Wait),
 });
@@ -63,9 +64,30 @@ const readingOf = (wait: typeof Wait.Type, now: number): AlarmReadingValue =>
       }
     : { status: "ok" };
 
+export interface DeskWakeSighting {
+  readonly name: string;
+  readonly health: MailboxHealthValue | null;
+}
+
+const readUnavailable: AlarmReadingValue = {
+  evidence: "Desk wake nameHealth read unavailable",
+  status: "unknown",
+};
+
+const logDeskWake = (
+  action:
+    | "wanted"
+    | "sent"
+    | "send_failed"
+    | "prepare_failed"
+    | "read_unavailable",
+  name: string,
+  reason?: string
+) => Console.log(JSON.stringify({ action, name, reason, source: "desk_wake" }));
+
 const inspectDesks = (
   configured: NonNullable<AlarmSettingsValue["wakeOnMail"]>,
-  sightings: readonly (typeof WakeSighting.Type)[] | null | undefined,
+  sightings: readonly DeskWakeSighting[] | null,
   state: State,
   now: number
 ) => {
@@ -74,6 +96,8 @@ const inspectDesks = (
   const priorWaiting = new Map(Object.entries(state.waiting));
   const waiting = new Map<string, typeof Wait.Type>();
   const readings: Record<string, AlarmReadingValue> = {};
+
+  const unavailable: string[] = [];
 
   const requests = new Map<
     string,
@@ -104,32 +128,38 @@ const inspectDesks = (
         waiting.set(name, previous);
       }
 
-      readings[`mail.wake/${name}`] = { status: "unknown" };
+      unavailable.push(name);
+      readings[`mail.wake/${name}`] = readUnavailable;
     } else {
       readings[`mail.wake/${name}`] = { status: "ok" };
     }
   }
 
-  return { readings, requests, waiting };
+  return { readings, requests, unavailable, waiting };
 };
 
 export const collectDeskWake = Effect.fn("Alarm.collectDeskWake")(
   function* collectDeskWake<R>(
     configured: NonNullable<AlarmSettingsValue["wakeOnMail"]>,
-    sightings: readonly (typeof WakeSighting.Type)[] | null | undefined,
+    sightings: readonly DeskWakeSighting[] | null,
     prior: State | undefined,
     now: number,
     ports: DeskWakePorts<R>,
-    save: (state: State) => Effect.Effect<void, FleetError, R>,
-    unavailable: Effect.Effect<void, never, R>
+    save: (state: State) => Effect.Effect<void, FleetError, R>
   ) {
     const state = prior ?? { pending: {}, sent: [], waiting: {} };
 
-    const { readings, requests, waiting } = inspectDesks(
-      configured,
-      sightings,
-      state,
-      now
+    const {
+      readings,
+      requests,
+      unavailable: unread,
+      waiting,
+    } = inspectDesks(configured, sightings, state, now);
+
+    yield* Effect.forEach(
+      unread,
+      (name) => logDeskWake("read_unavailable", name, readUnavailable.evidence),
+      { discard: true }
     );
 
     const pending = new Map(Object.entries(state.pending));
@@ -137,17 +167,24 @@ export const collectDeskWake = Effect.fn("Alarm.collectDeskWake")(
 
     const prepared = yield* Effect.forEach(
       requests,
-      ([id, request]) => {
-        const existing = pending.get(id);
+      ([id, request]) =>
+        Effect.gen(function* prepare() {
+          yield* logDeskWake("wanted", request.name);
 
-        return (
-          existing === undefined
-            ? ports.prepare(request.waker, request.record).pipe(Effect.option)
-            : Effect.succeedSome(existing)
-        ).pipe(
-          Effect.map((delivery) => ({ delivery, id, name: request.name }))
-        );
-      },
+          const existing = pending.get(id);
+
+          const delivery =
+            existing === undefined
+              ? yield* ports.prepare(request.waker, request.record).pipe(
+                  Effect.tapError((failure) =>
+                    logDeskWake("prepare_failed", request.name, failure.reason)
+                  ),
+                  Effect.option
+                )
+              : Option.some(existing);
+
+          return { delivery, id, name: request.name };
+        }),
       { concurrency: "unbounded" }
     );
 
@@ -165,17 +202,23 @@ export const collectDeskWake = Effect.fn("Alarm.collectDeskWake")(
 
     if (attempts.length > 0) {
       yield* save({
+        ...state,
         pending: Object.fromEntries(pending),
-        sent: state.sent,
         waiting: Object.fromEntries(waiting),
       });
     }
 
     const outcomes = yield* Effect.forEach(
       attempts,
-      ({ delivery, id }) =>
+      ({ delivery, id, name }) =>
         ports.send(delivery).pipe(
-          Effect.isSuccess,
+          Effect.matchEffect({
+            onFailure: (failure) =>
+              logDeskWake("send_failed", name, failure.reason).pipe(
+                Effect.as(false)
+              ),
+            onSuccess: () => logDeskWake("sent", name).pipe(Effect.as(true)),
+          }),
           Effect.map((ok) => ({ id, ok }))
         ),
       { concurrency: "unbounded" }
@@ -188,21 +231,15 @@ export const collectDeskWake = Effect.fn("Alarm.collectDeskWake")(
       }
     }
 
-    if (prepared.length !== attempts.length || outcomes.some(({ ok }) => !ok)) {
-      yield* unavailable;
-    }
-
     for (const [name, wait] of waiting) {
       readings[`mail.wake/${name}`] ??= readingOf(wait, now);
     }
 
     return {
+      pending: Object.fromEntries(pending),
       readings,
-      state: {
-        pending: Object.fromEntries(pending),
-        sent: [...sent],
-        waiting: Object.fromEntries(waiting),
-      },
+      sent: [...sent],
+      waiting: Object.fromEntries(waiting),
     };
   }
 );

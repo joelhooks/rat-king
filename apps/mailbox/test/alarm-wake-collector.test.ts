@@ -9,7 +9,10 @@ import {
   identity,
 } from "../../../packages/mailbox-client/test/identity.ts";
 import { AlarmSettings } from "../../../stacks/nest/alarm-config.ts";
-import { collectWakeHealth } from "../../../stacks/nest/alarm-wake-collector.ts";
+import {
+  collectDeskWakeHealth,
+  collectWakeHealth,
+} from "../../../stacks/nest/alarm-wake-collector.ts";
 import {
   DEFAULT_WAKE_UNACKED_MINUTES,
   wakeReading,
@@ -175,11 +178,16 @@ it.effect.prop(
 
         expect(yield* collectWakeHealth(optedIn)).toBeNull();
 
-        const desk = yield* collectWakeHealth(optedIn, undefined, [], true);
+        const desk = yield* collectDeskWakeHealth({
+          ...optedIn,
+          alarm: {
+            ...optedIn.alarm,
+            wakeTargets: [{ name: "operator", owner: "owner" }],
+          },
+        });
 
         expect(desk).toMatchObject([
           {
-            deskWakeOnly: true,
             health: { oldestWakeSinceAck: { seq: 12 } },
             name: "target",
           },

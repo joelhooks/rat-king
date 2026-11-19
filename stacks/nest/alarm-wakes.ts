@@ -50,7 +50,6 @@ export const WakeSighting = Schema.Struct({
   defaultUnackedMinutes: Schema.optionalKey(
     Schema.Int.check(Schema.isGreaterThan(0))
   ),
-  deskWakeOnly: Schema.optionalKey(Schema.Literal(true)),
   health: Schema.NullOr(MailboxHealth),
   lastTurnAt: Schema.optionalKey(Schema.Finite),
   retired: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),

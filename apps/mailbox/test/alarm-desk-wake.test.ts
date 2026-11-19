@@ -1,7 +1,8 @@
 import { promisify } from "node:util";
 
 import { it } from "@effect/vitest";
-import { Arbitrary, Effect, Queue, Schema } from "effect";
+import { Arbitrary, Console, Effect, Queue, Schema } from "effect";
+import { TestClock } from "effect/testing";
 import { asyncModelRun } from "fast-check";
 import type { AsyncCommand } from "fast-check";
 import { expect } from "vitest";
@@ -16,8 +17,9 @@ import type { MailboxHealthValue } from "../../../packages/mailbox-client/src/he
 import { wakeWanted } from "../../../stacks/nest/alarm-desk-wake.ts";
 import {
   AlarmJournal,
-  alarmCycle,
+  deskWakeReadings,
   emptyJournal,
+  runAlarmCycle,
 } from "../../../stacks/nest/alarm.ts";
 import type { AlarmJournalValue } from "../../../stacks/nest/alarm.ts";
 import { FleetError } from "../../../stacks/nest/stage-config.ts";
@@ -27,6 +29,16 @@ const now = 1_800_000_000_000;
 const desk = "fixture-desk";
 
 const key = `mail.wake/${desk}`;
+
+const optedIn = { ...settings, wakeOnMail: [{ name: desk }] };
+
+const captureConsole = (lines?: string[]) =>
+  Effect.provideService(Console.Console, {
+    ...console,
+    log: (line: string) => {
+      lines?.push(line);
+    },
+  });
 
 const idOf = (message: number) => `222222222222${message}`;
 
@@ -125,20 +137,13 @@ const step = Effect.fn("Test.deskWakeTick")(function* step(
   const messageId = idOf(tick.message);
   const shouldSend = tick.enabled && !model.sent.has(tick.message);
 
-  const config = tick.enabled
-    ? { ...settings, wakeOnMail: [{ name: desk }] }
-    : settings;
+  yield* TestClock.setTime(at);
 
-  real.journal = yield* alarmCycle(
+  real.journal = yield* runAlarmCycle(
     real.journal,
-    {
-      ...healthy,
-      deskWakes: [
-        { health: healthOf(tick.message, now), name: desk, owner: null },
-      ],
-    },
-    at,
-    config,
+    Effect.succeed(healthy),
+    Effect.succeed([{ health: healthOf(tick.message, now), name: desk }]),
+    tick.enabled ? optedIn : settings,
     {
       ...ports,
       deskWake: {
@@ -181,7 +186,6 @@ const step = Effect.fn("Test.deskWakeTick")(function* step(
         Effect.sync(() => {
           checkpoint = journal;
         }),
-      unavailable: Effect.void,
     }
   );
 
@@ -279,5 +283,163 @@ it.effect.prop(
       yield* Effect.promise(
         asyncModelRun.bind(undefined, () => ({ model, real }), commands)
       );
-    }).pipe(Effect.scoped)
+    }).pipe(captureConsole(), Effect.scoped)
+);
+
+const serial = Schema.Literals([2, 3, 4, 5, 6, 7]);
+
+it.effect.prop(
+  "checkpoints a desk wake before its deadline even when the bulk sweep never returns",
+  [serial, Schema.Int.check(Schema.isBetween({ maximum: 14_000, minimum: 1 }))],
+  ([message, delay]) =>
+    Effect.gen(function* test() {
+      const { ports } = recorder();
+      const sent: string[] = [];
+      let checkpoint = emptyJournal;
+      let sweeping = false;
+
+      yield* TestClock.setTime(now);
+
+      yield* runAlarmCycle(
+        emptyJournal,
+        Effect.sync(() => {
+          sweeping = true;
+        }).pipe(Effect.andThen(Effect.never)),
+        Effect.sleep(delay).pipe(
+          Effect.as([{ health: healthOf(message, now), name: desk }])
+        ),
+        optedIn,
+        {
+          ...ports,
+          deskWake: {
+            prepare: (recipient, record) =>
+              Effect.succeed({ envelope: sealed(message), recipient }).pipe(
+                Effect.tap(() =>
+                  Effect.sync(() => {
+                    expect(record.messageId).toBe(idOf(message));
+                  })
+                )
+              ),
+            send: ({ envelope }) =>
+              Effect.sync(() => {
+                sent.push(envelope.aad.messageId);
+              }),
+          },
+          save: (journal) =>
+            Effect.sync(() => {
+              checkpoint = journal;
+            }),
+        }
+      ).pipe(Effect.forkScoped);
+
+      yield* TestClock.adjust(delay + 1);
+
+      expect(sweeping).toBe(true);
+      expect(sent).toEqual([idOf(message)]);
+      expect(checkpoint.wakeOnMail?.sent).toEqual(sent);
+    }).pipe(captureConsole(), Effect.scoped)
+);
+
+it.effect.prop(
+  "unavailable desk health persists unknown evidence and never replays pending mail",
+  [serial, Schema.Boolean],
+  ([message, partial]) =>
+    Effect.gen(function* test() {
+      const { ports } = recorder();
+
+      const pending = {
+        [idOf(message)]: {
+          envelope: sealed(message),
+          recipient: "fixture-waker",
+        },
+      };
+
+      const prior = {
+        ...emptyJournal,
+        wakeOnMail: {
+          pending,
+          readings: { [key]: { status: "ok" as const } },
+          sent: [],
+          waiting: {},
+        },
+      };
+
+      const journal = yield* runAlarmCycle(
+        prior,
+        Effect.succeed(healthy),
+        Effect.succeed(partial ? [{ health: null, name: desk }] : null),
+        optedIn,
+        {
+          ...ports,
+          deskWake: {
+            prepare: () => Effect.die("unread desk must not prepare"),
+            send: () => Effect.die("unread desk must not send"),
+          },
+        }
+      );
+
+      const encoded = yield* Schema.encodeEffect(JournalJson)(journal);
+      const reloaded = yield* Schema.decodeEffect(JournalJson)(encoded);
+
+      expect(deskWakeReadings(reloaded, optedIn)[key]).toEqual({
+        evidence: "Desk wake nameHealth read unavailable",
+        status: "unknown",
+      });
+      expect(reloaded.wakeOnMail?.pending).toEqual(pending);
+    }).pipe(captureConsole())
+);
+
+const actions = [
+  "prepare_failed",
+  "send_failed",
+  "sent",
+  "read_unavailable",
+] as const;
+
+const logLine = (event: string, reason?: string) =>
+  JSON.stringify({ action: event, name: desk, reason, source: "desk_wake" });
+
+it.effect.prop(
+  "logs each desk wake action with a safe reason and no record fields",
+  [serial],
+  ([message]) =>
+    Effect.gen(function* test() {
+      const { ports } = recorder();
+      const logs: string[] = [];
+      const failure = new FleetError({ reason: "Fixture unavailable" });
+
+      for (const outcome of actions) {
+        yield* runAlarmCycle(
+          emptyJournal,
+          Effect.succeed(healthy),
+          Effect.succeed(
+            outcome === "read_unavailable"
+              ? null
+              : [{ health: healthOf(message, now), name: desk }]
+          ),
+          optedIn,
+          {
+            ...ports,
+            deskWake: {
+              prepare: (recipient) =>
+                outcome === "prepare_failed"
+                  ? Effect.fail(failure)
+                  : Effect.succeed({ envelope: sealed(message), recipient }),
+              send: () =>
+                outcome === "send_failed" ? Effect.fail(failure) : Effect.void,
+            },
+          }
+        ).pipe(captureConsole(logs));
+      }
+
+      expect(logs).toEqual([
+        logLine("wanted"),
+        logLine("prepare_failed", failure.reason),
+        logLine("wanted"),
+        logLine("send_failed", failure.reason),
+        logLine("wanted"),
+        logLine("sent"),
+        logLine("read_unavailable", "Desk wake nameHealth read unavailable"),
+      ]);
+    })
 );
