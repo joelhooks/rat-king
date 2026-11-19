@@ -10,38 +10,20 @@ export const collectWakeHealth = Effect.fn("Alarm.collectWakeHealth")(
   function* collectWakeHealth(
     config: StageConfigValue,
     readers?: readonly (typeof WakeTarget.Type)[],
-    previous: readonly (typeof WakeTarget.Type)[] = [],
-    collectDeskWakes?: boolean
+    previous: readonly (typeof WakeTarget.Type)[] = []
   ) {
     const configured = config.alarm?.wakeTargets ?? [];
-
-    const desks =
-      collectDeskWakes === true ? (config.alarm?.wakeOnMail ?? []) : [];
 
     if (
       readers === undefined &&
       previous.length === 0 &&
-      configured.length === 0 &&
-      desks.length === 0
+      configured.length === 0
     ) {
       return null;
     }
 
-    const observed =
+    const unique =
       mergeWakeTargets([...previous, ...(readers ?? [])], configured) ?? [];
-
-    const targets = new Map<
-      string,
-      typeof WakeTarget.Type & { deskWakeOnly?: true }
-    >(observed.map((target) => [target.name, target]));
-
-    for (const { name } of desks) {
-      if (!targets.has(name)) {
-        targets.set(name, { deskWakeOnly: true, name, owner: null });
-      }
-    }
-
-    const unique = [...targets.values()];
 
     if (unique.length === 0) {
       return [];
@@ -74,7 +56,6 @@ export const collectWakeHealth = Effect.fn("Alarm.collectWakeHealth")(
           const retirement = health?.retired ?? null;
 
           const turn =
-            reader.deskWakeOnly === true ||
             target === undefined ||
             health?.lease === null ||
             health === null ||
@@ -103,6 +84,44 @@ export const collectWakeHealth = Effect.fn("Alarm.collectWakeHealth")(
               : { defaultUnackedMinutes }),
           };
         }),
+      { concurrency: 4 }
+    );
+  },
+  Effect.scoped,
+  (effect) =>
+    effect.pipe(
+      Effect.timeout("15 seconds"),
+      Effect.orElseSucceed(() => null)
+    )
+);
+
+export const collectDeskWakeHealth = Effect.fn("Alarm.collectDeskWakeHealth")(
+  function* collectDeskWakeHealth(config: StageConfigValue) {
+    const desks = new Set(config.alarm?.wakeOnMail?.map(({ name }) => name));
+
+    if (desks.size === 0) {
+      return [];
+    }
+
+    const { client, targets } = yield* prepareAlarmMail(
+      config,
+      [...desks],
+      "",
+      true
+    );
+
+    return yield* Effect.forEach(
+      desks,
+      (name) => {
+        const target = targets.find((candidate) => candidate.name === name);
+
+        return target === undefined
+          ? Effect.succeed({ health: null, name })
+          : client.health(target.did, name).pipe(
+              Effect.orElseSucceed(() => null),
+              Effect.map((health) => ({ health, name }))
+            );
+      },
       { concurrency: 4 }
     );
   },

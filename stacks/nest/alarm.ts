@@ -1,4 +1,4 @@
-import { DateTime, Effect, Option, Schema } from "effect";
+import { Clock, DateTime, Effect, Option, Schema } from "effect";
 
 import * as Defs from "../../packages/lexicon/src/defs.ts";
 import { AlarmKey, AlarmState, alarmKeys } from "./alarm-config.ts";
@@ -9,7 +9,7 @@ import type {
   AlarmStateValue,
 } from "./alarm-config.ts";
 import { DeskWakeState, collectDeskWake } from "./alarm-desk-wake.ts";
-import type { DeskWakePorts } from "./alarm-desk-wake.ts";
+import type { DeskWakePorts, DeskWakeSighting } from "./alarm-desk-wake.ts";
 import { advanceAlarm, emptyAlarm } from "./alarm-machine.ts";
 import type { AlarmRefused } from "./alarm-refusal.ts";
 import {
@@ -480,31 +480,48 @@ const observedKeys = (
     .filter(Schema.is(AlarmKey))
     .filter((key) => key !== "wake.unacked");
 
+export const deskWakeReadings = (
+  journal: AlarmJournalValue,
+  settings: AlarmSettingsValue
+) =>
+  Object.fromEntries(
+    (settings.wakeOnMail ?? []).flatMap(({ name }) => {
+      const key = `mail.wake/${name}`;
+      const reading = journal.wakeOnMail?.readings?.[key];
+
+      return reading === undefined ? [] : [[key, reading] as const];
+    })
+  );
+
 const observeDeskWake = Effect.fn("Alarm.observeDeskWake")(
-  function* observeDeskWake<R>(
+  function* observeDeskWake<R, R2>(
     journal: AlarmJournalValue,
-    facts: typeof AlarmFacts.Type,
-    now: number,
+    read: Effect.Effect<readonly DeskWakeSighting[] | null, never, R2>,
     settings: AlarmSettingsValue,
     ports: AlarmPorts<R>
   ) {
     const configured = settings.wakeOnMail ?? [];
 
     if (configured.length === 0 || ports.deskWake === undefined) {
-      return { journal, readings: {} };
+      return journal;
     }
 
-    const { state, readings } = yield* collectDeskWake(
+    const sightings = yield* read;
+
+    const wakeOnMail = yield* collectDeskWake(
       configured,
-      facts.deskWakes,
+      sightings,
       journal.wakeOnMail,
-      now,
+      yield* Clock.currentTimeMillis,
       ports.deskWake,
-      (wakeOnMail) => ports.save({ ...journal, wakeOnMail }),
-      ports.unavailable
+      (pending) => ports.save({ ...journal, wakeOnMail: pending })
     );
 
-    return { journal: { ...journal, wakeOnMail: state }, readings };
+    const next = { ...journal, wakeOnMail };
+
+    yield* ports.save(next);
+
+    return next;
   }
 );
 
@@ -537,14 +554,10 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
     sources: observation.sources,
   };
 
-  const deskWake = yield* observeDeskWake(current, facts, now, settings, ports);
-
   const readings: Partial<Record<AlarmKeyValue, AlarmReadingValue>> = {
     ...observation.readings,
-    ...deskWake.readings,
+    ...deskWakeReadings(current, settings),
   };
-
-  current = deskWake.journal;
 
   yield* ports.save(current);
 
@@ -693,3 +706,26 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
 
   return current;
 });
+
+export const runAlarmCycle = Effect.fn("Alarm.runCycle")(
+  function* runAlarmCycle<E, R, R2, R3>(
+    prior: AlarmJournalValue,
+    facts: Effect.Effect<typeof AlarmFacts.Type, E, R>,
+    deskHealth: Effect.Effect<readonly DeskWakeSighting[] | null, never, R2>,
+    settings: AlarmSettingsValue,
+    ports: AlarmPorts<R3>
+  ) {
+    const [journal, observations] = yield* Effect.all(
+      [observeDeskWake(prior, deskHealth, settings, ports), facts],
+      { concurrency: "unbounded" }
+    );
+
+    return yield* alarmCycle(
+      journal,
+      observations,
+      yield* Clock.currentTimeMillis,
+      settings,
+      ports
+    );
+  }
+);

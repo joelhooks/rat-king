@@ -208,19 +208,26 @@ const sendDeskWake = Effect.fn("Alarm.sendDeskWake")(function* sendDeskWake(
   return yield* Effect.void;
 }, Effect.scoped);
 
-const withDeskWakeDeadline = <A, E, R>(operation: Effect.Effect<A, E, R>) =>
+const withDeskWakeDeadline = <A, E, R>(
+  operation: Effect.Effect<A, E, R>,
+  phase: "prepare" | "send"
+) =>
   operation.pipe(
-    Effect.timeout("8 seconds"),
     Effect.mapError(
-      () => new FleetError({ reason: "Desk wake operation unavailable" })
-    )
+      () => new FleetError({ reason: `Desk wake ${phase} unavailable` })
+    ),
+    Effect.timeoutOrElse({
+      duration: "8 seconds",
+      orElse: () =>
+        Effect.fail(new FleetError({ reason: `Desk wake ${phase} timed out` })),
+    })
   );
 
 export const deskWakeMail = (config: StageConfigValue) => ({
   prepare: (recipient: string, record: typeof Wake.Main.Encoded) =>
-    withDeskWakeDeadline(prepareDeskWake(config, recipient, record)),
+    withDeskWakeDeadline(prepareDeskWake(config, recipient, record), "prepare"),
   send: (delivery: PendingWake) =>
-    withDeskWakeDeadline(sendDeskWake(config, delivery)),
+    withDeskWakeDeadline(sendDeskWake(config, delivery), "send"),
 });
 
 export { AlarmRefused, terminalRefusal } from "./alarm-refusal.ts";

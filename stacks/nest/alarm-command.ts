@@ -31,8 +31,11 @@ import type {
   WindowReceipt,
 } from "./alarm-sources.ts";
 import { observeAlarms } from "./alarm-sources.ts";
-import { collectWakeHealth } from "./alarm-wake-collector.ts";
-import { AlarmJournal, alarmCycle } from "./alarm.ts";
+import {
+  collectDeskWakeHealth,
+  collectWakeHealth,
+} from "./alarm-wake-collector.ts";
+import { AlarmJournal, deskWakeReadings, runAlarmCycle } from "./alarm.ts";
 import type { AlarmPorts, AlarmJournalValue } from "./alarm.ts";
 import type { HealthDigest } from "./health.ts";
 import { rotateLogs } from "./log-rotation.ts";
@@ -161,22 +164,28 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           readAlarmJournal(directory)
         );
 
-        const facts = yield* collectAlarmFacts(
+        const facts = collectAlarmFacts(
           config,
           health,
           deploy,
           (readers) =>
-            collectWakeHealth(config, readers, prior.sources.wakeTargets, true),
+            collectWakeHealth(config, readers, prior.sources.wakeTargets),
           windows,
           withLiveness(liveness)
-        ).pipe((effect) => alarmStep("facts.collect", effect));
+        ).pipe(
+          (effect) => alarmStep("facts.collect", effect),
+          Effect.tap((observed) =>
+            Effect.gen(function* reportFacts() {
+              const observedAt = yield* Clock.currentTimeMillis;
 
-        const observedAt = yield* Clock.currentTimeMillis;
-        yield* Ref.update(readerWindows, (previous) =>
-          updateReaderWindows(previous, facts, observedAt)
+              yield* Ref.update(readerWindows, (previous) =>
+                updateReaderWindows(previous, observed, observedAt)
+              );
+
+              yield* reportMissing(observed);
+            })
+          )
         );
-
-        yield* reportMissing(facts);
 
         const ports: AlarmPorts<
           | FileSystem.FileSystem
@@ -245,10 +254,10 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           ),
         };
 
-        yield* alarmCycle(
+        yield* runAlarmCycle(
           prior,
           facts,
-          yield* Clock.currentTimeMillis,
+          collectDeskWakeHealth(config),
           settings,
           ports
         );
@@ -353,8 +362,15 @@ export const alarmCheck = Effect.fn("Alarm.check")(
       withLiveness(liveness)
     );
 
-    return observeAlarms(prior.sources, facts, yield* Clock.currentTimeMillis)
-      .readings;
+    const { readings } = observeAlarms(
+      prior.sources,
+      facts,
+      yield* Clock.currentTimeMillis
+    );
+
+    return config.alarm === undefined
+      ? readings
+      : { ...readings, ...deskWakeReadings(prior, config.alarm) };
   },
   (effect) =>
     effect.pipe(Effect.provide([FetchHttpClient.layer, secretStoreLayer({})]))

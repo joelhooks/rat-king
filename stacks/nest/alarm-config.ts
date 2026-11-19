@@ -127,7 +127,10 @@ export const Severity = Schema.Literals(["warn", "critical"]);
 
 export const AlarmReading = Schema.Union([
   Schema.Struct({ status: Schema.Literal("ok") }),
-  Schema.Struct({ status: Schema.Literal("unknown") }),
+  Schema.Struct({
+    evidence: Schema.optionalKey(Schema.String),
+    status: Schema.Literal("unknown"),
+  }),
   Schema.Struct({
     evidence: Schema.String,
     recipients: Schema.optionalKey(Schema.Array(AgentName)),
