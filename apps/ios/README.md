@@ -27,6 +27,14 @@ Marketing version starts at `0.2.0`; build number is the UTC `YYYYMMDDHHMM` time
 
 After the desk authorizes the exact upload, set `RK_UPLOAD_AUTHORIZED=1` and run `--upload`. It uses `xcodebuild -exportArchive` with `destination: upload` and the existing distribution certificate. It refuses an archive from a different commit or a dirty checkout. No application password is required. Private signing keychain and password-file paths come from `RK_SIGNING_KEYCHAIN_PATH` and `RK_SIGNING_KEYCHAIN_PASSWORD_FILE` in the ignored xcconfig. The script unlocks that keychain before archive and again before export through `security -i`; the password is never placed on argv or logged. It does not change the search list, lock timeout or key access permissions. A successful upload is not proof of processing, installation or live mail.
 
+## Development OTA installs
+
+On the signing Mac, set `RK_OTA_PROFILE` to an API-created iOS development profile for the explicit app identifier with Push enabled, and `RK_OTA_DEVICES_FILE` to a private file containing the two enrolled phones' UDIDs, one per line. Set `PHONE_APPS_ROOT` to the local phone-apps checkout and `PHONE_APPS_ORIGIN` to its approved private HTTPS origin. Use absolute paths. The Apple Development signing identity must already be available to Xcode. Keep the profile and device list outside tracked files.
+
+From a clean checkout on the signing Mac, run `apps/ios/scripts/build-and-link.sh` under the local heavy-job lock. The script exports and checks the IPA before publishing, then prints the install URL. Pass hours (1–72, default 24) to change its expiry. It does not create certificates or profiles, use automatic signing, or upload to App Store Connect. Keep the URL private; the signed IPA contains the instance's mailbox configuration. Phone-apps retains the last five builds, and its desk owns retiring stale links after a profile change.
+
+OTA builds register sandbox push tokens. They can install on either enrolled phone, but installation does not register that phone's device-bound mailbox keys. Confirm the public document with the desk before relying on live mail from a second device. As with Debug installs, registering push for the same phone DID can replace its previous token.
+
 ## Join and prove
 
 1. Open the app on a physical iPhone with the mailbox reachable. Share the public DID document from Identity. Save the exact JSON for the desk.
