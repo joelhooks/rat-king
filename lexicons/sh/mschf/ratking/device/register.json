@@ -1,0 +1,68 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.device.register",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Register or replace the APNs device for the authenticated mailbox DID.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "did",
+            "environment",
+            "token"
+          ],
+          "properties": {
+            "did": {
+              "type": "string",
+              "format": "did"
+            },
+            "environment": {
+              "type": "string",
+              "enum": [
+                "sandbox",
+                "production"
+              ]
+            },
+            "token": {
+              "type": "string",
+              "minLength": 2,
+              "maxLength": 512
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "registered"
+          ],
+          "properties": {
+            "registered": {
+              "type": "boolean",
+              "const": true
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "MailboxUnavailable"
+        }
+      ]
+    }
+  }
+}

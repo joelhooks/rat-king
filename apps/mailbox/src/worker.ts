@@ -45,6 +45,7 @@ import {
   flushDelegations,
 } from "./delegation.ts";
 import { deskMethods } from "./desk.ts";
+import { deviceMethods, deviceRequest, runDevice } from "./device-http.ts";
 import {
   documentsJson,
   documentsLayer,
@@ -260,6 +261,27 @@ export class Mailbox extends DurableObject<Bindings> {
             status: error.status,
           })
         )
+      )
+    );
+  }
+
+  device(nsid: string, input: string, issuer: string) {
+    return Effect.runPromise(
+      runDevice(
+        this.sql,
+        this.ctx.id.name ?? "",
+        didAllowlist(this.env.OPERATOR_DIDS),
+        nsid,
+        input,
+        issuer
+      ).pipe(
+        Effect.match({
+          onFailure: (error) => ({
+            body: JSON.stringify({ error: error.error }),
+            status: error.status,
+          }),
+          onSuccess: (body) => ({ body, status: 200 }),
+        })
       )
     );
   }
@@ -1185,6 +1207,7 @@ const methods = new Set<string>(
     ...attentionMethods,
     ...issuerMethods,
     ...deskMethods,
+    ...deviceMethods,
   ].map((method) => method.nsid)
 );
 
@@ -1471,6 +1494,10 @@ const serviceRequest = (
     return nameHealthRequest(request, env, issuer);
   }
 
+  if (deviceMethods.some((method) => method.nsid === nsid)) {
+    return deviceRequest(request, env, nsid, issuer);
+  }
+
   if (attentionMethods.some((method) => method.nsid === nsid)) {
     return attentionRequest(request, env, nsid, issuer, scope);
   }
@@ -1563,6 +1590,7 @@ const handleRequest = (
         ...attentionMethods,
         ...issuerMethods,
         ...deskMethods,
+        ...deviceMethods,
       ].some((method) => method.nsid === nsid)
     ) {
       return Response.json({ error: "InvalidRequest" }, { status: 404 });

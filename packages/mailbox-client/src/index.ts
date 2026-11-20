@@ -91,4 +91,6 @@ export {
 
 export { consumerMachine } from "./consume.ts";
 
+export { readPendingPush, registerDevice } from "./device.ts";
+
 export type { ConsumeOptions, MessageMeta, Skipped } from "./consume.ts";

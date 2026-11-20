@@ -1,7 +1,7 @@
 {
   "effect": "4.1.4",
   "generatorVersion": "0.1.0",
-  "sourceDigest": "cd022cfbaa4c4f9b0ab2c9446eda7829ef652ef8b9fc2dabdb64b24b7b708ed6",
+  "sourceDigest": "1e3b16aef19f1ee30f91305b55267c373ce5cf4886bfaec29cb900dc381a4e38",
   "sources": [
     "lexicons/sh/mschf/agentgraph/checkin.json",
     "lexicons/sh/mschf/agentgraph/friction.json",
@@ -33,6 +33,8 @@
     "lexicons/sh/mschf/ratking/desk/theme.json",
     "lexicons/sh/mschf/ratking/desk/update.json",
     "lexicons/sh/mschf/ratking/desk/wake.json",
+    "lexicons/sh/mschf/ratking/device/pendingPush.json",
+    "lexicons/sh/mschf/ratking/device/register.json",
     "lexicons/sh/mschf/ratking/identity/deleteRole.json",
     "lexicons/sh/mschf/ratking/identity/enrollHost.json",
     "lexicons/sh/mschf/ratking/identity/listNames.json",
