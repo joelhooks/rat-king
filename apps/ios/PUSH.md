@@ -1,0 +1,16 @@
+# Enable push for Rat King on iPhone
+
+The alarm worker sends visible APNs alerts. The app requires notification permission. It registers its device token after it acquires its own mailbox lease. Alerts carry an opaque message ID and admission sequence, not an envelope or decrypted text. Tapping an alert opens the thread after a foreground read and local verification. The app does not use silent push or background fetch. Without an APNs key, the app and mailbox still work; no server push is sent.
+
+## Apple Developer account
+
+1. Sign in as an Account Holder or Admin. Go to [Certificates, Identifiers & Profiles → Identifiers](https://developer.apple.com/account/resources/identifiers/list). Open the existing explicit App ID that matches `RK_BUNDLE_ID` in the ignored `Config/Local.xcconfig`. Enable **Push Notifications**, click **Save** and confirm. Do not create an APNs SSL certificate; the sender uses a key.
+2. Go to [Keys](https://developer.apple.com/account/resources/authkeys/list). Click **+**, enter a name for the key and select **Apple Push Notification service (APNs)**. Click **Configure**, choose **Production** for TestFlight, choose **Topic Specific** and select the Rat King App ID. Save the configuration, click **Continue**, review and register the key. A locally installed Debug app uses sandbox. Use a separate test DID: registering a new token replaces the previous token for that DID.
+3. Download the `.p8` file. Apple lets you download it once. Record the **Key ID** from the key details and the **Team ID** from [Membership details](https://developer.apple.com/account/#/membership), not an App Store Connect issuer ID. Keep the file and IDs out of Git, chat and build logs. See [Apple's key steps](https://developer.apple.com/help/account/keys/create-a-private-key/) and [APNs key scoping](https://developer.apple.com/news/?id=wy4tb0uo).
+4. Hand the `.p8` and the Key ID, Team ID and exact bundle ID to **Lockjaw (`secret-cell/secret-desk`)** through its approved secret intake. Lockjaw stores one JSON secret with fields `keyId`, `teamId`, `bundleId` and `privateKey` (the full PEM text from the `.p8`). The operator configures `alarm.push.names` and `alarm.push.secret` (the reference to that JSON secret) on the **alarm worker**, not on celld or the phone. The app does not need the `.p8`.
+
+## Sign and prove
+
+The desk owns profile refresh and TestFlight upload. After changing the App ID, refresh the provisioning profile only with the desk's authorization. The packaged TestFlight app must have `aps-environment=production`; the source entitlement starts at `development` for Xcode development signing. See [README](README.md) for the separate archive and upload gates.
+
+Install the processed TestFlight build on an iPhone. Allow notifications, open the app once, acquire its lease and confirm registration in **Identity**. Background the app and send an ordinary sealed message to the phone. Check that a generic alert appears, tap it, and verify the exact conversation opens. Repeat for a desk item, and with the original alert older than the newest page. Confirm that quiet messages and CC copies don't alert. An Apple registration callback or an archive is not proof of APNs delivery.

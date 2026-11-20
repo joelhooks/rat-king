@@ -3,20 +3,32 @@ import UniformTypeIdentifiers
 
 @main
 struct RatKingApp: App {
+    @UIApplicationDelegateAdaptor(PushNotifications.self) private var notifications
+
+    init() {
+        #if DEBUG
+        if ProcessInfo.processInfo.arguments.contains("--inbox-benchmark") { InboxBenchmarkView.markLaunch() }
+        #endif
+    }
+
     var body: some Scene {
         WindowGroup {
             #if DEBUG
             if ProcessInfo.processInfo.arguments.contains("--terminal-gesture-test") { TerminalGestureHarness() }
             else if ProcessInfo.processInfo.arguments.contains("--traffic-preview-test") { TrafficPreviewHarness() }
             else if ProcessInfo.processInfo.arguments.contains("--conversation-test") { ConversationHarness() }
-            else { TerminalView() }
+            else if ProcessInfo.processInfo.arguments.contains("--inbox-benchmark") { InboxBenchmarkView() }
+            else { TerminalView(notifications: notifications) }
             #else
-            TerminalView()
+            TerminalView(notifications: notifications)
             #endif
         }
     }
 }
 struct TerminalView: View {
+    let notifications: PushNotifications
+    @State private var pushRoute: ChatRoute?
+    @State private var attemptedTap: PushTap?
     @State private var store = InboxStore()
     @State private var tab = 0
     @State private var filters = ListFilters()
@@ -49,7 +61,7 @@ struct TerminalView: View {
             if tab != 3 || store.traffic == nil, let error = store.lastError { Text("! " + error).foregroundStyle(TUITheme.err).frame(maxWidth: .infinity, alignment: .leading).padding(12).textSelection(.enabled) }
             Group {
                 switch tab {
-                case 0: ConversationsView(store: store, filters: filters)
+                case 0: ConversationsView(store: store, filters: filters, pushRoute: $pushRoute)
                 case 1: DeskInboxView(store: store, filter: $filters.desk)
                 case 3:
                     if let traffic = store.traffic { TrafficView(store: traffic, inbox: store, copies: store.copies, filter: $filters.traffic) } else { Text("Phone identity required for traffic.").foregroundStyle(TUITheme.warn) }
@@ -68,8 +80,14 @@ struct TerminalView: View {
         }
         .font(TUITheme.monoFont).foregroundStyle(TUITheme.fg).background(TUITheme.bg)
         .task { if scenePhase == .active { store.start(); if tab == 3 { store.traffic?.start() } } }
+        .task(id: scenePhase) { if scenePhase == .active { await notifications.enable() } }
+        .onChange(of: notifications.device, initial: true) { _, device in store.pushDevice = device }
+        .onChange(of: notifications.pendingTap, initial: true) { _, _ in attemptedTap = nil; openNotification() }
+        .onChange(of: store.state) { _, _ in openNotification() }
+        .onChange(of: store.loadingOlder) { _, _ in openNotification() }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { store.start(); if tab == 3 { store.traffic?.start() } } else { store.stop() }
+            if phase == .active { store.start(); if tab == 3 { store.traffic?.start() } }
+            else { store.stop(); attemptedTap = nil }
         }
         .onChange(of: tab) { _, selected in
             if selected == 3, scenePhase == .active { store.traffic?.start() } else { store.traffic?.stop() }
@@ -79,6 +97,17 @@ struct TerminalView: View {
                 let access = url.startAccessingSecurityScopedResource(); defer { if access { url.stopAccessingSecurityScopedResource() } }
                 if let data = try? Data(contentsOf: url) { store.importPeers(data) }
             }
+        }
+    }
+    private func openNotification() {
+        guard let tap = notifications.pendingTap else { return }
+        if let route = store.route(for: tap) {
+            notifications.pendingTap = nil
+            tab = 0
+            pushRoute = route
+        } else if store.state == .live, !store.loadingOlder {
+            if attemptedTap == tap || tap.seq == nil { notifications.pendingTap = nil }
+            else { attemptedTap = tap; store.loadPushTarget(tap) }
         }
     }
     private var identity: some View {
@@ -106,7 +135,8 @@ struct TerminalView: View {
                         Button("[accept changed document]") { store.acceptPeerChange(did); store.refresh() }.foregroundStyle(TUITheme.warn)
                     }
                 }
-                Text("Live mail runs while this app is in the foreground. Reopening catches up from the mailbox. Background push is not enabled.").foregroundStyle(TUITheme.dim)
+                Text(notifications.status ?? store.pushStatus ?? "Push requires notification permission and APNs configured on the server.").foregroundStyle(TUITheme.dim)
+                Text("Mail opens and decrypts only in the foreground.").foregroundStyle(TUITheme.dim)
                 Text("BUILD \(Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?") / \(Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?")").foregroundStyle(TUITheme.dim)
                 Text("COMMIT " + (Bundle.main.object(forInfoDictionaryKey: "RKBuildCommit") as? String ?? "development")).foregroundStyle(TUITheme.dim).textSelection(.enabled)
             }.padding(12)

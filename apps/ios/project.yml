@@ -27,6 +27,11 @@ targets:
         CODE_SIGN_STYLE: Automatic
         GENERATE_INFOPLIST_FILE: NO
         INFOPLIST_FILE: Sources/App/Info.plist
+        CODE_SIGN_ENTITLEMENTS: Config/Push.entitlements
+    attributes:
+      SystemCapabilities:
+        com.apple.Push:
+          enabled: 1
   RatKingTests:
     type: bundle.unit-test
     platform: iOS

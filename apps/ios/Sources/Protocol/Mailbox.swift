@@ -66,12 +66,27 @@ struct Mailbox: Sendable {
         request.setValue("Bearer " + (try identity.token(audience: configuration.audience, method: Self.namespace + method)), forHTTPHeaderField: "Authorization")
         if let body { request.httpBody = try body.jsonData(); request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         let (bytes, response) = try await session.data(for: request)
-        guard let http = response as? HTTPURLResponse, bytes.count <= 2_000_000 else { throw ProtocolError.invalid("Invalid mailbox response") }
+        guard let http = response as? HTTPURLResponse else { throw ProtocolError.invalid("Invalid mailbox response") }
+        guard bytes.count <= 2_000_000 else { throw XRPCError(code: "MailboxResponseTooLarge", status: 413) }
         guard (200..<300).contains(http.statusCode) else {
             let error = try? Value.json(bytes)
             throw XRPCError(code: (try? error?.required("error").text) ?? "MailboxRequestFailed", status: http.statusCode)
         }
         return try Value.json(bytes)
+    }
+    func inboxPage(_ request: InboxRead, limit: Int = InboxRead.size) async throws -> InboxPage {
+        var params = request.parameters
+        params["recipientDid"] = identity.did
+        var size = limit
+        while true {
+            params["limit"] = String(size)
+            do { return try await InboxPage(call("mailbox.listPage", params: params), request: request, limit: size) }
+            catch let rpc as XRPCError where rpc.status == 413 && size > 1 { size /= 2 }
+        }
+    }
+    func register(_ device: PushDevice) async throws {
+        let reply = try await call("device.register", body: .map(["did": .string(identity.did), "token": .string(device.token), "environment": .string(device.environment)]))
+        guard reply["registered"] == .bool(true) else { throw ProtocolError.invalid("Push registration was not confirmed") }
     }
     func acquire() async throws -> Lease {
         let request: Value = .map(["did": .string(identity.did), "harness": .map(["$type": .string(Self.namespace + "runtime.lease#other"), "kind": .string("ios")]), "expiresAt": .string(ISO8601DateFormatter.fractional.string(from: Date().addingTimeInterval(300)))])
