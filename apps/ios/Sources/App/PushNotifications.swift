@@ -9,7 +9,7 @@ struct PushDevice: Equatable {
 
     init(data: Data) {
         token = data.map { String(format: "%02x", $0) }.joined()
-        #if DEBUG
+        #if DEBUG || RK_OTA
         environment = "sandbox"
         #else
         environment = "production"
