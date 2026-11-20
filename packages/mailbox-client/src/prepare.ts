@@ -26,6 +26,7 @@ import { base64url, Document, DidResolver, documentResolver } from "./auth.ts";
 import { consume } from "./consume.ts";
 import type { ConsumeOptions, MessageMeta } from "./consume.ts";
 import * as Deadline from "./deadline.ts";
+import { readPendingPush } from "./device.ts";
 import { clientError, MailboxClientError } from "./error.ts";
 import { readMailboxHealth } from "./health.ts";
 import { importSigning, Identity } from "./identity.ts";
@@ -598,6 +599,7 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
       readMailboxHealth(transport, did, name),
     mailbox,
     open: mailbox.open,
+    pendingPush: (did: string) => readPendingPush(transport, did),
     presence,
     refresh,
     resolveLease: mailbox.lease.resolve,

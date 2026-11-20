@@ -11,6 +11,7 @@ import type {
 import { DeskWakeState, collectDeskWake } from "./alarm-desk-wake.ts";
 import type { DeskWakePorts, DeskWakeSighting } from "./alarm-desk-wake.ts";
 import { advanceAlarm, emptyAlarm } from "./alarm-machine.ts";
+import { PushAttempts } from "./alarm-push-state.ts";
 import type { AlarmRefused } from "./alarm-refusal.ts";
 import {
   SourceState,
@@ -64,6 +65,7 @@ export const AlarmJournal = Schema.Struct({
     })
   ),
   pending: Schema.Array(Delivery),
+  pushAttempts: Schema.optionalKey(PushAttempts),
   sources: SourceState,
   version: Schema.Literal(1),
   wakeOnMail: Schema.optionalKey(DeskWakeState),
@@ -122,7 +124,11 @@ export const alarmRecipients = (
   key: AlarmKeyValue,
   downInstances: readonly string[] = []
 ) => {
-  if (key === "wake.unacked" || key.startsWith("mail.owner/")) {
+  if (
+    key === "wake.unacked" ||
+    key.startsWith("mail.owner/") ||
+    key.startsWith("reader.absent/")
+  ) {
     return [];
   }
 

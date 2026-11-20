@@ -1,7 +1,7 @@
 {
   "effect": "4.1.4",
   "generatorVersion": "0.1.0",
-  "sourceDigest": "76f28415b9e220c1032cb23895e6a3dd33e39bd955463c4814e2eba8ccb613c0",
+  "sourceDigest": "2611fdbb9a0a26973dd42d2387bf99af94f130ceb53d34741c18e5e89114e610",
   "sources": [
     "lexicons/sh/mschf/agentgraph/checkin.json",
     "lexicons/sh/mschf/agentgraph/friction.json",
@@ -33,6 +33,8 @@
     "lexicons/sh/mschf/ratking/desk/theme.json",
     "lexicons/sh/mschf/ratking/desk/update.json",
     "lexicons/sh/mschf/ratking/desk/wake.json",
+    "lexicons/sh/mschf/ratking/device/pendingPush.json",
+    "lexicons/sh/mschf/ratking/device/register.json",
     "lexicons/sh/mschf/ratking/identity/deleteRole.json",
     "lexicons/sh/mschf/ratking/identity/enrollHost.json",
     "lexicons/sh/mschf/ratking/identity/listNames.json",
@@ -50,7 +52,9 @@
     "lexicons/sh/mschf/ratking/mailbox/getPeerDocument.json",
     "lexicons/sh/mschf/ratking/mailbox/getPresence.json",
     "lexicons/sh/mschf/ratking/mailbox/list.json",
+    "lexicons/sh/mschf/ratking/mailbox/listPage.json",
     "lexicons/sh/mschf/ratking/mailbox/listTraffic.json",
+    "lexicons/sh/mschf/ratking/mailbox/markRead.json",
     "lexicons/sh/mschf/ratking/mailbox/nameHealth.json",
     "lexicons/sh/mschf/ratking/mailbox/send.json",
     "lexicons/sh/mschf/ratking/mailbox/sendViaPass.json",

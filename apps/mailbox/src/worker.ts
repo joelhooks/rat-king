@@ -45,6 +45,7 @@ import {
   flushDelegations,
 } from "./delegation.ts";
 import { deskMethods } from "./desk.ts";
+import { deviceMethods, deviceRequest, runDevice } from "./device-http.ts";
 import {
   documentsJson,
   documentsLayer,
@@ -55,6 +56,7 @@ import { logFailure } from "./failure-log.ts";
 import type { FailureScope } from "./failure-log.ts";
 import { errorResponse, failure } from "./failure.ts";
 import { wakeHosted } from "./hosted-wake.ts";
+import { inboxMethods, inboxRequest, runInbox } from "./inbox-http.ts";
 import { issuerInstance } from "./issuer-object.ts";
 import { issuerMethods } from "./issuer.ts";
 import { jsonResponse } from "./json-response.ts";
@@ -260,6 +262,42 @@ export class Mailbox extends DurableObject<Bindings> {
             status: error.status,
           })
         )
+      )
+    );
+  }
+
+  device(nsid: string, input: string, issuer: string) {
+    return Effect.runPromise(
+      runDevice(
+        this.sql,
+        this.ctx.id.name ?? "",
+        didAllowlist(this.env.OPERATOR_DIDS),
+        nsid,
+        input,
+        issuer
+      ).pipe(
+        Effect.match({
+          onFailure: (error) => ({
+            body: JSON.stringify({ error: error.error }),
+            status: error.status,
+          }),
+          onSuccess: (body) => ({ body, status: 200 }),
+        })
+      )
+    );
+  }
+
+  inbox(nsid: string, input: string, issuer: string) {
+    return Effect.runPromise(
+      runInbox(nsid, input, issuer, didAllowlist(this.env.OPERATOR_DIDS)).pipe(
+        Effect.provide(this.store),
+        Effect.match({
+          onFailure: (error) => ({
+            body: JSON.stringify({ error: error.error }),
+            status: error.status,
+          }),
+          onSuccess: (body) => ({ body, status: 200 }),
+        })
       )
     );
   }
@@ -1185,6 +1223,8 @@ const methods = new Set<string>(
     ...attentionMethods,
     ...issuerMethods,
     ...deskMethods,
+    ...deviceMethods,
+    ...inboxMethods,
   ].map((method) => method.nsid)
 );
 
@@ -1471,6 +1511,14 @@ const serviceRequest = (
     return nameHealthRequest(request, env, issuer);
   }
 
+  if (deviceMethods.some((method) => method.nsid === nsid)) {
+    return deviceRequest(request, env, nsid, issuer);
+  }
+
+  if (inboxMethods.some((method) => method.nsid === nsid)) {
+    return inboxRequest(request, env, nsid, issuer);
+  }
+
   if (attentionMethods.some((method) => method.nsid === nsid)) {
     return attentionRequest(request, env, nsid, issuer, scope);
   }
@@ -1563,6 +1611,8 @@ const handleRequest = (
         ...attentionMethods,
         ...issuerMethods,
         ...deskMethods,
+        ...deviceMethods,
+        ...inboxMethods,
       ].some((method) => method.nsid === nsid)
     ) {
       return Response.json({ error: "InvalidRequest" }, { status: 404 });

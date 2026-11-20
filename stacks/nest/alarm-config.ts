@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 
+import { SecretName } from "../../packages/alchemy-nest/src/secret-source.ts";
 import { AgentName } from "../../packages/ratking-client/src/name.ts";
 
 export const ISSUER_FAILURE_CHECKS = 3;
@@ -33,6 +34,7 @@ export const AlarmKey = Schema.Union([
   Schema.TemplateLiteral(["mail.stranded/", AgentName]),
   Schema.TemplateLiteral(["mail.owner/", AgentName]),
   Schema.TemplateLiteral(["mail.wake/", AgentName]),
+  Schema.TemplateLiteral(["reader.absent/", AgentName]),
 ]);
 
 export type AlarmKeyValue = typeof AlarmKey.Type;
@@ -84,6 +86,12 @@ export const AlarmSettings = Schema.Struct({
     node: Schema.NonEmptyString,
     script: Schema.NonEmptyString,
   }),
+  push: Schema.optionalKey(
+    Schema.Struct({
+      names: Schema.NonEmptyArray(AgentName),
+      secret: SecretName,
+    })
+  ),
   readerHeartbeats: Schema.optionalKey(
     Schema.NonEmptyArray(
       Schema.Struct({

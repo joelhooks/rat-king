@@ -28,6 +28,12 @@ Pages go to Joel's phone and grokbot, so they carry real incidents only. Warn ne
 
 Optional `alarm.wakeTargets: [{ name, owner, unackedMinutes?, page? }]` preserves explicit owner opt-ins. The threshold defaults to `alarm.wakeUnackedMinutes` (15 minutes when omitted). Each overdue target fires `mail.owner/<name>` to its owner only, never to broadcast, the desk or the operator gateway. The legacy `page` option still decodes but no longer grants operator paging authority. Owner notices and their recovery use the normal durable outbox.
 
+The same opt-in enables `reader.absent/<name>` when the lease has been absent for the threshold and admitted mail has been undelivered for at least that long. It reports the lease age and undelivered count to the configured owner. A live lease or empty backlog keeps it quiet. Unlike `mail.owner/<name>`, this alarm needs no process heartbeat and can page through the normal gate when the target sets `page: true`.
+
+Optional `alarm.push: { names, secret }` enables APNs for the listed names. Put the secret reference in private stage config. The referenced credential is JSON with `keyId`, `teamId`, `bundleId` and the `.p8` PEM contents in `privateKey`. The alarm worker leases it at startup. An absent or invalid credential emits `push.unconfigured` once and disables push until restart. The mailbox does not call Apple. It returns one pending notice to this operator client only when the DID has registered a device and has no live lease.
+
+Push is best effort. It picks the newest eligible message, coalesces during the one-minute per-name budget, and records the attempt before sending. A failed attempt does not retry that message. The journal stores message IDs, admission positions and attempt times, never tokens or previews. `push.sent` means APNs accepted the request, not that the handset displayed it. No APNs credential is needed for mail admission or foreground catch-up.
+
 Use a fresh copy of the live stage config. Do not promote an older proposal that loses approval fields or notification recipients.
 
 ## Sources

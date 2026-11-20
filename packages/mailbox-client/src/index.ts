@@ -91,4 +91,8 @@ export {
 
 export { consumerMachine } from "./consume.ts";
 
+export { readPendingPush, registerDevice } from "./device.ts";
+
+export { listPage, markRead } from "./inbox.ts";
+
 export type { ConsumeOptions, MessageMeta, Skipped } from "./consume.ts";

@@ -69,6 +69,11 @@ export const Output = Schema.StructWithRest(
       )
     ),
     lease: Schema.optionalKey(Lease),
+    oldestUndeliveredAt: Schema.optionalKey(
+      Runtime.lexString({ format: "datetime", type: "string" }).pipe(
+        Schema.brand("Lexicon:datetime")
+      )
+    ),
     oldestWake: Schema.optionalKey(Wake),
     oldestWakeSinceAck: Schema.optionalKey(Wake),
     quietUnacked: Schema.Int.check(
@@ -76,6 +81,12 @@ export const Output = Schema.StructWithRest(
       Schema.isLessThanOrEqualTo(9_007_199_254_740_991)
     ),
     retired: Schema.optionalKey(Schema.Boolean),
+    undelivered: Schema.optionalKey(
+      Schema.Int.check(
+        Schema.isGreaterThanOrEqualTo(0),
+        Schema.isLessThanOrEqualTo(9_007_199_254_740_991)
+      )
+    ),
     wakesSinceAck: Schema.optionalKey(
       Schema.Int.check(
         Schema.isGreaterThanOrEqualTo(0),

@@ -43,6 +43,19 @@ const Persisted = Schema.Struct({
   envelope: Defs.EncryptedEnvelope,
 });
 
+const MessageRow = Schema.Struct({ value: Schema.fromJsonString(Persisted) });
+
+const readMessages = (
+  sql: Sql,
+  query: string,
+  through: number,
+  limit: number
+) =>
+  Array.from(
+    sql.exec(query, through, limit),
+    (row) => Schema.decodeUnknownSync(MessageRow)(row).value
+  );
+
 const EventSchema = List.Output;
 
 const firstValue = (
@@ -74,6 +87,9 @@ export const sqliteStore = (
     "CREATE INDEX IF NOT EXISTS messages_custody ON messages(json_extract(value,'$.current.state'),json_extract(value,'$.admission.seq'))"
   );
   sql.exec(
+    "CREATE INDEX IF NOT EXISTS messages_admission ON messages(json_extract(value,'$.admission.seq'))"
+  );
+  sql.exec(
     "CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY CHECK(seq > 0 AND seq <= 9007199254740991), value TEXT NOT NULL)"
   );
   sql.exec(
@@ -91,6 +107,13 @@ export const sqliteStore = (
   trafficTables(sql);
 
   const transaction: Transaction = {
+    admissionsThrough: (through, limit) =>
+      readMessages(
+        sql,
+        "SELECT value FROM messages WHERE json_extract(value,'$.admission.seq') <= ? ORDER BY json_extract(value,'$.admission.seq') DESC LIMIT ?",
+        through,
+        limit
+      ),
     append: (event: Event) => {
       sql.exec(
         "INSERT INTO events (seq,value) VALUES (?,?)",
@@ -257,6 +280,13 @@ export const sqliteStore = (
         Schema.encodeSync(Schema.fromJsonString(Retirement))(retirement)
       );
     },
+    unreadThrough: (through, limit) =>
+      readMessages(
+        sql,
+        "SELECT value FROM messages WHERE json_extract(value,'$.current.state') IN ('accepted','queued','delivered') AND json_extract(value,'$.admission.seq') <= ? ORDER BY json_extract(value,'$.admission.seq') ASC LIMIT ?",
+        through,
+        limit
+      ),
     watermark: () => {
       const [row] = [
         ...sql.exec("SELECT COALESCE(MAX(seq),0) AS value FROM events"),

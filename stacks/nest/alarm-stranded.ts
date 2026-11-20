@@ -4,7 +4,7 @@ import type {
   AlarmStateValue,
 } from "./alarm-config.ts";
 import type { AlarmFacts } from "./alarm-sources.ts";
-import { stalledWakes } from "./alarm-wakes.ts";
+import { readerAbsence, stalledWakes } from "./alarm-wakes.ts";
 import type { WakeSighting, WakeTarget } from "./alarm-wakes.ts";
 
 export const STRANDED_MAIL_MS = 4 * 60 * 60_000;
@@ -139,6 +139,11 @@ export const mailReadings = (
 
   for (const item of seen ?? []) {
     readings[`mail.stranded/${item.name}`] = strandedReading(item, now);
+
+    if (item.configured === true) {
+      readings[`reader.absent/${item.name}`] = readerAbsence(item, now);
+    }
+
     readings[`mail.owner/${item.name}`] =
       item.retired !== true &&
       item.retired !== null &&

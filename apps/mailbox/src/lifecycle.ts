@@ -10,6 +10,7 @@ export const delivery = createMachine({
       on: {
         expire: { target: "expired" },
         fail: { target: "failed" },
+        operatorRead: { target: "acked" },
         queue: { target: "queued" },
       },
     },
@@ -20,6 +21,7 @@ export const delivery = createMachine({
         expire: { target: "expired" },
         fail: { target: "failed" },
         inject: { target: "delivered" },
+        operatorRead: { target: "acked" },
       },
     },
     expired: { type: "final" },
@@ -29,12 +31,19 @@ export const delivery = createMachine({
         expire: { target: "expired" },
         fail: { target: "failed" },
         inject: { target: "delivered" },
+        operatorRead: { target: "acked" },
       },
     },
   },
 });
 
-export type DeliveryCommand = "queue" | "inject" | "ack" | "expire" | "fail";
+export type DeliveryCommand =
+  | "queue"
+  | "inject"
+  | "ack"
+  | "expire"
+  | "fail"
+  | "operatorRead";
 
 export const advance = (
   state: Defs.DeliveryStateKnown,

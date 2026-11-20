@@ -1,0 +1,66 @@
+{
+  "lexicon": 1,
+  "id": "sh.mschf.ratking.mailbox.markRead",
+  "defs": {
+    "main": {
+      "type": "procedure",
+      "description": "Operator-only. Mark pending admissions at or below upToSeq read, in bounded batches. Repeat with the same cutoff while more is true.",
+      "input": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "recipientDid",
+            "upToSeq"
+          ],
+          "properties": {
+            "recipientDid": {
+              "type": "string",
+              "format": "did"
+            },
+            "upToSeq": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      },
+      "output": {
+        "encoding": "application/json",
+        "schema": {
+          "type": "object",
+          "required": [
+            "marked",
+            "more"
+          ],
+          "properties": {
+            "marked": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "more": {
+              "type": "boolean"
+            }
+          }
+        }
+      },
+      "errors": [
+        {
+          "name": "InvalidRequest"
+        },
+        {
+          "name": "AuthRequired"
+        },
+        {
+          "name": "Forbidden"
+        },
+        {
+          "name": "MailboxUnavailable"
+        },
+        {
+          "name": "InvalidCursor"
+        }
+      ]
+    }
+  }
+}

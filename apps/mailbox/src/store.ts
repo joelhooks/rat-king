@@ -58,6 +58,10 @@ export type RetirementValue = typeof Retirement.Type;
 export type Event = List.OutputValue["events"][number];
 
 export interface Transaction {
+  readonly admissionsThrough: (
+    through: number,
+    limit: number
+  ) => readonly Message[];
   readonly attentionPreferences: () => Prefs.MainValue | undefined;
   readonly attentionStatus: () => Status.MainValue | undefined;
   readonly setAttentionPreferences: (prefs: Prefs.MainValue) => void;
@@ -74,6 +78,10 @@ export interface Transaction {
     through: number,
     limit: number
   ) => readonly Event[];
+  readonly unreadThrough: (
+    through: number,
+    limit: number
+  ) => readonly Message[];
   readonly lease: () => LeaseValue | undefined;
   readonly setLease: (lease: LeaseValue) => void;
   readonly cursorSecret: () => Uint8Array;

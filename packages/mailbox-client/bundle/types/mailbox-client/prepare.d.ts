@@ -105,6 +105,7 @@ export declare const prepare: (options: PrepareOptions) => Effect.Effect<{
             readonly holder: string;
             readonly pane: string | null;
         } | null;
+        readonly oldestUndeliveredAt?: number;
         readonly oldestWake: {
             readonly at: number;
             readonly id: string;
@@ -119,6 +120,7 @@ export declare const prepare: (options: PrepareOptions) => Effect.Effect<{
         } | null;
         readonly quietUnacked: number;
         readonly retired?: boolean;
+        readonly undelivered?: number;
     }, MailboxClientError, never>;
     mailbox: {
         readonly getPreferences: import("./attention.js").AttentionClient["getPreferences"];
@@ -148,6 +150,18 @@ export declare const prepare: (options: PrepareOptions) => Effect.Effect<{
         readonly putDidDocument: (document: Defs.DidDocumentValue) => Effect.Effect<import("../lexicon/admin.putDidDocument.js").OutputValue, MailboxClientError>;
     };
     open: (envelope: Defs.EncryptedEnvelopeValue, receipt?: Defs.ReceiptValue) => Effect.Effect<OpenedMessage, MailboxClientError>;
+    pendingPush: (did: string) => Effect.Effect<{
+        readonly [x: string]: import("../lexicon/runtime.js").LexValue;
+        readonly notice?: {
+            readonly [x: string]: import("../lexicon/runtime.js").LexValue;
+            readonly admissionSeq: number;
+            readonly body: string;
+            readonly environment: "production" | "sandbox";
+            readonly messageId: string & import("effect/Brand").Brand<"Lexicon:tid">;
+            readonly title: string;
+            readonly token: string;
+        };
+    }, MailboxClientError, never>;
     presence: (did: string) => Effect.Effect<{
         readonly [x: string]: import("../lexicon/runtime.js").LexValue;
         readonly did: string & import("effect/Brand").Brand<"Lexicon:did">;

@@ -23,6 +23,7 @@ import {
   sendAlarmDelivery,
   withAlarmMailTransport,
 } from "./alarm-mail.ts";
+import { collectPush, dispatchPush, loadAlarmPush } from "./alarm-push.ts";
 import { updateReaderWindows } from "./alarm-reader-windows.ts";
 import type { ReaderWindowObservation } from "./alarm-reader-windows.ts";
 import type {
@@ -104,6 +105,7 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
     }
 
     const readerWindows = yield* Ref.make<ReaderWindowObservation | null>(null);
+    const push = yield* loadAlarmPush(settings.push);
 
     yield* watchReaderCrashes(config, directory, Ref.get(readerWindows));
 
@@ -254,12 +256,30 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           ),
         };
 
-        yield* runAlarmCycle(
+        const main = runAlarmCycle(
           prior,
           facts,
           collectDeskWakeHealth(config),
           settings,
           ports
+        );
+
+        if (push === null || settings.push === undefined) {
+          yield* main;
+
+          return;
+        }
+
+        const [journal, seen] = yield* Effect.all(
+          [main, collectPush(config, settings.push.names)],
+          { concurrency: "unbounded" }
+        );
+
+        yield* dispatchPush(
+          journal.pushAttempts ?? {},
+          seen,
+          push,
+          (pushAttempts) => save({ ...journal, pushAttempts })
         );
       }).pipe(
         withAlarmMailTransport,

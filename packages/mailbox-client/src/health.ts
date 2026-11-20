@@ -25,10 +25,12 @@ export const MailboxHealth = Schema.Struct({
       pane: Schema.NullOr(Schema.String),
     })
   ),
+  oldestUndeliveredAt: Schema.optionalKey(Schema.Finite),
   oldestWake: Schema.NullOr(Wake),
   oldestWakeSinceAck: Schema.optionalKey(Schema.NullOr(Wake)),
   quietUnacked: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   retired: Schema.optionalKey(Schema.Boolean),
+  undelivered: Health.Output.schema.fields.undelivered,
 });
 
 export type MailboxHealthValue = typeof MailboxHealth.Type;
@@ -105,6 +107,12 @@ export const readMailboxHealth = Effect.fn("Mailbox.readHealth")(
               holder: value.lease.holder,
               pane: value.lease.pane ?? null,
             },
+      ...(value.oldestUndeliveredAt === undefined
+        ? undefined
+        : { oldestUndeliveredAt: Date.parse(value.oldestUndeliveredAt) }),
+      ...(value.undelivered === undefined
+        ? undefined
+        : { undelivered: value.undelivered }),
       oldestWake:
         value.oldestWake === undefined
           ? null
