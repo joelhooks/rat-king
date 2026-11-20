@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import UniformTypeIdentifiers
 
 @main
@@ -33,6 +34,7 @@ struct TerminalView: View {
     @State private var tab = 0
     @State private var filters = ListFilters()
     @State private var importing = false
+    @State private var copiedPublicDocument: String?
     @Environment(\.scenePhase) private var scenePhase
     var body: some View {
         VStack(spacing: 0) {
@@ -116,10 +118,16 @@ struct TerminalView: View {
                 TerminalPanel(title: "DEVICE IDENTITY") {
                     Text(store.identity?.did ?? "NO DEVICE IDENTITY").foregroundStyle(TUITheme.teal).textSelection(.enabled)
                     Text("Two device-only keys. No operator credentials. Share the public document with the desk for registration.").foregroundStyle(TUITheme.dim)
-                    ShareLink(item: store.publicDocument) { Text("[share public DID]") }.disabled(store.identity == nil).foregroundStyle(TUITheme.accent)
+                    if let document = store.publicDocument {
+                        Button(copiedPublicDocument == document ? "Copied public document" : "Copy public document") {
+                            UIPasteboard.general.setItems([[UTType.utf8PlainText.identifier: document]], options: [.expirationDate: Date.now.addingTimeInterval(600)])
+                            copiedPublicDocument = document
+                        }.frame(minHeight: 44).foregroundStyle(TUITheme.accent)
+                        ShareLink(item: document) { Text("Share public document") }.foregroundStyle(TUITheme.accent)
+                    }
                 }
                 TerminalPanel(title: "PUBLIC DOCUMENT") {
-                    Text(store.publicDocument).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    Text(store.publicDocument ?? "Identity unavailable").textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
                 TerminalPanel(title: "TRUSTED PEERS / \(store.peers.count)") {
                     Button("[import peer DID]") { importing = true }.foregroundStyle(TUITheme.accent)

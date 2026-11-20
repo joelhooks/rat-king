@@ -33,11 +33,13 @@ On the signing Mac, set `RK_OTA_PROFILE` to an API-created iOS development profi
 
 From a clean checkout on the signing Mac, run `apps/ios/scripts/build-and-link.sh` under the local heavy-job lock. The script exports and checks the IPA before publishing, then prints the install URL. Pass hours (1–72, default 24) to change its expiry. It does not create certificates or profiles, use automatic signing, or upload to App Store Connect. Keep the URL private; the signed IPA contains the instance's mailbox configuration. Phone-apps retains the last five builds, and its desk owns retiring stale links after a profile change.
 
+For a second phone with its own mailbox identity, set `RK_OTA_PHONE_DID` to the desk-approved DID for that build. The override does not change the bundle ID, profile, or ignored configuration file. Set `RK_OTA_LINK_TITLE` to distinguish the variant on the install page. Install each variant only on its intended phone: installing a different variant on the same phone replaces the app and changes its configured DID.
+
 OTA builds register sandbox push tokens. They can install on either enrolled phone, but installation does not register that phone's device-bound mailbox keys. Confirm the public document with the desk before relying on live mail from a second device. As with Debug installs, registering push for the same phone DID can replace its previous token.
 
 ## Join and prove
 
-1. Open the app on a physical iPhone with the mailbox reachable. Share the public DID document from Identity. Save the exact JSON for the desk.
+1. Open the app on the intended physical phone. In Identity, tap **Copy public document** or **Share public document**, then send the exact JSON to the desk through an already working inbox. Those actions are unavailable until the phone has a public document. They never copy or share its private keys.
 2. The desk runs `mailbox register --did <phone-did> --document <public-json>` using its existing operator configuration. The phone never receives those credentials. Registration refuses private material and a mismatched DID. Exact retries use the server's idempotent registration route.
 3. The phone looks up the agent's registered public DID document when needed. A bundled seed or manual import is optional.
 4. Keep the app open. It acquires its own five-minute `runtime.lease#other` binding with `kind: ios`, renews every two minutes, authenticates the WebSocket in its first frame, waits for the ready notice, then fetches the newest page or resumes from the local cursor.

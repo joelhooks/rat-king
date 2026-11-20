@@ -168,7 +168,10 @@ final class InboxStore {
             }
         } catch { client = nil; lastError = error.localizedDescription }
     }
-    var publicDocument: String { guard let identity, let data = try? identity.document.jsonData() else { return "Identity unavailable" }; return String(decoding: data, as: UTF8.self) }
+    var publicDocument: String? {
+        guard let identity, let data = try? identity.document.jsonData() else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
     static func scope(did: String, audience: String) -> String {
         SHA256.hash(data: Data((did + "\n" + audience).utf8)).map { String(format: "%02x", $0) }.joined()
     }

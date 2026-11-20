@@ -94,10 +94,14 @@ struct PhoneIdentity: Sendable {
     }
     func sign(_ data: Data) throws -> Data { try ES256.normalize(signing.signature(for: data).rawRepresentation) }
     var document: Value {
+        Self.publicDocument(did: did, signing: signing.publicKey, encryption: encryption.publicKey)
+    }
+    static func publicDocument(did: String, signing: P256.Signing.PublicKey, encryption: P256.KeyAgreement.PublicKey) -> Value {
+        let signingId = did + "#atproto", encryptionId = did + "#encryption"
         func jwk(_ point: Data) -> Value { .map(["kty": .string("EC"), "crv": .string("P-256"), "x": .string(Data(point.dropFirst().prefix(32)).base64url), "y": .string(Data(point.suffix(32)).base64url)]) }
         return .map(["id": .string(did), "authentication": .array([.string(signingId)]), "keyAgreement": .array([.string(encryptionId)]), "verificationMethod": .array([
-            .map(["id": .string(signingId), "controller": .string(did), "publicKeyJwk": jwk(signing.publicKey.x963Representation)]),
-            .map(["id": .string(encryptionId), "controller": .string(did), "publicKeyJwk": jwk(encryption.publicKey.x963Representation)])
+            .map(["id": .string(signingId), "controller": .string(did), "publicKeyJwk": jwk(signing.x963Representation)]),
+            .map(["id": .string(encryptionId), "controller": .string(did), "publicKeyJwk": jwk(encryption.x963Representation)])
         ])])
     }
     func token(audience: String, method: String) throws -> String {
