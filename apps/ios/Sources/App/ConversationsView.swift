@@ -22,7 +22,6 @@ struct ConversationsView: View {
                     HStack {
                         Text(archived ? "[ARCHIVED CHATS]" : "[CHATS]").foregroundStyle(TUITheme.accent)
                         Spacer()
-                        if store.presentation.syncing { Text("SYNCING \(store.presentation.progress)").foregroundStyle(TUITheme.warn).font(TUITheme.microFont) }
                         Button("[+ new message]") { path.append(.picker) }.foregroundStyle(TUITheme.accent).accessibilityIdentifier("new-message")
                     }.padding(.vertical, 8)
                     TerminalHints(text: archived ? "tap → conversation · swipe right → restore" : "tap → conversation · ← archive · + → pick an agent")
@@ -33,9 +32,8 @@ struct ConversationsView: View {
                             Button("[RETRY PENDING SEND]") { Task { await store.send(to: "", text: "") } }.disabled(store.state != .live || store.sending).foregroundStyle(TUITheme.accent)
                         }.padding(.vertical, 4)
                     }
-                    if store.presentation.loading {
-                        Text("loading \(store.presentation.progress)…").foregroundStyle(TUITheme.warn)
-                    } else {
+                    if let notice = store.syncNotice { Text(notice).foregroundStyle(TUITheme.warn).accessibilityIdentifier("inbox-sync-notice") }
+                    if !store.presentation.loading {
                         let all = store.conversations
                         TerminalFilterBar(filter: $filters.conversations, projects: all.flatMap(\.projects))
                         let shown = all.filter { filters.conversations.admits($0.facts) }

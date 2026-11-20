@@ -11,6 +11,22 @@ struct InboxPresentation<ID: Hashable> {
     private(set) var pending: [ID] = []
     var loading: Bool { phase == .loading }
     var syncing: Bool { phase == .syncing }
+
+    func syncNotice(state: ConnectionState, hasError: Bool) -> String? {
+        let saved = visible.isEmpty ? "" : " · showing saved mail"
+        switch state {
+        case .stopped:
+            if hasError { return "Mail sync stopped" + saved }
+            return visible.isEmpty ? (loading ? "Mail isn’t connected" : nil) : "Mail is offline" + saved
+        case .waiting: return visible.isEmpty ? nil : "Showing saved mail"
+        case .retrying: return "Trying to reconnect" + saved
+        case .acquiring, .authenticating, .catchingUp:
+            if loading { return progress == 0 ? "Connecting to mail…" : "Loading mail (\(progress))…" }
+            return syncing ? "Syncing saved mail (\(progress))…" : nil
+        case .live: return nil
+        }
+    }
+
     mutating func begin() { phase = .loading; progress = 0; visible = []; pending = [] }
     mutating func resume(_ cached: [ID]) {
         progress = 0

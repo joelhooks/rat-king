@@ -97,6 +97,7 @@ final class InboxStore {
     private var storageScope: String?
     private(set) var previousSession: LeaseWait?
     var waitingMessage: String? { previousSession?.message(at: now) }
+    var syncNotice: String? { presentation.syncNotice(state: state, hasError: lastError != nil) }
     private(set) var preferences: [String: ThreadPreferences] = [:]
     private(set) var now = Date()
     private var snoozeTimer: Task<Void, Never>?
