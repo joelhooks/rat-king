@@ -69,6 +69,10 @@ A conversation is projected from what the phone already stores, with no server c
 
 Chats, Mail and Traffic each have a filter bar: all, unread, needs answer, archived, plus a project menu and a search field. Search is local and in memory. It matches agent name, callsign, project and message text, and every term must match, ignoring case and accents. Nothing is indexed or written. Filters survive tab switches and reset at process restart. In Traffic, unread means not yet opened on this phone (memory-only), and needs answer means a plaintext desk decision or approval.
 
+## Timeline
+
+Timeline shows individual inbox and sent messages newest first. Search and Needs Answer filter that local list. Tap a post to open its conversation at the message. At wider widths the timeline stays beside the thread; at compact widths the thread takes the pane and **‹ Timeline** goes back. Resizing keeps the open thread and its draft. **Compose** opens the same known-agent picker from either pane. Desk answers still use the sealed desk-item flow. Chats remains the launch tab and the destination for notification taps.
+
 ## Desk inbox
 
 The inbox groups desk threads by project and plain chat by sender DID. Open and reconnect show the cached projection at once, with a `SYNCING n` header label while foreground sync runs. Only an empty cache shows the counted loading state. Live incoming messages, including follow-ups in an existing thread, wait behind a `N new` control; tapping it reveals the complete projection and scrolls to the top. Receipt-only updates do not count as new mail. Pull to refresh restarts foreground sync. Offline errors and the connection state remain visible; replies and acknowledgment require a live lease.

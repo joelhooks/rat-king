@@ -18,6 +18,7 @@ struct RatKingApp: App {
             if ProcessInfo.processInfo.arguments.contains("--terminal-gesture-test") { TerminalGestureHarness() }
             else if ProcessInfo.processInfo.arguments.contains("--traffic-preview-test") { TrafficPreviewHarness() }
             else if ProcessInfo.processInfo.arguments.contains("--conversation-test") { ConversationHarness() }
+            else if ProcessInfo.processInfo.arguments.contains("--timeline-test") { ConversationHarness(timeline: true) }
             else if ProcessInfo.processInfo.arguments.contains("--inbox-benchmark") { InboxBenchmarkView() }
             else { TerminalView(notifications: notifications) }
             #else
@@ -40,14 +41,14 @@ struct TerminalView: View {
         VStack(spacing: 0) {
             HStack {
                 Text("RAT KING").foregroundStyle(TUITheme.accent).font(TUITheme.titleFont)
-                Text("⌘1–4 tabs").foregroundStyle(TUITheme.dim).font(TUITheme.microFont)
+                Text("⌘1–5 tabs").foregroundStyle(TUITheme.dim).font(TUITheme.microFont)
                 Spacer()
                 Circle().fill((tab == 3 ? store.traffic?.state == .live : store.state == .live) ? TUITheme.ok : TUITheme.warn).frame(width: 5, height: 5)
                 Text(tab == 3 ? (store.traffic?.state.rawValue.uppercased() ?? "PAUSED") : store.state.rawValue.uppercased()).font(TUITheme.microFont)
             }.padding(8).background(TUITheme.panel)
             ThinDivider()
             HStack(spacing: 8) {
-                ForEach(Array(["CHATS", "MAIL", "IDENTITY", "TRAFFIC"].enumerated()), id: \.offset) { index, label in
+                ForEach(Array(["CHATS", "MAIL", "IDENTITY", "TRAFFIC", "TIMELINE"].enumerated()), id: \.offset) { index, label in
                     Button { tab = index } label: {
                         Text(tab == index ? "[\(index + 1) \(label)]" : "\(index + 1) \(label)")
                             .foregroundStyle(tab == index ? TUITheme.accent : TUITheme.dim)
@@ -67,6 +68,7 @@ struct TerminalView: View {
                 case 1: DeskInboxView(store: store, filter: $filters.desk)
                 case 3:
                     if let traffic = store.traffic { TrafficView(store: traffic, inbox: store, copies: store.copies, filter: $filters.traffic) } else { Text("Phone identity required for traffic.").foregroundStyle(TUITheme.warn) }
+                case 4: TimelineView(store: store)
                 default: identity
                 }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
