@@ -99,8 +99,13 @@ struct ConversationRow: View {
             if let latest = conversation.latest {
                 Text((latest.outgoing ? "YOU: " : "") + latest.preview).foregroundStyle(TUITheme.dim).lineLimit(1)
             }
-            let status = [conversation.agent.project, conversation.latest?.receipt.uppercased(), conversation.unread > 0 ? "\(conversation.unread) UNREAD" : nil, conversation.needsAnswer ? "NEEDS ANSWER" : nil].compactMap { $0 }
-            Text(status.joined(separator: " / ")).font(TUITheme.microFont).foregroundStyle(conversation.unread > 0 || conversation.needsAnswer ? TUITheme.teal : TUITheme.dim).lineLimit(1)
+            HStack(spacing: 8) {
+                if conversation.needsAnswer {
+                    Text("NEEDS ANSWER").font(TUITheme.microFontBold).foregroundStyle(TUITheme.warn).fixedSize()
+                }
+                let status = [conversation.agent.project, conversation.latest?.receipt.uppercased(), conversation.unread > 0 ? "\(conversation.unread) UNREAD" : nil].compactMap { $0 }
+                Text(status.joined(separator: " / ")).font(TUITheme.microFont).foregroundStyle(conversation.unread > 0 ? TUITheme.teal : TUITheme.dim).lineLimit(1)
+            }
         }
         #if DEBUG
         .onAppear { benchmarkPaint?() }
@@ -116,13 +121,18 @@ struct TerminalFilterBar: View {
     let projects: [String]
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 10) {
+            HStack(spacing: 4) {
                 ForEach(ListScope.allCases) { scope in
-                    Button(filter.scope == scope ? "[" + scope.rawValue + "]" : scope.rawValue) { filter.scope = scope }
-                        .foregroundStyle(filter.scope == scope ? TUITheme.accent : TUITheme.dim)
+                    Button { filter.scope = scope } label: {
+                        Text(filter.scope == scope ? "[" + scope.rawValue + "]" : scope.rawValue)
+                            .padding(.horizontal, 6).frame(minWidth: 44, minHeight: 44)
+                            .contentShape(Rectangle())
+                            .foregroundStyle(filter.scope == scope ? TUITheme.accent : scope == .answer ? TUITheme.warn : TUITheme.dim)
+                    }.buttonStyle(.plain)
+                        .accessibilityLabel(scope.rawValue)
                         .accessibilityAddTraits(filter.scope == scope ? .isSelected : [])
                 }
-            }.font(TUITheme.microFont).lineLimit(1).minimumScaleFactor(0.7)
+            }.font(TUITheme.monoFont).lineLimit(1).minimumScaleFactor(0.7)
             HStack(spacing: 8) {
                 Menu {
                     Button("all projects") { filter.project = nil }

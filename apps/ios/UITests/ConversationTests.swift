@@ -1,6 +1,35 @@
 import XCTest
 
 final class ConversationTests: XCTestCase {
+    @MainActor func testNeedsAnswerFilterAndDeskChoice() {
+        let app = XCUIApplication(); app.launchArguments = ["--conversation-test"]; app.launch()
+        let filter = app.buttons["needs answer"]
+        let ask = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Review synthetic release")).firstMatch
+        let chat = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Sample Alpha")).firstMatch
+        XCTAssertTrue(filter.waitForExistence(timeout: 5))
+        XCTAssertGreaterThanOrEqual(filter.frame.height, 44)
+        XCTAssertTrue(ask.exists); XCTAssertTrue(chat.exists)
+        XCTAssertTrue(ask.label.contains("NEEDS ANSWER"))
+        attach(app, "chats-before-filter")
+        filter.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.15)).tap()
+        XCTAssertTrue(ask.exists); XCTAssertFalse(chat.exists)
+        attach(app, "needs-answer-filtered")
+        ask.tap()
+        let open = app.buttons["[open desk item]"]
+        XCTAssertTrue(open.waitForExistence(timeout: 5)); open.tap()
+        let accept = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Accept candidate")).firstMatch
+        XCTAssertTrue(accept.waitForExistence(timeout: 5)); accept.tap()
+        XCTAssertTrue(accept.label.contains("[x]"))
+        XCTAssertFalse(app.buttons["[SEAL + SEND ANSWER]"].isEnabled)
+        attach(app, "desk-choice-selected")
+        app.terminate()
+    }
+
+    @MainActor private func attach(_ app: XCUIApplication, _ name: String) {
+        let attachment = XCTAttachment(screenshot: app.screenshot())
+        attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
+    }
+
     @MainActor func testNewMessagePicksAgentAndOpensConversationWithComposerFocused() {
         let app = XCUIApplication(); app.launchArguments = ["--conversation-test"]; app.launch()
         let new = app.buttons["new-message"]
