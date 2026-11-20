@@ -1,7 +1,9 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import * as Acquire from "@rat-king/lexicon/runtime.acquireLease";
+import * as Release from "@rat-king/lexicon/runtime.releaseLease";
 import * as Renew from "@rat-king/lexicon/runtime.renewLease";
+import { WebSocketPort } from "@rat-king/mailbox-client";
 import { RatKing, ReaderState } from "@rat-king/ratking-client/ratking";
 import {
   Arbitrary,
@@ -20,7 +22,10 @@ import { TestClock } from "effect/testing";
 import { expect, vi } from "vitest";
 
 import { crashedReader } from "../../../stacks/nest/turn-crash-record.ts";
-import { ReaderHeartbeat } from "../../ratking-client/src/reader-health.ts";
+import {
+  HeartbeatJson,
+  ReaderHeartbeat,
+} from "../../ratking-client/src/reader-health.ts";
 import { runEffectModel } from "../../ratking-client/test/pass-launcher-model.ts";
 import { fakeMailbox, quietSocket } from "./fake-mailbox.ts";
 import { harness } from "./harness.ts";
@@ -108,6 +113,18 @@ const decode = <A, I>(
       ).pipe(Effect.orDie)
     : Effect.die("no body");
 
+const LEASE_ID = "3mxcx45mn7sxx";
+
+const matchesLease = (
+  server: Server,
+  fence: { readonly generation?: number; readonly leaseId?: string }
+) => fence.generation === server.serial && fence.leaseId === LEASE_ID;
+
+const resumesLease = (server: Server, input: typeof Acquire.Input.Type) =>
+  matchesLease(server, input) &&
+  "sessionId" in input.harness &&
+  input.harness.sessionId === server.holder;
+
 const lease = (server: Server, did: string) => ({
   did,
   expiresAt: stamp(server.until),
@@ -116,10 +133,15 @@ const lease = (server: Server, did: string) => ({
     $type: "sh.mschf.ratking.runtime.lease#pi",
     sessionId: server.holder,
   },
-  leaseId: "3mxcx45mn7sxx",
+  leaseId: LEASE_ID,
 });
 
-const serve = (server: Server, session: string, slow: boolean) => {
+const serve = (
+  server: Server,
+  session: string,
+  slow: boolean,
+  beforeList?: (now: number) => void
+) => {
   const mailbox = fakeMailbox("accept");
 
   return HttpClient.make((request) =>
@@ -127,6 +149,10 @@ const serve = (server: Server, session: string, slow: boolean) => {
       const nsid = new URL(request.url).pathname;
       const now = yield* Clock.currentTimeMillis;
       const held = server.until > now;
+
+      if (nsid.endsWith(".list")) {
+        beforeList?.(now);
+      }
 
       if (now >= server.outageFrom && now < server.outageUntil) {
         return slow
@@ -137,12 +163,15 @@ const serve = (server: Server, session: string, slow: boolean) => {
       if (nsid.endsWith(".acquireLease")) {
         const input = yield* decode(Acquire.Input, request);
 
-        if (held) {
+        if (held && !resumesLease(server, input)) {
           return respond(request, { error: "LeaseHeld" }, 409);
         }
 
-        server.serial += 1;
-        server.holder = session;
+        if (!held) {
+          server.serial += 1;
+          server.holder = session;
+        }
+
         server.until = now + TTL_MS;
 
         return respond(request, { lease: lease(server, input.did) });
@@ -151,13 +180,25 @@ const serve = (server: Server, session: string, slow: boolean) => {
       if (nsid.endsWith(".renewLease")) {
         const input = yield* decode(Renew.Input, request);
 
-        if (!held || input.generation !== server.serial) {
+        if (!held || !matchesLease(server, input)) {
           return respond(request, { error: "LeaseExpired" }, 409);
         }
 
         server.until = now + TTL_MS;
 
         return respond(request, { lease: lease(server, input.did) });
+      }
+
+      if (nsid.endsWith(".releaseLease")) {
+        const input = yield* decode(Release.Input, request);
+
+        if (!held || !matchesLease(server, input)) {
+          return respond(request, { error: "LeaseMismatch" }, 409);
+        }
+
+        server.until = now;
+
+        return respond(request, { released: true });
       }
 
       if (nsid.endsWith(".resolveLease")) {
@@ -249,6 +290,346 @@ it.effect.prop(
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 12 }, timeout: 600_000 }
+);
+
+it.effect.prop(
+  "after reconnect exhaustion during an outage, an unexpired lease can be resumed using its fence",
+  {
+    duration: Schema.Int.check(
+      Schema.isBetween({ maximum: 24_000, minimum: 20_000 })
+    ),
+  },
+  ({ duration }) =>
+    Effect.gen(function* resumeLease() {
+      const state = "/reader-resume-fixture";
+      const session = "resume";
+
+      const server: Server = {
+        holder: session,
+        listed: false,
+        outageFrom: 0,
+        outageUntil: 0,
+        serial: 0,
+        until: 0,
+      };
+
+      const outageStarted = yield* Deferred.make<number>();
+      const drained = yield* Deferred.make<boolean>();
+
+      const http = serve(server, session, false, (now) => {
+        if (server.serial !== 1 || server.outageUntil !== 0) {
+          return;
+        }
+
+        server.outageFrom = now;
+        server.outageUntil = now + duration;
+        Deferred.doneUnsafe(outageStarted, Effect.succeed(server.until));
+      });
+
+      yield* Effect.gen(function* proof() {
+        yield* (yield* RatKing).run(
+          {
+            alive: () => false,
+            env: Option.some("tester"),
+            pane: Option.none(),
+            pid: 1,
+            session,
+          },
+          () => Effect.void,
+          (caughtUp) => {
+            if (caughtUp) {
+              Deferred.doneUnsafe(drained, Effect.succeed(true));
+            }
+          }
+        );
+
+        const expiry = yield* Deferred.await(outageStarted);
+
+        yield* advance(duration + 10_000);
+        expect(yield* Deferred.isDone(drained)).toBe(true);
+        expect(server.serial).toBe(1);
+        expect(server.until).toBeGreaterThan(expiry);
+      }).pipe(
+        Effect.provide(
+          Layer.provideMerge(
+            harness(state, http, [], {}, memoryFiles()),
+            quietSocket
+          )
+        )
+      );
+    }).pipe(Effect.scoped),
+  { arbitrary: { runs: 3 } }
+);
+
+const Reconnect = Schema.Literals(["hang", "exhaust", "silent"]);
+
+const recoveryClaims = {
+  exhaust: "eight failed reconnects give way to a new acquire",
+  hang: "an unavailable intake followed by a silent socket times out and re-acquires",
+  silent: "an initially silent socket times out and re-acquires",
+};
+
+for (const fault of Reconnect.literals) {
+  it.effect.prop(
+    recoveryClaims[fault],
+    {
+      unavailable: Schema.Int.check(
+        Schema.isBetween({ maximum: 6, minimum: 1 })
+      ),
+    },
+    ({ unavailable }) =>
+      Effect.gen(function* stalledIntake() {
+        const state = "/reader-reconnect-fixture";
+        const box = fakeMailbox("accept");
+        const files = memoryFiles();
+        let generation = 0;
+        let failed = 0;
+        let connections = 0;
+        let stalled = false;
+        let drained = false;
+
+        const http = HttpClient.make((request) =>
+          Effect.suspend(() => {
+            const path = new URL(request.url).pathname;
+
+            if (path.endsWith(".acquireLease")) {
+              generation += 1;
+            }
+
+            if (
+              path.endsWith(".list") &&
+              generation === 1 &&
+              connections > 0 &&
+              fault !== "silent"
+            ) {
+              failed += 1;
+
+              return Effect.succeed(
+                respond(request, { error: "MailboxUnavailable" }, 503)
+              );
+            }
+
+            return box.http.execute(request);
+          })
+        );
+
+        yield* Effect.gen(function* proof() {
+          const ratking = yield* RatKing;
+          const socket = yield* WebSocketPort;
+
+          yield* ratking
+            .run(
+              {
+                alive: () => true,
+                env: Option.some("tester"),
+                pane: Option.none(),
+                pid: 1,
+                session: "reconnect",
+              },
+              () => Effect.void,
+              (caughtUp) => {
+                drained = caughtUp;
+              }
+            )
+            .pipe(
+              Effect.provideService(WebSocketPort, {
+                connect: (url) => {
+                  connections += 1;
+                  const connected = socket.connect(url);
+
+                  if (
+                    generation !== 1 ||
+                    fault === "exhaust" ||
+                    (fault === "hang" && failed < unavailable)
+                  ) {
+                    return connected;
+                  }
+
+                  return {
+                    ...connected,
+                    send: () => {
+                      stalled = true;
+                    },
+                  };
+                },
+              })
+            );
+
+          const first = fault === "exhaust" ? () => failed > 0 : () => stalled;
+
+          yield* runEffectModel(
+            () => ({ model: { phase: 0 }, real: {} }),
+            [
+              Effect.gen(function* observeFault() {
+                for (let tries = 0; tries < 16 && !first(); tries += 1) {
+                  yield* advance(1000);
+                }
+
+                expect(first()).toBe(true);
+                expect(generation).toBe(1);
+              }),
+              Effect.gen(function* recover() {
+                const seconds = { exhaust: 20, hang: 36, silent: 66 }[fault];
+
+                for (let tries = 0; tries < seconds; tries += 1) {
+                  if (drained) {
+                    break;
+                  }
+
+                  yield* advance(1000);
+                }
+
+                expect(drained).toBe(true);
+                expect(generation).toBe(2);
+                expect(
+                  ReaderState.$is("Live")((yield* ratking.status).reader)
+                ).toBe(true);
+                expect(failed).toBe(
+                  { exhaust: 8, hang: unavailable, silent: 0 }[fault]
+                );
+                expect(
+                  box.calls
+                    .filter((call) =>
+                      /\.(?:acquireLease|releaseLease)$/u.test(call)
+                    )
+                    .map((call) => call.split(".").at(-1))
+                ).toEqual(["acquireLease", "releaseLease", "acquireLease"]);
+              }),
+            ].map((step, phase) => ({
+              check: (model: Readonly<{ phase: number }>) =>
+                model.phase === phase,
+              run: (model: { phase: number }) =>
+                step.pipe(
+                  Effect.tap(() =>
+                    Effect.sync(() => {
+                      model.phase += 1;
+                    })
+                  )
+                ),
+              toString: () => ["fault", "recover"][phase] ?? "step",
+            }))
+          );
+        }).pipe(
+          Effect.provide(
+            Layer.provideMerge(harness(state, http, [], {}, files), quietSocket)
+          )
+        );
+      }).pipe(Effect.scoped),
+    { arbitrary: { runs: 3 } }
+  );
+}
+
+it.effect.prop(
+  "heartbeats outlive a stalled reader, stop claiming a lapsed lease, and the watchdog restarts consumption",
+  {
+    leaseOffset: Schema.Int.check(
+      Schema.isBetween({ maximum: 5000, minimum: 0 })
+    ),
+  },
+  ({ leaseOffset }) =>
+    Effect.gen(function* watchdog() {
+      const state = "/reader-watchdog-fixture";
+      const files = memoryFiles();
+      const start = yield* Clock.currentTimeMillis;
+
+      const server: Server = {
+        holder: "me",
+        listed: false,
+        outageFrom: 0,
+        outageUntil: 0,
+        serial: 0,
+        until: start,
+      };
+
+      const watchdogReasons: string[] = [];
+      const ready = yield* Deferred.make<boolean>();
+      let stallNext = false;
+      let stalled = false;
+      let drained = false;
+
+      const fs = {
+        ...files,
+        writeFileString: (
+          path: string,
+          text: string,
+          options?: Parameters<typeof files.writeFileString>[2]
+        ) =>
+          Effect.suspend(() => {
+            if (stallNext && path.includes("/leases/")) {
+              stallNext = false;
+              stalled = true;
+
+              return Effect.never;
+            }
+
+            return files.writeFileString(path, text, options);
+          }),
+      };
+
+      const readBeat = fs
+        .readFileString(`${state}/readers/tester.json`)
+        .pipe(Effect.flatMap(Schema.decodeUnknownEffect(HeartbeatJson)));
+
+      yield* Effect.gen(function* proof() {
+        const ratking = yield* RatKing;
+
+        yield* ratking.run(
+          {
+            alive: () => true,
+            env: Option.some("tester"),
+            onState: (reader) => {
+              if (ReaderState.$is("Retrying")(reader)) {
+                watchdogReasons.push(reader.reason);
+              }
+            },
+            pane: Option.none(),
+            pid: 1,
+            session: "me",
+          },
+          () => Effect.void,
+          (caughtUp) => {
+            drained = caughtUp;
+
+            if (caughtUp) {
+              Deferred.doneUnsafe(ready, Effect.succeed(true));
+            }
+          }
+        );
+
+        yield* Deferred.await(ready);
+        const first = yield* readBeat;
+        stallNext = true;
+
+        yield* TestClock.adjust(TTL_MS / 2 - 1000);
+        yield* advance(6000);
+        expect(stalled).toBe(true);
+
+        yield* TestClock.adjust(TTL_MS + 60_000 + leaseOffset);
+        const later = yield* readBeat;
+        expect(DateTime.toEpochMillis(later.updatedAt)).toBeGreaterThan(
+          DateTime.toEpochMillis(first.updatedAt)
+        );
+        expect(watchdogReasons).toEqual([]);
+        expect(server.serial).toBe(1);
+
+        yield* TestClock.adjust(TTL_MS / 2 - 60_000 - leaseOffset - 6000);
+        yield* advance(10_000);
+        expect(watchdogReasons).toEqual([
+          "Reader made no progress for two lease TTLs",
+        ]);
+        expect(later.state).not.toBe("Live");
+        expect(server.serial).toBe(2);
+        expect(drained).toBe(true);
+      }).pipe(
+        Effect.provide(
+          Layer.provideMerge(
+            harness(state, serve(server, "me", false), [], {}, fs),
+            quietSocket
+          )
+        )
+      );
+    }).pipe(Effect.scoped),
+  { arbitrary: { runs: 3 } }
 );
 
 it.effect.prop(
