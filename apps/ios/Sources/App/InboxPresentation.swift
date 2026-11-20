@@ -30,6 +30,11 @@ struct InboxPresentation<ID: Hashable> {
         let shown = Set(visible)
         pending = ids.filter { !shown.contains($0) }
     }
+    mutating func addHistory(_ history: [ID], in all: [ID]) {
+        let revealed = Set(visible + history)
+        visible = all.filter { revealed.contains($0) }
+        update(all)
+    }
     mutating func showLocal(_ id: ID) {
         guard !loading, !visible.contains(id) else { return }
         visible.insert(id, at: 0); pending.removeAll { $0 == id }

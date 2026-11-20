@@ -6,6 +6,7 @@ struct DeskInboxView: View {
     private var archived: Bool { filter.scope == .archived }
     @State private var snoozing: InboxThread?
     @State private var path: [String] = []
+    @State private var history = InboxHistoryScroll()
     var body: some View {
         NavigationStack(path: $path) {
             ScrollViewReader { proxy in
@@ -46,9 +47,11 @@ struct DeskInboxView: View {
                             }
                         }
                     }
+                    InboxHistoryFooter(store: store, scroll: $history)
                     }
                 }.padding(8)
             }.refreshable { store.refresh() }
+            .simultaneousGesture(DragGesture().onEnded { history.drag($0, load: store.loadOlder) })
             }
             .background(TUITheme.bg).toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: String.self) { threadId in

@@ -1,6 +1,51 @@
 #!/usr/bin/env bash
 set -euo pipefail
 set +x
+asc_auth=0
+case "${RK_ASC_KEY_PATH+x}${RK_ASC_KEY_ID+x}${RK_ASC_ISSUER_ID+x}" in
+  '') ;;
+  xxx)
+    if [[ -z "$RK_ASC_KEY_PATH" || -z "$RK_ASC_KEY_ID" || -z "$RK_ASC_ISSUER_ID" ]]; then
+      echo "App Store Connect API authentication requires three nonempty RK_ASC variables" >&2
+      exit 1
+    fi
+    for value in "$RK_ASC_KEY_PATH" "$RK_ASC_KEY_ID" "$RK_ASC_ISSUER_ID"; do
+      if [[ "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+        echo "App Store Connect API authentication values must be single-line" >&2
+        exit 1
+      fi
+    done
+    [[ "$RK_ASC_KEY_PATH" == /* ]] || RK_ASC_KEY_PATH="$PWD/$RK_ASC_KEY_PATH"
+    if [[ ! -f "$RK_ASC_KEY_PATH" || ! -r "$RK_ASC_KEY_PATH" || "$(/usr/bin/stat -f '%Lp' "$RK_ASC_KEY_PATH" 2>/dev/null)" != 600 ]]; then
+      echo "App Store Connect API key must be a readable regular file with mode 600" >&2
+      exit 1
+    fi
+    asc_auth=1
+    ;;
+  *) echo "Set all or none of RK_ASC_KEY_PATH, RK_ASC_KEY_ID and RK_ASC_ISSUER_ID" >&2; exit 1 ;;
+esac
+run_signing_xcodebuild() {
+  if [[ "$asc_auth" == 0 ]]; then
+    xcodebuild "$@"
+    return
+  fi
+  env -u RK_ASC_KEY_PATH -u RK_ASC_KEY_ID -u RK_ASC_ISSUER_ID \
+    xcodebuild "$@" -authenticationKeyPath "$RK_ASC_KEY_PATH" \
+    -authenticationKeyID "$RK_ASC_KEY_ID" -authenticationKeyIssuerID "$RK_ASC_ISSUER_ID" 2>&1 |
+    python3 -u -c '
+import json, os, re, sys
+names = ("RK_ASC_KEY_PATH", "RK_ASC_KEY_ID", "RK_ASC_ISSUER_ID")
+values = {os.environ[name] for name in names}
+path = os.environ[names[0]]
+values.update((os.path.normpath(path), os.path.realpath(path)))
+values.update(json.dumps(value, ensure_ascii=False)[1:-1] for value in tuple(values))
+patterns = ["".join(re.escape(c) if c.isalnum() else r"\\?" + re.escape(c) for c in value)
+            for value in sorted(values, key=len, reverse=True)]
+secrets = re.compile("|".join(patterns), re.IGNORECASE)
+for line in sys.stdin:
+    sys.stdout.write(secrets.sub("[redacted]", line))
+'
+}
 cd "$(dirname "$0")/.."
 mode="${1:---archive-only}"
 case "$mode" in
@@ -15,8 +60,8 @@ commit="$(git rev-parse HEAD)"
 xcodegen generate
 mkdir -p build
 umask 077
-# Xcode owns its signed-in account. Never extract account tokens or mint keys.
-xcodebuild -project RatKing.xcodeproj -scheme RatKing -showBuildSettings -json > build/settings.json
+env -u RK_ASC_KEY_PATH -u RK_ASC_KEY_ID -u RK_ASC_ISSUER_ID \
+  xcodebuild -project RatKing.xcodeproj -scheme RatKing -showBuildSettings -json > build/settings.json
 team="$(python3 -c 'import json; print(next(x["buildSettings"]["DEVELOPMENT_TEAM"] for x in json.load(open("build/settings.json")) if x["target"] == "RatKing"))')"
 unlock_signing_keychain() {
   # Private paths come from ignored configuration, not public source. The
@@ -77,7 +122,7 @@ PY
   [[ "$marketing" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Malformed marketing version" >&2; exit 1; }
   build_number="$(date -u +%Y%m%d%H%M)"
   echo "Archive candidate: version $marketing, build $build_number, commit $commit"
-  xcodebuild -project RatKing.xcodeproj -scheme RatKing \
+  run_signing_xcodebuild -project RatKing.xcodeproj -scheme RatKing \
     -archivePath build/RatKing.xcarchive -destination 'generic/platform=iOS' \
     -allowProvisioningUpdates CODE_SIGN_STYLE=Automatic CODE_SIGN_IDENTITY='Apple Development' \
     RK_BUILD_COMMIT="$commit" MARKETING_VERSION="$marketing" CURRENT_PROJECT_VERSION="$build_number" archive
@@ -101,7 +146,7 @@ PY
 unlock_signing_keychain
 # Xcode's IPA step runs /usr/bin/rsync (openrsync), which spawns its receiver
 # from PATH. A newer Homebrew rsync there rejects -E, so pin the system tools.
-PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH" xcodebuild -exportArchive -archivePath build/RatKing.xcarchive \
+PATH="/usr/bin:/bin:/usr/sbin:/sbin:$PATH" run_signing_xcodebuild -exportArchive -archivePath build/RatKing.xcarchive \
   -exportPath build/export -exportOptionsPlist build/ExportOptions.private.plist \
   -allowProvisioningUpdates
 if [[ "$mode" == --export ]]; then

@@ -5,7 +5,15 @@ enum ChatRoute: Hashable { case picker, conversation(String, focus: Bool), desk(
 struct ConversationsView: View {
     let store: InboxStore
     @Bindable var filters: ListFilters
+    @Binding var pushRoute: ChatRoute?
     @State private var path: [ChatRoute] = []
+    @State private var history = InboxHistoryScroll()
+
+    init(store: InboxStore, filters: ListFilters, pushRoute: Binding<ChatRoute?> = .constant(nil)) {
+        self.store = store
+        self.filters = filters
+        _pushRoute = pushRoute
+    }
     var body: some View {
         NavigationStack(path: $path) {
             ScrollView {
@@ -41,9 +49,11 @@ struct ConversationsView: View {
                                 ConversationRow(conversation: conversation)
                             }
                         }
+                        InboxHistoryFooter(store: store, scroll: $history)
                     }
                 }.padding(8)
             }.refreshable { store.refresh() }
+            .simultaneousGesture(DragGesture().onEnded { history.drag($0, load: store.loadOlder) })
             .background(TUITheme.bg).toolbar(.hidden, for: .navigationBar)
             .navigationDestination(for: ChatRoute.self) { route in
                 switch route {
@@ -60,6 +70,11 @@ struct ConversationsView: View {
                 }
             }
         }.tint(TUITheme.accent)
+            .onChange(of: pushRoute, initial: true) { _, route in
+                guard let route else { return }
+                path = [route]
+                pushRoute = nil
+            }
     }
     // Archiving a conversation archives (and acknowledges) each of its open threads.
     private func archive(_ conversation: Conversation) async {
@@ -69,6 +84,9 @@ struct ConversationsView: View {
 
 struct ConversationRow: View {
     let conversation: Conversation
+    #if DEBUG
+    @Environment(\.inboxBenchmarkPaint) private var benchmarkPaint
+    #endif
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
@@ -84,6 +102,9 @@ struct ConversationRow: View {
             let status = [conversation.agent.project, conversation.latest?.receipt.uppercased(), conversation.unread > 0 ? "\(conversation.unread) UNREAD" : nil, conversation.needsAnswer ? "NEEDS ANSWER" : nil].compactMap { $0 }
             Text(status.joined(separator: " / ")).font(TUITheme.microFont).foregroundStyle(conversation.unread > 0 || conversation.needsAnswer ? TUITheme.teal : TUITheme.dim).lineLimit(1)
         }
+        #if DEBUG
+        .onAppear { benchmarkPaint?() }
+        #endif
     }
 }
 func shortTime(_ date: Date, now: Date = Date()) -> String {
