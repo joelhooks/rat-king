@@ -7,6 +7,8 @@ private let alpha = "did:web:sample-project.alpha.pi.ratking-fleet.invalid"
 private let gamma = "did:web:other-project.gamma.pi.ratking-fleet.invalid"
 private let desk = "did:web:sample-project.desk.pi.ratking-fleet.invalid"
 struct ConversationHarness: View {
+    var timeline = false
+    @State private var narrow = false
     @State private var store = InboxStore(preview: phone, peers: [alpha, gamma], messages: [
         MailItem(id: alpha + "/3m5abcde23456", message: .map(["senderDid": .string(alpha), "messageId": .string("3m5abcde23456")]), sender: alpha,
             text: #"{"body":"Read https://example.invalid/chat","from":"sample-project/alpha","label":"Sample Alpha"}"#, receipt: "delivered"),
@@ -19,7 +21,15 @@ struct ConversationHarness: View {
     @State private var filters = ListFilters()
     @State private var openedLink: URL?
     var body: some View {
-        ConversationsView(store: store, filters: filters)
+        Group {
+            if timeline {
+                VStack(spacing: 0) {
+                    Button(narrow ? "Use available width" : "Use compact width") { narrow.toggle() }
+                        .accessibilityIdentifier("timeline-test-width")
+                    TimelineView(store: store).frame(maxWidth: narrow ? 390 : .infinity)
+                }
+            } else { ConversationsView(store: store, filters: filters) }
+        }
             .font(TUITheme.monoFont).foregroundStyle(TUITheme.fg).background(TUITheme.bg)
             .environment(\.openURL, OpenURLAction { url in openedLink = url; return .handled })
             .overlay(alignment: .bottom) {

@@ -186,6 +186,8 @@ struct AgentPickerView: View {
 
 struct ConversationView: View {
     let store: InboxStore; let peer: String; let autofocus: Bool
+    var timelineAnchor: Binding<String?>? = nil
+    var composerVisible = true
     let openDesk: (String) -> Void
     @State private var chosen: String?
     @State private var fresh = false
@@ -194,7 +196,7 @@ struct ConversationView: View {
         let agent = conversation?.agent ?? AgentIdentity(did: peer, callsign: store.callsignsBySender[peer])
         let entries = conversation?.entries ?? []
         // Reply to the chosen message, else the latest incoming one; [x] sends fresh.
-        let targetId = fresh ? nil : chosen ?? entries.last { !$0.outgoing && $0.mailId != nil }?.mailId
+        let targetId = fresh || (timelineAnchor != nil && autofocus && chosen == nil) ? nil : chosen ?? entries.last { !$0.outgoing && $0.mailId != nil }?.mailId
         let target = targetId.flatMap { id in store.messages.first { $0.id == id } }
         ScrollViewReader { proxy in
             ScrollView {
@@ -215,13 +217,17 @@ struct ConversationView: View {
                             canAcknowledge: store.state == .live)
                     }
                     Color.clear.frame(height: 1).id("bottom")
-                }.padding(8)
+                }.scrollTargetLayout().padding(8)
             }
-            .onAppear { proxy.scrollTo("bottom", anchor: .bottom) }
-            .onChange(of: entries.count) { _, _ in withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
+            .scrollPosition(id: timelineAnchor ?? .constant(nil), anchor: .top)
+            .onAppear { if timelineAnchor == nil { proxy.scrollTo("bottom", anchor: .bottom) } }
+            .onChange(of: entries.count) { _, _ in
+                if timelineAnchor == nil { withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
+            }
         }
+        .onChange(of: autofocus) { _, focus in if focus, timelineAnchor != nil { chosen = nil; fresh = true } }
         .safeAreaInset(edge: .bottom) {
-            ConversationComposer(store: store, peer: peer, name: agent.name, target: target, autofocus: autofocus) { chosen = nil; fresh = true }
+            ConversationComposer(store: store, peer: peer, name: agent.name, target: target, autofocus: autofocus, visible: composerVisible) { chosen = nil; fresh = true }
         }
         .background(TUITheme.bg).toolbar(.visible, for: .navigationBar).toolbarBackground(TUITheme.bg, for: .navigationBar)
     }
@@ -290,6 +296,7 @@ struct ConversationComposer: View {
     let store: InboxStore; let peer: String; let name: String
     let target: MailItem?
     let autofocus: Bool
+    var visible = true
     let clearTarget: () -> Void
     @State private var text = ""
     @State private var summary = ""
@@ -329,6 +336,8 @@ struct ConversationComposer: View {
             guard autofocus else { return }
             try? await Task.sleep(for: .milliseconds(450)); focused = true
         }
+        .onChange(of: autofocus) { _, focus in if focus, visible { focused = true } }
+        .onChange(of: visible) { _, visible in if !visible { focused = false } }
         .onChange(of: scenePhase) { _, phase in if phase != .active { text = ""; summary = "" } }
     }
 }
