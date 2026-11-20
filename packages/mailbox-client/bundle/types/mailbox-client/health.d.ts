@@ -16,6 +16,7 @@ export declare const MailboxHealth: Schema.Struct<{
         readonly holder: Schema.String;
         readonly pane: Schema.NullOr<Schema.String>;
     }>>;
+    readonly oldestUndeliveredAt: Schema.optionalKey<Schema.Finite>;
     readonly oldestWake: Schema.NullOr<Schema.Struct<{
         readonly at: Schema.Finite;
         readonly id: Schema.String;
@@ -30,6 +31,7 @@ export declare const MailboxHealth: Schema.Struct<{
     }>>>;
     readonly quietUnacked: Schema.Int;
     readonly retired: Schema.optionalKey<Schema.Boolean>;
+    readonly undelivered: Schema.optionalKey<Schema.Int>;
 }>;
 export type MailboxHealthValue = typeof MailboxHealth.Type;
 export interface HealthFacts extends MailboxHealthValue {
@@ -48,6 +50,7 @@ export declare const readMailboxHealth: (transport: {
         readonly holder: string;
         readonly pane: string | null;
     } | null;
+    readonly oldestUndeliveredAt?: number;
     readonly oldestWake: {
         readonly at: number;
         readonly id: string;
@@ -62,4 +65,5 @@ export declare const readMailboxHealth: (transport: {
     } | null;
     readonly quietUnacked: number;
     readonly retired?: boolean;
+    readonly undelivered?: number;
 }, MailboxClientError, never>;

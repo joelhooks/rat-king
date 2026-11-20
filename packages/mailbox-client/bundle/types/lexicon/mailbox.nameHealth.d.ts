@@ -31,6 +31,7 @@ export declare const Output: Schema.StructWithRest<Schema.Struct<{
         readonly holder: Schema.String;
         readonly pane: Schema.optionalKey<Schema.String>;
     }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
+    readonly oldestUndeliveredAt: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:datetime">>;
     readonly oldestWake: Schema.optionalKey<Schema.StructWithRest<Schema.Struct<{
         readonly id: Schema.brand<Schema.String, "Lexicon:tid">;
         readonly recordedAt: Schema.brand<Schema.String, "Lexicon:datetime">;
@@ -47,6 +48,7 @@ export declare const Output: Schema.StructWithRest<Schema.Struct<{
     }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
     readonly quietUnacked: Schema.Int;
     readonly retired: Schema.optionalKey<Schema.Boolean>;
+    readonly undelivered: Schema.optionalKey<Schema.Int>;
     readonly wakesSinceAck: Schema.optionalKey<Schema.Int>;
 }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
 export type OutputValue = typeof Output.Type;
@@ -94,6 +96,7 @@ export declare const Method: {
             readonly holder: Schema.String;
             readonly pane: Schema.optionalKey<Schema.String>;
         }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
+        readonly oldestUndeliveredAt: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:datetime">>;
         readonly oldestWake: Schema.optionalKey<Schema.StructWithRest<Schema.Struct<{
             readonly id: Schema.brand<Schema.String, "Lexicon:tid">;
             readonly recordedAt: Schema.brand<Schema.String, "Lexicon:datetime">;
@@ -110,6 +113,7 @@ export declare const Method: {
         }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>>;
         readonly quietUnacked: Schema.Int;
         readonly retired: Schema.optionalKey<Schema.Boolean>;
+        readonly undelivered: Schema.optionalKey<Schema.Int>;
         readonly wakesSinceAck: Schema.optionalKey<Schema.Int>;
     }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
     readonly outputEncoding: "application/json";

@@ -33,6 +33,7 @@ export const AlarmKey = Schema.Union([
   Schema.TemplateLiteral(["mail.stranded/", AgentName]),
   Schema.TemplateLiteral(["mail.owner/", AgentName]),
   Schema.TemplateLiteral(["mail.wake/", AgentName]),
+  Schema.TemplateLiteral(["reader.absent/", AgentName]),
 ]);
 
 export type AlarmKeyValue = typeof AlarmKey.Type;

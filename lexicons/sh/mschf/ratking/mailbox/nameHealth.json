@@ -13,6 +13,8 @@
         "complete": { "type": "boolean" },
         "quietUnacked": { "type": "integer", "minimum": 0 },
         "retired": { "type": "boolean" },
+        "undelivered": { "type": "integer", "minimum": 0 },
+        "oldestUndeliveredAt": { "type": "string", "format": "datetime" },
         "lastAck": { "type": "string", "format": "datetime" },
         "lease": { "type": "ref", "ref": "#lease" },
         "oldestWake": { "type": "ref", "ref": "#wake" },

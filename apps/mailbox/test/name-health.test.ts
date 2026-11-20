@@ -90,6 +90,11 @@ for (const state of [
 
         const pending = ["accepted", "queued", "delivered"].includes(state);
 
+        const undelivered = state === "accepted" || state === "queued";
+        expect(health.undelivered).toBe(undelivered ? 1 : 0);
+        expect(health.oldestUndeliveredAt).toBe(
+          undelivered ? receipt.recordedAt : undefined
+        );
         expect(health.lease).toBeUndefined();
         expect(health.complete).toBe(!pending || input.declared);
         expect(health.quietUnacked).toBe(
@@ -269,9 +274,10 @@ it.effect.prop(
               "oldestWakeSinceAck",
               "quietUnacked",
               "retired",
+              "undelivered",
               "wakesSinceAck",
             ]
-          : ["complete", "lease", "quietUnacked", "retired"]
+          : ["complete", "lease", "quietUnacked", "retired", "undelivered"]
       );
       expect(Object.keys(before.lease ?? {}).toSorted()).toEqual([
         "expiresAt",
@@ -294,10 +300,12 @@ it.effect.prop(
         "complete",
         "lastAck",
         "lease",
+        "oldestUndeliveredAt",
         "oldestWake",
         "oldestWakeSinceAck",
         "quietUnacked",
         "retired",
+        "undelivered",
         "wakesSinceAck",
       ]);
 

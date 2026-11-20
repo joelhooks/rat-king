@@ -5274,6 +5274,11 @@ var Output16 = Schema52.StructWithRest(
       )
     ),
     lease: Schema52.optionalKey(Lease),
+    oldestUndeliveredAt: Schema52.optionalKey(
+      lexString({ format: "datetime", type: "string" }).pipe(
+        Schema52.brand("Lexicon:datetime")
+      )
+    ),
     oldestWake: Schema52.optionalKey(Wake),
     oldestWakeSinceAck: Schema52.optionalKey(Wake),
     quietUnacked: Schema52.Int.check(
@@ -5281,6 +5286,12 @@ var Output16 = Schema52.StructWithRest(
       Schema52.isLessThanOrEqualTo(9007199254740991)
     ),
     retired: Schema52.optionalKey(Schema52.Boolean),
+    undelivered: Schema52.optionalKey(
+      Schema52.Int.check(
+        Schema52.isGreaterThanOrEqualTo(0),
+        Schema52.isLessThanOrEqualTo(9007199254740991)
+      )
+    ),
     wakesSinceAck: Schema52.optionalKey(
       Schema52.Int.check(
         Schema52.isGreaterThanOrEqualTo(0),
@@ -5343,10 +5354,12 @@ var MailboxHealth = Schema53.Struct({
       pane: Schema53.NullOr(Schema53.String)
     })
   ),
+  oldestUndeliveredAt: Schema53.optionalKey(Schema53.Finite),
   oldestWake: Schema53.NullOr(Wake2),
   oldestWakeSinceAck: Schema53.optionalKey(Schema53.NullOr(Wake2)),
   quietUnacked: Schema53.Int.check(Schema53.isGreaterThanOrEqualTo(0)),
-  retired: Schema53.optionalKey(Schema53.Boolean)
+  retired: Schema53.optionalKey(Schema53.Boolean),
+  undelivered: Output16.schema.fields.undelivered
 });
 var readMailboxHealth = Effect32.fn("Mailbox.readHealth")(
   function* readMailboxHealth2(transport, did, name) {
@@ -5377,6 +5390,8 @@ var readMailboxHealth = Effect32.fn("Mailbox.readHealth")(
         holder: value.lease.holder,
         pane: value.lease.pane ?? null
       },
+      ...value.oldestUndeliveredAt === void 0 ? void 0 : { oldestUndeliveredAt: Date.parse(value.oldestUndeliveredAt) },
+      ...value.undelivered === void 0 ? void 0 : { undelivered: value.undelivered },
       oldestWake: value.oldestWake === void 0 ? null : {
         at: Date.parse(value.oldestWake.recordedAt),
         id: value.oldestWake.id,

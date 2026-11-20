@@ -12,6 +12,11 @@ import { Lease, storageOperation } from "./store.ts";
 
 const Row = Schema.Struct({ value: Schema.String });
 
+const UndeliveredRow = Schema.Struct({
+  count: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
+  oldest: Schema.NullOr(Schema.String),
+});
+
 const WakeRow = Schema.Struct({
   seq: Schema.NullOr(Defs.Receipt.schema.fields.seq),
   value: Schema.String,
@@ -195,6 +200,11 @@ export const nameHealth = Effect.fn("Mailbox.nameHealth")(
             };
           }
         ),
+        undelivered: [
+          ...sql.exec(
+            "SELECT count(*) AS count, min(json_extract(value,'$.admission.recordedAt')) AS oldest FROM messages WHERE json_extract(value,'$.current.state') IN ('accepted','queued')"
+          ),
+        ],
       }))
     );
 
@@ -238,10 +248,18 @@ export const nameHealth = Effect.fn("Mailbox.nameHealth")(
 
     const [leaseRow] = rows.lease;
 
+    const backlog = yield* Schema.decodeUnknownEffect(UndeliveredRow)(
+      rows.undelivered[0]
+    );
+
     let result: typeof closedOutput.Encoded = {
       complete,
+      ...(backlog.oldest === null
+        ? undefined
+        : { oldestUndeliveredAt: backlog.oldest }),
       quietUnacked,
       retired: rows.retired,
+      undelivered: backlog.count,
     };
 
     if (ack !== undefined) {

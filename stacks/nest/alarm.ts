@@ -122,7 +122,11 @@ export const alarmRecipients = (
   key: AlarmKeyValue,
   downInstances: readonly string[] = []
 ) => {
-  if (key === "wake.unacked" || key.startsWith("mail.owner/")) {
+  if (
+    key === "wake.unacked" ||
+    key.startsWith("mail.owner/") ||
+    key.startsWith("reader.absent/")
+  ) {
     return [];
   }
 

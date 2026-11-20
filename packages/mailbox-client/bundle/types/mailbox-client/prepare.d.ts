@@ -105,6 +105,7 @@ export declare const prepare: (options: PrepareOptions) => Effect.Effect<{
             readonly holder: string;
             readonly pane: string | null;
         } | null;
+        readonly oldestUndeliveredAt?: number;
         readonly oldestWake: {
             readonly at: number;
             readonly id: string;
@@ -119,6 +120,7 @@ export declare const prepare: (options: PrepareOptions) => Effect.Effect<{
         } | null;
         readonly quietUnacked: number;
         readonly retired?: boolean;
+        readonly undelivered?: number;
     }, MailboxClientError, never>;
     mailbox: {
         readonly getPreferences: import("./attention.js").AttentionClient["getPreferences"];

@@ -64,6 +64,52 @@ const wakeLimit = (item: typeof WakeSighting.Type) =>
     ? item.unackedMinutes
     : (item.defaultUnackedMinutes ?? DEFAULT_WAKE_UNACKED_MINUTES)) * 60_000;
 
+export const readerAbsence = (
+  item: typeof WakeSighting.Type,
+  now: number
+): AlarmReadingValue => {
+  const { health } = item;
+
+  if (
+    item.configured !== true ||
+    item.retired === true ||
+    health?.retired === true
+  ) {
+    return { status: "ok" };
+  }
+
+  const expiredAt = health?.lease?.expiresAt;
+
+  if (expiredAt !== undefined && now - expiredAt < wakeLimit(item)) {
+    return { status: "ok" };
+  }
+
+  const count = health?.undelivered;
+  const oldest = health?.oldestUndeliveredAt;
+
+  if (count === 0 || (oldest !== undefined && now - oldest < wakeLimit(item))) {
+    return { status: "ok" };
+  }
+
+  if (count === undefined || oldest === undefined || item.owner === null) {
+    return { status: "unknown" };
+  }
+
+  const age = Math.floor((now - (expiredAt ?? oldest)) / 60_000);
+
+  const since =
+    expiredAt === undefined
+      ? `no lease recorded; oldest mail ${age}m old`
+      : `last lease ended ${age}m ago`;
+
+  return {
+    evidence: `${item.name}: ${since}; ${count} undelivered message(s) waiting`,
+    recipients: [item.owner],
+    severity: item.page === true ? "critical" : "warn",
+    status: "firing",
+  };
+};
+
 const waiting = (health: NonNullable<typeof WakeSighting.Type.health>) =>
   health.oldestWakeSinceAck === undefined
     ? health.oldestWake
