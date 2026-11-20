@@ -15,19 +15,17 @@ struct DeskInboxView: View {
                     HStack {
                         Text(archived ? "[ARCHIVED]" : "[INBOX]").foregroundStyle(TUITheme.accent)
                         Spacer()
-                        if store.presentation.syncing { Text("SYNCING \(store.presentation.progress)").foregroundStyle(TUITheme.warn).font(TUITheme.microFont).accessibilityIdentifier("inbox-syncing") }
                     }.padding(.vertical, 8)
                     TerminalHints(text: archived ? "tap → thread · swipe right → restore" : "tap → thread · ← archive · snooze →")
                     TerminalFilterBar(filter: $filter, projects: store.presentedThreads.flatMap { threadFacts($0, unread: 0, callsign: nil).projects })
                     Color.clear.frame(height: 1).id("top")
-                    if store.presentation.loading {
-                        Text("loading \(store.presentation.progress)…").foregroundStyle(TUITheme.warn).accessibilityIdentifier("inbox-loading")
-                    } else {
+                    if let notice = store.syncNotice { Text(notice).foregroundStyle(TUITheme.warn).accessibilityIdentifier("inbox-sync-notice") }
+                    if !store.presentation.loading {
                     if !store.presentation.pending.isEmpty {
                         Button("[\(store.presentation.pending.count) new ↑]") { store.revealNew(); proxy.scrollTo("top", anchor: .top) }.foregroundStyle(TUITheme.accent)
                     }
                     let threads = visibleThreads
-                    if threads.isEmpty { Text(archived ? "No archived threads." : filter == ListFilter() ? "Waiting for encrypted mail. Keep the app open to sync." : "Nothing matches this filter.").foregroundStyle(TUITheme.dim) }
+                    if threads.isEmpty { Text(archived ? "No archived threads." : filter == ListFilter() ? "No encrypted mail yet." : "Nothing matches this filter.").foregroundStyle(TUITheme.dim) }
                     ForEach(Array(Set(threads.map(\.project))).sorted(), id: \.self) { project in
                         Text(project.uppercased()).foregroundStyle(TUITheme.dim).font(TUITheme.microFont).padding(.top, 4)
                         ForEach(threads.filter { $0.project == project }) { thread in

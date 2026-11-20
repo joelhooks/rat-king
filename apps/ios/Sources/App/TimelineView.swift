@@ -99,7 +99,10 @@ struct TimelineView: View {
             }.padding(.horizontal, 8)
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {
-                    if shown.isEmpty { Text(store.presentation.loading ? "Waiting for mail…" : "No matching messages.").foregroundStyle(TUITheme.dim) }
+                    if let notice = store.syncNotice { Text(notice).foregroundStyle(TUITheme.warn).accessibilityIdentifier("inbox-sync-notice") }
+                    if shown.isEmpty && !store.presentation.loading {
+                        Text(posts.isEmpty ? "No messages yet." : "No matching messages.").foregroundStyle(TUITheme.dim)
+                    }
                     ForEach(shown) { post in postRow(post) }
                     InboxHistoryFooter(store: store, scroll: $history)
                 }.scrollTargetLayout().padding(8)
