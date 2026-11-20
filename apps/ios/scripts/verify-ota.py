@@ -1,4 +1,5 @@
 import datetime
+import os
 import pathlib
 import plistlib
 import re
@@ -42,6 +43,8 @@ def check_runtime(settings):
 
 def prepare(work, devices, settings):
     check_runtime(settings)
+    override = os.environ.get('RK_OTA_PHONE_DID')
+    require(override is None or override == settings['RK_PHONE_DID'], 'Xcode did not apply the requested phone DID override')
     uuid = checked_profile(load(work / 'profile.plist'), devices, settings)
     options = dict(method='debugging', destination='export', signingStyle='manual',
                    teamID=settings['DEVELOPMENT_TEAM'], signingCertificate='Apple Development',
