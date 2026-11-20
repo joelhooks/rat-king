@@ -71,15 +71,15 @@ struct TerminalHints: View {
 struct TerminalMessage: View {
     let text: String
     @State private var expanded = false
-    private var lines: Int { text.components(separatedBy: .newlines).count }
-    private var folds: Bool { lines > 4 || text.count > 240 }
+    private var folds: Bool { text.components(separatedBy: .newlines).count > 4 || text.count > 240 }
     var body: some View {
         TerminalPanel(title: "MESSAGE") {
             Text(text).lineLimit(expanded || !folds ? nil : 4).textSelection(.enabled)
             if folds {
-                Button(expanded ? "[− collapse]" : "[+ full message · \(lines) lines]") { expanded.toggle() }
+                Button(expanded ? "[− collapse]" : "[+ full message]") { expanded.toggle() }
                     .foregroundStyle(TUITheme.accent)
             }
+            if expanded || !folds { MessageLinks(text: text) }
         }
     }
 }

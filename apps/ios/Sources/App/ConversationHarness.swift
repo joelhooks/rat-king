@@ -9,7 +9,7 @@ private let desk = "did:web:sample-project.desk.pi.ratking-fleet.invalid"
 struct ConversationHarness: View {
     @State private var store = InboxStore(preview: phone, peers: [alpha, gamma], messages: [
         MailItem(id: alpha + "/3m5abcde23456", message: .map(["senderDid": .string(alpha), "messageId": .string("3m5abcde23456")]), sender: alpha,
-            text: #"{"body":"Synthetic status","from":"sample-project/alpha","label":"Sample Alpha"}"#, receipt: "delivered"),
+            text: #"{"body":"Read https://example.invalid/chat","from":"sample-project/alpha","label":"Sample Alpha"}"#, receipt: "delivered"),
         MailItem(id: phone + "/3m5abcde23457", message: .map(["senderDid": .string(phone), "messageId": .string("3m5abcde23457")]), sender: phone,
             text: "Synthetic reply", receipt: "accepted", replyTo: .map(["senderDid": .string(alpha), "messageId": .string("3m5abcde23456")]), outgoingTo: alpha),
         MailItem(id: desk + "/3m5abcde23458", message: .map(["senderDid": .string(desk), "messageId": .string("3m5abcde23458")]), sender: desk,
@@ -17,9 +17,16 @@ struct ConversationHarness: View {
             receipt: "delivered"),
     ])
     @State private var filters = ListFilters()
+    @State private var openedLink: URL?
     var body: some View {
         ConversationsView(store: store, filters: filters)
             .font(TUITheme.monoFont).foregroundStyle(TUITheme.fg).background(TUITheme.bg)
+            .environment(\.openURL, OpenURLAction { url in openedLink = url; return .handled })
+            .overlay(alignment: .bottom) {
+                if let openedLink {
+                    Text(openedLink.absoluteString).accessibilityIdentifier("opened-message-link")
+                }
+            }
     }
 }
 #endif

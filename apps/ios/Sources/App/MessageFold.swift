@@ -79,6 +79,14 @@ struct MessageFoldView: View {
         let fold = MessageFold(sender: sender, markers: markers, summary: summary, body: text, width: columns)
         let unit = FontBook.columnWidth
         VStack(alignment: .leading, spacing: 4) {
+            message(fold)
+            if expanded || !fold.folds { MessageLinks(text: text) }
+        }
+        .onGeometryChange(for: Int.self) { proxy in Int(proxy.size.width / unit) } action: { columns = max(1, $0) }
+    }
+
+    private func message(_ fold: MessageFold) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 0) {
                 Text("─ " + sender).lineLimit(1).truncationMode(.tail)
                 Text(markers.map { " · " + $0 }.joined()).lineLimit(1).fixedSize()
@@ -101,7 +109,6 @@ struct MessageFoldView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
         .onTapGesture { if fold.folds || expanded { expanded.toggle() } }
-        .onGeometryChange(for: Int.self) { proxy in Int(proxy.size.width / unit) } action: { columns = max(1, $0) }
         .accessibilityElement(children: .combine)
         .accessibilityHint(fold.folds ? (expanded ? "Tap to fold" : "Tap to show the full message") : "")
     }

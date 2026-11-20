@@ -25,6 +25,39 @@ final class ConversationTests: XCTestCase {
         app.terminate()
     }
 
+    @MainActor func testHTTPSLinkInLongDeskMessageOpensOnlyOnTap() {
+        let app = XCUIApplication(); app.launchArguments = ["--conversation-test"]; app.launch()
+        let ask = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Review synthetic release")).firstMatch
+        XCTAssertTrue(ask.waitForExistence(timeout: 5)); ask.tap()
+        let open = app.buttons["[open desk item]"]
+        XCTAssertTrue(open.waitForExistence(timeout: 5)); open.tap()
+        let expand = app.buttons["[+ full message]"]
+        let destination = "https://example.invalid/review"
+        let link = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Open " + destination)).firstMatch
+        let opened = app.staticTexts["opened-message-link"]
+        XCTAssertTrue(expand.waitForExistence(timeout: 5)); XCTAssertFalse(link.exists)
+        expand.tap()
+        XCTAssertTrue(link.waitForExistence(timeout: 5)); XCTAssertFalse(opened.exists)
+        attach(app, "desk-message-https-link")
+        link.tap()
+        XCTAssertTrue(opened.waitForExistence(timeout: 5)); XCTAssertEqual(opened.label, destination)
+        app.terminate()
+    }
+
+    @MainActor func testHTTPSLinkInShortChatIsAvailableWithoutUnfolding() {
+        let app = XCUIApplication(); app.launchArguments = ["--conversation-test"]; app.launch()
+        let chat = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Sample Alpha")).firstMatch
+        XCTAssertTrue(chat.waitForExistence(timeout: 5)); chat.tap()
+        let destination = "https://example.invalid/chat"
+        let link = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Open " + destination)).firstMatch
+        let opened = app.staticTexts["opened-message-link"]
+        XCTAssertTrue(link.waitForExistence(timeout: 5)); XCTAssertFalse(opened.exists)
+        link.tap()
+        XCTAssertTrue(opened.waitForExistence(timeout: 5)); XCTAssertEqual(opened.label, destination)
+        XCTAssertTrue(link.exists)
+        app.terminate()
+    }
+
     @MainActor private func attach(_ app: XCUIApplication, _ name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)
