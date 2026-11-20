@@ -13,4 +13,5 @@ export type { OwnIdentity, PeerDocument, PrepareOptions, SealOptions, SealedMess
 export { lookupPresence, readerCannotRender, recordType, } from "./record-visibility.js";
 export { consumerMachine } from "./consume.js";
 export { readPendingPush, registerDevice } from "./device.js";
+export { listPage, markRead } from "./inbox.js";
 export type { ConsumeOptions, MessageMeta, Skipped } from "./consume.js";

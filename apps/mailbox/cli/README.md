@@ -28,6 +28,16 @@ Existing secrets are reused, never rotated. A different DID stops the command wi
 
 `--secrets-config` and `--secrets-socket` select an isolated `agent-secrets` store and daemon for testing. They apply to operator and agent leases and additions alike. Private identity values never appear in argv, repository files, process output or failure diagnostics.
 
+## Mark a mailbox read
+
+With an operator identity, pass the directory-resolved recipient DID and a reviewed **admission sequence cutoff**, not the message count:
+
+```sh
+node /tmp/mailbox.mjs mark-read --did <recipient-did> --through <admission-seq>
+```
+
+The command appends normal read receipts for up to 500 pending admissions through the cutoff. It does not inject mail or touch leases. Check `marked` and repeat with the same cutoff only while `more` is true. It preserves history and cannot mark newer admissions. Run this only with approval for that recipient and cutoff.
+
 ## Name retirement
 
 ```sh

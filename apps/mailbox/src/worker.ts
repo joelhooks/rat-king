@@ -56,6 +56,7 @@ import { logFailure } from "./failure-log.ts";
 import type { FailureScope } from "./failure-log.ts";
 import { errorResponse, failure } from "./failure.ts";
 import { wakeHosted } from "./hosted-wake.ts";
+import { inboxMethods, inboxRequest, runInbox } from "./inbox-http.ts";
 import { issuerInstance } from "./issuer-object.ts";
 import { issuerMethods } from "./issuer.ts";
 import { jsonResponse } from "./json-response.ts";
@@ -275,6 +276,21 @@ export class Mailbox extends DurableObject<Bindings> {
         input,
         issuer
       ).pipe(
+        Effect.match({
+          onFailure: (error) => ({
+            body: JSON.stringify({ error: error.error }),
+            status: error.status,
+          }),
+          onSuccess: (body) => ({ body, status: 200 }),
+        })
+      )
+    );
+  }
+
+  inbox(nsid: string, input: string, issuer: string) {
+    return Effect.runPromise(
+      runInbox(nsid, input, issuer, didAllowlist(this.env.OPERATOR_DIDS)).pipe(
+        Effect.provide(this.store),
         Effect.match({
           onFailure: (error) => ({
             body: JSON.stringify({ error: error.error }),
@@ -1208,6 +1224,7 @@ const methods = new Set<string>(
     ...issuerMethods,
     ...deskMethods,
     ...deviceMethods,
+    ...inboxMethods,
   ].map((method) => method.nsid)
 );
 
@@ -1498,6 +1515,10 @@ const serviceRequest = (
     return deviceRequest(request, env, nsid, issuer);
   }
 
+  if (inboxMethods.some((method) => method.nsid === nsid)) {
+    return inboxRequest(request, env, nsid, issuer);
+  }
+
   if (attentionMethods.some((method) => method.nsid === nsid)) {
     return attentionRequest(request, env, nsid, issuer, scope);
   }
@@ -1591,6 +1612,7 @@ const handleRequest = (
         ...issuerMethods,
         ...deskMethods,
         ...deviceMethods,
+        ...inboxMethods,
       ].some((method) => method.nsid === nsid)
     ) {
       return Response.json({ error: "InvalidRequest" }, { status: 404 });

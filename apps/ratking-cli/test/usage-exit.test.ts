@@ -64,6 +64,7 @@ const mailboxCommands = [
   ["register", true],
   ["enroll-host", true],
   ["record-retired", true],
+  ["mark-read", true],
   ["retire", true],
   ["unretire", true],
   ["retired", false],

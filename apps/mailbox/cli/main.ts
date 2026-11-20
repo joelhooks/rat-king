@@ -26,6 +26,7 @@ import { FetchHttpClient } from "effect/http";
 
 import { enrollHost } from "./enroll-host.ts";
 import { CliError, readIdentity } from "./identity.ts";
+import { markInboxRead } from "./mark-read.ts";
 import { provision } from "./provision.ts";
 import { recordRetired, recordRetiredFile } from "./record-retired.ts";
 import { registerDocument } from "./register-document.ts";
@@ -109,6 +110,7 @@ type CliOutput =
   | Effect.Success<ReturnType<typeof setRole>>
   | Effect.Success<ReturnType<typeof deleteRole>>
   | Effect.Success<ReturnType<typeof listRoles>>
+  | Effect.Success<ReturnType<typeof markInboxRead>>
   | OpenedMessage
   | { released: true };
 
@@ -379,6 +381,18 @@ const authority = Effect.gen(function* authority() {
     serviceDid: env.serviceDid,
   };
 });
+
+export const markReadCommand = Command.make(
+  "mark-read",
+  { did: Flag.String("did"), through: Flag.Int("through") },
+  Effect.fn("MailboxCli.markRead")(function* markRead(args) {
+    yield* print(
+      yield* markInboxRead(yield* authority, args.did, args.through).pipe(
+        Effect.provide([FetchHttpClient.layer, secretStoreLayer({})])
+      )
+    );
+  })
+);
 
 export const retireCommand = Command.make(
   "retire",
@@ -682,6 +696,7 @@ export const command = Command.make("mailbox").pipe(
     registerCommand,
     enrollHostCommand,
     retireCommand,
+    markReadCommand,
     unretireCommand,
     recordRetiredCommand,
     retiredCommand,

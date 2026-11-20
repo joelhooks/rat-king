@@ -6346,6 +6346,246 @@ var prepare = Effect39.fn("Mailbox.prepare")(function* prepare2(options) {
     turnHealth: (did, name, session, startsOnly = false) => readTurnHealth(transport, did, name, session, startsOnly)
   };
 });
+
+// packages/lexicon/src/mailbox.listPage.ts
+import { Effect as Effect40, Schema as Schema65 } from "effect";
+var Message2 = Schema65.StructWithRest(
+  Schema65.Struct({
+    admissionSeq: Schema65.Int.check(
+      Schema65.isGreaterThanOrEqualTo(1),
+      Schema65.isLessThanOrEqualTo(9007199254740991)
+    ),
+    envelope: EncryptedEnvelope,
+    receipt: Receipt
+  }),
+  [Schema65.Record(Schema65.String, Data)]
+);
+var Params24 = Schema65.StructWithRest(
+  Schema65.Struct({
+    afterSeq: Schema65.optionalKey(
+      Schema65.Int.check(
+        Schema65.isGreaterThanOrEqualTo(0),
+        Schema65.isLessThanOrEqualTo(9007199254740991)
+      )
+    ),
+    beforeSeq: Schema65.optionalKey(
+      Schema65.Int.check(
+        Schema65.isGreaterThanOrEqualTo(1),
+        Schema65.isLessThanOrEqualTo(9007199254740991)
+      )
+    ),
+    limit: Schema65.optionalKey(
+      Schema65.Int.check(
+        Schema65.isGreaterThanOrEqualTo(1),
+        Schema65.isLessThanOrEqualTo(100)
+      )
+    ),
+    recipientDid: lexString({ format: "did", type: "string" }).pipe(
+      Schema65.brand("Lexicon:did")
+    )
+  }),
+  [Schema65.Record(Schema65.String, Data)]
+);
+var Input22 = Schema65.Undefined;
+var Output21 = Schema65.StructWithRest(
+  Schema65.Struct({
+    events: Schema65.Array(
+      Schema65.Union([
+        Schema65.StructWithRest(
+          Schema65.Struct({
+            $type: Schema65.Literal("sh.mschf.ratking.defs#messageEvent"),
+            envelope: EncryptedEnvelope,
+            receipt: Receipt,
+            seq: Schema65.Int.check(
+              Schema65.isGreaterThanOrEqualTo(1),
+              Schema65.isLessThanOrEqualTo(9007199254740991)
+            )
+          }),
+          [Schema65.Record(Schema65.String, Data)]
+        ),
+        Schema65.StructWithRest(
+          Schema65.Struct({
+            $type: Schema65.Literal("sh.mschf.ratking.defs#receiptEvent"),
+            receipt: Receipt,
+            seq: Schema65.Int.check(
+              Schema65.isGreaterThanOrEqualTo(1),
+              Schema65.isLessThanOrEqualTo(9007199254740991)
+            )
+          }),
+          [Schema65.Record(Schema65.String, Data)]
+        ),
+        Schema65.StructWithRest(
+          Schema65.Struct({
+            $type: Schema65.Literal("sh.mschf.ratking.attention.receipt"),
+            operation: lexString({
+              enum: ["putPreferences", "putStatus"],
+              type: "string"
+            }).pipe(
+              Schema65.decodeTo(Schema65.Literals(["putPreferences", "putStatus"]))
+            ),
+            seq: Schema65.Int.check(
+              Schema65.isGreaterThanOrEqualTo(1),
+              Schema65.isLessThanOrEqualTo(9007199254740991)
+            )
+          }),
+          [Schema65.Record(Schema65.String, Data)]
+        ),
+        TaggedMap.check(
+          Schema65.makeFilter(
+            (value) => ![
+              "sh.mschf.ratking.defs#messageEvent",
+              "sh.mschf.ratking.defs#receiptEvent",
+              "sh.mschf.ratking.attention.receipt"
+            ].includes(value.$type),
+            { expected: "unknown union tag only" }
+          )
+        )
+      ])
+    ).check(Schema65.isMinLength(0), Schema65.isMaxLength(100)),
+    latestSeq: Schema65.Int.check(
+      Schema65.isGreaterThanOrEqualTo(0),
+      Schema65.isLessThanOrEqualTo(9007199254740991)
+    ),
+    messages: Schema65.optionalKey(
+      Schema65.Array(Message2).check(
+        Schema65.isMinLength(0),
+        Schema65.isMaxLength(100)
+      )
+    ),
+    nextAfterSeq: Schema65.optionalKey(
+      Schema65.Int.check(
+        Schema65.isGreaterThanOrEqualTo(1),
+        Schema65.isLessThanOrEqualTo(9007199254740991)
+      )
+    ),
+    nextBeforeSeq: Schema65.optionalKey(
+      Schema65.Int.check(
+        Schema65.isGreaterThanOrEqualTo(1),
+        Schema65.isLessThanOrEqualTo(9007199254740991)
+      )
+    )
+  }),
+  [Schema65.Record(Schema65.String, Data)]
+);
+var ParamsFromQuery12 = Schema65.StructWithRest(
+  Schema65.Struct({
+    afterSeq: Schema65.optionalKey(Schema65.FiniteFromString),
+    beforeSeq: Schema65.optionalKey(Schema65.FiniteFromString),
+    limit: Schema65.optionalKey(Schema65.FiniteFromString),
+    recipientDid: Schema65.String
+  }),
+  [Schema65.Record(Schema65.String, Data)]
+).pipe(Schema65.decodeTo(Params24));
+var encodeParams23 = Effect40.fn("lexicon.encodeParams")(
+  function* encodeParams24(params) {
+    return entries(
+      yield* Schema65.decodeUnknownEffect(Params2)(
+        yield* Schema65.encodeEffect(ParamsFromQuery12)(params)
+      )
+    );
+  }
+);
+var decodeParams23 = Effect40.fn("lexicon.decodeParams")(
+  function* decodeParams24(entries2) {
+    return yield* Schema65.decodeUnknownEffect(ParamsFromQuery12)(
+      parameters(entries2)
+    );
+  }
+);
+var ErrorBody21 = XrpcErrorBody;
+var Method22 = {
+  defaults: { limit: 50 },
+  error: ErrorBody21,
+  input: Input22,
+  inputEncoding: "",
+  method: "GET",
+  nsid: "sh.mschf.ratking.mailbox.listPage",
+  output: Output21,
+  outputEncoding: "application/json",
+  params: Params24,
+  path: "/xrpc/sh.mschf.ratking.mailbox.listPage"
+};
+
+// packages/lexicon/src/mailbox.markRead.ts
+import { Schema as Schema66 } from "effect";
+var Params25 = Schema66.Undefined;
+var Input23 = Schema66.StructWithRest(
+  Schema66.Struct({
+    recipientDid: lexString({ format: "did", type: "string" }).pipe(
+      Schema66.brand("Lexicon:did")
+    ),
+    upToSeq: Schema66.Int.check(
+      Schema66.isGreaterThanOrEqualTo(0),
+      Schema66.isLessThanOrEqualTo(9007199254740991)
+    )
+  }),
+  [Schema66.Record(Schema66.String, Data)]
+);
+var Output22 = Schema66.StructWithRest(
+  Schema66.Struct({
+    marked: Schema66.Int.check(
+      Schema66.isGreaterThanOrEqualTo(0),
+      Schema66.isLessThanOrEqualTo(9007199254740991)
+    ),
+    more: Schema66.Boolean
+  }),
+  [Schema66.Record(Schema66.String, Data)]
+);
+var ErrorBody22 = XrpcErrorBody;
+var Method23 = {
+  defaults: {},
+  error: ErrorBody22,
+  input: Input23,
+  inputEncoding: "application/json",
+  method: "POST",
+  nsid: "sh.mschf.ratking.mailbox.markRead",
+  output: Output22,
+  outputEncoding: "application/json",
+  params: Params25,
+  path: "/xrpc/sh.mschf.ratking.mailbox.markRead"
+};
+
+// packages/mailbox-client/src/inbox.ts
+import { Effect as Effect41, Option as Option7, Schema as Schema67 } from "effect";
+var ErrorBody23 = Schema67.Struct({ error: Schema67.String });
+var phoneCall = Effect41.fn("Mailbox.phoneCall")(function* phoneCall2(transport, request, schema) {
+  const response = yield* transport.request(request);
+  if (response.kind !== "json" || response.status !== 200) {
+    const error = Option7.getOrUndefined(
+      Schema67.decodeUnknownOption(ErrorBody23)(response.body)
+    )?.error;
+    return yield* new MailboxClientError({
+      ...error === void 0 ? void 0 : { error },
+      reason: "Mailbox inbox request refused",
+      status: response.status
+    });
+  }
+  return yield* Schema67.decodeUnknownEffect(schema)(response.body);
+}, Effect41.mapError(clientError));
+var listPage = Effect41.fn("Mailbox.listPage")(function* listPage2(transport, params) {
+  return yield* phoneCall(
+    transport,
+    {
+      input: void 0,
+      method: "GET",
+      nsid: Method22.nsid,
+      params: yield* Schema67.encodeEffect(Params24)(params)
+    },
+    Output21
+  );
+}, Effect41.mapError(clientError));
+var markRead = Effect41.fn("Mailbox.markRead")(function* markRead2(transport, input) {
+  return yield* phoneCall(
+    transport,
+    {
+      input: yield* Schema67.encodeEffect(Input23)(input),
+      method: "POST",
+      nsid: Method23.nsid,
+      params: void 0
+    },
+    Output22
+  );
+}, Effect41.mapError(clientError));
 export {
   AgentName,
   Claims,
@@ -6378,7 +6618,9 @@ export {
   importAgreement,
   importSigning,
   layer,
+  listPage,
   lookupPresence,
+  markRead,
   ownIdentity,
   prepare,
   readPendingPush,
