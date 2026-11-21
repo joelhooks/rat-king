@@ -136,7 +136,7 @@ struct TrafficDetailView: View {
                     }
                     ReplyComposer(store: inbox, target: MailItem(id: detail.selected.senderDid + "/" + detail.selected.messageId, message: ref, sender: detail.selected.senderDid, text: detail.latest.body ?? "", receipt: detail.latest.state)).id(detail.selected.messageKey)
                 }
-            }.padding(12)
+            }.padding(12).readingColumn()
         }.background(TUITheme.bg).toolbar(.visible, for: .navigationBar)
         .toolbarBackground(TUITheme.bg, for: .navigationBar)
     }
@@ -157,7 +157,7 @@ struct CopyContentView: View {
             Text("TO " + (copy.recipient ?? "unknown")).textSelection(.enabled)
             Text("PRIMARY " + (copy.primaryMessageId ?? "unknown")).foregroundStyle(TUITheme.dim)
             Text("COPY RECEIVED " + copy.time).font(TUITheme.microFont).foregroundStyle(TUITheme.dim)
-            Text(copy.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            ReadingBody(text: copy.text)
         }
     }
 }

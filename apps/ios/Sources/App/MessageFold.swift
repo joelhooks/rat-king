@@ -87,17 +87,23 @@ struct MessageFoldView: View {
 
     private func message(_ fold: MessageFold) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 0) {
-                Text("─ " + sender).lineLimit(1).truncationMode(.tail)
-                Text(markers.map { " · " + $0 }.joined()).lineLimit(1).fixedSize()
-                ThinDivider().padding(.leading, 8)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 8) {
+                    Text("─ " + sender).fixedSize()
+                    if !markers.isEmpty { Text(markers.joined(separator: " · ")).fixedSize() }
+                    ThinDivider()
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("─ " + sender).lineLimit(2)
+                    if !markers.isEmpty { Text(markers.joined(separator: " · ")).fixedSize(horizontal: false, vertical: true) }
+                }
             }.font(TUITheme.microFontBold).foregroundStyle(TUITheme.accent)
             if expanded {
                 if let quote { Text(quote).font(TUITheme.microFont).foregroundStyle(TUITheme.dim) }
                 if let summary, MessageText.oneLine(text) != summary {
                     Text("Summary: " + summary).foregroundStyle(TUITheme.teal).fixedSize(horizontal: false, vertical: true)
                 }
-                Text(text).foregroundStyle(TUITheme.fg).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                ReadingBody(text: text).foregroundStyle(TUITheme.fg)
                 Text("[− fold]").font(TUITheme.microFont).foregroundStyle(TUITheme.accent)
             } else {
                 ForEach(Array(fold.lines.enumerated()), id: \.offset) { index, line in

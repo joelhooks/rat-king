@@ -79,7 +79,7 @@ struct ConversationsView: View {
         ForEach(store.threads.filter { conversation.threadIds.contains($0.id) && threadNeedsAnswer($0) }) { thread in
             Button { path.append(.desk(thread.id)) } label: {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("NEEDS ANSWER · " + conversation.agent.name).font(TUITheme.microFont).foregroundStyle(TUITheme.warn)
+                    Text("NEEDS ANSWER · " + conversation.agent.headline).font(TUITheme.microFont).foregroundStyle(TUITheme.warn)
                     Text(thread.title).foregroundStyle(TUITheme.fg).lineLimit(3)
                 }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(.horizontal, 8)
                     .background(TUITheme.panel).contentShape(Rectangle())
@@ -111,10 +111,9 @@ struct ConversationRow: View {
         VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 6) {
                 Text("›").foregroundStyle(TUITheme.accent)
-                Text(conversation.agent.name).foregroundStyle(TUITheme.fg).lineLimit(1)
-                if let callsign = conversation.agent.callsign { Text(callsign).foregroundStyle(TUITheme.teal).lineLimit(1) }
+                Text(conversation.agent.headline).foregroundStyle(TUITheme.fg).lineLimit(2).layoutPriority(1)
                 Spacer(minLength: 4)
-                if let date = conversation.latest?.date { Text(shortTime(date)).font(TUITheme.microFont).foregroundStyle(TUITheme.dim) }
+                if let date = conversation.latest?.date { Text(shortTime(date)).font(TUITheme.microFont).foregroundStyle(TUITheme.dim).fixedSize() }
             }
             if let latest = conversation.latest {
                 Text((latest.outgoing ? "YOU: " : "") + latest.preview).foregroundStyle(TUITheme.dim).lineLimit(1)
@@ -221,12 +220,7 @@ struct ConversationView: View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 8) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(agent.name).font(TUITheme.titleFont).foregroundStyle(TUITheme.accent)
-                        if let callsign = agent.callsign { Text(callsign).foregroundStyle(TUITheme.teal) }
-                        Text(agent.project.map { "PROJECT " + $0 } ?? "NO PROJECT").font(TUITheme.microFont).foregroundStyle(TUITheme.dim)
-                        Text(peer).font(TUITheme.microFont).foregroundStyle(TUITheme.dim).textSelection(.enabled)
-                    }
+                    PeerHeading(agent: agent)
                     TerminalHints(text: "edge swipe → back · [reply] → answer that message")
                     if entries.isEmpty { Text("No messages yet.").foregroundStyle(TUITheme.dim) }
                     ForEach(entries) { entry in
@@ -237,7 +231,7 @@ struct ConversationView: View {
                             canAcknowledge: store.state == .live)
                     }
                     Color.clear.frame(height: 1).id("bottom")
-                }.scrollTargetLayout().padding(8)
+                }.scrollTargetLayout().padding(8).readingColumn()
             }
             .scrollPosition(id: timelineAnchor ?? .constant(nil), anchor: .top)
             .onAppear { if timelineAnchor == nil { proxy.scrollTo("bottom", anchor: .bottom) } }
@@ -247,7 +241,8 @@ struct ConversationView: View {
         }
         .onChange(of: autofocus) { _, focus in if focus, timelineAnchor != nil { chosen = nil; fresh = true } }
         .safeAreaInset(edge: .bottom) {
-            ConversationComposer(store: store, peer: peer, name: agent.name, target: target, autofocus: autofocus, visible: composerVisible) { chosen = nil; fresh = true }
+            ConversationComposer(store: store, peer: peer, name: agent.headline, target: target, autofocus: autofocus, visible: composerVisible) { chosen = nil; fresh = true }
+                .readingColumn().background(TUITheme.bg)
         }
         .background(TUITheme.bg).toolbar(.visible, for: .navigationBar).toolbarBackground(TUITheme.bg, for: .navigationBar)
     }
@@ -298,13 +293,13 @@ struct ConversationEntryView: View {
             }.font(TUITheme.microFont)
         }
     }
-    private var who: String { entry.outgoing ? "YOU" : entry.label ?? agent.name }
+    private var who: String { entry.outgoing ? "YOU" : AgentIdentity(did: agent.did, callsign: entry.label ?? agent.callsign).headline }
     // Markers never truncate: reply, time and receipt.
     private var markers: [String] {
         return [entry.isReply ? "↩" : nil, entry.date.map { shortTime($0) }, entry.receipt.uppercased()].compactMap { $0 }.filter { !$0.isEmpty }
     }
     private func quote(_ parent: ConversationEntry) -> String {
-        let who = parent.outgoing ? "YOU" : parent.label ?? agent.name
+        let who = parent.outgoing ? "YOU" : AgentIdentity(did: agent.did, callsign: parent.label ?? agent.callsign).headline
         return "↳ re " + who + ": " + InboxThread.firstLine(parent.text)
     }
     private func deskLabel(_ desk: InboxThread?) -> String {

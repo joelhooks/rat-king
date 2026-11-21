@@ -52,6 +52,11 @@ final class ConversationTests: XCTestCase {
         let link = app.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Open " + destination)).firstMatch
         let opened = app.staticTexts["opened-message-link"]
         XCTAssertTrue(link.waitForExistence(timeout: 5)); XCTAssertFalse(opened.exists)
+        let did = app.staticTexts["did:web:sample-project.alpha.pi.ratking-fleet.invalid"]
+        XCTAssertFalse(did.exists)
+        app.buttons["peer-details"].tap()
+        XCTAssertTrue(did.waitForExistence(timeout: 5))
+        app.buttons["peer-details"].tap()
         link.tap()
         XCTAssertTrue(opened.waitForExistence(timeout: 5)); XCTAssertEqual(opened.label, destination)
         XCTAssertTrue(link.exists)
@@ -69,7 +74,8 @@ final class ConversationTests: XCTestCase {
         XCTAssertTrue(new.waitForExistence(timeout: 5)); new.tap()
         let agent = app.buttons.matching(identifier: "agent-other-project/gamma").firstMatch
         XCTAssertTrue(agent.waitForExistence(timeout: 5)); agent.tap()
-        XCTAssertTrue(app.staticTexts["did:web:other-project.gamma.pi.ratking-fleet.invalid"].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.staticTexts["other-project/gamma"].waitForExistence(timeout: 5))
+        XCTAssertFalse(app.staticTexts["did:web:other-project.gamma.pi.ratking-fleet.invalid"].exists)
         let composer = app.descendants(matching: .any).matching(identifier: "conversation-composer").firstMatch
         XCTAssertTrue(composer.waitForExistence(timeout: 5))
         let focused = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hasKeyboardFocus == true"), object: composer)

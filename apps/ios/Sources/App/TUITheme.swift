@@ -74,10 +74,11 @@ struct TerminalMessage: View {
     private var folds: Bool { text.components(separatedBy: .newlines).count > 4 || text.count > 240 }
     var body: some View {
         TerminalPanel(title: "MESSAGE") {
-            Text(text).lineLimit(expanded || !folds ? nil : 4).textSelection(.enabled)
+            if expanded { ReadingBody(text: text) }
+            else { Text(text).lineLimit(folds ? 4 : nil).textSelection(.enabled) }
             if folds {
                 Button(expanded ? "[− collapse]" : "[+ full message]") { expanded.toggle() }
-                    .foregroundStyle(TUITheme.accent)
+                    .foregroundStyle(TUITheme.accent).frame(minHeight: 44)
             }
             if expanded || !folds { MessageLinks(text: text) }
         }

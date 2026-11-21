@@ -37,7 +37,9 @@ struct DeskInboxView: View {
                                 VStack(alignment: .leading, spacing: 3) {
                                     HStack(spacing: 6) {
                                         Text("›").foregroundStyle(TUITheme.accent)
-                                        Text(thread.summary).foregroundStyle(TUITheme.fg).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
+                                        let headline = thread.card == nil ? AgentIdentity(did: thread.sender).headline : thread.title
+                                        let summary = thread.latestSummary.isEmpty ? headline : headline + " / " + thread.latestSummary
+                                        Text(summary).foregroundStyle(TUITheme.fg).lineLimit(2).frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                     let unread = store.messages.filter { thread.mailIds.contains($0.id) && $0.outgoingTo == nil && $0.receipt == "delivered" }.count
                                     Text((store.answerDelivery(for: thread.id)?.rawValue ?? thread.state.rawValue).uppercased() + " / \(thread.mailIds.count) MAIL" + (unread > 0 ? " / \(unread) UNREAD" : " / NO UNREAD")).foregroundStyle(unread > 0 ? TUITheme.teal : TUITheme.dim).font(TUITheme.microFont)
@@ -107,10 +109,10 @@ struct DeskThreadView: View {
                         Spacer()
                         Button("[ARCHIVE + NEXT]") { Task { await archiveNext() } }.disabled(!canArchiveThread(thread, connection: store.state)).foregroundStyle(TUITheme.accent).accessibilityIdentifier("archive-next")
                     }
-                    Text("FROM " + thread.sender).foregroundStyle(TUITheme.teal).textSelection(.enabled)
+                    PeerHeading(agent: AgentIdentity(did: thread.sender, callsign: store.callsignsBySender[thread.sender]))
                     if let card = thread.card {
-                        Text(card.title).font(TUITheme.titleFont).foregroundStyle(TUITheme.accent)
-                        Text(card.why).foregroundStyle(TUITheme.warn)
+                        Text(card.title).font(.title3.weight(.semibold)).foregroundStyle(TUITheme.accent).fixedSize(horizontal: false, vertical: true)
+                        ReadingBody(text: card.why).foregroundStyle(TUITheme.warn)
                         TerminalMessage(text: card.body)
                         ForEach(card.choices) { axis in
                             VStack(alignment: .leading, spacing: 4) {
@@ -150,7 +152,7 @@ struct DeskThreadView: View {
                         }
                     }
                 }
-            }.padding(8)
+            }.padding(8).readingColumn()
         }.background(TUITheme.bg).toolbar(.visible, for: .navigationBar)
         .toolbarBackground(TUITheme.bg, for: .navigationBar)
         .task {
