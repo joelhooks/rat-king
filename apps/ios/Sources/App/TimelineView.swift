@@ -113,7 +113,10 @@ struct TimelineView: View {
     }
 
     private func postRow(_ post: TimelinePost) -> some View {
-        Button { select(peer: post.agent.did, post: post.id) } label: {
+        Button {
+            if post.needsAnswer, case let .desk(id) = post.entry.kind { sheet = .desk(id) }
+            else { select(peer: post.agent.did, post: post.id) }
+        } label: {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(post.entry.outgoing ? "You → " + post.agent.name : post.agent.callsign ?? post.agent.name)
@@ -121,7 +124,7 @@ struct TimelineView: View {
                     Spacer()
                     if let date = post.entry.date { Text(shortTime(date)).foregroundStyle(TUITheme.dim) }
                 }.font(TUITheme.microFont)
-                if post.needsAnswer { Text("NEEDS ANSWER").foregroundStyle(TUITheme.warn).font(TUITheme.microFont) }
+                if post.needsAnswer { Text("NEEDS ANSWER · OPEN ASK").foregroundStyle(TUITheme.warn).font(TUITheme.microFont) }
                 Text(post.entry.preview).foregroundStyle(TUITheme.fg).lineLimit(3)
             }.padding(8).frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
                 .background(selection?.post == post.id ? TUITheme.panel : TUITheme.bg).contentShape(Rectangle())

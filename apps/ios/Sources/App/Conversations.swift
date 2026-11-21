@@ -89,7 +89,7 @@ func conversationList(phone: String?, messages: [MailItem], threads: [InboxThrea
     for thread in threads {
         guard let prefs = preferences[thread.id], let ref = prefs.outgoingRef, let answer = prefs.answer,
               let sender = try? ref.required("senderDid").text, let tid = try? ref.required("messageId").text else { continue }
-        add(thread.sender, ConversationEntry(id: sender + "/" + tid, messageId: tid, outgoing: true, text: (try? deskAnswerLine(answer)) ?? "Reply", receipt: "sent", kind: .message, mailId: nil),
+        add(thread.sender, ConversationEntry(id: sender + "/" + tid, messageId: tid, outgoing: true, text: (try? deskAnswerLine(answer)) ?? "Reply", receipt: prefs.answerReceipt ?? "admitted", kind: .message, mailId: nil),
             replyToId: thread.cardTid.map { thread.sender + "/" + $0 })
     }
     if let phone {
@@ -135,7 +135,7 @@ func conversationList(phone: String?, messages: [MailItem], threads: [InboxThrea
     }
     return result.sorted { ($0.latest?.messageId ?? "", $0.id) > ($1.latest?.messageId ?? "", $1.id) }
 }
-func threadNeedsAnswer(_ thread: InboxThread) -> Bool { thread.state == .open && ["decision", "approval"].contains(thread.card?.kind ?? "") }
+func threadNeedsAnswer(_ thread: InboxThread) -> Bool { thread.state == .open && thread.requiresSealedAnswer }
 
 // Known peers plus everyone the phone has talked to; recently messaged first.
 struct AgentDirectory: Equatable {
