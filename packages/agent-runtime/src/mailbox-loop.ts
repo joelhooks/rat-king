@@ -1,6 +1,6 @@
 import { open, seal, suite } from "@rat-king/envelope";
 import * as Defs from "@rat-king/lexicon/defs";
-import { Context, Effect, Match, Schema } from "effect";
+import { Context, Effect, Match, Result, Schema } from "effect";
 import { createMachine, transition } from "xstate";
 
 import { AgentJournal, Journal } from "./agent-journal.ts";
@@ -24,7 +24,12 @@ export const loopLifecycle = createMachine({
     acked: { type: "final" },
     answered: { on: { sealed: { target: "sealed" } } },
     failed: { type: "final" },
-    pending: { on: { submitted: { target: "submitted" } } },
+    pending: {
+      on: {
+        submitted: { target: "submitted" },
+        unanswered: { target: "unanswered" },
+      },
+    },
     replied: { on: { acked: { target: "acked" } } },
     sealed: { on: { replied: { target: "replied" } } },
     submitted: {
@@ -152,25 +157,45 @@ export const drainMailbox = Effect.fn("Agent.drainMailbox")(
               Effect.gen(function* submitMessage() {
                 yield* mailbox.inject(message);
 
-                const payload = yield* open({
+                const content = yield* open({
                   envelope,
                   recipientDid: keys.did,
                   recipientKey: keys.agreement,
                   recipientKeyId: `${keys.did}#encryption`,
                   resolveSigningKey: (did, keyId) =>
                     keys.resolve(did, keyId, "authentication"),
+                }).pipe(
+                  Effect.flatMap((payload) =>
+                    Effect.try({
+                      catch: () => "Invalid UTF-8",
+                      try: () =>
+                        new TextDecoder("utf-8", {
+                          fatal: true,
+                          ignoreBOM: false,
+                        }).decode(payload.body),
+                    })
+                  ),
+                  Effect.result
+                );
+
+                if (Result.isFailure(content)) {
+                  return yield* save(
+                    Journal.cases.unanswered.make({
+                      reason: "Invalid incoming envelope",
+                    })
+                  );
+                }
+
+                const id = yield* harness.submit({
+                  content: content.success,
+                  requestId,
                 });
-
-                const content = new TextDecoder("utf-8", {
-                  fatal: true,
-                  ignoreBOM: false,
-                }).decode(payload.body);
-
-                const id = yield* harness.submit({ content, requestId });
 
                 yield* save(
                   Journal.cases.submitted.make({ id, replyId: state.replyId })
                 );
+
+                return yield* Effect.void;
               }),
             replied: () =>
               Effect.gen(function* acknowledge() {
@@ -199,7 +224,9 @@ export const drainMailbox = Effect.fn("Agent.drainMailbox")(
               Effect.gen(function* failedReceipt() {
                 yield* mailbox.fail(
                   message,
-                  "Agent harness settled unanswered"
+                  state.reason === "Invalid incoming envelope"
+                    ? state.reason
+                    : "Agent harness settled unanswered"
                 );
                 yield* save(
                   Journal.cases.failed.make({ reason: state.reason })
