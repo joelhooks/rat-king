@@ -1,6 +1,12 @@
-import { Directory } from "@rat-king/ratking-client/directory";
-import { Config, Console, Effect, Option } from "effect";
-import { Command, Flag } from "effect/cli";
+import { settingsLayer } from "@rat-king/ratking-client/config";
+import { Directory, directoryLayer } from "@rat-king/ratking-client/directory";
+import {
+  retireSelf,
+  SelfRetireError,
+} from "@rat-king/ratking-client/retirement";
+import { secretStoreLayer as localSecretStoreLayer } from "@rat-king/ratking-client/secrets";
+import { Config, Console, Effect, Layer, Option } from "effect";
+import { CliError as CommandError, Command, Flag } from "effect/cli";
 import { FetchHttpClient } from "effect/http";
 
 import { CliError } from "../../mailbox/cli/identity.ts";
@@ -15,6 +21,7 @@ import {
 import type { ProvisionArgs } from "../../mailbox/cli/main.ts";
 import { retireName, unretireName } from "../../mailbox/cli/retire.ts";
 import { secretStoreLayer } from "../../mailbox/cli/secrets.ts";
+import { refuse } from "./output.ts";
 import { localDirectoryLayer } from "./retired-import.ts";
 
 const authority = Effect.gen(function* authority() {
@@ -51,33 +58,81 @@ const provisionCommand = Command.make("provision", provisionFlags, (args) =>
   )
 );
 
+const recordRetired = (name: string, successor: string | undefined) =>
+  Directory.use((directory) => directory.recordRetired(name, successor));
+
+const overlayFailure =
+  "Name retired remotely, but local retired overlay update failed";
+
+export const retireAsOperator = Effect.fn("RatkingCli.retireAsOperator")(
+  function* retireAsOperator(name: string, successor: Option.Option<string>) {
+    const result = yield* retireName(yield* authority, name, successor);
+    yield* recordRetired(name, Option.getOrUndefined(successor)).pipe(
+      Effect.mapError(() => new CliError({ reason: overlayFailure })),
+      Effect.provide(localDirectoryLayer)
+    );
+
+    return result;
+  }
+);
+
+export const retireAsName = Effect.fn("RatkingCli.retireAsName")(
+  function* retireAsName(name: string, successor: Option.Option<string>) {
+    const result = yield* retireSelf({ name, successor });
+    yield* recordRetired(result.name, result.successor).pipe(
+      Effect.mapError(
+        () => new SelfRetireError({ code: "Partial", reason: overlayFailure })
+      )
+    );
+
+    return result;
+  }
+);
+
+const selfRetireLayer = Layer.mergeAll(
+  localSecretStoreLayer,
+  directoryLayer,
+  FetchHttpClient.layer
+).pipe(Layer.provideMerge(settingsLayer));
+
 const retireCommand = Command.make(
   "retire",
   {
-    name: Flag.String("name"),
+    as: Flag.String("as").pipe(Flag.optional),
+    name: Flag.String("name").pipe(Flag.optional),
     successor: Flag.String("successor").pipe(Flag.optional),
   },
-  Effect.fn("RatkingCli.retire")(function* retire(args) {
-    const result = yield* retireName(
-      yield* authority,
-      args.name,
-      args.successor
-    ).pipe(Effect.provide([FetchHttpClient.layer, secretStoreLayer({})]));
+  (args) => {
+    if (Option.isSome(args.as)) {
+      const name = args.as.value;
 
-    yield* Directory.use((directory) =>
-      directory.recordRetired(args.name, Option.getOrUndefined(args.successor))
+      return retireAsName(name, args.successor).pipe(
+        Effect.provide(selfRetireLayer),
+        Effect.matchEffect({
+          onFailure: (fault) => refuse(false, "retire", { as: name }, fault),
+          onSuccess: (result) => Console.log(JSON.stringify(result)),
+        })
+      );
+    }
+
+    return retireAsOperator(
+      Option.getOrElse(args.name, () => ""),
+      args.successor
     ).pipe(
-      Effect.provide(localDirectoryLayer),
-      Effect.mapError(
-        () =>
-          new CliError({
-            reason:
-              "Name retired remotely, but local retired overlay update failed",
-          })
-      )
+      Effect.provide([FetchHttpClient.layer, secretStoreLayer({})]),
+      Effect.flatMap((result) => Console.log(JSON.stringify(result)))
     );
-    yield* Console.log(JSON.stringify(result));
-  })
+  }
+).pipe(
+  Command.validate(({ as, name }) =>
+    Option.isSome(as) === Option.isSome(name)
+      ? Effect.fail(
+          new CommandError.ValidationError({
+            message: "Supply exactly one of --as or --name",
+          })
+        )
+      : Effect.void
+  )
 );
 
 const unretireCommand = Command.make(
@@ -115,7 +170,7 @@ export const operatorCommands = [
   ),
   retireCommand.pipe(
     Command.withDescription(
-      "Operator: retire a name, optionally naming its successor, and update its local listing overlay."
+      "Retire a name and update its local listing overlay. Use --as to sign with its local key or --name for operator authority. With --as, stop the reader and keep it stopped until retirement finishes: the lease check and retirement are separate requests."
     )
   ),
   unretireCommand.pipe(

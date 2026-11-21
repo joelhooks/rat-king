@@ -9,6 +9,7 @@ import type {
   LeaseHeld,
   NotDelivered,
 } from "@rat-king/ratking-client/ratking";
+import type { SelfRetireError } from "@rat-king/ratking-client/retirement";
 import { Match, Predicate, Schema } from "effect";
 
 export class Usage extends Schema.TaggedError<Usage>()("Usage", {
@@ -24,6 +25,7 @@ export type Fault =
   | NotConfigured
   | NotDelivered
   | QuietAsk
+  | SelfRetireError
   | Usage;
 
 export interface Faulted {
@@ -155,6 +157,39 @@ const askFailed = (failure: AskFailed, ground: Ground): PromptInput =>
     }))
   );
 
+const selfRetireFault = (
+  failure: SelfRetireError,
+  ground: Ground
+): PromptInput => ({
+  accepted:
+    "a local key for a name with no active reader, and an optional live successor",
+  debug: "ratking retire --help",
+  fix: Match.value(failure.code).pipe(
+    Match.when(
+      "NoIdentity",
+      () =>
+        `use ratking retire --name ${ground.as} with operator authority; keep --successor if supplied`
+    ),
+    Match.when(
+      "LeaseLive",
+      () => "retry after the reader releases or the lease expires"
+    ),
+    Match.when(
+      "Partial",
+      () =>
+        "repair the local listing overlay; the name is already retired remotely"
+    ),
+    Match.when(
+      "Uncertain",
+      () => "check retirement with the issuer before retrying"
+    ),
+    Match.when("Rejected", () => "correct the refusal above before retrying"),
+    Match.exhaustive
+  ),
+  tag: failure.code,
+  why: failure.reason,
+});
+
 const promptOf = (fault: Fault, ground: Ground): PromptInput =>
   Match.value(fault).pipe(
     Match.tag("NotDelivered", (failure) => notDelivered(failure, ground)),
@@ -190,6 +225,7 @@ const promptOf = (fault: Fault, ground: Ground): PromptInput =>
       tag: failure._tag,
       why: failure.why,
     })),
+    Match.tag("SelfRetireError", (failure) => selfRetireFault(failure, ground)),
     Match.tag("Usage", (failure) => ({
       accepted: failure.accepted,
       debug: "ratking --help",
@@ -217,6 +253,14 @@ export const faulted = (fault: Fault, ground: Ground): Faulted => {
 
   const code = Match.value(fault).pipe(
     Match.tag("LeaseHeld", () => 4),
+    Match.tag("SelfRetireError", (failure) =>
+      Match.value(failure.code).pipe(
+        Match.when("LeaseLive", () => 4),
+        Match.when("Partial", () => 3),
+        Match.when("Uncertain", () => 3),
+        Match.orElse(() => 2)
+      )
+    ),
     Match.tag("NotDelivered", (failure) =>
       failure.code === "Uncertain" || failure.code === "Partial" ? 3 : 2
     ),

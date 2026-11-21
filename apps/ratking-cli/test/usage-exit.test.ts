@@ -212,6 +212,21 @@ for (const client of clients) {
   }
 }
 
+it.effect(
+  "ratking retire rejects both authority flags before running either path",
+  () =>
+    Effect.gen(function* exclusiveAuthority() {
+      const result = yield* boundary(
+        runRatking(["retire", "--as", "tester", "--name", "tester"]).pipe(
+          Effect.provide(NodeServices.layer)
+        )
+      );
+
+      expectUsage(result, "ratking retire");
+      expect(result.stderr).toContain("Supply exactly one of --as or --name");
+    })
+);
+
 const subprocess = Effect.fn("UsageTest.subprocess")(
   function* subprocess(bin: string, args: readonly string[]) {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
