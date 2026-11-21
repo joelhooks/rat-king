@@ -530,6 +530,7 @@ it.effect.prop(
                     reserved: [],
                   }),
                   operators: [operator],
+                  staticDids: new Set(),
                 }).pipe(
                   Layer.provide(issuerLayer),
                   Layer.provide(unusedDocuments),
@@ -737,6 +738,7 @@ it.effect.prop(
               reserved: [],
             }),
             operators: [operator],
+            staticDids: new Set(),
           }).pipe(
             Layer.provide(issuerStore(issuerStorage.sql)),
             Layer.provide(
@@ -804,6 +806,7 @@ it.effect(
               reserved: [],
             }),
             operators: [operator],
+            staticDids: new Set(),
           }).pipe(
             Layer.provide(issuerStore(issuerStorage.sql)),
             Layer.provide(

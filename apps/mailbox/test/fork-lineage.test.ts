@@ -115,6 +115,7 @@ it.effect.prop(
               reserved: [],
             }),
             operators: [],
+            staticDids: new Set(),
           }).pipe(
             Layer.provide(storeLayer),
             Layer.provide(

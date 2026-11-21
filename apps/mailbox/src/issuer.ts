@@ -137,6 +137,7 @@ export class IssuerHandlers extends Context.Service<
 export interface IssuerPolicy {
   readonly operators: readonly string[];
   readonly config: Option.Option<IssuerConfigValue>;
+  readonly staticDids: ReadonlySet<string>;
 }
 
 export const issuerConfig = (
@@ -252,10 +253,13 @@ export const issuerHandlers = (policy: IssuerPolicy) =>
 
         const { did, host } = found.value;
 
+        const hostMayManage =
+          !policy.staticDids.has(did) && Option.contains(host, caller.did);
+
         if (
           !policy.operators.includes(caller.did) &&
           caller.did !== did &&
-          !Option.contains(host, caller.did)
+          !hostMayManage
         ) {
           return yield* Effect.fail(failure("Forbidden", 403));
         }
@@ -633,6 +637,7 @@ export const issuerHandlers = (policy: IssuerPolicy) =>
                 host: caller.did,
                 name: input.name,
               },
+              policy.staticDids,
               tx.binding(input.name)
             );
           };
