@@ -1,5 +1,6 @@
 import {
   Clock,
+  DateTime,
   Effect,
   FileSystem,
   Option,
@@ -13,6 +14,8 @@ export class LockBusy extends Schema.TaggedError<LockBusy>()("LockBusy", {
 }) {}
 
 const staleAfterMillis = 30_000;
+
+const refreshEvery = "5 seconds";
 
 export const withLock = <A, E, R>(
   directory: string,
@@ -54,9 +57,21 @@ export const withLock = <A, E, R>(
       Effect.mapError(busy)
     );
 
+    const refresh = Effect.gen(function* refresh() {
+      const now = DateTime.toDate(yield* DateTime.now);
+
+      yield* fs.utimes(lockPath, now, now);
+    }).pipe(
+      Effect.delay(refreshEvery),
+      Effect.forever,
+      Effect.mapError(
+        () => new LockBusy({ reason: `${name} lock could not be refreshed` })
+      )
+    );
+
     return yield* Effect.acquireUseRelease(
       take,
-      () => effect,
+      () => Effect.raceFirst(effect, refresh),
       () => fs.remove(lockPath, { recursive: true }).pipe(Effect.ignore)
     );
   });
