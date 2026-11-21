@@ -50,23 +50,16 @@ it.effect.prop(
   ([health, reasons, status]) =>
     Effect.sync(() => {
       const counts = {
-        failed: 0,
         fallbacks: 0,
         lost: 0,
         quarantined: 0,
-        ratking: 0,
-        raw: 0,
         sent: 0,
-        unanswered: 0,
       };
 
-      const result = composeDigest(
-        health,
-        counts,
-        counts,
-        "2026-01-01T00:00:00Z",
-        { reasons, status }
-      );
+      const result = composeDigest(health, counts, "2026-01-01T00:00:00Z", {
+        reasons,
+        status,
+      });
 
       expect(result.status).toBe(status);
       expect(result.reasons).toEqual(reasons);

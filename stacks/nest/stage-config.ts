@@ -60,7 +60,6 @@ export const RuntimeConfig = Schema.Struct({
 const Paths = Schema.Struct({
   quarantine: Text,
   receipts: Text,
-  sessions: Text,
 });
 
 const DoctorHost = Schema.Struct({
@@ -121,7 +120,11 @@ export class FleetError extends Schema.TaggedError<FleetError>()("FleetError", {
 export const RETIRED_KEYS: readonly {
   readonly key: string;
   readonly path: readonly string[];
-}[] = [{ key: "minIntervalHours", path: ["ship", "restart"] }];
+}[] = [
+  { key: "minIntervalHours", path: ["ship", "restart"] },
+  { key: "sessions", path: ["comms", "local"] },
+  { key: "sessions", path: ["comms", "remote"] },
+];
 
 const JsonObject = Schema.Record(Schema.String, Schema.Json);
 

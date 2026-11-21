@@ -17,7 +17,6 @@ import type { JsonDocument } from "../../../stacks/nest/stage-config.ts";
 import {
   FleetError,
   loadStageConfig,
-  RETIRED_KEYS,
   StageConfig,
 } from "../../../stacks/nest/stage-config.ts";
 
@@ -70,11 +69,33 @@ it.effect.prop(
   [StageConfig, ShipSettings],
   ([config, ship]) =>
     Effect.gen(function* retiredKeys() {
-      for (const retired of RETIRED_KEYS) {
-        const tolerated = yield* load(withRetired(config, ship, retired.key));
+      const stage = yield* Schema.encodeEffect(StageConfig)(config);
+
+      const fixtures = [
+        [
+          "ship.restart.minIntervalHours",
+          withRetired(config, ship, "minIntervalHours"),
+        ],
+        ...(["local", "remote"] as const).map(
+          (host) =>
+            [
+              `comms.${host}.sessions`,
+              {
+                ...stage,
+                comms: {
+                  ...stage.comms,
+                  [host]: { ...stage.comms[host], sessions: "/unused" },
+                },
+              },
+            ] as const
+        ),
+      ] as const;
+
+      for (const [key, fixture] of fixtures) {
+        const tolerated = yield* load(fixture);
 
         expect(Exit.isSuccess(tolerated.exit)).toBe(true);
-        expect(tolerated.warnings.join("\n")).toContain(retired.key);
+        expect(tolerated.warnings.join("\n")).toContain(key);
         expect(tolerated.warnings.join("\n")).toContain("remove");
       }
 

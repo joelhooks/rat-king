@@ -1,40 +1,9 @@
-import {
-  DateTime,
-  Effect,
-  FileSystem,
-  Match,
-  Option,
-  Schema,
-  Stream,
-} from "effect";
+import { DateTime, Effect, FileSystem, Match, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { shellQuote } from "../../packages/alchemy-nest/src/ssh.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
-
-const Content = Schema.Union([
-  Schema.Struct({
-    arguments: Schema.Struct({ action: Schema.optionalKey(Schema.String) }),
-    id: Schema.String,
-    name: Schema.String,
-    type: Schema.Literal("toolCall"),
-  }),
-  Schema.Struct({ text: Schema.String, type: Schema.Literal("text") }),
-  Schema.Struct({ type: Schema.String }),
-]);
-
-const Session = Schema.Struct({
-  message: Schema.optionalKey(
-    Schema.Struct({
-      content: Schema.optionalKey(Schema.Array(Content)),
-      role: Schema.String,
-      toolCallId: Schema.optionalKey(Schema.String),
-      toolName: Schema.optionalKey(Schema.String),
-    })
-  ),
-  timestamp: Schema.String,
-});
 
 const Receipt = Schema.Struct({
   at: Schema.DateTimeUtcFromString,
@@ -43,52 +12,27 @@ const Receipt = Schema.Struct({
 });
 
 const Frame = Schema.Union([
-  Schema.Struct({
-    file: Schema.String,
-    kind: Schema.Literal("session"),
-    line: Schema.String,
-  }),
   Schema.Struct({ kind: Schema.Literal("receipt"), line: Schema.String }),
   Schema.Struct({ kind: Schema.Literal("quarantine") }),
 ]);
 
 export const Counts = Schema.Struct({
-  failed: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   fallbacks: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   lost: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   quarantined: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  ratking: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  raw: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   sent: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  unanswered: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
 });
 
 export type CountsValue = typeof Counts.Type;
 
-export const LEGACY_SENT = "Message sent to ";
-
-export const classify = (text: string | undefined) => {
-  if (text === undefined) {
-    return "unanswered";
-  }
-
-  if (text.includes("Rat King")) {
-    return "ratking";
-  }
-
-  return text.startsWith(LEGACY_SENT) ? "raw" : "failed";
-};
-
 export const doneBar = (local: CountsValue, remote: CountsValue) =>
-  local.raw === 0 && remote.raw === 0 && local.lost === 0 && remote.lost === 0;
+  local.lost === 0 && remote.lost === 0;
 
 export const countFrames = <E, R>(
   frames: Stream.Stream<typeof Frame.Type, E, R>,
   cut: number
 ) =>
   Effect.gen(function* accumulateFrames() {
-    const calls = new Map<string, Set<string>>();
-    const results = new Map<string, Map<string, string>>();
     let sent = 0;
     let fallbacks = 0;
     let lost = 0;
@@ -121,80 +65,11 @@ export const countFrames = <E, R>(
             }
           })
         ),
-        Match.when({ kind: "session" }, (session) =>
-          Effect.gen(function* sessionFrame() {
-            const parsed = yield* Schema.decodeUnknownEffect(
-              Schema.fromJsonString(Session)
-            )(session.line).pipe(Effect.option);
-
-            if (Option.isNone(parsed)) {
-              return;
-            }
-
-            const row = parsed.value;
-
-            if (
-              Date.parse(row.timestamp) < cut ||
-              !Number.isFinite(Date.parse(row.timestamp))
-            ) {
-              return;
-            }
-
-            const { message } = row;
-
-            if (message === undefined) {
-              return;
-            }
-
-            if (
-              message.role === "toolResult" &&
-              message.toolName === "intercom" &&
-              message.toolCallId !== undefined
-            ) {
-              const text = (message.content ?? [])
-                .flatMap((content) => ("text" in content ? [content.text] : []))
-                .join(" ");
-
-              const fileResults =
-                results.get(session.file) ?? new Map<string, string>();
-
-              fileResults.set(message.toolCallId, text);
-              results.set(session.file, fileResults);
-            }
-
-            for (const content of message.content ?? []) {
-              if (
-                "name" in content &&
-                content.name === "intercom" &&
-                ["send", "ask", "reply", "handover"].includes(
-                  content.arguments.action ?? ""
-                )
-              ) {
-                const fileCalls = calls.get(session.file) ?? new Set<string>();
-                fileCalls.add(content.id);
-                calls.set(session.file, fileCalls);
-              }
-            }
-          })
-        ),
         Match.exhaustive
       )
     );
-    const classified = { failed: 0, ratking: 0, raw: 0, unanswered: 0 };
 
-    for (const [file, ids] of calls) {
-      for (const id of ids) {
-        classified[classify(results.get(file)?.get(id))] += 1;
-      }
-    }
-
-    return {
-      ...classified,
-      fallbacks,
-      lost,
-      quarantined,
-      sent,
-    } satisfies CountsValue;
+    return { fallbacks, lost, quarantined, sent } satisfies CountsValue;
   });
 
 export const collectComms = Effect.fn("Nest.collectComms")(
