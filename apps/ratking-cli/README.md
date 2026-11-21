@@ -38,7 +38,7 @@ Client commands take `--as <name>` (default `RATKING_NAME`) and `--json`. `healt
 - `2`: usage errors, including unknown commands or flags, missing required inputs and invalid flag values. Parser failures print a JSON object with `failed`, `why` and `next` on stderr. Run the suggested `--help` command to see accepted inputs. Commands with no required inputs still accept an empty argument list.
 - `1`: unhandled runtime failures, such as an unreadable resolve input or failed operator configuration.
 
-Existing client refusal codes remain unchanged: `2` for rejected requests, `3` for partial or uncertain delivery, and `4` for a held reader lease. Exit `2` is therefore not exclusive to parser errors. The standalone `apps/mailbox/cli/main.ts` uses the same parser exit rule.
+Existing client refusal codes remain unchanged: `2` for rejected requests, `3` for partial or uncertain outcomes, and `4` for a held reader lease. Exit `2` is therefore not exclusive to parser errors. The standalone `apps/mailbox/cli/main.ts` uses the same parser exit rule.
 
 ## Identity
 
@@ -71,6 +71,8 @@ Writes read the stored preferences, change one thing and put the whole record ba
 `identity`, `retired` and `traffic` mount the `apps/mailbox/cli` commands unchanged. `provision`, `retire` and `unretire` use the same remote operations, then update the host-local retired listing overlay after success. They need the operator `RAT_KING_*` configuration described in `apps/mailbox/cli/README.md`; the overlay also uses the local Pi configuration. If the remote operation succeeds but the local update fails, the error states that partial outcome. The standalone mailbox CLI never changes this overlay.
 
 ### Local retired listing overlay
+
+`ratking retire --as <name> [--successor <name>]` signs with the name's local key and prints a JSON receipt. Stop the reader first. The CLI refuses if its lease check finds a live reader, but the check and retirement are separate requests: do not start another reader during retirement. If the local key is missing, use `ratking retire --name <name> [--successor <name>]` with operator authority.
 
 `ratking retired-import --file ./retired-names.txt` reads one name per line, ignores blank lines, and validates the entire file before writing. It prints `{ "added": 12, "already": 3 }`. Repeating an import preserves existing retirement metadata. It makes no network requests and needs no operator identity.
 
