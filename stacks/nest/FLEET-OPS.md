@@ -5,8 +5,8 @@ The nest CLI loads its settings from one private JSON file selected by `RAT_KING
 The JSON contains:
 
 - `runtime`: the named settings declared by `RuntimeConfig`. Arrays and booleans are JSON values, not shell strings. `HOME` and the inventory location are explicit. Publication metadata is explicit; the desk sets the approved commit before cutover. Listener approval, offline planning and recovery remain separate settings.
-- `comms` → `local`: absolute locations for sessions, route receipts and quarantine.
-- `comms` → `remote`: the same locations plus an SSH target. Both hosts require readable receipts and existing session/quarantine directories.
+- `comms` → `local`: absolute locations for route receipts and quarantine.
+- `comms` → `remote`: the same locations plus an SSH target. Both hosts require readable receipts and an existing quarantine directory. Older stage files may still contain `sessions`; the loader ignores it and warns.
 - Optional `mintHost`: the SSH target, Node executable, DID and secret-store entry name. Omit it when minting is not authorized.
 
 A private launcher only needs to select the JSON and execute `stacks/nest/cli.ts` with its arguments. It no longer exports individual settings.
@@ -20,7 +20,7 @@ A private launcher only needs to select the JSON and execute `stacks/nest/cli.ts
 | `ship-plist` | Print the launchd plist using configured paths. Never install or load it. |
 | `doctor` | Inspect each configured host’s selected Pi config, issuer executable/script arguments, document files and service-issuer identity lease. Print sanitized fail reasons; exit nonzero on failure. |
 | `digest` | Read-only host health plus comms counts. Append one JSON line to the configured state's `health.jsonl` and print that line. Read the last history line for the previous health sample. |
-| `done-bar` | Print separate host counts. Exit zero only when raw intercom sends and lost messages are zero on each host over the last 24 hours. |
+| `done-bar` | Print separate host counts. Exit zero only when neither host recorded any lost messages in the last 24 hours. |
 | `provision` | Forward mailbox provisioning flags. Without `--secret`, substitute the agent label into `RAT_KING_AGENT_SECRET_TEMPLATE`. |
 | `mailbox` | Forward any mailbox CLI command and flags under the same configuration. |
 | `mint-host` | Generate signing/agreement keys on the configured target. Refuse an existing secret-store entry. Send private keys only through target-local stdin to the secret store. Print only the DID after successful storage. |
@@ -29,9 +29,9 @@ A private launcher only needs to select the JSON and execute `stacks/nest/cli.ts
 | `send --as <identity-secret> --sealed -` | Submit bare sealed envelope JSON from stdin without re-sealing. Print its receipt. |
 | `drain`, `ack` | Read or acknowledge script inbox messages. See [DRAIN.md](DRAIN.md). |
 
-The Python collector is a read-only filesystem adapter. It emits frames; the Effect stream parses and classifies them. Call IDs are scoped to each session file. A send/ask/reply/handover whose result contains `Rat King` is network-routed; other returned results count as raw intercom. Calls without a tool result count as unanswered, not raw, and do not affect the done-bar. Digest exposes their aggregate as `unanswered_24h`; older history without that field still parses. Malformed session lines follow the old collector's skip behavior. Invalid route receipts, missing inputs, SSH failures and collector timeouts fail rather than reporting zero.
+The read-only Python collector emits route receipts and one frame per recent quarantine file. It does not read session transcripts. Invalid route receipts, missing inputs, SSH failures and collector timeouts fail rather than reporting zero.
 
-Digest history keeps the old field meanings: route, fallback, loss and quarantine counts come from the local host; raw intercom counts sum both hosts. The done-bar is deliberately stricter: it also checks remote losses. A failed measurement does not append a successful digest.
+Digest requires both collectors to succeed and records the local route, fallback, loss and quarantine counts. Done-bar checks losses on both hosts. A failed measurement does not append a successful digest.
 
 ## Script sends
 

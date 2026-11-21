@@ -10,13 +10,10 @@ export const FailedHealth = Schema.Struct({
 export const FleetDigest = Schema.Struct({
   at: Schema.String,
   comms: Schema.Struct({
-    failed_intercom_24h: Schema.optionalKey(Schema.Int),
     fallbacks_24h: Schema.Int,
     lost_24h: Schema.Int,
     quarantined_24h: Schema.Int,
-    raw_intercom_24h: Schema.Int,
     sent_24h: Schema.Int,
-    unanswered_24h: Schema.optionalKey(Schema.Int),
   }),
   doctorUnavailableCount: Schema.optionalKey(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
