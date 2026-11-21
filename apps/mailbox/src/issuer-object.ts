@@ -5,7 +5,7 @@ import { Effect, Layer, Option, Schema } from "effect";
 
 import type { Bindings } from "./bindings.ts";
 import { Caller } from "./caller.ts";
-import { didAllowlist } from "./documents.ts";
+import { configuredDocuments, didAllowlist } from "./documents.ts";
 import { failure } from "./failure.ts";
 import type { PublicDocument } from "./issuer-policy.ts";
 import { IssuerStore, issuerStore } from "./issuer-store.ts";
@@ -198,6 +198,7 @@ export class Issuer extends DurableObject<Bindings> {
           issuerHandlers({
             config: issuerConfig(env.ISSUER_DID_TEMPLATE, env.ISSUER_RESERVED),
             operators: didAllowlist(env.OPERATOR_DIDS),
+            staticDids: new Set(configuredDocuments(env).map(({ id }) => id)),
           }).pipe(
             Layer.provide(this.store),
             Layer.provide(registry),

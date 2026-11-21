@@ -81,6 +81,7 @@ it.effect.prop(
       const handlers = issuerHandlers({
         config: Option.none(),
         operators: [operator],
+        staticDids: new Set(),
       }).pipe(
         Layer.provide(storeLayer),
         Layer.provide(registry),

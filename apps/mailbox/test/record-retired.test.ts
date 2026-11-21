@@ -77,7 +77,11 @@ const setup = (allowCurrent = false) =>
     const route = (request: XrpcRequest, caller = operator) =>
       issuerRoute(request).pipe(
         Effect.provide(
-          issuerHandlers({ config: Option.none(), operators: [operator] }).pipe(
+          issuerHandlers({
+            config: Option.none(),
+            operators: [operator],
+            staticDids: new Set(),
+          }).pipe(
             Layer.provide(Layer.succeed(IssuerStore, store)),
             Layer.provide(Layer.succeed(Caller, { did: caller })),
             Layer.provide(

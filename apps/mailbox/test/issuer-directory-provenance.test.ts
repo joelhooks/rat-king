@@ -103,6 +103,7 @@ it.effect.prop(
           reserved: [],
         }),
         operators: [operator],
+        staticDids: new Set(),
       }).pipe(
         Layer.provide(Layer.succeed(IssuerStore, store)),
         Layer.provide(Layer.succeed(Caller, { did: operator })),

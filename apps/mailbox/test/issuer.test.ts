@@ -4,6 +4,8 @@ import * as Defs from "@rat-king/lexicon/defs";
 import * as Enroll from "@rat-king/lexicon/identity.enrollHost";
 import * as ListNames from "@rat-king/lexicon/identity.listNames";
 import * as Register from "@rat-king/lexicon/identity.register";
+import * as Retire from "@rat-king/lexicon/identity.retireName";
+import * as Unretire from "@rat-king/lexicon/identity.unretireName";
 import type { Request as XrpcRequest } from "@rat-king/lexicon/transport";
 import { Arbitrary, Effect, Layer, Option, Result, Schema } from "effect";
 import * as fc from "fast-check";
@@ -17,14 +19,16 @@ import { Caller } from "../src/caller.ts";
 import {
   AgentName,
   decideRegistration,
+  fingerprint,
   nameDid,
 } from "../src/issuer-policy.ts";
 import type { PublicDocument } from "../src/issuer-policy.ts";
-import { issuerStore } from "../src/issuer-store.ts";
+import { IssuerStore, issuerStore } from "../src/issuer-store.ts";
 import {
   DocumentRegistry,
   issuerHandlers,
   issuerRoute,
+  RetirementRegistry,
 } from "../src/issuer.ts";
 import { storeDocument } from "../src/mailbox.ts";
 import { MailboxStore } from "../src/store.ts";
@@ -64,7 +68,8 @@ it.effect.prop(
           enrolled: true,
           host: "did:web:host.example.invalid",
           name,
-        }
+        },
+        new Set()
       );
 
       expect(Result.isSuccess(decision)).toBe(Schema.is(PiAgentName)(name));
@@ -103,6 +108,7 @@ it.effect.prop(
       const decision = decideRegistration(
         { didTemplate, reserved: [...others, name] },
         { document: publicDocument(did, 0), enrolled: true, host, name },
+        new Set(),
         bound ? { did, fingerprint: "", host } : undefined
       );
 
@@ -151,6 +157,79 @@ const post = (nsid: string, input: XrpcRequest["input"]): XrpcRequest => ({
   nsid,
   params: undefined,
 });
+
+const staticPolicyLayer = (
+  store: Layer.Layer<IssuerStore>,
+  did: string,
+  host: string
+) =>
+  issuerHandlers({
+    config: Option.some({ didTemplate, reserved: [] }),
+    operators: [],
+    staticDids: new Set([did]),
+  }).pipe(
+    Layer.provide(store),
+    Layer.provide(Layer.mock(DocumentRegistry, {})),
+    Layer.provide(Layer.mock(RetirementRegistry, {})),
+    Layer.provide(Layer.succeed(Caller, { did: host }))
+  );
+
+it.effect.prop(
+  "registration refuses names resolving to static identities",
+  [Arbitrary.schema(AgentName)],
+  ([name]) =>
+    Effect.gen(function* staticRegistration() {
+      const did = nameDid(didTemplate, name);
+      const host = "did:web:host.example.invalid";
+      const db = yield* testStoreFor(host);
+      const store = issuerStore(db.sql);
+
+      yield* IssuerStore.use((issuer) =>
+        issuer.transaction((tx) => {
+          tx.enroll(host);
+        })
+      ).pipe(Effect.provide(store));
+
+      const response = yield* issuerRoute(
+        post(Register.Method.nsid, { document: publicDocument(did, 0), name })
+      ).pipe(Effect.provide(staticPolicyLayer(store, did, host)));
+
+      expect(response.status).toBe(403);
+      expect(errorOf(response.body)).toBe("StaticIdentity");
+    }).pipe(Effect.scoped)
+);
+
+it.effect.prop(
+  "legacy bindings do not give hosts lifecycle authority over static identities",
+  [Arbitrary.schema(AgentName)],
+  ([name]) =>
+    Effect.gen(function* staticLifecycle() {
+      const did = nameDid(didTemplate, name);
+      const host = "did:web:host.example.invalid";
+      const document = publicDocument(did, 0);
+      const db = yield* testStoreFor(host);
+      const store = issuerStore(db.sql);
+
+      yield* IssuerStore.use((issuer) =>
+        issuer.transaction((tx) => {
+          tx.bind(
+            name,
+            { did, fingerprint: fingerprint(document), host },
+            document
+          );
+        })
+      ).pipe(Effect.provide(store));
+
+      for (const nsid of [Retire.Method.nsid, Unretire.Method.nsid]) {
+        const response = yield* issuerRoute(post(nsid, { name })).pipe(
+          Effect.provide(staticPolicyLayer(store, did, host))
+        );
+
+        expect(response.status).toBe(403);
+        expect(errorOf(response.body)).toBe("Forbidden");
+      }
+    }).pipe(Effect.scoped)
+);
 
 const listFrom = async (
   real: Real,
@@ -380,6 +459,7 @@ it.effect.prop(
         issuerHandlers({
           config: Option.some({ didTemplate, reserved }),
           operators: [operator],
+          staticDids: new Set(),
         }).pipe(
           Layer.provide(issuerStore(issuer.sql)),
           Layer.provide(registry),

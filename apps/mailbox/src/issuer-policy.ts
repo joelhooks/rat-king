@@ -38,6 +38,7 @@ export type Refusal =
   | "InvalidName"
   | "NameReserved"
   | "NameTaken"
+  | "StaticIdentity"
   | "InvalidRequest";
 
 export interface Decision {
@@ -52,6 +53,7 @@ export const refusalStatus: Readonly<Record<Refusal, number>> = {
   InvalidRequest: 400,
   NameReserved: 403,
   NameTaken: 409,
+  StaticIdentity: 403,
 };
 
 const isName = Schema.is(AgentName);
@@ -70,6 +72,7 @@ export const publicOnly = (document: Schema.Json) =>
 export const decideRegistration = (
   config: IssuerConfigValue,
   request: RegistrationRequest,
+  staticDids: ReadonlySet<string>,
   existing?: Binding
 ): Result.Result<Decision, Refusal> => {
   if (!request.enrolled) {
@@ -88,6 +91,10 @@ export const decideRegistration = (
 
   if (request.document.id !== did) {
     return Result.fail("InvalidRequest");
+  }
+
+  if (staticDids.has(did)) {
+    return Result.fail("StaticIdentity");
   }
 
   const binding = {

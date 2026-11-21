@@ -147,6 +147,7 @@ const harness = Effect.gen(function* harness() {
         issuerHandlers({
           config: Option.some({ didTemplate, reserved: [reserved] }),
           operators: [operator],
+          staticDids: new Set(),
         }).pipe(
           Layer.provide(issuerLayer),
           Layer.provide(
