@@ -119,10 +119,10 @@ struct TimelineView: View {
         } label: {
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text(post.entry.outgoing ? "You → " + post.agent.name : post.agent.callsign ?? post.agent.name)
-                        .foregroundStyle(TUITheme.accent).lineLimit(1)
+                    Text((post.entry.outgoing ? "You → " : "") + post.agent.headline)
+                        .foregroundStyle(TUITheme.accent).lineLimit(2).layoutPriority(1)
                     Spacer()
-                    if let date = post.entry.date { Text(shortTime(date)).foregroundStyle(TUITheme.dim) }
+                    if let date = post.entry.date { Text(shortTime(date)).foregroundStyle(TUITheme.dim).fixedSize() }
                 }.font(TUITheme.microFont)
                 if post.needsAnswer { Text("NEEDS ANSWER · OPEN ASK").foregroundStyle(TUITheme.warn).font(TUITheme.microFont) }
                 Text(post.entry.preview).foregroundStyle(TUITheme.fg).lineLimit(3)

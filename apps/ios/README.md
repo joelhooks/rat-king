@@ -73,6 +73,8 @@ Chats, Mail and Traffic each have a filter bar: all, unread, needs answer, archi
 
 Timeline shows individual inbox and sent messages newest first. Search and Needs Answer filter that local list. Tap a post to open its conversation at the message. At wider widths the timeline stays beside the thread; at compact widths the thread takes the pane and **‹ Timeline** goes back. Resizing keeps the open thread and its draft. **Compose** opens the same known-agent picker from either pane. An open decision or approval opens its sealed answer form directly from the Timeline post or the Chats Needs Answer filter. Other posts still open the conversation. Pending sealed answers can be retried only from the matching desk item; queued and delivered receipts are labeled separately. Chats remains the launch tab and the destination for notification taps.
 
+Conversation and desk headers lead with the sender’s name or callsign. Expand **Peer details** to see or select the full DID. Long messages use a reading column on wide screens; expanding a message shows its full text with larger type and more line spacing.
+
 ## Desk inbox
 
 The inbox groups desk threads by project and plain chat by sender DID. Open and reconnect show the cached projection at once, with a `SYNCING n` header label while foreground sync runs. Only an empty cache shows the counted loading state. Live incoming messages, including follow-ups in an existing thread, wait behind a `N new` control; tapping it reveals the complete projection and scrolls to the top. Receipt-only updates do not count as new mail. Pull to refresh restarts foreground sync. Offline errors and the connection state remain visible; replies and acknowledgment require a live lease.
