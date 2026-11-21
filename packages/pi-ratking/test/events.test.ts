@@ -31,6 +31,8 @@ import {
   Layer,
   Option,
   Predicate,
+  Queue,
+  Schedule,
   Schema,
 } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
@@ -1442,9 +1444,9 @@ it.live.prop(
         Effect.die(`Unexpected request ${request.url}`)
       );
 
-      const answered = yield* Deferred.make<unknown>();
+      const answers = yield* Queue.unbounded<unknown>();
       pi.events.on(STATUS_RESULT_EVENT, (data) => {
-        Deferred.doneUnsafe(answered, Effect.succeed(data));
+        Queue.offerUnsafe(answers, data);
       });
       yield* Effect.promise(async () => {
         await ratkingExtension({
@@ -1468,17 +1470,47 @@ it.live.prop(
         requestId: "self",
         to: "tester",
       });
-      yield* Deferred.await(started);
-      pi.events.emit(STATUS_EVENT, { requestId });
-      expect(yield* Deferred.await(answered)).toEqual({
+
+      const expected = {
         did: "did:web:tester.agents.example.invalid",
         name: "tester",
         reader: "send-only",
         requestId,
+      };
+
+      const readStatus = Effect.gen(function* readStatus() {
+        pi.events.emit(STATUS_EVENT, { requestId });
+        const result = yield* Queue.take(answers);
+
+        const reader = Predicate.hasProperty(result, "reader")
+          ? result.reader
+          : undefined;
+
+        expect(result).toEqual({ ...expected, reader });
+        expect(["off", "acquiring", "send-only"]).toContain(reader);
+
+        return reader;
       });
-      yield* Effect.promise(async () => {
-        await lifecycle.end();
-      });
+
+      yield* Effect.gen(function* awaitSettledStatus() {
+        yield* Deferred.await(started);
+
+        const settled = yield* readStatus.pipe(
+          Effect.repeat({
+            schedule: Schedule.spaced("20 millis"),
+            until: (reader) => reader === "send-only",
+          }),
+          Effect.timeout("5 seconds")
+        );
+
+        expect(settled).toBe("send-only");
+      }).pipe(
+        Effect.ensuring(
+          Effect.promise(async () => {
+            await lifecycle.end();
+          })
+        )
+      );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 3 }, timeout: 60_000 }
 );
