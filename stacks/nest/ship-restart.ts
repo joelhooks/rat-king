@@ -9,7 +9,7 @@ import { RestartEvent, ShipAttempt } from "./ship-config.ts";
 import { observedRestartEvent, ProcessStart } from "./ship-observation.ts";
 
 export const restartScript = String.raw`
-import datetime, fcntl, json, os, pathlib, subprocess, sys, tempfile, time
+import datetime, fcntl, fnmatch, json, os, pathlib, subprocess, sys, tempfile, time
 settings = json.loads(sys.argv[1])
 mode = sys.argv[2]
 policy = settings['restart']
@@ -17,7 +17,7 @@ def defer(at, reason=None):
     print(json.dumps(dict(retryAt=at) if reason is None else dict(retryAt=at, reason=reason)), flush=True)
     sys.exit(75)
 def state():
-    result = subprocess.run(['systemctl','--user','show',policy['unit'],'-p','ActiveState','-p','InvocationID','-p','ActiveEnterTimestampMonotonic','-p','ActiveExitTimestampMonotonic','-p','Requires'], capture_output=True, text=True)
+    result = subprocess.run(['systemctl','--user','show',policy['unit'],'-p','ActiveState','-p','InvocationID','-p','ActiveEnterTimestampMonotonic','-p','ActiveExitTimestampMonotonic','-p','Requires','-p','Names'], capture_output=True, text=True)
     if result.returncode != 0: sys.exit(2)
     return dict(line.split('=',1) for line in result.stdout.splitlines() if '=' in line)
 def window(at):
@@ -31,11 +31,14 @@ def window(at):
     next_start = moment.replace(hour=start, minute=0, second=0, microsecond=0)
     if next_start.timestamp() <= at: next_start += datetime.timedelta(days=1)
     return next_start.timestamp()
+def matches_unit(name, arg):
+    pattern = os.path.basename(arg)
+    return fnmatch.fnmatchcase(name, pattern) or fnmatch.fnmatchcase(name.removesuffix('.service'), pattern.removesuffix('.service'))
 try:
     before = state() if mode != 'probe' else None
-    if mode != 'probe':
-        names = [policy['unit'], *policy.get('dependencies',[]), *before.get('Requires','').split()]
-        if not any(name in sys.argv[3:] for name in names):
+    if mode == 'restart':
+        names = [policy['unit'], *policy.get('dependencies',[]), *before.get('Requires','').split(), *before.get('Names','').split()]
+        if not any(matches_unit(name, arg) for name in names for arg in sys.argv[3:]):
             result = subprocess.run(sys.argv[3:], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             print(json.dumps(dict(code=result.returncode,durationSeconds=0,restarted=False)),flush=True)
             sys.exit(result.returncode)
@@ -270,6 +273,60 @@ export const guardRestartPlan = Effect.fn("Ship.guardRestartPlan")(
   }
 );
 
+const unitLifecycle = new Set([
+  "condrestart",
+  "force-reload",
+  "freeze",
+  "kill",
+  "reload",
+  "reload-or-restart",
+  "reload-or-try-restart",
+  "restart",
+  "start",
+  "stop",
+  "try-reload-or-restart",
+  "try-restart",
+]);
+
+const managerLifecycle = new Set([
+  "--job-mode=isolate",
+  "--marked",
+  "default",
+  "emergency",
+  "exit",
+  "halt",
+  "isolate",
+  "kexec",
+  "poweroff",
+  "reboot",
+  "rescue",
+  "soft-reboot",
+  "switch-root",
+]);
+
+const unitFileLifecycle = new Set(["disable", "enable", "mask", "reenable"]);
+
+const lifecycleMode = (argv: readonly string[]) => {
+  const [program, ...args] = argv;
+
+  if (program?.split("/").at(-1) !== "systemctl") {
+    return null;
+  }
+
+  if (args.some((arg) => managerLifecycle.has(arg))) {
+    return "manager";
+  }
+
+  if (
+    args.some((arg) => unitLifecycle.has(arg)) ||
+    (args.includes("--now") && args.some((arg) => unitFileLifecycle.has(arg)))
+  ) {
+    return "restart";
+  }
+
+  return null;
+};
+
 export const guardedShell = Effect.fn("Ship.guardedShell")(
   function* guardedShell(shell: Interface) {
     const settings = yield* attempt;
@@ -285,10 +342,9 @@ export const guardedShell = Effect.fn("Ship.guardedShell")(
       ...shell,
       exec: Effect.fn("Ship.remoteCommand")(
         function* remoteCommand(argv, diagnostics) {
-          if (
-            argv[0] !== "systemctl" ||
-            !argv.some((arg) => ["restart", "start", "stop"].includes(arg))
-          ) {
+          const mode = lifecycleMode(argv);
+
+          if (mode === null) {
             return yield* shell.exec(argv, diagnostics);
           }
 
@@ -303,7 +359,7 @@ export const guardedShell = Effect.fn("Ship.guardedShell")(
             "-c",
             restartScript,
             JSON.stringify(target),
-            "restart",
+            mode,
             ...argv,
           ]);
 

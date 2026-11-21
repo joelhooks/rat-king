@@ -1,10 +1,13 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Schema } from "effect";
+import { ConfigProvider, Effect, FileSystem, Result, Schema } from "effect";
 import { expect } from "vitest";
 
 import type { RestartSettings } from "../../../stacks/nest/ship-config.ts";
-import { restartScript } from "../../../stacks/nest/ship-restart.ts";
+import {
+  guardedShell,
+  restartScript,
+} from "../../../stacks/nest/ship-restart.ts";
 import { localExec } from "../src/local-exec.ts";
 
 const fixture = String.raw`#!/usr/bin/env python3
@@ -16,7 +19,7 @@ if 'show' in sys.argv:
         backup = 'backup.invalid.service' in sys.argv
         print('active' if value.get('backup' if backup else 'busy') else 'inactive')
     else:
-        print('ActiveState=active\nInvocationID='+value['id']+'\nRequires=store.invalid.service\nActiveEnterTimestampMonotonic='+str(value['enter'])+'\nActiveExitTimestampMonotonic='+str(value['exit']))
+        print('ActiveState=active\nInvocationID='+value['id']+'\nRequires=store.invalid.service\nNames=cell.invalid.service alias.invalid.service\nActiveEnterTimestampMonotonic='+str(value['enter'])+'\nActiveExitTimestampMonotonic='+str(value['exit']))
 elif 'restart' in sys.argv:
     value.update(id='after',exit=1000000,enter=1000000+value['duration']*1000000)
     path.write_text(json.dumps(value))
@@ -120,6 +123,116 @@ const run = Effect.fn("Test.shipGuard")(function* run(
 
   return { ...result, marker: yield* fs.readFileString(marker), seeded };
 });
+
+const forms = [
+  { args: ["restart", "cell.invalid.service"], guarded: true },
+  { absolute: true, args: ["restart", "cell.invalid"], guarded: true },
+  { args: ["start", "cell.invalid"], guarded: true },
+  { args: ["stop", "store.invalid"], guarded: true },
+  { absolute: true, args: ["try-restart", "cell.invalid"], guarded: true },
+  { args: ["reload-or-restart", "cell.invalid.service"], guarded: true },
+  { args: ["reload-or-try-restart", "cell.invalid"], guarded: true },
+  { args: ["try-reload-or-restart", "cell.invalid"], guarded: true },
+  { args: ["condrestart", "cell.invalid"], guarded: true },
+  { args: ["force-reload", "cell.invalid"], guarded: true },
+  { args: ["kill", "alias.invalid"], guarded: true },
+  { args: ["freeze", "cell.invalid"], guarded: true },
+  { args: ["reload", "cell.invalid"], guarded: true },
+  { args: ["disable", "cell.invalid", "--now"], guarded: true },
+  { args: ["enable", "--now", "/units/cell.invalid.service"], guarded: true },
+  { args: ["mask", "--now", "cell.invalid"], guarded: true },
+  { args: ["reenable", "--now", "cell.invalid"], guarded: true },
+  { args: ["restart", "cell*.service"], guarded: true },
+  { args: ["reload-or-restart", "--marked"], guarded: true },
+  { args: ["isolate", "maintenance.invalid.target"], guarded: true },
+  {
+    args: ["start", "--job-mode=isolate", "maintenance.invalid.target"],
+    guarded: true,
+  },
+  { args: ["exit"], guarded: true },
+  { args: ["show", "cell.invalid"], guarded: false },
+  { args: ["disable", "cell.invalid"], guarded: false },
+  { args: ["restart", "other.invalid"], guarded: false },
+  { args: ["restart", "cell.invalid.socket"], guarded: false },
+];
+
+it.live(
+  "guards lifecycle argv at the shell and defers them while the backup runs",
+  () =>
+    Effect.gen(function* backupGuardArgv() {
+      const fs = yield* FileSystem.FileSystem;
+      const local = yield* localExec;
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const program = `${root}/systemctl`;
+      const state = `${root}/state.json`;
+      const events = `${root}/events.jsonl`;
+
+      yield* fs.writeFileString(program, fixture, { mode: 0o700 });
+      yield* fs.writeFileString(
+        state,
+        JSON.stringify({
+          backup: true,
+          duration: 1,
+          enter: 1000,
+          exit: 0,
+          id: "before",
+        })
+      );
+
+      const shell = yield* guardedShell({
+        exec: (argv) =>
+          local.exec([
+            "env",
+            `PATH=${root}:/usr/bin:/bin`,
+            `FIXTURE_STATE=${state}`,
+            ...argv,
+          ]),
+        mkdir: () => Effect.void,
+        purgeRoots: [],
+        read: () => Effect.die("Unexpected file read"),
+        remove: () => Effect.void,
+        rmdir: () => Effect.void,
+        stat: () => Effect.die("Unexpected file stat"),
+        write: () => Effect.void,
+      }).pipe(
+        Effect.provide(
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({
+              RAT_KING_SHIP_ATTEMPT: JSON.stringify({
+                events,
+                restart: {
+                  backupUnit: "backup.invalid.service",
+                  lock: `${root}/backup.lock`,
+                  marker: `${root}/marker.json`,
+                  unit: "cell.invalid.service",
+                  units: ["maintenance.invalid.service"],
+                },
+                sha: "a".repeat(40),
+              }),
+            })
+          )
+        )
+      );
+
+      for (const form of forms) {
+        yield* fs.writeFileString(events, "");
+
+        const argv = [
+          form.absolute === true ? program : "systemctl",
+          "--user",
+          ...form.args,
+        ];
+
+        const result = yield* shell.exec(argv).pipe(Effect.result);
+        const recorded = yield* fs.readFileString(events);
+
+        expect(Result.isFailure(result), argv.join(" ")).toBe(form.guarded);
+        expect(recorded.includes("backup is running"), argv.join(" ")).toBe(
+          form.guarded
+        );
+      }
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+);
 
 const hour = Schema.Int.check(Schema.isBetween({ maximum: 23, minimum: 0 }));
 
