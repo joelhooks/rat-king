@@ -13,7 +13,11 @@ import {
 } from "effect";
 
 import { Settings } from "./config.ts";
-import { Directory, writePrivateJson } from "./directory.ts";
+import {
+  Directory,
+  readDirectoryEntries,
+  writePrivateJson,
+} from "./directory.ts";
 import { reasonOf } from "./errors.ts";
 import { forkName } from "./fork.ts";
 import type { ForkIdentity, ForkParent } from "./fork.ts";
@@ -21,6 +25,7 @@ import { Issuer } from "./issuer.ts";
 import { withLock } from "./lock.ts";
 import {
   AgentName,
+  canonicalName,
   deriveName,
   didFor,
   isReserved,
@@ -213,15 +218,20 @@ export const ensureIdentity = Effect.fn("RatKing.ensureIdentity")(
     const settings = yield* Settings;
     const store = yield* SecretStore;
     const issuer = yield* Issuer;
-    const directory = yield* Directory;
     const path = yield* Path.Path;
+
     const reserved = isReserved(settings.reserved, name);
 
     return yield* withLock(
       path.join(settings.state, "locks"),
       "provision",
       Effect.gen(function* provision() {
-        const listed = yield* directory.resolve(name).pipe(Effect.option);
+        const entries = yield* readDirectoryEntries(settings.directory);
+
+        const canonical = canonicalName(settings.reserved, name);
+
+        const boundDid =
+          settings.reserved[canonical]?.did ?? entries[canonical]?.did;
 
         const { held, secret } = yield* locateIdentitySecret(name);
 
@@ -242,12 +252,9 @@ export const ensureIdentity = Effect.fn("RatKing.ensureIdentity")(
             );
           }
 
-          const registered = Option.exists(
-            listed,
-            (entry) => entry.did === identity.did
-          );
+          const registered = boundDid === identity.did;
 
-          if (Option.isSome(listed) && !registered) {
+          if (boundDid !== undefined && !registered) {
             return yield* fail(
               `Name ${name} is bound to another identity; keys not used`
             );
@@ -260,9 +267,7 @@ export const ensureIdentity = Effect.fn("RatKing.ensureIdentity")(
           return identity;
         }
 
-        const known =
-          Option.isSome(listed) ||
-          (yield* directory.list).some((entry) => entry.name === name);
+        const known = boundDid !== undefined;
 
         if (requireExisting === true && known) {
           return yield* fail(

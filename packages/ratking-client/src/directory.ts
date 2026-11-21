@@ -121,6 +121,31 @@ export const writePrivateJson = Effect.fn("RatKing.writePrivateJson")(
   }
 );
 
+const emptyEntries: EntriesValue = {};
+
+export const readDirectoryEntries = Effect.fn("Directory.readEntries")(
+  function* readEntries(file: string) {
+    const fs = yield* FileSystem.FileSystem;
+
+    return yield* fs.readFileString(file).pipe(
+      Effect.flatMap((raw) =>
+        Schema.decodeEffect(Schema.fromJsonString(Entries))(raw, {
+          onExcessProperty: "error",
+        })
+      ),
+      Effect.catchReason("PlatformError", "NotFound", () =>
+        Effect.succeed(emptyEntries)
+      )
+    );
+  },
+  Effect.mapError(
+    () =>
+      new DirectoryError({
+        reason: "Local identity directory is unreadable; nothing was written",
+      })
+  )
+);
+
 export const directoryLayer = Layer.effect(
   Directory,
   Effect.gen(function* makeDirectory() {
@@ -184,11 +209,13 @@ export const directoryLayer = Layer.effect(
         Effect.provideService(Path.Path, path)
       );
 
-    const entries = fs.readFileString(settings.directory).pipe(
-      Effect.flatMap(
-        Schema.decodeUnknownEffect(Schema.fromJsonString(Entries))
-      ),
-      Effect.orElseSucceed((): EntriesValue => ({}))
+    const readEntries = readDirectoryEntries(settings.directory).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs)
+    );
+
+    const entries = readEntries.pipe(
+      Effect.tapError((failure) => Effect.logWarning(failure.reason)),
+      Effect.orElseSucceed(() => emptyEntries)
     );
 
     const configured = Effect.all(
@@ -355,7 +382,7 @@ export const directoryLayer = Layer.effect(
             path.join(settings.state, "locks"),
             "directory",
             Effect.gen(function* write() {
-              const known = yield* entries;
+              const known = yield* readEntries;
 
               const entry: typeof Entry.Type = { did: document.id, document };
               const lineage = parent ?? known[name]?.parent;
@@ -372,8 +399,10 @@ export const directoryLayer = Layer.effect(
             })
           );
         },
-        Effect.mapError(
-          () => new DirectoryError({ reason: "Directory write failed" })
+        Effect.mapError((failure) =>
+          Schema.is(DirectoryError)(failure)
+            ? failure
+            : new DirectoryError({ reason: "Directory write failed" })
         ),
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.provideService(Path.Path, path)
