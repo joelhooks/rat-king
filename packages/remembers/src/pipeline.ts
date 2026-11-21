@@ -71,6 +71,11 @@ export const redact = (text: string): string => {
   return result;
 };
 
+const transcriptSpanSize = 24;
+
+export const safeEvidenceQuote = (quote: string) =>
+  redact(quote) === quote && codePoints(quote).length < transcriptSpanSize;
+
 export const retryModel = <A, R>(job: Effect.Effect<A, Failure, R>) =>
   job.pipe(
     Effect.retry({
@@ -106,12 +111,20 @@ const verify = Effect.fn("Remembers.verify")(function* verifyDraft(
       return null;
     }
 
+    if (!safeEvidenceQuote(evidence.quote)) {
+      continue;
+    }
+
     cites.push({
       chunk_id: chunk.id,
       end,
       sha256: yield* sha256(evidence.quote),
       start,
     });
+  }
+
+  if (cites.length === 0) {
+    return null;
   }
 
   return yield* Schema.decodeUnknownEffect(Candidate)({
@@ -184,8 +197,12 @@ const leaksTranscript = (candidate: CandidateValue, slice: SliceValue) => {
   return slice.chunks.some((chunk) => {
     const points = codePoints(chunk.text);
 
-    for (let index = 0; index + 24 <= points.length; index += 1) {
-      const fragment = points.slice(index, index + 24).join("");
+    for (
+      let index = 0;
+      index + transcriptSpanSize <= points.length;
+      index += 1
+    ) {
+      const fragment = points.slice(index, index + transcriptSpanSize).join("");
 
       if (fields.some((field) => field.includes(fragment))) {
         return true;
