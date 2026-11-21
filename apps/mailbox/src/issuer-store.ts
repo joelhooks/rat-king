@@ -44,6 +44,7 @@ export interface IssuerTransaction {
     filter?: "active" | "retired" | "all",
     match?: string
   ) => readonly IssuedName[];
+  readonly parentName: (did: string) => string | undefined;
   readonly retire: (retired: RetiredName) => void;
   readonly unretire: (name: string, retiredAt?: number) => void;
   readonly retired: (after: string, limit: number) => readonly RetiredName[];
@@ -77,6 +78,8 @@ const NameRow = Schema.Struct({
   retired: Schema.Number,
   roleTarget: Schema.Number,
 });
+
+const ParentRow = Schema.Struct({ parent: Schema.fromJsonString(Parent) });
 
 const RoleRow = Schema.Struct({
   name: Schema.String,
@@ -173,6 +176,14 @@ export const issuerStore = (sql: Sql) => {
           return parent === null ? entry : { ...entry, parent };
         }
       ),
+    parentName: (did) =>
+      Array.from(
+        sql.exec(
+          "SELECT parent FROM name_parents JOIN names USING (name) WHERE names.did=?",
+          did
+        ),
+        (row) => Schema.decodeUnknownSync(ParentRow)(row).parent.name
+      ).at(0),
     retire: (retired) => {
       sql.exec(
         "INSERT INTO retired (name,did,retired_at,successor,by) VALUES (?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET did=excluded.did, retired_at=excluded.retired_at, successor=excluded.successor, by=excluded.by",

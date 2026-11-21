@@ -51,6 +51,9 @@ const pendingWindow = 200;
 export class DeskRegistry extends Context.Service<
   DeskRegistry,
   {
+    readonly parent: (
+      destination: string
+    ) => Effect.Effect<string | undefined, XrpcFailure>;
     readonly snapshot: (
       did: string,
       atSeq: number
@@ -103,7 +106,7 @@ const vacant = (empty: boolean) => {
   }
 };
 
-export const deskHandlers = (desk: string) => {
+export const deskHandlers = (desk: string, operators: readonly string[]) => {
   const addressed = (did: string) =>
     did === desk
       ? Effect.void
@@ -162,6 +165,13 @@ export const deskHandlers = (desk: string) => {
             return yield* Effect.fail(
               failure("InvalidRequest", 400, "A desk cannot fork into itself")
             );
+          }
+
+          if (
+            !operators.includes(caller.did) &&
+            (yield* registry.parent(input.desk)) !== caller.did
+          ) {
+            return yield* Effect.fail(failure("Forbidden", 403));
           }
 
           yield* store.transaction((tx) => {
