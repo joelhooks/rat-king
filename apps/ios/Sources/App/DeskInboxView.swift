@@ -40,7 +40,7 @@ struct DeskInboxView: View {
                                         Text(thread.summary).foregroundStyle(TUITheme.fg).lineLimit(1).frame(maxWidth: .infinity, alignment: .leading)
                                     }
                                     let unread = store.messages.filter { thread.mailIds.contains($0.id) && $0.outgoingTo == nil && $0.receipt == "delivered" }.count
-                                    Text(thread.state.rawValue.uppercased() + " / \(thread.mailIds.count) MAIL" + (unread > 0 ? " / \(unread) UNREAD" : " / NO UNREAD")).foregroundStyle(unread > 0 ? TUITheme.teal : TUITheme.dim).font(TUITheme.microFont)
+                                    Text((store.answerDelivery(for: thread.id)?.rawValue ?? thread.state.rawValue).uppercased() + " / \(thread.mailIds.count) MAIL" + (unread > 0 ? " / \(unread) UNREAD" : " / NO UNREAD")).foregroundStyle(unread > 0 ? TUITheme.teal : TUITheme.dim).font(TUITheme.microFont)
                                 }
                             }
                         }
@@ -94,6 +94,7 @@ struct DeskThreadView: View {
     @State private var values: [String: String] = [:]
     @State private var rows: [String: [String]] = [:]
     @State private var note = ""
+    @State private var answerFailure: String?
     @Environment(\.dismiss) private var dismiss
     private var thread: InboxThread? { store.threads.first { $0.id == threadId } }
     var body: some View {
@@ -102,7 +103,7 @@ struct DeskThreadView: View {
                 Button("[BACK]") { dismiss() }.foregroundStyle(TUITheme.accent)
                 if let thread {
                     HStack {
-                        Text(thread.project + " / " + thread.state.rawValue.uppercased()).foregroundStyle(TUITheme.dim)
+                        Text(thread.project + " / " + (thread.state == .sent ? "ANSWER" : thread.state.rawValue.uppercased())).foregroundStyle(TUITheme.dim)
                         Spacer()
                         Button("[ARCHIVE + NEXT]") { Task { await archiveNext() } }.disabled(!canArchiveThread(thread, connection: store.state)).foregroundStyle(TUITheme.accent).accessibilityIdentifier("archive-next")
                     }
@@ -121,7 +122,7 @@ struct DeskThreadView: View {
                                             Text("then: " + option.outcome).foregroundStyle(TUITheme.dim)
                                         }.frame(maxWidth: .infinity, alignment: .leading).padding(10).background(TUITheme.panel)
                                             .overlay(Rectangle().stroke(values[axis.id] == option.id ? TUITheme.accent : TUITheme.grid, lineWidth: 1))
-                                    }.foregroundStyle(TUITheme.fg).disabled(thread.state != .open)
+                                    }.foregroundStyle(TUITheme.fg).disabled(thread.state != .open || store.pendingAnswerThread == thread.id)
                                 }
                             }
                         }
@@ -132,20 +133,13 @@ struct DeskThreadView: View {
                                     var selected = rows[group.key] ?? []
                                     if selected.contains(row.id) { selected.removeAll { $0 == row.id } } else { selected.append(row.id) }
                                     rows[group.key] = selected
-                                } label: { Text((rows[group.key]?.contains(row.id) == true ? "[x] " : "[ ] ") + row.label) }.foregroundStyle(TUITheme.fg).disabled(thread.state != .open)
+                                } label: { Text((rows[group.key]?.contains(row.id) == true ? "[x] " : "[ ] ") + row.label) }.foregroundStyle(TUITheme.fg).disabled(thread.state != .open || store.pendingAnswerThread == thread.id)
                             }
                         }
                         if !card.refs.isEmpty { Text("REFS: " + card.refs.joined(separator: " / ")).foregroundStyle(TUITheme.dim) }
-                        if thread.state != .open, let saved = store.preferences[thread.id]?.answer, let sentNote = try? saved["note"]?.text { Text("SENT NOTE: " + sentNote).foregroundStyle(TUITheme.dim) }
-                        if thread.state == .open {
-                            Text("NOTE (overrides ticks if they conflict)").foregroundStyle(TUITheme.dim)
-                            TextEditor(text: $note).font(TUITheme.monoFont).scrollContentBackground(.hidden).frame(minHeight: 64).padding(6).background(TUITheme.panel)
-                            Button("[SEAL + SEND ANSWER]") { Task { await store.answer(thread, values: values, rows: rows, note: note) } }
-                                .disabled(store.state != .live || store.sending || store.hasPendingSend).foregroundStyle(TUITheme.accent)
-                            if store.hasPendingSend { Text("A sealed send is pending. Retry it from Chats before answering another item.").foregroundStyle(TUITheme.warn) }
-                        }
+                        answerActions(thread)
                     }
-                    if let target = store.messages.last(where: { thread.mailIds.contains($0.id) && $0.outgoingTo == nil }) {
+                    if !thread.requiresSealedAnswer, let target = store.messages.last(where: { thread.mailIds.contains($0.id) && $0.outgoingTo == nil }) {
                         ReplyComposer(store: store, target: target).id(target.id)
                     }
                     ForEach(Array(thread.lines.enumerated()), id: \.offset) { _, line in TerminalMessage(text: line) }
@@ -167,6 +161,31 @@ struct DeskThreadView: View {
                 if let sentValues = try? saved.required("values").object().mapValues({ try $0.text }) { values = sentValues }
                 if let sentRows = try? saved["rows"]?.object().mapValues({ try $0.list().map { try $0.text } }) { rows = sentRows }
             }
+        }
+    }
+
+    @ViewBuilder private func answerActions(_ thread: InboxThread) -> some View {
+        if let delivery = store.answerDelivery(for: thread.id, failed: answerFailure != nil) {
+            Text(delivery.rawValue).foregroundStyle(TUITheme.warn).accessibilityIdentifier("desk-answer-delivery")
+        }
+        if let answerFailure { Text(answerFailure).foregroundStyle(TUITheme.err) }
+        if let saved = store.preferences[thread.id]?.answer, let sentNote = try? saved["note"]?.text {
+            Text("ANSWER NOTE: " + sentNote).foregroundStyle(TUITheme.dim)
+        }
+        if store.pendingAnswerThread == thread.id {
+            Button("[RETRY SEALED ANSWER]") {
+                Task {
+                    await store.retryPendingSend(answering: thread.id)
+                    answerFailure = store.pendingAnswerThread == thread.id ? store.lastError : nil
+                }
+            }.disabled(store.state != .live || store.sending).foregroundStyle(TUITheme.accent)
+        } else if thread.state == .open {
+            Text("NOTE (overrides ticks if they conflict)").foregroundStyle(TUITheme.dim)
+            TextEditor(text: $note).font(TUITheme.monoFont).scrollContentBackground(.hidden).frame(minHeight: 64).padding(6).background(TUITheme.panel)
+            Button("[SEAL + SEND ANSWER]") {
+                Task { answerFailure = await store.answer(thread, values: values, rows: rows, note: note) }
+            }.disabled(store.state != .live || store.sending || store.hasPendingSend).foregroundStyle(TUITheme.accent)
+            if store.hasPendingSend { Text("Another send is saved. Retry it before answering this item.").foregroundStyle(TUITheme.warn) }
         }
     }
 }

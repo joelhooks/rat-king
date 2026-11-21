@@ -19,6 +19,7 @@ struct InboxThread: Identifiable {
     var lines: [String] = []
     var latestSummary = ""
     var title: String { card?.title ?? sender }
+    var requiresSealedAnswer: Bool { card?.kind == "decision" || card?.kind == "approval" }
     var summary: String { latestSummary.isEmpty ? title : title + " / " + latestSummary }
     static func firstLine(_ text: String) -> String { String(text.split(whereSeparator: \.isNewline).first ?? "").trimmingCharacters(in: .whitespaces) }
     func visible(at date: Date, archivedView: Bool) -> Bool { archivedView ? archived : !archived && (snoozedUntil.map { $0 <= date } ?? true) }
@@ -28,11 +29,13 @@ struct ThreadPreferences {
     var state: ThreadState = .open; var archived = false; var snoozedUntil: Date?
     var answer: Value?
     var outgoingRef: Value?
+    var answerReceipt: String?
     var wire: Value {
         var fields: [String: Value] = ["state": .string(state.rawValue), "archived": .bool(archived)]
         if let snoozedUntil { fields["snoozedUntil"] = .int(Int64(snoozedUntil.timeIntervalSince1970)) }
         if let answer { fields["answer"] = answer }
         if let outgoingRef { fields["outgoingRef"] = outgoingRef }
+        if let answerReceipt { fields["answerReceipt"] = .string(answerReceipt) }
         return .map(fields)
     }
     init() {}
@@ -44,9 +47,31 @@ struct ThreadPreferences {
             guard case .answer = try DeskRecord.decode(saved) else { throw ProtocolError.invalid("Invalid saved desk answer") }; answer = saved
         }
         if let ref = value["outgoingRef"] { _ = try ref.required("senderDid").text; _ = try ref.required("messageId").text; outgoingRef = ref }
+        answerReceipt = try value["answerReceipt"]?.text
         if let time = value["snoozedUntil"] { snoozedUntil = Date(timeIntervalSince1970: Double(try time.number)) }
     }
 }
+enum DeskAnswerDelivery: String {
+    case pending = "Answer saved · not sent", failed = "Answer not sent", queued = "Answer queued"
+    case admitted = "Answer admitted · delivery unconfirmed", delivered = "Answer delivered", acknowledged = "Answer acknowledged"
+    case expired = "Answer expired", rejected = "Answer rejected"
+
+    static func project(pending: Bool, failed: Bool, preferences: ThreadPreferences?) -> Self? {
+        switch preferences?.answerReceipt {
+        case "delivered": return .delivered
+        case "acked": return .acknowledged
+        case "expired": return .expired
+        case "failed", "rejected": return .rejected
+        case "queued": return .queued
+        case "accepted": return .admitted
+        default:
+            if pending { return .pending }
+            if failed { return .failed }
+            return preferences?.answer == nil ? nil : .admitted
+        }
+    }
+}
+
 func inboxThreadKey(sender: String, project: String, itemId: String?) throws -> String {
     String(decoding: try Value.array([.string(sender), .string(project), itemId.map(Value.string) ?? .null]).jsonData(), as: UTF8.self)
 }

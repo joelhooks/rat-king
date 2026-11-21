@@ -15,12 +15,12 @@ final class ConversationTests: XCTestCase {
         XCTAssertTrue(ask.exists); XCTAssertFalse(chat.exists)
         attach(app, "needs-answer-filtered")
         ask.tap()
-        let open = app.buttons["[open desk item]"]
-        XCTAssertTrue(open.waitForExistence(timeout: 5)); open.tap()
+        XCTAssertFalse(app.buttons["[open desk item]"].exists)
         let accept = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Accept candidate")).firstMatch
         XCTAssertTrue(accept.waitForExistence(timeout: 5)); accept.tap()
         XCTAssertTrue(accept.label.contains("[x]"))
         XCTAssertFalse(app.buttons["[SEAL + SEND ANSWER]"].isEnabled)
+        XCTAssertFalse(app.buttons["[SIGN + SEND REPLY]"].exists)
         attach(app, "desk-choice-selected")
         app.terminate()
     }

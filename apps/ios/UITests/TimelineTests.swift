@@ -1,6 +1,23 @@
 import XCTest
 
 final class TimelineTests: XCTestCase {
+    @MainActor func testTimelineAskOpensSealedChoicesWithoutAChatHop() {
+        let app = XCUIApplication()
+        app.launchArguments = ["--timeline-test"]
+        app.launch()
+        let ask = app.buttons.matching(NSPredicate(format: "label CONTAINS %@", "Review synthetic release")).firstMatch
+        XCTAssertTrue(ask.waitForExistence(timeout: 5))
+        ask.tap()
+        let seal = app.buttons["[SEAL + SEND ANSWER]"]
+        XCTAssertTrue(seal.waitForExistence(timeout: 5))
+        XCTAssertFalse(seal.isEnabled)
+        XCTAssertFalse(app.buttons["[SIGN + SEND REPLY]"].exists)
+        let shot = XCTAttachment(screenshot: app.screenshot())
+        shot.name = "timeline-open-desk-ask"
+        shot.lifetime = .keepAlways
+        add(shot)
+    }
+
     @MainActor func testTimelineOpensThreadAndRetainsDraftAcrossWidths() {
         let app = XCUIApplication()
         app.launchArguments = ["--timeline-test"]

@@ -93,6 +93,15 @@ final class InboxStore {
     private var pushTask: Task<Void, Never>?
     private(set) var pushStatus: String?
     private var pending: Value?
+    var pendingAnswerThread: String? { try? pending?["threadId"]?.text }
+    var composeNotice: String {
+        if pendingAnswerThread != nil { return "A sealed answer is saved. Open its desk item to retry." }
+        if hasPendingSend { return "Saved send pending. Retry uses the same envelope, not this draft." }
+        return "Signed plaintext from this phone. Not encrypted."
+    }
+    func answerDelivery(for id: String, failed: Bool = false) -> DeskAnswerDelivery? {
+        DeskAnswerDelivery.project(pending: pendingAnswerThread == id, failed: failed, preferences: preferences[id])
+    }
     private var lastTid: UInt64 = 0
     private var storageScope: String?
     private(set) var previousSession: LeaseWait?
@@ -405,6 +414,10 @@ final class InboxStore {
             if snapshot || admission == nil { messages[index].receipt = status }
             if let admission { messages[index].admissionSeq = admission }
         }
+        if sender == phoneDid, snapshot || admission == nil,
+           let key = preferences.first(where: { $0.value.outgoingRef?["messageId"] == .string(tid) && $0.value.outgoingRef?["senderDid"] == .string(sender) })?.key {
+            preferences[key]?.answerReceipt = status
+        }
         if let index = copies.firstIndex(where: { $0.id == id }) {
             if snapshot || admission == nil { copies[index].receipt = status }
             try await receiveCopy(copies[index], client: client, lease: lease, token: token)
@@ -551,22 +564,29 @@ final class InboxStore {
     }
     // New messages and replies carry a one-line summary inside the signed payload.
     func send(to did: String, text: String, summary: String = "") async {
+        guard pendingAnswerThread == nil else { return }
         await sendBytes(to: did, bytes: outgoing(text, summary: summary), plaintext: true)
     }
     func reply(to item: MailItem, text: String, summary: String = "") async {
-        guard item.outgoingTo == nil else { return }
+        guard item.outgoingTo == nil, pendingAnswerThread == nil else { return }
         await sendBytes(to: item.sender, bytes: outgoing(text, summary: summary), replyTo: item.message, plaintext: true)
     }
     private func outgoing(_ text: String, summary: String) -> Data {
         guard !text.isEmpty, let did = client?.identity.did else { return Data(text.utf8) }
         return Data(MessageText.outgoing(body: text, summary: summary, senderDid: did).utf8)
     }
-    func answer(_ thread: InboxThread, values: [String: String], rows: [String: [String]], note: String) async {
-        guard !hasPendingSend, let currentThread = threads.first(where: { $0.id == thread.id }), currentThread.state == .open, let card = currentThread.card, let tid = currentThread.cardTid else { return }
+    func answer(_ thread: InboxThread, values: [String: String], rows: [String: [String]], note: String) async -> String? {
+        guard state == .live, !sending, !hasPendingSend, let currentThread = threads.first(where: { $0.id == thread.id }), currentThread.state == .open, let card = currentThread.card, let tid = currentThread.cardTid else { return "Answer can’t be sent right now." }
+        lastError = nil
         do {
             let record = try DeskRecord.answer(card: card, inReplyTo: tid, values: values, rows: rows, note: note)
             await sendBytes(to: thread.sender, bytes: try record.jsonData(), threadId: thread.id)
         } catch { lastError = error.localizedDescription }
+        return lastError
+    }
+    func retryPendingSend(answering threadId: String? = nil) async {
+        guard hasPendingSend, pendingAnswerThread == threadId else { return }
+        await sendBytes(to: "", bytes: Data())
     }
     private func sendBytes(to did: String, bytes: Data, threadId: String? = nil, replyTo: Value? = nil, plaintext: Bool = false) async {
         guard state == .live, !sending, let client, let lease else { return }
@@ -598,7 +618,7 @@ final class InboxStore {
             let accepted = try receipt.required("state").text
             guard ["accepted", "queued", "delivered", "acked"].contains(accepted) else { throw ProtocolError.invalid("Send not admitted: " + accepted) }
             if let target = try pending["threadId"]?.text {
-                var prefs = preferences[target] ?? ThreadPreferences(); prefs.state = threadState(prefs.state, .answered); prefs.answer = pending["answer"]
+                var prefs = preferences[target] ?? ThreadPreferences(); prefs.state = threadState(prefs.state, .answered); prefs.answer = pending["answer"]; prefs.answerReceipt = accepted
                 let aad = try (pending["envelope"] ?? pending).required("aad")
                 prefs.outgoingRef = .map(["senderDid": try aad.required("senderDid"), "messageId": try aad.required("messageId")])
                 try savePreferences(prefs, for: target)

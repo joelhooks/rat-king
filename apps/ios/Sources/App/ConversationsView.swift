@@ -27,9 +27,13 @@ struct ConversationsView: View {
                     TerminalHints(text: archived ? "tap → conversation · swipe right → restore" : "tap → conversation · ← archive · + → pick an agent")
                     if store.hasPendingSend {
                         HStack {
-                            Text("Saved send pending.").foregroundStyle(TUITheme.warn)
+                            Text(store.pendingAnswerThread.flatMap { store.answerDelivery(for: $0)?.rawValue } ?? "Saved send pending.").foregroundStyle(TUITheme.warn)
                             Spacer()
-                            Button("[RETRY PENDING SEND]") { Task { await store.send(to: "", text: "") } }.disabled(store.state != .live || store.sending).foregroundStyle(TUITheme.accent)
+                            if let id = store.pendingAnswerThread {
+                                Button("[REVIEW ANSWER]") { path.append(.desk(id)) }.foregroundStyle(TUITheme.accent)
+                            } else {
+                                Button("[RETRY PENDING SEND]") { Task { await store.retryPendingSend() } }.disabled(store.state != .live || store.sending).foregroundStyle(TUITheme.accent)
+                            }
                         }.padding(.vertical, 4)
                     }
                     if let notice = store.syncNotice { Text(notice).foregroundStyle(TUITheme.warn).accessibilityIdentifier("inbox-sync-notice") }
@@ -38,14 +42,10 @@ struct ConversationsView: View {
                         TerminalFilterBar(filter: $filters.conversations, projects: all.flatMap(\.projects))
                         let shown = all.filter { filters.conversations.admits($0.facts) }
                         if shown.isEmpty { Text(all.isEmpty ? "No conversations yet. Start one with + new message." : "Nothing matches this filter.").foregroundStyle(TUITheme.dim).padding(.vertical, 8) }
-                        ForEach(shown) { conversation in
-                            TerminalSwipeRow(archiveLabel: "[ARCHIVE]", snoozeLabel: archived ? "[RESTORE]" : "",
-                                canArchive: !conversation.archived && !conversation.threadIds.isEmpty && store.state == .live, canSnooze: archived,
-                                archive: { Task { await archive(conversation) } },
-                                snooze: { for thread in store.threads where conversation.threadIds.contains(thread.id) { store.restore(thread) } },
-                                open: { path.append(.conversation(conversation.id, focus: false)) }) {
-                                ConversationRow(conversation: conversation)
-                            }
+                        if filters.conversations.scope == .answer {
+                            ForEach(shown) { conversation in answerRows(for: conversation) }
+                        } else {
+                            ForEach(shown) { conversation in chatRow(conversation, archived: archived) }
                         }
                         InboxHistoryFooter(store: store, scroll: $history)
                     }
@@ -73,6 +73,28 @@ struct ConversationsView: View {
                 path = [route]
                 pushRoute = nil
             }
+    }
+
+    private func answerRows(for conversation: Conversation) -> some View {
+        ForEach(store.threads.filter { conversation.threadIds.contains($0.id) && threadNeedsAnswer($0) }) { thread in
+            Button { path.append(.desk(thread.id)) } label: {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("NEEDS ANSWER · " + conversation.agent.name).font(TUITheme.microFont).foregroundStyle(TUITheme.warn)
+                    Text(thread.title).foregroundStyle(TUITheme.fg).lineLimit(3)
+                }.frame(maxWidth: .infinity, minHeight: 44, alignment: .leading).padding(.horizontal, 8)
+                    .background(TUITheme.panel).contentShape(Rectangle())
+            }.buttonStyle(.plain)
+        }
+    }
+
+    private func chatRow(_ conversation: Conversation, archived: Bool) -> some View {
+        TerminalSwipeRow(archiveLabel: "[ARCHIVE]", snoozeLabel: archived ? "[RESTORE]" : "",
+            canArchive: !conversation.archived && !conversation.threadIds.isEmpty && store.state == .live, canSnooze: archived,
+            archive: { Task { await archive(conversation) } },
+            snooze: { for thread in store.threads where conversation.threadIds.contains(thread.id) { store.restore(thread) } },
+            open: { path.append(.conversation(conversation.id, focus: false)) }) {
+            ConversationRow(conversation: conversation)
+        }
     }
     // Archiving a conversation archives (and acknowledges) each of its open threads.
     private func archive(_ conversation: Conversation) async {
@@ -209,7 +231,7 @@ struct ConversationView: View {
                     if entries.isEmpty { Text("No messages yet.").foregroundStyle(TUITheme.dim) }
                     ForEach(entries) { entry in
                         ConversationEntryView(entry: entry, agent: agent, parent: entry.parentId.flatMap { id in entries.first { $0.id == id } },
-                            thread: { id in store.threads.first { $0.id == id } }, openDesk: openDesk,
+                            thread: { id in store.threads.first { $0.id == id } }, answerDelivery: { store.answerDelivery(for: $0) }, openDesk: openDesk,
                             reply: entry.mailId.map { id in { chosen = id; fresh = false } },
                             acknowledge: entry.mailId.flatMap { id in store.messages.first { $0.id == id } }.map { item in { Task { await store.acknowledge(item) } } },
                             canAcknowledge: store.state == .live)
@@ -234,6 +256,7 @@ struct ConversationView: View {
 struct ConversationEntryView: View {
     let entry: ConversationEntry; let agent: AgentIdentity; let parent: ConversationEntry?
     let thread: (String) -> InboxThread?
+    let answerDelivery: (String) -> DeskAnswerDelivery?
     let openDesk: (String) -> Void
     let reply: (() -> Void)?
     let acknowledge: (() -> Void)?
@@ -285,8 +308,9 @@ struct ConversationEntryView: View {
         return "↳ re " + who + ": " + InboxThread.firstLine(parent.text)
     }
     private func deskLabel(_ desk: InboxThread?) -> String {
-        let kind = desk?.card?.kind.uppercased() ?? "ITEM", state = desk?.state.rawValue.uppercased() ?? "OPEN"
-        return "DESK " + kind + " / " + state
+        let kind = desk?.card?.kind.uppercased() ?? "ITEM"
+        let state = desk.flatMap { answerDelivery($0.id)?.rawValue } ?? (desk?.state == .sent ? "ANSWER" : desk?.state.rawValue ?? "OPEN")
+        return "DESK " + kind + " / " + state.uppercased()
     }
 }
 
@@ -318,14 +342,14 @@ struct ConversationComposer: View {
                     .accessibilityIdentifier("conversation-composer")
                 Button(store.hasPendingSend ? "[RETRY]" : "[SEND]") {
                     Task {
-                        if store.hasPendingSend { await store.send(to: "", text: "") }
+                        if store.hasPendingSend { await store.retryPendingSend() }
                         else if let target { await store.reply(to: target, text: text, summary: summary) }
                         else { await store.send(to: peer, text: text, summary: summary) }
                         if !store.hasPendingSend, store.lastError == nil { text = ""; summary = "" }
                     }
-                }.disabled(store.state != .live || store.sending || (!store.hasPendingSend && text.isEmpty)).foregroundStyle(TUITheme.accent).padding(.vertical, 8)
+                }.disabled(store.state != .live || store.sending || store.pendingAnswerThread != nil || (!store.hasPendingSend && text.isEmpty)).foregroundStyle(TUITheme.accent).padding(.vertical, 8)
             }
-            Text(store.hasPendingSend ? "Saved send pending. Retry uses the same envelope, not this draft." : "Signed plaintext from this phone. Not encrypted.")
+            Text(store.composeNotice)
                 .font(TUITheme.microFont).foregroundStyle(TUITheme.warn)
             if let error = store.lastError { Text("! " + error).font(TUITheme.microFont).foregroundStyle(TUITheme.err) }
         }.padding(8).background(TUITheme.bg)
