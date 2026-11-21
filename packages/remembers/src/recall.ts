@@ -2,7 +2,7 @@ import { Clock, Effect, Schema } from "effect";
 
 import type { CiteRefValue, MemoryRecordValue } from "./contract.ts";
 import { Failure, MemoryRecord, SliceSource, Store } from "./contract.ts";
-import { sha256 } from "./pipeline.ts";
+import { safeEvidenceQuote, sha256 } from "./pipeline.ts";
 
 export const SearchInput = Schema.Struct({
   project: Schema.NullOr(Schema.NonEmptyString),
@@ -23,7 +23,7 @@ export const RecallHit = Schema.Struct({
 export type RecallHitValue = typeof RecallHit.Type;
 
 export const recallHelp =
-  "Search valid claims and cite references. Quotes appear only when SliceSource can resolve and verify them; unavailable or changed evidence never appears as a quote. Search does not log use. Log only a result you actually act on with remembers_use.";
+  "Search valid claims and cite references. Quotes appear only when SliceSource can resolve and verify them; unavailable, private or changed evidence never appears as a quote. Search does not log use. Log only a result you actually act on with remembers_use.";
 
 const priority = (record: MemoryRecordValue) =>
   ["policy", "product_rule", "decision", "preference"].includes(
@@ -93,7 +93,9 @@ export const search = Effect.fn("Remembers.search")(function* search(
             return { status: "stale", text: null } as const;
           }
 
-          return { status: "verified", text } as const;
+          return safeEvidenceQuote(text)
+            ? ({ status: "verified", text } as const)
+            : ({ status: "unavailable", text: null } as const);
         })
       )(record.cites);
 

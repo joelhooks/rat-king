@@ -24,14 +24,19 @@ interface Real {
 const Operation = Schema.Literals([
   "matched",
   "cancelled",
+  "unverifiedCancel",
+  "otherSenderCancel",
   "targetGone",
   "idle",
   "shown",
   "tick",
 ]);
 
-const arrival = (status: string, id: string) => ({
-  did: "did:key:invented",
+const isCancellation = (operation: string) =>
+  ["cancelled", "unverifiedCancel", "otherSenderCancel"].includes(operation);
+
+const arrival = (operation: string, id: string) => ({
+  did: operation === "otherSenderCancel" ? "did:key:other" : "did:key:invented",
   from: "worker",
   id,
   record: {
@@ -42,12 +47,12 @@ const arrival = (status: string, id: string) => ({
     result: "pane result",
     source: "herdr_watch",
     startedAt: "2026-01-01T00:00:00Z",
-    status,
+    status: isCancellation(operation) ? "cancelled" : operation,
     text: "Expanded text",
     watch: "watch-a",
   },
   replyTo: Option.none<string>(),
-  verified: true,
+  verified: operation !== "unverifiedCancel",
 });
 
 const step = (
@@ -72,7 +77,9 @@ const step = (
         model.pending.delete(key);
       }
     }
+  }
 
+  if (isCancellation(operation)) {
     model.acked.push(id);
   }
 
@@ -105,7 +112,7 @@ const step = (
   if (
     operation === "matched" ||
     operation === "targetGone" ||
-    operation === "cancelled"
+    isCancellation(operation)
   ) {
     receiveWake(
       {
@@ -126,12 +133,14 @@ const step = (
 };
 
 it.effect.prop(
-  "wake custody model: Next holds, withdraw settles both, failures wake Now, display alone acknowledges",
+  "wake custody model: Next holds, only verified same-DID withdrawal clears a held wake, failures wake Now, display alone acknowledges",
   [Arbitrary.schema(Schema.Array(Operation).check(Schema.isMaxLength(40)))],
   ([operations]) =>
     Effect.promise(async () => {
       const commands: AsyncCommand<Model, Real>[] = [
         "matched",
+        "unverifiedCancel",
+        "otherSenderCancel",
         "cancelled",
         "idle",
         "targetGone",

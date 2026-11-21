@@ -7,6 +7,7 @@ import type { Bindings } from "./bindings.ts";
 import { Caller } from "./caller.ts";
 import { configuredDocuments, didAllowlist } from "./documents.ts";
 import { failure } from "./failure.ts";
+import { nameDid } from "./issuer-policy.ts";
 import type { PublicDocument } from "./issuer-policy.ts";
 import { IssuerStore, issuerStore } from "./issuer-store.ts";
 import {
@@ -46,6 +47,31 @@ export class Issuer extends DurableObject<Bindings> {
 
         return yield* store.transaction((tx) => tx.binding(name)?.did);
       }).pipe(Effect.provide(this.store))
+    );
+  }
+
+  deskParent(did: string) {
+    const { env } = this;
+
+    return Effect.runPromise(
+      IssuerStore.use((store) =>
+        store.transaction((tx) => {
+          const resolve = (name: string) =>
+            tx.binding(name)?.did ??
+            Option.getOrUndefined(
+              issuerConfig(env.ISSUER_DID_TEMPLATE, env.ISSUER_RESERVED).pipe(
+                Option.map(({ didTemplate }) => nameDid(didTemplate, name)),
+                Option.filter((candidate) =>
+                  configuredDocuments(env).some(({ id }) => id === candidate)
+                )
+              )
+            );
+
+          return Option.getOrUndefined(
+            Option.fromNullishOr(tx.parentName(did)).pipe(Option.map(resolve))
+          );
+        })
+      ).pipe(Effect.provide(this.store))
     );
   }
 

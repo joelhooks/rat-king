@@ -59,6 +59,7 @@ const command = (op: typeof Operation.Type): Command<Model, Real> => ({
         id: op.id,
         notBefore: op.timed ? model.elapsed + op.minutes * 60_000 : undefined,
         wake: op.wake,
+        wakeSender: "fixture",
         watch: op.id,
       };
 
@@ -112,7 +113,7 @@ const command = (op: typeof Operation.Type): Command<Model, Real> => ({
         (mail) => mail.id === op.id && !mail.emitted
       );
 
-      expect(real.box.withdraw(op.id)).toEqual(
+      expect(real.box.withdraw(op.id, "fixture")).toEqual(
         removable.map((mail) => mail.id)
       );
       model.mails = model.mails.filter((mail) => !removable.includes(mail));

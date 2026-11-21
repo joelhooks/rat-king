@@ -33,7 +33,7 @@ it.effect.prop(
 
       const text = changed
         ? "changed fictional evidence"
-        : "approved the violet protocol";
+        : "approved the violet";
 
       const body = {
         chunk: cite.chunk_id,

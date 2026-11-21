@@ -305,7 +305,7 @@ export const flushWake = (
 export interface WakeHost {
   readonly consume: (id: string) => void;
   readonly take: (mail: PendingMail, hold: Hold) => void;
-  readonly withdraw: (watch: string) => readonly string[];
+  readonly withdraw: (watch: string, sender: string) => readonly string[];
 }
 
 const pendingWake = (
@@ -327,6 +327,7 @@ const pendingWake = (
     },
     id: inbound.id,
     wake: true,
+    wakeSender: inbound.did,
     watch: record.watch,
   };
 
@@ -353,8 +354,10 @@ export const receiveWake = (
   const record = decoded.value;
 
   if (record.status === "cancelled") {
-    for (const id of host.withdraw(record.watch)) {
-      host.consume(id);
+    if (inbound.verified) {
+      for (const id of host.withdraw(record.watch, inbound.did)) {
+        host.consume(id);
+      }
     }
 
     host.consume(inbound.id);

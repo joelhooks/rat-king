@@ -59,7 +59,7 @@ it.effect.prop(
       const hits = yield* search({ project: "orchid", text: "Orchid" });
       expect(hits[0]?.quotes[0]).toEqual({
         status: "verified",
-        text: "approved the violet protocol",
+        text: "approved the violet",
       });
       const cite = records[0]?.cites[0];
       const text = data.slices[0]?.chunks[0]?.text ?? "";

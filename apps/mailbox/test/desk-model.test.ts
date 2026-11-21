@@ -32,6 +32,8 @@ const authors = ["a", "b", "c"].map(
 
 const stranger = "did:web:stranger.example.invalid";
 
+const [first = stranger, second = stranger, third = stranger] = desks;
+
 const projects = ["alpha", "beta"];
 
 const kinds = [
@@ -510,6 +512,14 @@ const forkCommand = (from: string, to: string, fraction: number) =>
       return;
     }
 
+    if (from !== third && (from !== first || to !== second)) {
+      if (real.invariant === "authorization") {
+        expect(errorOf(response.body)).toBe("Forbidden");
+      }
+
+      return;
+    }
+
     const empty =
       target.head === 0 &&
       target.project === undefined &&
@@ -541,7 +551,10 @@ const forkCommand = (from: string, to: string, fraction: number) =>
     );
     target.forked = true;
 
-    if (real.invariant === "forkInheritsCursor") {
+    if (
+      real.invariant === "forkInheritsCursor" ||
+      real.invariant === "authorization"
+    ) {
       expect(decoded(Fork.Output, response)).toEqual({
         atSeq,
         copied: items.length,
@@ -757,8 +770,6 @@ const toCommand = (spec: typeof Spec.Type) => {
   return rememberCommand(did(spec.desk), spec.index, spec.id);
 };
 
-const [first = stranger, second = stranger, third = stranger] = desks;
-
 const [alice = stranger, bob = stranger] = authors;
 
 const scenario = [
@@ -792,7 +803,10 @@ const scenario = [
   rememberCommand(first, 0, 1),
   ackCommand(first, [1], true),
   restartCommand(first),
+  forkCommand(first, third, 1),
   forkCommand(first, second, 1),
+  forkCommand(third, first, 0),
+  forkCommand(third, desks[3] ?? stranger, 0),
   ackCommand(first, [0], false),
   ackCommand(second, [2], false),
   forkCommand(first, second, 1),
@@ -848,6 +862,8 @@ const deskModel = (
     const registry = Layer.succeed(
       DeskRegistry,
       DeskRegistry.of({
+        parent: (destination) =>
+          Effect.succeed(destination === second ? first : undefined),
         snapshot: (from: string, atSeq: number) =>
           DeskStore.use((store) =>
             store.transaction((tx) => tx.snapshot(atSeq))
@@ -873,7 +889,7 @@ const deskModel = (
         await run(
           deskRoute(request).pipe(
             Effect.provide(
-              deskHandlers(desk).pipe(
+              deskHandlers(desk, [third]).pipe(
                 Layer.provide(storeOf(desk)),
                 Layer.provide(registry),
                 Layer.provide(Layer.succeed(Caller, { did: caller }))
@@ -935,7 +951,7 @@ gate(
 );
 
 gate(
-  "only the desk reads, acks, binds or forks its queue; others ingest only as the item's author",
+  "only the desk reads, acks or binds; forks need source ownership and destination lineage or operator authority; others ingest only as author",
   "authorization"
 );
 

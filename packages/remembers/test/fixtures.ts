@@ -32,7 +32,7 @@ export const draft = (conversation: string, suffix: number): DraftValue => ({
   evidence: [
     {
       chunk_id: `${conversation}-chunk`,
-      quote: "approved the violet protocol",
+      quote: "approved the violet",
     },
   ],
   subject: { orchid: 1 },

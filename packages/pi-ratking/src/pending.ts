@@ -55,6 +55,7 @@ export interface PendingMail {
   readonly coalesce?: boolean;
   readonly watch?: string;
   readonly wake?: boolean;
+  readonly wakeSender?: string;
   readonly content: string;
   readonly deliverAs?: Hold;
   readonly details: unknown;
@@ -274,9 +275,13 @@ export const inbox = (host: MailHost) => {
         due.every((mail) => mail.wake === true) ? "wake" : "cc"
       );
     },
-    withdraw: (watch: string): readonly string[] => {
+    withdraw: (watch: string, sender: string): readonly string[] => {
       const ids = [...pending.values()].flatMap((mail) =>
-        mail.watch === watch && !digested.has(mail.id) ? [mail.id] : []
+        mail.watch === watch &&
+        mail.wakeSender === sender &&
+        !digested.has(mail.id)
+          ? [mail.id]
+          : []
       );
 
       for (const id of ids) {

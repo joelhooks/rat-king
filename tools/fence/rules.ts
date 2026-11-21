@@ -14,6 +14,12 @@ export const instanceLiterals = (
   ["domains", inventory.domains],
   ["hosts", inventory.hosts],
   ["ips", inventory.ips],
+  [
+    "s3Credentials",
+    inventory.s3Credentials === undefined
+      ? []
+      : [inventory.s3Credentials.accessKey, inventory.s3Credentials.secretKey],
+  ],
   ["secretNames", inventory.secretNames],
   ["sites", inventory.sites],
   [
@@ -43,6 +49,45 @@ const privateIp = (value: string): boolean => {
     (first === 192 && second === 168) ||
     (first === 100 && second !== undefined && second >= 64 && second <= 127)
   );
+};
+
+const hasPrivateIpv6 = (content: string) => {
+  for (const [address] of content.matchAll(
+    /(?<![\w:])(?:f[cd][\da-f]{2}|fe[89ab][\da-f]):[\da-f:]*(?:\.\d{1,3}){0,3}(?![\w:])/giu
+  )) {
+    if (isIP(address) === 6) {
+      return true;
+    }
+  }
+
+  return false;
+};
+
+const credentialAssignment =
+  /\b(?:[a-z][\w]*?(?=[A-Z]))?(?:[aA]piKey|[sS]ecretAccessKey|[aA]ccessKeyId|[aA]ccessKey|[sS]ecretKey|[aA]ccessToken|[rR]efreshToken|[cC]lientSecret|[pP]rivateKey|[aA]uthToken)["']?\s*[:=]\s*(?<quote>["'`])(?<value>[^"'`\r\n]*)\k<quote>/gu;
+
+const placeholderCredential =
+  /(?:^|[-_])(?:test|fake|example|dummy|invented|sample|placeholder|redacted)(?=$|[-_])/iu;
+
+const hasCredentialAssignment = (content: string) => {
+  for (const match of content.matchAll(credentialAssignment)) {
+    const value = match.groups?.value;
+
+    if (value === undefined || !/^[\da-z+/_-]{16,}={0,2}$/iu.test(value)) {
+      continue;
+    }
+
+    const body = value.replace(/=+$/u, "");
+
+    if (
+      !/^(?<char>.)\k<char>*$/u.test(body) &&
+      !placeholderCredential.test(body)
+    ) {
+      return true;
+    }
+  }
+
+  return false;
 };
 
 const escaped = (value: string) =>
@@ -99,6 +144,14 @@ export const violations = ({
     if (privateIp(match[0])) {
       found.add("private-ip");
     }
+  }
+
+  if (hasPrivateIpv6(content)) {
+    found.add("private-ipv6");
+  }
+
+  if (hasCredentialAssignment(content)) {
+    found.add("credential-assignment");
   }
 
   if (inventory !== null) {

@@ -7,7 +7,9 @@ import type { Bindings } from "./bindings.ts";
 import { Caller } from "./caller.ts";
 import { DeskSnapshot, DeskStore, deskStore } from "./desk-store.ts";
 import { DeskRegistry, deskHandlers, deskRoute } from "./desk.ts";
+import { didAllowlist } from "./documents.ts";
 import { failure } from "./failure.ts";
+import { issuerInstance } from "./issuer-object.ts";
 
 const SnapshotJson = Schema.fromJsonString(DeskSnapshot);
 
@@ -37,6 +39,19 @@ export class Desk extends DurableObject<Bindings> {
     const registry = Layer.succeed(
       DeskRegistry,
       DeskRegistry.of({
+        parent: Effect.fn("DeskRegistry.parent")(function* parent(
+          destination: string
+        ) {
+          const issuers = env.ISSUER;
+
+          return issuers === undefined
+            ? undefined
+            : yield* Effect.tryPromise({
+                catch: () => failure("MailboxUnavailable", 503),
+                try: () =>
+                  issuers.getByName(issuerInstance).deskParent(destination),
+              });
+        }),
         snapshot: Effect.fn("DeskRegistry.snapshot")(function* snapshot(
           did: string,
           atSeq: number
@@ -68,7 +83,7 @@ export class Desk extends DurableObject<Bindings> {
     return Effect.runPromise(
       deskRoute(request).pipe(
         Effect.provide(
-          deskHandlers(this.desk).pipe(
+          deskHandlers(this.desk, didAllowlist(env.OPERATOR_DIDS)).pipe(
             Layer.provide(this.store),
             Layer.provide(registry),
             Layer.provide(Layer.succeed(Caller, { did: caller }))
