@@ -1,5 +1,5 @@
 import { it } from "@effect/vitest";
-import { Effect, Schema } from "effect";
+import { Arbitrary, Effect, Schema } from "effect";
 import { describe, expect } from "vitest";
 
 import {
@@ -16,6 +16,10 @@ const inventory = {
   domains: ["network.example"],
   hosts: ["node-a"],
   ips: ["203.0.113.10", "2001:db8::10"],
+  s3Credentials: {
+    accessKey: ["example", "access"].join("-"),
+    secretKey: ["example", "secret"].join("-"),
+  },
   secretNames: ["example_credential"],
   sites: ["site-a"],
 };
@@ -50,6 +54,71 @@ describe("publication rules", () => {
     }
   });
 
+  it.prop(
+    "rejects private IPv6 literals, including the tailnet ULA range, but not neighboring public literals",
+    [
+      Arbitrary.schema(
+        Schema.Int.check(Schema.isBetween({ maximum: 65_535, minimum: 1 }))
+      ),
+    ],
+    ([end]) => {
+      const format = (head: string) => [head, "", end.toString(16)].join(":");
+
+      for (const head of ["fc00", "FD7A", "fdff", "fe80", "febf"]) {
+        expect(check(`[${format(head)}]:443`)).toContain("private-ipv6");
+      }
+
+      for (const head of ["fbff", "fe00", "fe7f", "fec0", "fc0"]) {
+        expect(check(format(head))).not.toContain("private-ipv6");
+      }
+    }
+  );
+
+  it.prop(
+    "rejects key-like literals assigned to camelCase credentials but allows placeholders and references",
+    [
+      Arbitrary.schema(
+        Schema.Literals([
+          "apiKey",
+          "vendorApiKey",
+          "secretAccessKey",
+          "accessToken",
+          "clientSecret",
+        ])
+      ),
+    ],
+    ([key]) => {
+      for (const value of [
+        "3a6f9c82d710eb54".repeat(2),
+        ["V9sYk3ab", "2q7BnZM+", "Hx0="].join(""),
+        "XKHMEF2C5BGZ6P7N",
+        ["AKIA", "63YEH4MKQ2J7WSDN"].join(""),
+      ]) {
+        expect(check(JSON.stringify({ [key]: value }))).toContain(
+          "credential-assignment"
+        );
+      }
+
+      for (const value of [
+        "{{CREDENTIAL_TEMPLATE}}",
+        ["$", "{options.placeholder}"].join(""),
+        "f".repeat(32),
+        "abc-example-n7R0dzft6295",
+        "abc-short",
+      ]) {
+        expect(check(JSON.stringify({ [key]: value }))).not.toContain(
+          "credential-assignment"
+        );
+      }
+
+      for (const reference of ["options.accessKey", "process.env.X", key]) {
+        expect(check(`${key}: ${reference}`)).not.toContain(
+          "credential-assignment"
+        );
+      }
+    }
+  );
+
   it("rejects generic leaks without copying sensitive fixtures", () => {
     expect(check(["node-a", "network", "ts", "net"].join("."))).toContain(
       "tailnet-domain"
@@ -81,6 +150,12 @@ describe("publication rules", () => {
             violations({ content: value.toUpperCase(), inventory: decoded })
           ).toContain(`instance-${category}`);
         }
+      }
+
+      for (const value of Object.values(inventory.s3Credentials)) {
+        expect(violations({ content: value, inventory: decoded })).toContain(
+          "instance-s3Credentials"
+        );
       }
 
       expect(
