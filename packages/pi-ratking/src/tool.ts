@@ -24,6 +24,7 @@ import { literalPrompt } from "@rat-king/ratking-client/prompt";
 import {
   RatKing,
   ClaimOutcome,
+  Inbox,
   ReaderControl,
   ReaderState,
   SendPhase,
@@ -64,6 +65,7 @@ export const Action = Schema.Literals([
   "ask",
   "handover",
   "reply",
+  "read",
   "pending",
   "handled",
   "status",
@@ -413,6 +415,7 @@ Usage:
   ${tool}({ action: "record", to: "name", type: "sh.mschf.agentgraph.checkin", record: { ... } }) → Validate then send typed data
   ${tool}({ action: "ask", to: "name", summary: "...", message: "..." }) → Ask and get the reply as a message; your turn is not blocked
   ${tool}({ action: "reply", replyTo: "<id>", summary: "...", message: "..." }) → Answer a message by its id
+  ${tool}({ action: "read", id: "<id>" })                             → Full body of a recently delivered message on this machine
   ${tool}({ action: "pending" })                                     → Unanswered inbound asks and open outbound asks
   ${tool}({ action: "list" })                                       → Directory names and roles, each with its role line
   ${tool}({ action: "list", match: "muster/" })                     → Matching directory names and roles
@@ -521,6 +524,36 @@ const needTo = (params: ToolParamsValue) =>
       )
     : Effect.succeed(params.to.trim());
 
+const readMail = Effect.fn("RatKing.readMail")(function* readMail(
+  id: string | undefined
+) {
+  if (id === undefined || id.trim() === "") {
+    return loud("Missing 'id' parameter");
+  }
+
+  const inbox = yield* Effect.serviceOption(Inbox);
+
+  if (Option.isNone(inbox)) {
+    return loud("Local received mail is unavailable in this runtime");
+  }
+
+  return yield* inbox.value.readReceived(id).pipe(
+    Effect.match({
+      onFailure: (error) => loud(error.reason),
+      onSuccess: Option.match({
+        onNone: () =>
+          loud(`No recently delivered message ${id} on this machine`),
+        onSome: ({ received }) =>
+          ok(
+            "record" in received
+              ? JSON.stringify(received.record, null, 2)
+              : received.body
+          ),
+      }),
+    })
+  );
+});
+
 export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
   tool: string,
   askTimeout: Duration.Input,
@@ -546,6 +579,10 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
 
   if (params.action === "connect") {
     return loud("Use /ratking connect in an interactive Pi");
+  }
+
+  if (params.action === "read") {
+    return yield* readMail(params.id);
   }
 
   return yield* Match.value(params.action).pipe(

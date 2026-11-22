@@ -46,6 +46,8 @@ import {
 } from "@rat-king/ratking-client/pass-socket";
 import {
   COPY_NOTE,
+  Kind,
+  renderInboundBody,
   LexiconRecord,
   renderInbound,
 } from "@rat-king/ratking-client/payload";
@@ -225,13 +227,36 @@ export const digestLine = (inbound: Inbound) => {
 
 const WakeEntry = Schema.Struct({
   body: Schema.String,
+  cc: Schema.optionalKey(Schema.Boolean),
   from: Schema.String,
+  kind: Schema.optionalKey(Kind),
   replyTo: Schema.optional(Schema.String),
   summary: Schema.optional(Schema.String),
 });
 
+const digestEntry = (mail: PendingMail) =>
+  Schema.decodeUnknownOption(WakeEntry)(mail.details);
+
+const isCc = (mail: PendingMail) =>
+  Option.exists(digestEntry(mail), (entry) => entry.cc === true);
+
+const digestBody = (tool: string, mail: PendingMail) =>
+  Option.match(digestEntry(mail), {
+    onNone: () => [],
+    onSome: ({ body, cc, kind }) => [
+      "",
+      renderInboundBody(tool, {
+        body,
+        cc: cc === true,
+        id: mail.id,
+        kind: kind ?? "message",
+      }),
+      "",
+    ],
+  });
+
 const wakeLine = (mail: PendingMail) =>
-  Option.match(Schema.decodeUnknownOption(WakeEntry)(mail.details), {
+  Option.match(digestEntry(mail), {
     onNone: () => `- id ${mail.id}`,
     onSome: (value) =>
       `- ${value.from} · ${(value.summary ?? value.body).replaceAll(/\s+/gu, " ").slice(0, DIGEST_LINE_MAX)} · id ${mail.id}${value.replyTo === undefined ? "" : ` · reply to ${value.replyTo}`}`,
@@ -248,7 +273,7 @@ const heldNote = (mails: readonly PendingMail[]) => {
   const rules = [...new Set(mails.flatMap(filterRule))];
 
   return [
-    ...(mails.some((mail) => filterRule(mail).length === 0) ? [COPY_NOTE] : []),
+    ...(mails.some(isCc) ? [COPY_NOTE] : []),
     ...(rules.length === 0
       ? []
       : [`Held by your filter ${rules.join(", ")}, so this did not wake you.`]),
@@ -263,9 +288,11 @@ export const renderDigest = (
   variant === "wake"
     ? [
         `**🐀 ${mails.every((mail) => mail.wake === true) ? "wake" : "while you were away"}** · ${mails.length}`,
-        ...mails.map(wakeLine),
+        ...mails.flatMap((mail) => [
+          wakeLine(mail),
+          ...(mail.wake === true ? ["", mail.content] : digestBody(tool, mail)),
+        ]),
         "",
-        ...mails.flatMap((mail) => (mail.wake === true ? [mail.content] : [])),
         ...(mails.every((mail) => mail.wake === true)
           ? []
           : [
@@ -274,12 +301,16 @@ export const renderDigest = (
             ]),
       ].join("\n")
     : [
-        `**🐀 ${digestLabel(digestReason(mails))}** · ${mails.length}${digestLabel(digestReason(mails)) === "cc digest" ? " cc'd" : ""} since the last digest, newest first`,
+        `**🐀 ${digestLabel(digestReason(mails))}** · ${mails.length}${mails.every(isCc) ? " cc'd" : ""} since the last digest, newest first`,
         formatReason(digestReason(mails)),
         "",
-        ...mails.map((mail) => mail.line ?? `- id ${mail.id}`),
+        ...mails.flatMap((mail) => [
+          mail.line ?? `- id ${mail.id}`,
+          ...digestBody(tool, mail),
+        ]),
         "",
-        `${digestLabel(digestReason(mails)) === "cc digest" ? "These are copies; the sender used to: for whoever must act. " : ""}To answer one: ${tool}({ action: "reply", replyTo: "<id>", summary: "...", message: "..." })`,
+        ...heldNote(mails),
+        `To answer one: ${tool}({ action: "reply", replyTo: "<id>", summary: "...", message: "..." })`,
       ].join("\n");
 
 export const digestDetails = (

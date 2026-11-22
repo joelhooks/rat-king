@@ -138,6 +138,8 @@ import {
 } from "./reader-liveness.ts";
 import type { IntakeBudget } from "./reader-liveness.ts";
 import { readerStore } from "./reader-store.ts";
+import { receivedMail } from "./received-mail.ts";
+import type { ReceivedMail } from "./received-mail.ts";
 import { recentMap } from "./recent.ts";
 import { RENDERS } from "./record-visibility.ts";
 import {
@@ -603,6 +605,9 @@ export class Inbox extends Context.Service<
     readonly levers: Effect.Effect<AttentionSnapshot, NotDelivered>;
     readonly locate: (name: string) => Effect.Effect<Located, NotDelivered>;
     readonly peek: (options?: PeekOptions) => Effect.Effect<Peek, NotDelivered>;
+    readonly readReceived: (
+      id: string
+    ) => Effect.Effect<Option.Option<ReceivedMail>, NotDelivered>;
     readonly statusOf: (
       name: string
     ) => Effect.Effect<AttentionStatus.MainValue, NotDelivered>;
@@ -864,6 +869,21 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     caughtUp = false;
     reportDrain();
   };
+
+  const localMail = (name: string) =>
+    receivedMail(settings.state, name).pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path)
+    );
+
+  const cacheDelivery = (name: string, entry: ReceivedMail) =>
+    localMail(name).pipe(
+      Effect.flatMap((mail) => mail.save(entry)),
+      Effect.tapError(() =>
+        Effect.logWarning("Rat King could not save a local received message")
+      ),
+      Effect.ignore
+    );
 
   const displayAck = (id: string) =>
     acknowledgments.get(id)?.pipe(
@@ -3169,10 +3189,16 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             Object.assign(levers, { owner: owner.value });
           }
 
+          const acknowledge = ack ?? displayAck(inbound.id);
+
           yield* deliver(
             { ...inbound, levers },
             settled,
-            ack ?? displayAck(inbound.id)
+            acknowledge === undefined
+              ? undefined
+              : cacheDelivery(own.name, { received: inbound }).pipe(
+                  Effect.andThen(acknowledge)
+                )
           );
 
           if (!("record" in inbound) && injects(inbound, settled)) {
@@ -3583,15 +3609,20 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           const consuming = client.consume(
             (message, meta) =>
               Effect.gen(function* showHeld() {
+                const entry: Peeked = {
+                  encrypted: message.encrypted ?? true,
+                  received: yield* classify(own, message),
+                  redelivered: meta.redelivered,
+                  seq: meta.seq,
+                  state: meta.redelivered ? "delivered" : "accepted",
+                };
+
                 yield* deliver(
-                  {
-                    encrypted: message.encrypted ?? true,
-                    received: yield* classify(own, message),
-                    redelivered: meta.redelivered,
-                    seq: meta.seq,
-                    state: meta.redelivered ? "delivered" : "accepted",
-                  },
-                  meta.ack.pipe(Effect.mapError(unreachable))
+                  entry,
+                  cacheDelivery(own.name, entry).pipe(
+                    Effect.andThen(meta.ack),
+                    Effect.mapError(unreachable)
+                  )
                 );
                 yield* settle(message.tid);
               }),
@@ -4312,6 +4343,21 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         levers,
         locate,
         peek,
+        readReceived: (id) =>
+          awaitSelf.pipe(
+            Effect.flatMap(({ name }) => localMail(name)),
+            Effect.flatMap((mail) =>
+              mail
+                .find(id)
+                .pipe(
+                  Effect.mapError(() =>
+                    refused("NotAttempted")(
+                      "Could not read the local received mail journal"
+                    )
+                  )
+                )
+            )
+          ),
         statusOf,
       })
     )

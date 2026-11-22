@@ -9,7 +9,7 @@ import type {
 import { renderRecordBody } from "./agentgraph.ts";
 import { formatReason } from "./attend.ts";
 import type { Levers } from "./attend.ts";
-import { deliveryReason, quietCopy } from "./delivery.ts";
+import { deliveryReason } from "./delivery.ts";
 import { AgentName } from "./name.ts";
 
 export const LexiconRecord = Schema.StructWithRest(
@@ -149,18 +149,25 @@ const renderSent = (inbound: Inbound, by: string) =>
     `Context only: ${by} already sent this. Do not reply to it.`,
   ].join("\n");
 
-export const COPY_BODY_MAX = 500;
+export const COPY_BODY_MAX = 4000;
 
 export const COPY_NOTE =
-  "You are cc'd, so this did not wake you. No action is expected unless it names you; the sender uses to: for whoever must act.";
+  "You are cc'd. No action is expected unless it names you; the sender uses to: for whoever must act.";
 
-const copyBody = (inbound: Inbound) => {
-  if (Option.isSome(inbound.summary)) {
-    return "(Full text kept in the session view.)";
+export const renderInboundBody = (
+  tool: string,
+  inbound: Pick<Inbound, "body" | "cc" | "id" | "kind"> & {
+    readonly sentBy?: string | undefined;
+  }
+) => {
+  if (inbound.cc && inbound.sentBy === undefined) {
+    return inbound.body.length > COPY_BODY_MAX
+      ? `${inbound.body.slice(0, COPY_BODY_MAX)}…\n(clipped; read the full body with ${tool}({ action: "read", id: ${JSON.stringify(inbound.id)} }))`
+      : inbound.body;
   }
 
-  return inbound.body.length > COPY_BODY_MAX
-    ? `${inbound.body.slice(0, COPY_BODY_MAX)}… (clipped; full text kept in the session view)`
+  return inbound.kind === "data"
+    ? renderRecordBody(inbound.body)
     : inbound.body;
 };
 
@@ -210,13 +217,8 @@ export const renderInbound = (tool: string, inbound: Inbound) => {
       onNone: () => [],
       onSome: (summary) => [`Summary: ${summary}`, ""],
     }),
-    ...(quietCopy(inbound)
-      ? [copyBody(inbound), "", COPY_NOTE]
-      : [
-          inbound.kind === "data"
-            ? renderRecordBody(inbound.body)
-            : inbound.body,
-        ]),
+    renderInboundBody(tool, inbound),
+    ...(inbound.cc ? ["", COPY_NOTE] : []),
     "",
     replyHint(tool, inbound),
   ].join("\n");

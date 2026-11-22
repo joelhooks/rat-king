@@ -13,6 +13,7 @@ import {
   PassSource,
   passMarker,
   RelaySource,
+  renderInboundBody,
   replyHint,
 } from "@rat-king/ratking-client/payload";
 import type { Inbound } from "@rat-king/ratking-client/payload";
@@ -204,18 +205,22 @@ const turnLines = (input: InboundInput): readonly string[] | undefined => {
   });
 };
 
-const previewBody = (value: InboundView, expanded: boolean): string => {
-  if (value.kind === "data") {
-    return expanded
-      ? value.body
-      : Option.getOrElse(compactRecord(value.body), () => value.body);
+const previewBody = (
+  value: InboundView,
+  expanded: boolean,
+  tool: string
+): string => {
+  if (value.kind === "data" && !expanded && !value.cc) {
+    return Option.getOrElse(compactRecord(value.body), () => value.body);
   }
 
+  const body = renderInboundBody(tool, value);
   const summary = clean(value.summary ?? "").trim();
+  const text = clean(body).trimStart();
 
-  return summary !== "" && clean(value.body).trimStart().startsWith(summary)
-    ? clean(value.body).trimStart().slice(summary.length).trimStart()
-    : value.body;
+  return value.kind !== "data" && summary !== "" && text.startsWith(summary)
+    ? text.slice(summary.length).trimStart()
+    : body;
 };
 
 const statusGlyph = (value: InboundView): string => {
@@ -260,7 +265,7 @@ export const inboundLines = (input: InboundInput): readonly string[] => {
 
   const headline = `${value.sentBy === undefined ? "from" : "sent to"} ${value.sentBy === undefined ? name : recipient}${value.summary === undefined ? "" : ` · ${oneLine(value.summary)}`}`;
 
-  const bodyText = previewBody(value, expanded);
+  const bodyText = previewBody(value, expanded, input.tool);
 
   const body = paragraphs(
     value.via === undefined

@@ -1,9 +1,11 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import { Directory } from "@rat-king/ratking-client/directory";
+import { Inbox } from "@rat-king/ratking-client/ratking";
 import { Console, Effect, FileSystem, Layer, Schema } from "effect";
 import { expect } from "vitest";
 
+import { runAction } from "../../../packages/pi-ratking/src/tool.ts";
 import { harness } from "../../../packages/pi-ratking/test/harness.ts";
 import { runRatking } from "../src/main.ts";
 import { Wiring } from "../src/session.ts";
@@ -226,6 +228,32 @@ it.live.prop(
       expect(lines.map((line) => line.split("|")[1])).toEqual(
         lines.map((_, index) => String(index))
       );
+
+      const last = mails.length;
+      const id = mails.at(-1)?.event.receipt.message.messageId ?? "missing";
+      const read = captured();
+      const beforeRead = fake.calls.length;
+
+      yield* runRatking(["read", id, "--as", "tester"]).pipe(
+        Effect.provideService(Console.Console, read.console),
+        Effect.provideService(Wiring, wiring)
+      );
+
+      expect(read.stdout.join("\n")).toContain(`message ${last}`);
+
+      const result = yield* Effect.gen(function* readInPi() {
+        yield* Inbox.use((inbox) => inbox.attach("tester"));
+
+        return yield* runAction("ratking", "5 seconds", { action: "read", id });
+      }).pipe(Effect.provide(wiring));
+
+      expect(result.isError).toBe(false);
+      expect(result.text).toBe(`message ${last}`);
+      expect(
+        fake.calls
+          .slice(beforeRead)
+          .filter(({ nsid }) => nsid.endsWith(".poll"))
+      ).toEqual([]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 3 }, timeout: 120_000 }
 );
