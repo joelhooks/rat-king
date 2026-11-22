@@ -1,7 +1,8 @@
-import { Effect, FileSystem, Path } from "effect";
+import { Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { runCommand } from "../../packages/ratking-client/src/process.ts";
+import { SystemdAlarmSettings } from "./alarm-config.ts";
 import type { AlarmSettingsValue } from "./alarm-config.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
@@ -45,16 +46,21 @@ const unitWord = (value: string) => {
 export const alarmUnit = (config: StageConfigValue, configPath: string) => {
   const launch = config.alarm?.systemd;
 
-  if (launch === undefined) {
+  if (launch === undefined || !Schema.is(SystemdAlarmSettings)(config.alarm)) {
     return "";
   }
+
+  const account =
+    launch.scope === "system"
+      ? `User=${unitWord(launch.user)}\nGroup=${unitWord(launch.group)}\n`
+      : "";
 
   return `[Unit]
 Description=Rat King fleet alarm
 
 [Service]
 Type=exec
-ExecStart=${unitWord(`:${launch.node}`)} ${unitWord(alarmScript(launch.source))} alarm
+${account}ExecStart=${unitWord(`:${launch.node}`)} ${unitWord(alarmScript(launch.source))} alarm
 Environment=${unitWord(`RAT_KING_STAGE_CONFIG=${configPath}`)}
 Environment=${unitWord(`PATH=${launch.path}`)}
 WorkingDirectory=${escapeSpecifiers(launch.source)}

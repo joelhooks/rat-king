@@ -44,6 +44,38 @@ const failure = (operation: string) => () => new RelayFailure({ operation });
 
 const JournalJson = Schema.fromJsonString(JournalEntry);
 
+const signer = "rat_king_script_billing-alerts_identity";
+
+export const billingCredentials = Effect.fn("Nest.billingCredentials")(
+  function* billingCredentials() {
+    const source = yield* secretSource.pipe(
+      Effect.mapError(failure("secret-source"))
+    );
+
+    if (source === "agent-secrets") {
+      return {
+        identity: yield* Config.String("RAT_KING_BILLING_IDENTITY").pipe(
+          Config.withDefault(signer)
+        ),
+        token: yield* Config.Redacted("BILLING_PULL_CREDENTIAL"),
+      };
+    }
+
+    const token = yield* Config.String("RAT_KING_BILLING_PULL_SLOT").pipe(
+      Effect.flatMap(systemdCredential),
+      Effect.mapError(failure("pull-credential"))
+    );
+
+    const bearer = Redacted.value(token).trim();
+
+    if (!/^[A-Za-z0-9._~+/-]+=*$/u.test(bearer)) {
+      return yield* new RelayFailure({ operation: "invalid-pull-credential" });
+    }
+
+    return { identity: signer, token: Redacted.make(bearer) };
+  }
+);
+
 export const billingCommand = Effect.fn("Nest.billing-relay")(
   function* billingCommand(argv: readonly string[]) {
     if (argv.length > 0) {
@@ -76,30 +108,12 @@ export const billingCommand = Effect.fn("Nest.billing-relay")(
         );
       }
 
-      const source = yield* secretSource.pipe(
-        Effect.mapError(failure("secret-source"))
-      );
-
-      const token = yield* source === "systemd"
-        ? Config.String("RAT_KING_BILLING_PULL_SLOT").pipe(
-            Effect.flatMap(systemdCredential),
-            Effect.mapError(failure("pull-credential"))
-          )
-        : Config.Redacted("BILLING_PULL_CREDENTIAL");
+      const { identity, token } = yield* billingCredentials();
 
       const recipient = yield* Config.schema(
         AgentName,
         "RAT_KING_BILLING_RECIPIENT"
       ).pipe(Config.withDefault("switchboard"));
-
-      const signer = "rat_king_script_billing-alerts_identity";
-
-      const identity =
-        source === "systemd"
-          ? signer
-          : yield* Config.String("RAT_KING_BILLING_IDENTITY").pipe(
-              Config.withDefault(signer)
-            );
 
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -131,15 +145,7 @@ export const billingCommand = Effect.fn("Nest.billing-relay")(
         );
 
         const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-        const bearer = Redacted.value(token).trim();
-
-        if (!/^[A-Za-z0-9._~+/-]+=*$/u.test(bearer)) {
-          return yield* new RelayFailure({
-            operation: "invalid-pull-credential",
-          });
-        }
-
-        const authorize = HttpClientRequest.bearerToken(bearer);
+        const authorize = HttpClientRequest.bearerToken(Redacted.value(token));
 
         const pending = yield* client
           .execute(

@@ -8,6 +8,10 @@ import {
   SchemaIssue,
 } from "effect";
 
+import {
+  credentialEnvironment,
+  SecretSourceMode,
+} from "../../packages/ratking-client/src/systemd-credentials.ts";
 import { AlarmSettings } from "./alarm-config.ts";
 import { ShipAttempt, ShipSettings } from "./ship-config.ts";
 
@@ -49,6 +53,7 @@ export const RuntimeConfig = Schema.Struct({
   RAT_KING_RECOVER_STATE: OptionalBoolean,
   RAT_KING_REMOTE_AGENT: OptionalText,
   RAT_KING_REMOTE_DID: OptionalText,
+  RAT_KING_SECRET_SOURCE: Schema.optionalKey(SecretSourceMode),
   RAT_KING_SERVICE_DID: Text,
   RAT_KING_SIDECAR_OUTPUT: OptionalText,
   RAT_KING_SLICE_MEMORY_MAX: Text,
@@ -206,11 +211,14 @@ export const loadStageConfig = Effect.gen(function* loadStageConfig() {
   }).pipe(Effect.mapError(invalid));
 });
 
-export const stageProvider = (config: StageConfigValue) =>
+export const stageProvider = (
+  config: StageConfigValue,
+  env: Parameters<typeof credentialEnvironment>[0]
+) =>
   ConfigProvider.fromUnknown({
     ...config.runtime,
+    ...credentialEnvironment(env),
     ALCHEMY_TELEMETRY_DISABLED: "1",
-    CREDENTIALS_DIRECTORY: process.env.CREDENTIALS_DIRECTORY,
     RAT_KING_HEALTH_READER_DIDS: JSON.stringify(
       config.runtime.RAT_KING_HEALTH_READER_DIDS ?? []
     ),
@@ -226,7 +234,6 @@ export const stageProvider = (config: StageConfigValue) =>
     RAT_KING_OPERATOR_DIDS: JSON.stringify(
       config.runtime.RAT_KING_OPERATOR_DIDS
     ),
-    RAT_KING_SECRET_SOURCE: process.env.RAT_KING_SECRET_SOURCE,
     RAT_KING_SHIP_ATTEMPT:
       config.shipAttempt === undefined
         ? undefined

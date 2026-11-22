@@ -14,6 +14,7 @@ import {
 import type { OpenedMessage, SendOptions } from "@rat-king/mailbox-client";
 import {
   Config,
+  ConfigProvider,
   Console,
   Effect,
   FileSystem,
@@ -24,6 +25,7 @@ import {
 import { Argument, Command, Flag } from "effect/cli";
 import { FetchHttpClient } from "effect/http";
 
+import { credentialProvider } from "../../../packages/ratking-client/src/systemd-credentials.ts";
 import { enrollHost } from "./enroll-host.ts";
 import { CliError, identitySource, readCliIdentity } from "./identity.ts";
 import { markInboxRead } from "./mark-read.ts";
@@ -722,5 +724,16 @@ export const runMailbox = (args: readonly string[]) =>
   );
 
 if (import.meta.main) {
-  NodeRuntime.runMain(runMailbox(process.argv.slice(2)));
+  NodeRuntime.runMain(
+    runMailbox(process.argv.slice(2)).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          credentialProvider({
+            CREDENTIALS_DIRECTORY: process.env.CREDENTIALS_DIRECTORY,
+            RAT_KING_SECRET_SOURCE: process.env.RAT_KING_SECRET_SOURCE,
+          })
+        )
+      )
+    )
+  );
 }

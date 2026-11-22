@@ -1,5 +1,4 @@
 import { Config, Console, Effect, Logger, Schema, Stdio, Stream } from "effect";
-import { FetchHttpClient } from "effect/http";
 
 import {
   SendOutcomes,
@@ -14,11 +13,13 @@ import { AgentName } from "../../packages/ratking-client/src/name.ts";
 import { PayloadJson } from "../../packages/ratking-client/src/payload.ts";
 import { secretStoreLayer } from "../../packages/ratking-client/src/secrets.ts";
 import { secretSource } from "../../packages/ratking-client/src/systemd-credentials.ts";
+import {
+  digestText,
+  frontDeskRefused as refused,
+  withFrontDeskJournal,
+} from "./front-desk-journal.ts";
 import { prepareScript } from "./send.ts";
 import { FleetError } from "./stage-config.ts";
-
-const refused = () =>
-  new FleetError({ reason: "Front desk delivery not confirmed" });
 
 const Payload = Schema.Struct({
   body: Schema.String.check(Schema.isMinLength(1), Schema.isMaxLength(24_576)),
@@ -62,29 +63,36 @@ export const readFrontDeskInput = Effect.fn("Nest.frontDeskInput")(
   }
 );
 
-export const sendFrontDesk = Effect.fn("Nest.frontDeskSend")(
-  function* frontDeskSend(payload: typeof Payload.Type) {
+const prepareDelivery = Effect.fn("Nest.prepareFrontDeskDelivery")(
+  function* prepareDelivery() {
     const as = yield* Config.String("RAT_KING_FRONT_DESK_SIGNER");
     const to = yield* Config.schema(AgentName, "RAT_KING_FRONT_DESK_TO");
     const cc = yield* Config.schema(AgentName, "RAT_KING_FRONT_DESK_CC");
 
-    const { client, from, primary, targets } = yield* prepareScript({
-      as,
-      cc: [cc],
-      to,
-    });
-
-    const [, copy] = targets;
+    const prepared = yield* prepareScript({ as, cc: [cc], to });
+    const [, copy] = prepared.targets;
 
     if (
       copy === undefined ||
-      !targets.every(({ did, document }) =>
+      !prepared.targets.every(({ did, document }) =>
         document.keyAgreement.includes(`${did}#encryption`)
       )
     ) {
       return yield* refused();
     }
 
+    return { ...prepared, copy };
+  }
+);
+
+type Delivery = Effect.Success<ReturnType<typeof prepareDelivery>>;
+
+const sealDelivery = Effect.fn("Nest.sealFrontDeskDelivery")(
+  function* sealDelivery(
+    { client, copy, from, primary }: Delivery,
+    payload: typeof Payload.Type,
+    hash: string
+  ) {
     const body = yield* Schema.encodeEffect(PayloadJson)({
       body: payload.body,
       cc: [copy.name],
@@ -94,24 +102,86 @@ export const sendFrontDesk = Effect.fn("Nest.frontDeskSend")(
       to: primary.name,
     });
 
-    const envelope = yield* client.seal(primary.did, body, { encrypt: true });
+    const sealed = yield* client.seal(primary.did, body, { encrypt: true });
+    const carbon = yield* client.sealCopy(sealed, copy.did);
 
-    const receipt = yield* client.send(envelope, {
-      cc: copy.did,
-      wakeReason: payload.quiet ? "quiet" : "to",
-      woke: !payload.quiet,
-    });
+    return { copy: carbon, hash, primary: sealed, step: "prepared" as const };
+  }
+);
 
-    if (
-      !SendOutcomes.$is("Accepted")(receipt) ||
-      !SendOutcomes.$is("Accepted")(receipt.cc)
-    ) {
-      return yield* refused();
-    }
+const requireReceipt = (
+  envelope: Parameters<Delivery["client"]["send"]>[0],
+  sent: Effect.Success<ReturnType<Delivery["client"]["send"]>>
+) =>
+  SendOutcomes.$is("Accepted")(sent) &&
+  sent.receipt.message.messageId === envelope.aad.messageId &&
+  sent.receipt.message.senderDid === envelope.aad.senderDid &&
+  sent.receipt.recipientDid === envelope.aad.recipientDid
+    ? Effect.void
+    : Effect.fail(refused());
 
-    return { messageId: receipt.receipt.message.messageId, ok: true };
-  },
-  Effect.scoped
+export const sendFrontDesk = Effect.fn("Nest.frontDeskSend")(
+  function* frontDeskSend(payload: typeof Payload.Type) {
+    const settings = yield* Settings;
+
+    const hash = yield* digestText(
+      JSON.stringify([payload.id, payload.summary, payload.body, payload.quiet])
+    );
+
+    return yield* withFrontDeskJournal(
+      settings.state,
+      payload.id,
+      ({ read, write }) =>
+        Effect.gen(function* deliver() {
+          const prior = yield* read;
+
+          if (prior !== null && prior.hash !== hash) {
+            return yield* refused();
+          }
+
+          if (prior?.step === "done") {
+            return { messageId: prior.messageId, ok: true };
+          }
+
+          const delivery = yield* prepareDelivery();
+
+          const row = prior ?? (yield* sealDelivery(delivery, payload, hash));
+
+          if (
+            row.primary.aad.recipientDid !== delivery.primary.did ||
+            row.copy.aad.recipientDid !== delivery.copy.did
+          ) {
+            return yield* refused();
+          }
+
+          if (prior === null) {
+            yield* write(row);
+          }
+
+          if (row.step === "prepared") {
+            const sent = yield* delivery.client.send(row.primary, {
+              wakeReason: payload.quiet ? "quiet" : "to",
+              woke: !payload.quiet,
+            });
+
+            yield* requireReceipt(row.primary, sent);
+            yield* write({ ...row, step: "primary-accepted" });
+          }
+
+          const copied = yield* delivery.client.send(row.copy, {
+            wakeReason: "cc",
+            woke: false,
+          });
+
+          yield* requireReceipt(row.copy, copied);
+
+          const { messageId } = row.primary.aad;
+          yield* write({ hash, messageId, step: "done" });
+
+          return { messageId, ok: true };
+        }).pipe(Effect.scoped)
+    );
+  }
 );
 
 export const frontDeskCommand = (argv: readonly string[]) =>
@@ -133,7 +203,7 @@ export const frontDeskCommand = (argv: readonly string[]) =>
     const settings = yield* loadSettings();
 
     const receipt = yield* sendFrontDesk(payload).pipe(
-      Effect.provide([directoryLayer, secretStoreLayer, FetchHttpClient.layer]),
+      Effect.provide([directoryLayer, secretStoreLayer]),
       Effect.provideService(Settings, settings)
     );
 

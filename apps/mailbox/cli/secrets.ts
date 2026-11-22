@@ -131,7 +131,15 @@ const systemdLease = (name: string) =>
 const systemdStore = SecretStore.of({
   add: () =>
     Effect.fail(new CliError({ reason: "Systemd credentials are read only" })),
-  exists: (name) => systemdLease(name).pipe(Effect.isSuccess),
+  exists: (name) =>
+    systemdCredential(name).pipe(
+      Effect.as(true),
+      Effect.catchIf(
+        ({ kind }) => kind === "absent",
+        () => Effect.succeed(false)
+      ),
+      Effect.mapError(({ reason }) => new CliError({ reason }))
+    ),
   lease: systemdLease,
 });
 

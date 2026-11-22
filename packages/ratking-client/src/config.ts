@@ -138,50 +138,52 @@ export class NotConfigured extends Schema.TaggedError<NotConfigured>()(
 
 const notConfigured = (reason: string) => () => new NotConfigured({ reason });
 
-const readConfig = Effect.fn("RatKing.readConfig")(function* readConfig() {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
+export const readConfig = Effect.fn("RatKing.readConfig")(
+  function* readConfig() {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
 
-  const source = yield* secretSource.pipe(
-    Effect.mapError(notConfigured("Invalid secret source"))
-  );
+    const source = yield* secretSource.pipe(
+      Effect.mapError(notConfigured("Invalid secret source"))
+    );
 
-  const configured = yield* Config.option(Config.String("RATKING_CONFIG")).pipe(
-    Effect.mapError(notConfigured("RATKING_CONFIG is unreadable"))
-  );
+    const configured = yield* Config.option(
+      Config.String("RATKING_CONFIG")
+    ).pipe(Effect.mapError(notConfigured("RATKING_CONFIG is unreadable")));
 
-  if (
-    source === "systemd" &&
-    (!Option.isSome(configured) || !path.isAbsolute(configured.value))
-  ) {
-    return yield* notConfigured(
-      "Systemd mode requires an explicit absolute RATKING_CONFIG"
-    )();
+    if (
+      source === "systemd" &&
+      (!Option.isSome(configured) || !path.isAbsolute(configured.value))
+    ) {
+      return yield* notConfigured(
+        "Systemd mode requires an explicit absolute RATKING_CONFIG"
+      )();
+    }
+
+    const home =
+      source === "systemd"
+        ? undefined
+        : yield* Config.String("HOME").pipe(
+            Effect.mapError(notConfigured("HOME is unset"))
+          );
+
+    const file =
+      Option.getOrUndefined(configured) ??
+      path.join(home ?? "", ".config/rat-king/pi.json");
+
+    const text = yield* fs
+      .readFileString(file)
+      .pipe(Effect.mapError(notConfigured(`No Rat King config at ${file}`)));
+
+    const config = yield* Schema.decodeEffect(Schema.fromJsonString(PiConfig))(
+      text
+    ).pipe(
+      Effect.mapError(notConfigured(`Malformed Rat King config at ${file}`))
+    );
+
+    return { config, home };
   }
-
-  const home =
-    source === "systemd"
-      ? undefined
-      : yield* Config.String("HOME").pipe(
-          Effect.mapError(notConfigured("HOME is unset"))
-        );
-
-  const file =
-    Option.getOrUndefined(configured) ??
-    path.join(home ?? "", ".config/rat-king/pi.json");
-
-  const text = yield* fs
-    .readFileString(file)
-    .pipe(Effect.mapError(notConfigured(`No Rat King config at ${file}`)));
-
-  const config = yield* Schema.decodeEffect(Schema.fromJsonString(PiConfig))(
-    text
-  ).pipe(
-    Effect.mapError(notConfigured(`Malformed Rat King config at ${file}`))
-  );
-
-  return { config, home };
-});
+);
 
 export const toolName = Effect.gen(function* resolveToolName() {
   const env = yield* Config.option(Config.schema(ToolName, "RATKING_TOOL"));

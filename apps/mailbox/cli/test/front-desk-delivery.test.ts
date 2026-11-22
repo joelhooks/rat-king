@@ -4,11 +4,14 @@ import { plaintext } from "@rat-king/envelope/canonical";
 import * as Send from "@rat-king/lexicon/mailbox.send";
 import {
   ConfigProvider,
+  Console,
   Effect,
   FileSystem,
   Predicate,
   Result,
   Schema,
+  Stdio,
+  Stream,
 } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { expect } from "vitest";
@@ -17,13 +20,7 @@ import {
   document,
   identity,
 } from "../../../../packages/mailbox-client/test/identity.ts";
-import {
-  loadSettings,
-  Settings,
-} from "../../../../packages/ratking-client/src/config.ts";
-import { directoryLayer } from "../../../../packages/ratking-client/src/directory.ts";
-import { secretStoreLayer } from "../../../../packages/ratking-client/src/secrets.ts";
-import { sendFrontDesk } from "../../../../stacks/nest/front-desk-command.ts";
+import { frontDeskCommand } from "../../../../stacks/nest/front-desk-command.ts";
 
 const signer = "fixture-signer";
 
@@ -69,7 +66,9 @@ const seed = Effect.gen(function* seed() {
   });
 });
 
-const fixtureMailbox = (posted: Send.InputValue[], rejectCopy: boolean) =>
+const Path = Schema.Literals(["copy-refused", "primary-reply-lost", "all-ok"]);
+
+const fixtureMailbox = (posted: Send.InputValue[], first: typeof Path.Type) =>
   HttpClient.make((request) =>
     Effect.gen(function* respond() {
       expect(request.url).toContain(Send.Method.path);
@@ -83,72 +82,113 @@ const fixtureMailbox = (posted: Send.InputValue[], rejectCopy: boolean) =>
       )(new TextDecoder().decode(request.body.body)).pipe(Effect.orDie);
 
       posted.push(input);
+
       const { recipientDid, senderDid, messageId } = input.envelope.aad;
+
+      if (first === "primary-reply-lost" && posted.length === 1) {
+        return HttpClientResponse.fromWeb(
+          request,
+          Response.json({ error: "MailboxUnavailable" }, { status: 503 })
+        );
+      }
+
+      if (
+        first === "copy-refused" &&
+        recipientDid === copyDid &&
+        posted.length === 2
+      ) {
+        return HttpClientResponse.fromWeb(
+          request,
+          Response.json({ error: "Conflict" }, { status: 409 })
+        );
+      }
 
       return HttpClientResponse.fromWeb(
         request,
-        rejectCopy && recipientDid === copyDid
-          ? Response.json({ error: "Conflict" }, { status: 409 })
-          : Response.json({
-              receipt: {
-                message: { messageId, senderDid },
-                recipientDid,
-                seq: 1,
-                state: "accepted",
-              },
-            })
+        Response.json({
+          receipt: {
+            message: { messageId, senderDid },
+            recipientDid,
+            seq: 1,
+            state: "accepted",
+          },
+        })
       );
     })
   );
 
 it.effect.prop(
-  "front desk encrypts both copies, preserves quiet delivery, and emits a primary receipt only after both accept",
-  [Schema.Boolean, Schema.Boolean],
-  ([quiet, rejectCopy]) =>
+  "front desk journals the primary before copy, replays identical bytes after an uncertain receipt, and returns one stable receipt",
+  [Schema.Boolean, Path],
+  ([quiet, path]) =>
     Effect.gen(function* check() {
       const provider = yield* seed;
       const posted: Send.InputValue[] = [];
 
-      const verdict = yield* Effect.gen(function* send() {
-        const settings = yield* loadSettings();
+      const lines: string[] = [];
 
-        return yield* sendFrontDesk({
+      const input = new TextEncoder().encode(
+        JSON.stringify({
           body: "private fixture",
           id: "fixture",
           quiet,
           summary: "sample",
-        }).pipe(
-          Effect.provide([directoryLayer, secretStoreLayer]),
-          Effect.provideService(Settings, settings),
-          Effect.provideService(
-            HttpClient.HttpClient,
-            fixtureMailbox(posted, rejectCopy)
-          )
-        );
-      }).pipe(Effect.provide(ConfigProvider.layer(provider)), Effect.result);
+        })
+      );
 
-      expect(
-        posted.map((entry) => [
-          entry.envelope.aad.recipientDid,
-          plaintext(entry.envelope),
-          entry.woke,
-          entry.wakeReason,
-        ])
-      ).toEqual([
-        [primaryDid, false, !quiet, quiet ? "quiet" : "to"],
-        [copyDid, false, false, "cc"],
-      ]);
+      const send = frontDeskCommand(["--stdin"]).pipe(
+        Effect.provide([
+          ConfigProvider.layer(provider),
+          Stdio.layerTest({ stdin: Stream.succeed(input) }),
+        ]),
+        Effect.provideService(
+          HttpClient.HttpClient,
+          fixtureMailbox(posted, path)
+        ),
+        Effect.provideService(Console.Console, {
+          ...console,
+          log: (line: string) => {
+            lines.push(line);
+          },
+        }),
+        Effect.result
+      );
 
-      if (rejectCopy) {
-        expect(Result.isFailure(verdict)).toBe(true);
-      } else {
-        expect(verdict).toEqual(
-          Result.succeed({
-            messageId: posted[0]?.envelope.aad.messageId,
-            ok: true,
-          })
-        );
-      }
+      const first = yield* send;
+      const retry = yield* send;
+      const completed = yield* send;
+
+      expect(Result.isSuccess(first)).toBe(path === "all-ok");
+      expect(Result.isSuccess(retry)).toBe(true);
+      expect(Result.isSuccess(completed)).toBe(true);
+
+      const receipt = JSON.stringify({
+        messageId: posted[0]?.envelope.aad.messageId,
+        ok: true,
+      });
+
+      expect(lines).toEqual(
+        Array.from({ length: path === "all-ok" ? 3 : 2 }, () => receipt)
+      );
+
+      const primary = posted.filter(
+        (entry) => entry.envelope.aad.recipientDid === primaryDid
+      );
+
+      const copies = posted.filter(
+        (entry) => entry.envelope.aad.recipientDid === copyDid
+      );
+
+      expect(primary).toHaveLength(path === "primary-reply-lost" ? 2 : 1);
+      expect(copies).toHaveLength(path === "copy-refused" ? 2 : 1);
+      expect(primary.at(-1)).toEqual(primary[0]);
+      expect(copies.at(-1)).toEqual(copies[0]);
+      expect(posted.every((entry) => !plaintext(entry.envelope))).toBe(true);
+      expect(primary[0]).toMatchObject({
+        wakeReason: quiet ? "quiet" : "to",
+        woke: !quiet,
+      });
+      expect(copies[0]).toMatchObject({ wakeReason: "cc", woke: false });
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 12 } }
 );

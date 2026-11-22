@@ -58,9 +58,29 @@ it.prop(
         `StandardError=append:${escaped}/error.log`,
         "Restart=always",
         "RestartSec=60",
+        ...(systemd.scope === "system"
+          ? [`User="${systemd.user}"`, `Group="${systemd.group}"`]
+          : []),
         `WantedBy=${systemd.scope === "system" ? "multi-user.target" : "default.target"}`,
       ])
     );
+  }
+);
+
+it.prop(
+  "a system alarm rejects absent or root service accounts before rendering",
+  [SystemdAlarmSettings],
+  ([alarm]) => {
+    const { user: _user, group: _group, ...unit } = alarm.systemd;
+    const invalid = { ...alarm, systemd: { ...unit, scope: "system" } };
+
+    expect(Schema.is(AlarmSettings)(invalid)).toBe(false);
+    expect(
+      Schema.is(AlarmSettings)({
+        ...invalid,
+        systemd: { ...invalid.systemd, group: "service", user: "root" },
+      })
+    ).toBe(false);
   }
 );
 

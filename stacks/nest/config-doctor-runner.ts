@@ -15,7 +15,7 @@ import type { ChildProcessSpawner } from "effect/process";
 import { Identity } from "../../packages/mailbox-client/src/identity.ts";
 import { inspectConfig } from "../../packages/ratking-client/src/config-doctor.ts";
 import {
-  PiConfig,
+  readConfig,
   settingsLayer,
 } from "../../packages/ratking-client/src/config.ts";
 import { runCommand } from "../../packages/ratking-client/src/process.ts";
@@ -27,18 +27,12 @@ import {
 const program = Effect.gen(function* doctor() {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const home = yield* Config.String("HOME");
-
-  const file = yield* Config.String("RATKING_CONFIG").pipe(
-    Config.withDefault(path.join(home, ".config/rat-king/pi.json"))
-  );
-
-  const config = yield* Schema.decodeUnknownEffect(
-    Schema.fromJsonString(PiConfig)
-  )(yield* fs.readFileString(file));
+  const { config, home } = yield* readConfig();
 
   const expand = (value: string) =>
-    value.startsWith("~/") ? path.join(home, value.slice(2)) : value;
+    home !== undefined && value.startsWith("~/")
+      ? path.join(home, value.slice(2))
+      : value;
 
   const readable = (reference: string) =>
     fs.access(expand(reference), { readable: true }).pipe(

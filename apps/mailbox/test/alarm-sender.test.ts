@@ -21,6 +21,7 @@ import {
   prepareAlarmMail,
   sendAlarmDelivery,
 } from "../../../stacks/nest/alarm-mail.ts";
+import { readOpsName } from "../../../stacks/nest/ops-read.ts";
 import { ShipSettings } from "../../../stacks/nest/ship-config.ts";
 import { StageConfig } from "../../../stacks/nest/stage-config.ts";
 import type { StageConfigValue } from "../../../stacks/nest/stage-config.ts";
@@ -131,6 +132,45 @@ const arb = {
   ship: ShipSettings,
   useDefault: Schema.Boolean,
 };
+
+it.effect.prop(
+  "ops health refuses a cached name whose authoritative peer document is missing before reading name health",
+  arb,
+  ({ alarm, base, ship, useDefault }) =>
+    Effect.gen(function* check() {
+      const { config, files, secrets } = yield* fixture(
+        base,
+        alarm,
+        ship,
+        useDefault
+      );
+
+      const calls: string[] = [];
+
+      const http = HttpClient.make((request) =>
+        Effect.sync(() => {
+          calls.push(request.url);
+
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({ error: "DocumentNotFound" }, { status: 404 })
+          );
+        })
+      );
+
+      const failure = yield* readOpsName(config, "target").pipe(
+        Effect.provide([files, NodePath.layer]),
+        Effect.provideService(SecretStore, secrets(false)),
+        Effect.provideService(HttpClient.HttpClient, http),
+        Effect.flip
+      );
+
+      expect(failure.reason).toBe("Unknown ops health name");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain("mailbox.getPeerDocument");
+    }),
+  { arbitrary: { runs: 5 } }
+);
 
 it.effect.prop(
   "alarm notices, pruned broadcasts, typed desk wakes and reader-crash records sign at both wire boundaries as the selected sender",

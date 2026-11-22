@@ -71,17 +71,42 @@ const SystemdPath = Schema.NonEmptyString.check(
   )
 );
 
-const SystemdAlarm = Schema.Struct({
+const ServiceAccount = Schema.String.check(
+  Schema.isPattern(/^[a-z_][a-z0-9_-]{0,30}$/u)
+);
+
+const SystemdUnit = Schema.Struct({
   errorLog: SystemdPath,
   node: SystemdPath,
   outputLog: SystemdPath,
   path: Schema.NonEmptyString,
-  scope: Schema.optionalKey(Schema.Literals(["user", "system"])),
   source: SystemdPath,
   unit: Schema.NonEmptyString.check(
     Schema.isPattern(/^[A-Za-z0-9_.-]+\.service$/u)
   ),
 });
+
+const NonRootAccount = ServiceAccount.check(
+  Schema.makeFilter(
+    (value) =>
+      value !== "root" || "System supervisor requires a non-root account"
+  )
+);
+
+const SystemdAlarm = Schema.Union([
+  Schema.Struct({
+    ...SystemdUnit.fields,
+    group: Schema.optionalKey(Schema.Never),
+    scope: Schema.optionalKey(Schema.Literal("user")),
+    user: Schema.optionalKey(Schema.Never),
+  }),
+  Schema.Struct({
+    ...SystemdUnit.fields,
+    group: NonRootAccount,
+    scope: Schema.Literal("system"),
+    user: NonRootAccount,
+  }),
+]);
 
 export const ConfiguredWakeTargets = Schema.optionalKey(
   Schema.Array(ConfiguredWakeTarget)

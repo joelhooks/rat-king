@@ -340,6 +340,56 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
       : SendOutcomes.Uncertain({ error });
   });
 
+  const sealCopy = Effect.fn("Mailbox.sealCopy")(function* sealCopy(
+    envelope: Defs.EncryptedEnvelopeValue,
+    did: string
+  ) {
+    const payload = payloads.get(envelope);
+
+    if (
+      payload === undefined ||
+      !peers.has(did) ||
+      did === envelope.aad.recipientDid ||
+      plaintext(envelope)
+    ) {
+      return yield* failure(
+        "CC requires a locally sealed encrypted primary and a distinct known peer"
+      );
+    }
+
+    const cached =
+      copies.get(envelope) ?? new Map<string, Defs.EncryptedEnvelopeValue>();
+
+    const prior = cached.get(did);
+
+    if (prior !== undefined) {
+      return prior;
+    }
+
+    const body = JSON.stringify({
+      $type: "sh.mschf.ratking.mailbox.cc",
+      body: new TextDecoder().decode(payload.body),
+      primary: {
+        messageId: envelope.aad.messageId,
+        recipientDid: envelope.aad.recipientDid,
+        senderDid: identity.did,
+      },
+    });
+
+    const replyTo = yield* Schema.decodeUnknownEffect(
+      Schema.toType(Defs.MessageRef)
+    )({
+      messageId: envelope.aad.messageId,
+      senderDid: identity.did,
+    }).pipe(Effect.mapError(clientError));
+
+    const copy = yield* sealEnvelopeForPeer(did, body, { replyTo });
+    cached.set(did, copy);
+    copies.set(envelope, cached);
+
+    return copy;
+  });
+
   const send = Effect.fn("Mailbox.send")(
     function* send(
       envelope: Defs.EncryptedEnvelopeValue,
@@ -402,41 +452,10 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
         };
       }
 
-      const ccResult = yield* Effect.gen(function* carbonCopy() {
-        const cached =
-          copies.get(envelope) ??
-          new Map<string, Defs.EncryptedEnvelopeValue>();
-
-        let copy = cached.get(did);
-
-        if (copy === undefined) {
-          const body = JSON.stringify({
-            $type: "sh.mschf.ratking.mailbox.cc",
-            body: new TextDecoder().decode(payload.body),
-            primary: {
-              messageId: envelope.aad.messageId,
-              recipientDid: envelope.aad.recipientDid,
-              senderDid: identity.did,
-            },
-          });
-
-          const replyTo = yield* Schema.decodeUnknownEffect(
-            Schema.toType(Defs.MessageRef)
-          )({
-            messageId: envelope.aad.messageId,
-            senderDid: identity.did,
-          }).pipe(Effect.mapError(clientError));
-
-          copy = yield* sealEnvelopeForPeer(did, body, { replyTo });
-          cached.set(did, copy);
-          copies.set(envelope, cached);
-        }
-
-        return yield* submit(copy, opts?.fence, {
-          wakeReason: "cc",
-          woke: false,
-        });
-      }).pipe(
+      const ccResult = yield* sealCopy(envelope, did).pipe(
+        Effect.flatMap((copy) =>
+          submit(copy, opts?.fence, { wakeReason: "cc", woke: false })
+        ),
         Effect.mapError(clientError),
         Effect.catch((error) =>
           Effect.succeed(SendOutcomes.NotAttempted({ reason: error.reason }))
@@ -605,6 +624,7 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
     resolveLease: mailbox.lease.resolve,
     retirements: () => readRetirements(transport),
     seal: sealEnvelopeForPeer,
+    sealCopy,
     sealPayload,
     send,
     sendSealed: submit,
