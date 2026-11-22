@@ -9,7 +9,14 @@ import { Option, Schema } from "effect";
 
 export const NAME_ENTRY = "ratking.name";
 
-export const autoName = (session: string) => `pi-${session.slice(0, 8)}`;
+const isUuidV7: (session: string) => boolean = Schema.is(
+  Schema.String.check(Schema.isUUID(7))
+);
+
+export const autoName = (session: string) =>
+  isUuidV7(session)
+    ? `pi-${session.slice(14).replaceAll("-", "").toLowerCase()}`
+    : `pi-${session.slice(0, 8)}`;
 
 export const interactiveSession = (ctx: {
   readonly hasUI: boolean;
