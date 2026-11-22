@@ -2,9 +2,10 @@ import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import type { Path } from "effect";
 import {
-  ConfigProvider,
+  Clock,
   Effect,
   FileSystem,
+  Option,
   Schema,
   Sink,
   Stream,
@@ -17,14 +18,16 @@ import { initialTransition } from "xstate";
 import { digest } from "../../../packages/alchemy-nest/src/files.ts";
 import { ReleaseSource } from "../../../packages/alchemy-nest/src/release.ts";
 import {
-  deploymentPayloads,
   deploymentReleaseSource,
+  preparedDeployment,
 } from "../../../stacks/nest/deploy-payloads.ts";
+import { mailboxManifest } from "../../../stacks/nest/prepared-manifest.ts";
 import { encodePrepared } from "../../../stacks/nest/prepared-payload.ts";
 import type {
   ShipCheckpoint,
   ShipReceipt,
 } from "../../../stacks/nest/ship-config.ts";
+import { githubBudget } from "../../../stacks/nest/ship-github-budget.ts";
 import { shipMachine } from "../../../stacks/nest/ship-machine.ts";
 import { preparedEvidence } from "../../../stacks/nest/ship-prepared-evidence.ts";
 import { selectPrepared } from "../../../stacks/nest/ship-select.ts";
@@ -44,7 +47,10 @@ const repository = "example/project";
 
 const Case = Schema.Literals([
   "ready",
+  "apply-failed",
   "pin-mismatch",
+  "new-binding",
+  "candidate-date",
   "embedded-sha-mismatch",
   "invalid-format",
   "invalid-length",
@@ -58,6 +64,8 @@ const Case = Schema.Literals([
   "wrong-workflow",
   "pending-fence",
   "pending-head",
+  "paginated-jobs",
+  "non-tip",
   "skipped-fence-job",
   "wrong-fence-sha",
 ]);
@@ -67,6 +75,7 @@ type Scenario = typeof Case.Type;
 const programs = {
   backup: "throw new Error('backup executed locally')",
   cli: "throw new Error('CLI executed locally')",
+  manifest: mailboxManifest,
   restart: "throw new Error('restart gate executed locally')",
   worker: "throw new Error('worker executed locally')",
 };
@@ -94,15 +103,15 @@ const client = (scenario: Scenario) =>
     expect(request.method).toBe("GET");
 
     if (url === "git/ref/heads/main") {
-      return Effect.succeed(
-        HttpClientResponse.fromWeb(
-          request,
-          Response.json({
-            object: { sha: head, type: "commit" },
-            ref: "refs/heads/main",
-          })
-        )
-      );
+      const response =
+        request.headers["if-none-match"] === '"fixture-ref"'
+          ? new Response(null, { status: 304 })
+          : Response.json(
+              { object: { sha: head, type: "commit" }, ref: "refs/heads/main" },
+              { headers: { ETag: '"fixture-ref"' } }
+            );
+
+      return Effect.succeed(HttpClientResponse.fromWeb(request, response));
     }
 
     if (url.startsWith("git/commits/")) {
@@ -131,7 +140,26 @@ const client = (scenario: Scenario) =>
       );
     }
 
-    if (url === "actions/runs/10/attempts/1/jobs?per_page=100") {
+    if (
+      scenario === "paginated-jobs" &&
+      url === "actions/runs/10/attempts/1/jobs?per_page=100"
+    ) {
+      return Effect.succeed(
+        HttpClientResponse.fromWeb(
+          request,
+          Response.json(
+            { jobs: [] },
+            { headers: { Link: '<https://example.invalid/next>; rel="next"' } }
+          )
+        )
+      );
+    }
+
+    if (
+      url === "actions/runs/10/attempts/1/jobs?per_page=100" ||
+      (scenario === "paginated-jobs" &&
+        url === "actions/runs/10/attempts/1/jobs?per_page=100&page=2")
+    ) {
       return Effect.succeed(
         HttpClientResponse.fromWeb(
           request,
@@ -162,7 +190,9 @@ const client = (scenario: Scenario) =>
     return Effect.succeed(
       HttpClientResponse.fromWeb(
         request,
-        Response.json({ workflow_runs: [run(sha, scenario)] })
+        Response.json({
+          workflow_runs: scenario === "non-tip" ? [] : [run(sha, scenario)],
+        })
       )
     );
   });
@@ -216,11 +246,30 @@ const fixture = Effect.fn("PreparedShip.fixture")(function* fixture(
   const encoded = encodePrepared({
     ...programs,
     commit: scenario === "embedded-sha-mismatch" ? unrelated : eligible,
+    manifest: {
+      ...mailboxManifest,
+      declaration: {
+        ...mailboxManifest.declaration,
+        compatibility_date:
+          scenario === "candidate-date"
+            ? "2026-11-10"
+            : mailboxManifest.declaration.compatibility_date,
+        durable_objects: {
+          bindings:
+            scenario === "new-binding"
+              ? [
+                  ...mailboxManifest.declaration.durable_objects.bindings,
+                  { class_name: "Mailbox", name: "EXTRA" },
+                ]
+              : mailboxManifest.declaration.durable_objects.bindings,
+        },
+      },
+    },
     version: "1.2.3",
   });
 
   const serialized = new TextDecoder().decode(encoded);
-  const tampered = serialized.replace("rat-king/fleet/v1", "rat-king/fleet/v2");
+  const tampered = serialized.replace("rat-king/fleet/v2", "rat-king/fleet/v1");
   const wrongLength = serialized.replace(/"bytes":\d+/u, '"bytes":1');
 
   const variants = new Map<Scenario, string>([
@@ -283,11 +332,17 @@ it.effect.prop(
 
       const [initial] = initialTransition(shipMachine, {
         failed: "",
+        preparedRetries:
+          scenario === "apply-failed"
+            ? { [head]: Number.MAX_SAFE_INTEGER }
+            : {},
         successful: liveSha,
       });
 
       const checkpoints: (typeof ShipCheckpoint.Type)[] = [];
       const receipts: (typeof ShipReceipt.Type)[] = [];
+      const holds = new Map<string, string>();
+      let recoveries = 0;
 
       const cycle = yield* shipCycle<
         | FileSystem.FileSystem
@@ -303,14 +358,9 @@ it.effect.prop(
           expect(checkpoints).toHaveLength(1);
           expect(checkpoints[0]?.failed).toBe(payload.commit);
 
-          const stage = yield* deploymentPayloads(
-            true,
-            true,
-            { APPROVED: "fixture" },
-            payload
-          ).pipe(
-            Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown({})))
-          );
+          const stage = yield* preparedDeployment(payload, {
+            SERVICE_DID: "fixture",
+          });
 
           const download = yield* Effect.gen(function* attemptDownload() {
             const releases = yield* ReleaseSource;
@@ -331,13 +381,22 @@ it.effect.prop(
           expect(stage.restart).toBe(programs.restart);
           expect(stage.deployment.bundle).toBe(programs.worker);
           expect(stage.deployment.configuration).toContain(
-            '"vars":{"APPROVED":"fixture"}'
+            '"vars":{"SERVICE_DID":"fixture"}'
           );
+
+          if (scenario === "candidate-date") {
+            expect(stage.deployment.configuration).toContain(
+              '"compatibility_date":"2026-11-10"'
+            );
+          }
 
           return {
             celldRestarted: false,
             restartSeconds: 0,
-            result: "success" as const,
+            result:
+              scenario === "apply-failed"
+                ? ("failed" as const)
+                : ("success" as const),
           };
         }, Effect.orDie),
         notify: () => Effect.void,
@@ -345,11 +404,17 @@ it.effect.prop(
           Effect.sync(() => {
             receipts.push(receipt);
           }),
-        recover: Effect.die("Readiness holds and success never enter recovery"),
+        recover: Effect.sync(() => {
+          recoveries += 1;
+
+          return "recovered" as const;
+        }),
         select: (saved, now) =>
           selectPrepared<
             ChildProcessSpawner.ChildProcessSpawner | HttpClient.HttpClient
-          >(evidence, saved, now),
+          >(evidence, saved, now, (sha, reason) => {
+            holds.set(sha, reason);
+          }),
       }).pipe(
         Effect.provideService(
           ChildProcessSpawner.ChildProcessSpawner,
@@ -358,12 +423,108 @@ it.effect.prop(
         Effect.provideService(HttpClient.HttpClient, client(scenario))
       );
 
-      const success = scenario === "ready" || scenario === "pending-head";
-      expect(checkpoints).toHaveLength(success ? 2 : 0);
+      const success =
+        scenario === "ready" ||
+        scenario === "pending-head" ||
+        scenario === "candidate-date" ||
+        scenario === "paginated-jobs";
+
+      if (scenario === "new-binding") {
+        expect(holds.get(eligible)).toBe("ManifestChange: needs legacy ship");
+      }
+
+      if (scenario === "non-tip") {
+        expect(holds.get(eligible)).toContain("NotPushTip");
+      }
+
+      if (scenario === "invalid-format") {
+        expect(holds.get(eligible)).toContain("BundleFormat");
+      }
+
+      const failed = scenario === "apply-failed";
+      expect(checkpoints).toHaveLength(success || failed ? 2 : 0);
       expect(receipts.map((receipt) => receipt.sha)).toEqual(
-        success ? [eligible] : []
+        success || failed ? [eligible] : []
       );
+      expect(recoveries).toBe(failed ? 1 : 0);
       expect(cycle.context.successful).toBe(success ? eligible : liveSha);
+
+      if (failed) {
+        expect(receipts[0]).toMatchObject({
+          gate: "deploy",
+          recovered: true,
+          result: "failed",
+        });
+        expect(checkpoints[1]).toMatchObject({
+          failed: eligible,
+          preparedRetries: { [head]: Number.MAX_SAFE_INTEGER },
+          successful: liveSha,
+        });
+
+        const next = yield* selectPrepared<
+          ChildProcessSpawner.ChildProcessSpawner | HttpClient.HttpClient
+        >(
+          evidence,
+          cycle.context,
+          (yield* Clock.currentTimeMillis) / 1000,
+          (sha, reason) => {
+            holds.set(sha, reason);
+          }
+        ).pipe(
+          Effect.provideService(
+            ChildProcessSpawner.ChildProcessSpawner,
+            commands
+          ),
+          Effect.provideService(HttpClient.HttpClient, client(scenario))
+        );
+
+        expect(Option.isNone(next)).toBe(true);
+        expect(holds.get(eligible)).toBe("DeployFailureBarrier");
+      }
     }).pipe(Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 100 } }
+);
+
+it.prop(
+  "GitHub evidence charges fewer than 40 requests in any rolling hour",
+  [
+    Schema.Array(
+      Schema.Struct({
+        elapsed: Schema.Int.check(
+          Schema.isBetween({ maximum: 180_000, minimum: 0 })
+        ),
+        unchanged: Schema.Boolean,
+      })
+    ).check(Schema.isMinLength(100), Schema.isMaxLength(250)),
+  ],
+  ([ticks]) => {
+    const reserve = githubBudget();
+    const charged: number[] = [];
+    let previous = 0;
+
+    for (const { elapsed, unchanged } of ticks) {
+      const now = previous + elapsed;
+      previous = now;
+      const refund = reserve(now);
+
+      if (refund !== null) {
+        if (unchanged) {
+          refund();
+        } else {
+          charged.push(now);
+        }
+      }
+
+      expect(
+        charged.filter((time) => time > now - 3_600_000).length
+      ).toBeLessThan(40);
+    }
+
+    const burst = githubBudget();
+    expect(
+      Array.from({ length: 100 }, () => burst(0)).filter(
+        (value) => value !== null
+      )
+    ).toHaveLength(39);
+  }
 );

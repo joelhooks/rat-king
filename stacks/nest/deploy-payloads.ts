@@ -1,17 +1,14 @@
 import { Config, Effect, FileSystem, Layer, Option, Path } from "effect";
 
 import { bindings, hostedBindings } from "../../apps/mailbox/src/bindings.ts";
-import { prepareDeployment } from "../../packages/alchemy-nest/src/deployment-build.ts";
 import { wranglerConfiguration } from "../../packages/alchemy-nest/src/deployment-config.ts";
 import { refuse } from "../../packages/alchemy-nest/src/files.ts";
-import {
-  operatorBundle,
-  optionalOperatorBundle,
-} from "../../packages/alchemy-nest/src/operator-build.ts";
+import { awaitModule } from "../../packages/alchemy-nest/src/late-module.ts";
 import {
   ReleaseSource,
   sourceLayer,
 } from "../../packages/alchemy-nest/src/release.ts";
+import { allowManifest } from "./prepared-manifest.ts";
 import type { PreparedFleetPayload } from "./prepared-payload.ts";
 
 const noReleaseDownloads = Layer.succeed(ReleaseSource, {
@@ -30,9 +27,14 @@ export const preparedDeployment = Effect.fn("Nest.preparedDeployment")(
     payload: PreparedFleetPayload,
     vars: Readonly<Record<string, string>>
   ) {
-    const { commit, version, worker } = payload;
+    const { commit, manifest, version, worker } = payload;
+    yield* allowManifest(manifest);
 
-    const config = yield* wranglerConfiguration(bindings, {
+    if (Object.keys(vars).some((name) => !manifest.variables.includes(name))) {
+      return yield* refuse("ManifestChange: needs legacy ship");
+    }
+
+    const config = yield* wranglerConfiguration(manifest.declaration, {
       commit,
       main: "worker.mjs",
       vars,
@@ -63,6 +65,21 @@ const legacyDeployment = Effect.fn("Nest.legacyDeployment")(
     const path = yield* Path.Path;
     const commit = yield* Config.String("RAT_KING_COMMIT");
     const version = yield* Config.String("RAT_KING_VERSION");
+
+    const { prepareDeployment } = yield* Effect.suspend(() =>
+      awaitModule(
+        import("../../packages/alchemy-nest/src/deployment-build.ts"),
+        "Worker build module unavailable"
+      )
+    );
+
+    const { operatorBundle, optionalOperatorBundle } = yield* Effect.suspend(
+      () =>
+        awaitModule(
+          import("../../packages/alchemy-nest/src/operator-build.ts"),
+          "Operator bundle module unavailable"
+        )
+    );
 
     const deployment = yield* prepareDeployment(
       path.resolve(
@@ -104,8 +121,10 @@ export const deploymentPayloads = (
     return legacyDeployment(fleet, mailboxOnly, vars);
   }
 
-  if (!fleet) {
-    return Effect.fail(refuse("Prepared payloads are fleet-only"));
+  if (!fleet || !mailboxOnly) {
+    return Effect.fail(
+      refuse("Prepared payloads require a mailbox-only fleet stage")
+    );
   }
 
   return preparedDeployment(payload, vars);

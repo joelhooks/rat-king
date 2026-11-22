@@ -352,15 +352,17 @@ export const recordReceipt =
       Effect.andThen(
         Ref.get(shipping).pipe(
           Effect.flatMap((now) =>
-            pruneSafely(
-              {
-                keep: clampKeep(ship.keepReleases),
-                receipts: ship.receipts,
-                releases: ship.releases,
-              },
-              now,
-              logged
-            )
+            receipt.result === "held"
+              ? Effect.void
+              : pruneSafely(
+                  {
+                    keep: clampKeep(ship.keepReleases),
+                    receipts: ship.receipts,
+                    releases: ship.releases,
+                  },
+                  now,
+                  logged
+                )
           ),
           Effect.asVoid
         )

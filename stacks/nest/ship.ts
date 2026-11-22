@@ -150,9 +150,9 @@ export const shipCycle = Effect.fn("Ship.cycle")(function* shipCycle<R>(
   const { sha } = current.context;
   const armed = { failed: sha, successful: current.context.successful };
   yield* ports.checkpoint(
-    "select" in ports
-      ? { ...armed, preparedRetries: current.context.preparedRetries }
-      : armed
+    Object.keys(current.context.preparedRetries).length === 0
+      ? armed
+      : { ...armed, preparedRetries: current.context.preparedRetries }
   );
 
   const deployed = yield* acquired.deploy.pipe(

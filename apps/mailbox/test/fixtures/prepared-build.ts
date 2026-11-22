@@ -3,6 +3,7 @@ import { Console, Effect, Schema } from "effect";
 
 import { digest } from "../../../../packages/alchemy-nest/src/files.ts";
 import { buildFleetModules } from "../../../../packages/alchemy-nest/src/fleet-build.ts";
+import { mailboxManifest } from "../../../../stacks/nest/prepared-manifest.ts";
 import { encodePrepared } from "../../../../stacks/nest/prepared-payload.ts";
 import { Sha } from "../../../../stacks/nest/ship-config.ts";
 
@@ -14,7 +15,14 @@ const program = Effect.gen(function* fixtureBuild() {
   const version = "1.2.3";
   const payloads = yield* buildFleetModules(root, { commit, version });
   const home = process.env.HOME ?? "";
-  const bytes = encodePrepared({ ...payloads, commit, version });
+
+  const bytes = encodePrepared({
+    ...payloads,
+    commit,
+    manifest: mailboxManifest,
+    version,
+  });
+
   const wire = new TextDecoder().decode(bytes);
 
   const leak = Object.entries({ home, origin, root }).find(

@@ -1,8 +1,9 @@
 import type { Path } from "effect";
 import {
-  ConfigProvider,
+  Console,
   Effect,
   FileSystem,
+  Option,
   Ref,
   Schema,
   Stream,
@@ -14,22 +15,26 @@ import {
   SecretStore,
   secretStoreLayer,
 } from "../../apps/mailbox/cli/secrets.ts";
+import { digest } from "../../packages/alchemy-nest/src/files.ts";
 import { writePrivateJson } from "../../packages/ratking-client/src/directory.ts";
-import type { PreparedFleetPayload } from "./prepared-payload.ts";
-import { readShippedSha, shippedDrift } from "./runner-drift.ts";
+import { encodePrepared } from "./prepared-payload.ts";
+import { readShippedSha, runtimeDrift, shippedDrift } from "./runner-drift.ts";
 import { boundDeploy, observeAttempt, startAttempt } from "./ship-attempt.ts";
 import { Sha, ShipCheckpoint } from "./ship-config.ts";
 import { sanitizeCandidateStderr } from "./ship-diagnostics.ts";
 import { installDependencies, quarantineInstall } from "./ship-install.ts";
 import { sendShipNotification } from "./ship-notify.ts";
-import { preparedEvidence } from "./ship-prepared-evidence.ts";
+import {
+  preparedEvidence,
+  verifyShipWorkspace,
+} from "./ship-prepared-evidence.ts";
 import type { PreparedArgs } from "./ship-prepared-evidence.ts";
 import { prepareReleases, recordReceipt } from "./ship-prune.ts";
 import type { ReleaseCurrent } from "./ship-prune.ts";
-import { selectPrepared } from "./ship-select.ts";
+import { preparedBackoff, selectPrepared } from "./ship-select.ts";
 import { shipLoop } from "./ship.ts";
 import type { PreparedShipPorts, ShipPorts } from "./ship.ts";
-import { FleetError, causeDetail, shipConfigFields } from "./stage-config.ts";
+import { FleetError, causeDetail } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
 
 const Checks = Schema.Struct({
@@ -240,13 +245,7 @@ export const shipCommand = Effect.fn("Ship.command")(
   function* shipCommand(
     config: StageConfigValue,
     recover: ShipPorts["recover"],
-    prepared?: {
-      readonly args: PreparedArgs;
-      readonly loadApply: Effect.Effect<
-        (payload: PreparedFleetPayload) => Effect.Effect<boolean>,
-        FleetError
-      >;
-    }
+    prepared?: PreparedArgs
   ) {
     const { ship } = config;
 
@@ -263,6 +262,11 @@ export const shipCommand = Effect.fn("Ship.command")(
     const fs = yield* FileSystem.FileSystem;
     const http = yield* HttpClient.HttpClient;
     const store = yield* SecretStore;
+
+    if (prepared !== undefined) {
+      yield* verifyShipWorkspace(ship.releases);
+    }
+
     yield* prepareReleases(ship.releases);
     const shipping = yield* Ref.make<ReleaseCurrent>({ attempt: "", sha: "" });
     const logged = yield* Ref.make<ReadonlySet<string>>(new Set());
@@ -280,6 +284,10 @@ export const shipCommand = Effect.fn("Ship.command")(
         )
       : { failed: "", successful: "" };
 
+    const holds = yield* Ref.make<Readonly<Record<string, string>>>(
+      saved.preparedHolds ?? {}
+    );
+
     type Services =
       | FileSystem.FileSystem
       | Path.Path
@@ -288,20 +296,27 @@ export const shipCommand = Effect.fn("Ship.command")(
 
     const shared: Omit<ShipPorts<Services>, "fetch" | "ci" | "deploy"> = {
       checkpoint: (state) =>
-        writePrivateJson(
-          ship.checkpoint,
-          JSON.stringify({
-            deferred: state.deferred ?? "",
-            failed: state.failed,
-            failedGate: state.failedGate ?? "",
-            preparedRetries:
-              Object.keys(state.preparedRetries ?? {}).length === 0
-                ? undefined
-                : state.preparedRetries,
-            retryAt: state.retryAt ?? 0,
-            successful: state.successful,
-          })
-        ).pipe(
+        Ref.get(holds).pipe(
+          Effect.flatMap((preparedHolds) =>
+            writePrivateJson(
+              ship.checkpoint,
+              JSON.stringify({
+                deferred: state.deferred ?? "",
+                failed: state.failed,
+                failedGate: state.failedGate ?? "",
+                preparedHolds:
+                  Object.keys(preparedHolds).length === 0
+                    ? undefined
+                    : preparedHolds,
+                preparedRetries:
+                  Object.keys(state.preparedRetries ?? {}).length === 0
+                    ? undefined
+                    : state.preparedRetries,
+                retryAt: state.retryAt ?? 0,
+                successful: state.successful,
+              })
+            )
+          ),
           Effect.mapError(
             (cause) =>
               new FleetError({
@@ -321,13 +336,15 @@ export const shipCommand = Effect.fn("Ship.command")(
     };
 
     if (prepared !== undefined) {
-      const apply = yield* prepared.loadApply;
+      const { drifted } = yield* runtimeDrift;
 
       const evidence = preparedEvidence(
         ship.repository,
-        prepared.args,
+        prepared,
         ship.releases
       );
+
+      const backoff = preparedBackoff();
 
       const ports: PreparedShipPorts<Services> = {
         ...shared,
@@ -342,32 +359,114 @@ export const shipCommand = Effect.fn("Ship.command")(
             shipping
           );
 
-          const applied = yield* apply(payload).pipe(
-            Effect.provide(
-              ConfigProvider.layerAdd(
-                ConfigProvider.fromUnknown({
-                  ...shipConfigFields(attempt.config),
-                  RAT_KING_COMMIT: payload.commit,
-                  RAT_KING_VERSION: payload.version,
-                }),
-                { asPrimary: true }
-              )
-            )
+          const configPath = `${attempt.directory}/stage.json`;
+          const artifact = `${attempt.directory}/verified.bundle`;
+          const bytes = encodePrepared(payload);
+          yield* writePrivateJson(configPath, JSON.stringify(attempt.config));
+          yield* fs.writeFile(artifact, bytes, { flag: "wx", mode: 0o600 });
+
+          const result = yield* execute(
+            process.execPath,
+            [
+              `${import.meta.dirname}/prepared-apply.ts`,
+              artifact,
+              payload.commit,
+              digest(bytes),
+            ],
+            config.runtime.RAT_KING_STATE_DIR,
+            { RAT_KING_STAGE_CONFIG: configPath },
+            "trusted prepared apply"
           );
 
-          return yield* observeAttempt(attempt.events, {
-            code: applied ? 0 : 1,
-            stderrTail: applied ? undefined : "Trusted fleet apply failed",
-          });
+          return yield* observeAttempt(attempt.events, result);
         }, boundDeploy),
-        select: (state, now) => selectPrepared<Services>(evidence, state, now),
+        select: (state, now) =>
+          Effect.gen(function* selectAndRecord() {
+            if (yield* drifted) {
+              return Option.none();
+            }
+
+            const observed = new Map<string, string>();
+
+            const selection = yield* selectPrepared<Services>(
+              evidence,
+              state,
+              now,
+              (sha, reason) => {
+                if (observed.size < 256) {
+                  observed.set(sha || "global", reason);
+                }
+              },
+              backoff
+            );
+
+            const previous = yield* Ref.get(holds);
+
+            const changed = [...observed].filter(
+              ([sha, reason]) => previous[sha] !== reason
+            );
+
+            if (
+              changed.length === 0 &&
+              observed.size === Object.keys(previous).length
+            ) {
+              return selection;
+            }
+
+            yield* Ref.set(holds, Object.fromEntries(observed));
+            yield* shared.checkpoint(state);
+
+            const reasons = changed.map(
+              ([sha, reason]) => `${sha.slice(0, 12)}: ${reason}`
+            );
+
+            for (const [key, reason] of changed) {
+              yield* Console.error("SHIP_PREPARED_HOLD", key, reason);
+              const sha = key === "global" ? state.successful : key;
+
+              if (sha !== "") {
+                yield* shared.record({
+                  celldRestarted: null,
+                  end: now,
+                  hold: reason,
+                  restartSeconds: null,
+                  result: "held",
+                  sha,
+                  start: now,
+                });
+              }
+            }
+
+            if (reasons.length > 0) {
+              yield* sendShipNotification(
+                config,
+                `Prepared ship hold: ${reasons.slice(0, 8).join("; ").slice(0, 1500)} SR 🐀`,
+                false
+              ).pipe(
+                Effect.provideService(SecretStore, store),
+                Effect.catch(() =>
+                  Console.error("SHIP_PREPARED_HOLD_NOTIFICATION_FAILED")
+                )
+              );
+            }
+
+            return selection;
+          }).pipe(
+            Effect.matchEffect({
+              onFailure: (error) =>
+                Effect.logError("SHIP_HOLD_WRITE_FAILED", error.reason).pipe(
+                  Effect.as(Option.none())
+                ),
+              onSuccess: Effect.succeed,
+            })
+          ),
       };
 
       return yield* shipLoop(
         ports,
         saved,
         Math.max(120, ship.intervalSeconds),
-        Effect.succeed(false)
+        drifted
       );
     }
 

@@ -3,8 +3,8 @@ import { Random } from "alchemy/Random";
 import { Context, Effect, Layer, Redacted } from "effect";
 
 import { BucketResource } from "../src/bucket-api.ts";
-import { fileText, textDigest } from "../src/files.ts";
-import { HostError } from "../src/host-shell.ts";
+import { resolveFileContent } from "../src/file-content.ts";
+import { textDigest } from "../src/files.ts";
 import { NodeResource } from "../src/node-provider.ts";
 import {
   HostDirectory,
@@ -31,14 +31,7 @@ const fileProvider = Provider.effect(
       read: ({ output }) => Effect.succeed(output),
       reconcile: ({ news }) =>
         Effect.gen(function* renderInline() {
-          if (news.content === undefined) {
-            return yield* new HostError({
-              operation: "test render",
-              reason: "Inline renderer requires content.",
-            });
-          }
-
-          const content = fileText(news.content);
+          const content = yield* resolveFileContent(news);
           rendered.files.set(news.path, content);
 
           return {

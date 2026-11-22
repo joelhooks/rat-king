@@ -1,26 +1,18 @@
-import { Stack, localState } from "alchemy";
+import { Stack } from "alchemy";
 import * as Output from "alchemy/Output";
-import { Config, Effect, FileSystem, Layer, Option, Schema } from "effect";
-import { FetchHttpClient } from "effect/http";
+import { Config, Effect, FileSystem, Option, Schema } from "effect";
 
 import { Documents } from "../../apps/mailbox/src/auth.ts";
 import { hostedVars } from "../../apps/mailbox/src/bindings.ts";
-import { StateRecovery } from "../../packages/alchemy-nest/src/adoption.ts";
 import {
   RuntimeFiles,
-  RuntimeFilesProvider,
   sidecarUnit,
 } from "../../packages/alchemy-nest/src/agent-runtime-files.ts";
 import type { RuntimeFilesProps } from "../../packages/alchemy-nest/src/agent-runtime-files.ts";
 import { Celld } from "../../packages/alchemy-nest/src/celld.ts";
 import { stageDeploymentFiles } from "../../packages/alchemy-nest/src/deployment-stage.ts";
-import {
-  Deployment,
-  DeploymentProvider,
-} from "../../packages/alchemy-nest/src/deployment.ts";
+import { Deployment } from "../../packages/alchemy-nest/src/deployment.ts";
 import type { DeploymentProps } from "../../packages/alchemy-nest/src/deployment.ts";
-import { offlineLayer } from "../../packages/alchemy-nest/src/fake-shell.ts";
-import { HostShell } from "../../packages/alchemy-nest/src/host-shell.ts";
 import {
   Host,
   layer as inventoryLayer,
@@ -30,28 +22,18 @@ import {
   RemoteFile,
   SystemdUnit,
 } from "../../packages/alchemy-nest/src/providers.ts";
-import { SecretSource } from "../../packages/alchemy-nest/src/secret-source.ts";
-import { layer as sshLayer } from "../../packages/alchemy-nest/src/ssh.ts";
-import { startupLayer } from "../../packages/alchemy-nest/src/startup-contract.ts";
 import { backupTimer, backupUnit } from "./backup-units.ts";
 import { fleetCelldBinary } from "./celld-build.ts";
 import { mailboxCliEnvironment } from "./cli-environment.ts";
-import {
-  celldMemoryMax,
-  configuration,
-  stageName,
-  workerIPv4 as stageWorkerIPv4,
-} from "./config.ts";
+import { celldMemoryMax, configuration, stageName } from "./config.ts";
 import { fleetStoreCredentials } from "./credentials.ts";
-import {
-  deploymentPayloads,
-  deploymentReleaseSource,
-} from "./deploy-payloads.ts";
+import { deploymentPayloads } from "./deploy-payloads.ts";
+import { nestProviders } from "./nest-providers.ts";
 import type { PreparedFleetPayload } from "./prepared-payload.ts";
-import { restoreOwnedData } from "./restore.ts";
 import type { RestoreRequest } from "./restore.ts";
-import { guardedShell } from "./ship-restart.ts";
 import { fleetMemoryLimits } from "./stop-memory.ts";
+
+export { connection } from "./nest-providers.ts";
 
 const delegationVars = Config.Boolean("RAT_KING_DELEGATION").pipe(
   Config.withDefault(false),
@@ -85,55 +67,6 @@ const issuerVars = Effect.gen(function* readIssuerVars() {
   });
 });
 
-export const connection = Layer.unwrap(
-  Effect.gen(function* connection() {
-    const hosts = yield* Host;
-
-    if (
-      yield* Config.Boolean("RAT_KING_OFFLINE_PLAN").pipe(
-        Config.withDefault(false)
-      )
-    ) {
-      return offlineLayer;
-    }
-
-    const target = yield* hosts.node(
-      yield* Config.String("RAT_KING_LIVE_NODE")
-    );
-
-    return Layer.effect(
-      HostShell,
-      Effect.gen(function* shipConnection() {
-        return yield* guardedShell(yield* HostShell);
-      })
-    ).pipe(Layer.provide(sshLayer(target)));
-  })
-).pipe(Layer.provideMerge(inventoryLayer), Layer.orDie);
-
-const startup = (restore?: RestoreRequest) =>
-  Layer.unwrap(
-    Effect.gen(function* startupPorts() {
-      const hosts = yield* Host;
-
-      const stage = yield* stageName;
-
-      const node = yield* hosts.node(
-        yield* Config.String("RAT_KING_LIVE_NODE")
-      );
-
-      return startupLayer(
-        stageWorkerIPv4(stage, node),
-        stage === "pilot" ? "service" : "scope",
-        stage === "fleet"
-          ? `${node.dataRoot}/.mailbox-restore-objects.tar`
-          : undefined,
-        restore === undefined
-          ? undefined
-          : restoreOwnedData(yield* HostShell, node.dataRoot, restore)
-      );
-    })
-  ).pipe(Layer.provide(connection), Layer.orDie);
-
 const stateRecovery = Effect.fn("Nest.stateRecovery")(function* stateRecovery(
   mailboxOnly: boolean
 ) {
@@ -152,34 +85,12 @@ const stateRecovery = Effect.fn("Nest.stateRecovery")(function* stateRecovery(
 
 export const nestStack = (
   restore?: RestoreRequest,
-  payload?: PreparedFleetPayload
+  payload?: PreparedFleetPayload,
+  providers = nestProviders(restore, payload)
 ) =>
   Stack(
     "nest",
-    {
-      providers: Layer.mergeAll(
-        ObjectStore.providers(),
-        Celld.providers(),
-        DeploymentProvider(),
-        RuntimeFilesProvider()
-      ).pipe(
-        Layer.provide(
-          Layer.effect(
-            StateRecovery,
-            Config.Boolean("RAT_KING_RECOVER_STATE").pipe(
-              Config.withDefault(false),
-              Effect.orDie
-            )
-          )
-        ),
-        Layer.provide(SecretSource.layer),
-        Layer.provide(startup(restore)),
-        Layer.provide(connection),
-        Layer.provide(deploymentReleaseSource(payload).pipe(Layer.orDie)),
-        Layer.provide(FetchHttpClient.layer)
-      ),
-      state: localState(),
-    },
+    providers,
     Effect.gen(function* nest() {
       const fs = yield* FileSystem.FileSystem;
       const hosts = yield* Host;

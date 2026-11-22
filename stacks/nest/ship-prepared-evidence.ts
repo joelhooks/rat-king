@@ -1,16 +1,18 @@
-import { Effect, Schema } from "effect";
+import { Clock, Effect, FileSystem, Option, Path, Schema } from "effect";
 import { HttpClient } from "effect/http";
 
 import {
   AbsolutePath,
   readBoundedRegularFile,
 } from "../../packages/alchemy-nest/src/files.ts";
+import { allowManifest } from "./prepared-manifest.ts";
 import {
   decodePrepared,
   maxPreparedBytes,
   Sha256,
 } from "./prepared-payload.ts";
 import { Sha } from "./ship-config.ts";
+import { githubBudget } from "./ship-github-budget.ts";
 import { boundedOutput, decodeUtf8, readCommand } from "./ship-process.ts";
 import { maxFirstParents } from "./ship-select.ts";
 import { FleetError } from "./stage-config.ts";
@@ -100,29 +102,138 @@ const FenceJobs = Schema.fromJsonString(
   })
 );
 
+const rateLimited = () => new FleetError({ reason: "GitHubRateLimited" });
+
+const evidenceError = (error: { readonly _tag: string }) =>
+  Schema.is(FleetError)(error) ? error : unavailable();
+
 const github = Effect.fn("Ship.githubEvidence")(
-  function* github(repository: string, route: string) {
+  function* github(
+    repository: string,
+    route: string,
+    charge: ReturnType<typeof githubBudget>,
+    etag?: string
+  ) {
+    const refund = charge(yield* Clock.currentTimeMillis);
+
+    if (refund === null) {
+      return yield* rateLimited();
+    }
+
     const client = yield* HttpClient.HttpClient;
+
+    const headers = {
+      Accept: "application/vnd.github+json",
+      "User-Agent": "rat-king",
+    };
 
     const response = yield* client.get(
       `https://api.github.com/repos/${repository}/${route}`,
       {
-        headers: {
-          Accept: "application/vnd.github+json",
-          "User-Agent": "rat-king",
-        },
+        headers:
+          etag === undefined ? headers : { ...headers, "If-None-Match": etag },
       }
     );
+
+    if (response.status === 304 && etag !== undefined) {
+      refund();
+
+      return { response, text: undefined };
+    }
+
+    if (
+      response.status === 429 ||
+      (response.status === 403 &&
+        response.headers["x-ratelimit-remaining"] === "0")
+    ) {
+      return yield* rateLimited();
+    }
 
     if (response.status !== 200) {
       return yield* unavailable();
     }
 
-    return yield* boundedOutput(response.stream, 262_144);
+    return { response, text: yield* boundedOutput(response.stream, 262_144) };
   },
   (effect) =>
-    effect.pipe(Effect.timeout("15 seconds"), Effect.mapError(unavailable))
+    effect.pipe(Effect.timeout("15 seconds"), Effect.mapError(evidenceError))
 );
+
+const fenceJobs = Effect.fn("Ship.fenceJobs")(function* fenceJobs(
+  get: (route: string) => ReturnType<typeof github>,
+  route: string
+) {
+  const all: (typeof FenceJobs.Type)["jobs"][number][] = [];
+
+  for (let page = 1; page <= 5; page += 1) {
+    const { response, text } = yield* get(
+      page === 1 ? route : `${route}&page=${page}`
+    );
+
+    const { jobs } = yield* Schema.decodeUnknownEffect(FenceJobs)(text).pipe(
+      Effect.mapError(unavailable)
+    );
+
+    all.push(...jobs);
+
+    if (response.headers.link?.includes('rel="next"') !== true) {
+      return all;
+    }
+  }
+
+  return yield* unavailable();
+});
+
+const rejectWorkspace = () =>
+  new FleetError({
+    reason:
+      "Prepared releases must be an owned workspace without symbolic or writable ancestors",
+  });
+
+export const verifyShipWorkspace = Effect.fn("Ship.verifyWorkspace")(
+  function* verifyShipWorkspace(directory: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const uid = process.getuid?.();
+
+    if (
+      !path.isAbsolute(directory) ||
+      (yield* fs.realPath(directory)) !== directory ||
+      uid === undefined
+    ) {
+      return yield* rejectWorkspace();
+    }
+
+    let current = directory;
+
+    for (;;) {
+      const stat = yield* fs.lstat(current);
+      const owner = Option.getOrUndefined(stat.uid);
+      const groupWritable = Math.floor(stat.mode / 16) % 2 === 1;
+      const otherWritable = Math.floor(stat.mode / 2) % 2 === 1;
+
+      if (
+        stat.type !== "Directory" ||
+        (owner !== uid && (current === directory || owner !== 0)) ||
+        groupWritable ||
+        otherWritable
+      ) {
+        return yield* rejectWorkspace();
+      }
+
+      const parent = path.dirname(current);
+
+      if (parent === current) {
+        return yield* Effect.void;
+      }
+
+      current = parent;
+    }
+  }
+);
+
+const artifactMissing = () =>
+  new FleetError({ reason: "ArtifactMissingOrUnreadable" });
 
 export const preparedEvidence = (
   repository: string,
@@ -132,9 +243,26 @@ export const preparedEvidence = (
   const [, list, , helper] = args;
 
   const run = (helperArgs: readonly string[], maximum: number) =>
-    readCommand(helper, helperArgs, workspace, maximum, {});
+    readCommand(helper, helperArgs, workspace, maximum, {}).pipe(
+      Effect.mapError(
+        () =>
+          new FleetError({
+            reason: `ArtifactHelperFailed: ${helperArgs[0]?.startsWith("--") === true ? helperArgs[0] : "snapshot"}`,
+          })
+      )
+    );
 
   const parents = new Map<string, string | undefined>();
+  const charge = githubBudget();
+  const completed = new Map<string, boolean>();
+  const green = new Set<string>();
+
+  let ref:
+    | { readonly sha: string; readonly etag: string | undefined }
+    | undefined;
+
+  const get = (route: string, etag?: string) =>
+    github(repository, route, charge, etag);
 
   return {
     artifact: Effect.fn("Ship.snapshot")(function* artifact(sha: string) {
@@ -148,9 +276,16 @@ export const preparedEvidence = (
       const bytes = yield* readBoundedRegularFile(
         snapshot,
         maxPreparedBytes
-      ).pipe(Effect.mapError(unavailable));
+      ).pipe(Effect.mapError(artifactMissing));
 
-      return yield* decodePrepared(bytes, { commit: sha, sha256: pin });
+      const payload = yield* decodePrepared(bytes, {
+        commit: sha,
+        sha256: pin,
+      });
+
+      yield* allowManifest(payload.manifest);
+
+      return payload;
     }),
     eligible: Effect.gen(function* eligible() {
       const candidateBytes = yield* readBoundedRegularFile(list, maxList).pipe(
@@ -163,19 +298,27 @@ export const preparedEvidence = (
       return new Set([...pinned].filter((sha) => candidates.has(sha)));
     }),
     fence: Effect.fn("Ship.preparedFence")(function* fence(sha: string) {
-      const text = yield* github(
-        repository,
+      if (green.has(sha)) {
+        return true;
+      }
+
+      const { text } = yield* get(
         `actions/workflows/fence.yml/runs?branch=main&event=push&head_sha=${sha}&per_page=1`
       );
 
       const {
         workflow_runs: [workflow],
-      } = yield* Schema.decodeEffect(Fence)(text).pipe(
+      } = yield* Schema.decodeUnknownEffect(Fence)(text).pipe(
         Effect.mapError(unavailable)
       );
 
+      if (workflow === undefined) {
+        return yield* new FleetError({
+          reason: "NotPushTip: no exact pushed-main fence run",
+        });
+      }
+
       if (
-        workflow === undefined ||
         workflow.head_sha !== sha ||
         workflow.head_branch !== "main" ||
         workflow.event !== "push" ||
@@ -186,26 +329,44 @@ export const preparedEvidence = (
         return false;
       }
 
-      const jobs = yield* github(
-        repository,
+      const key = `${sha}:${workflow.id}:${workflow.run_attempt}`;
+      const verdict = completed.get(key);
+
+      if (verdict !== undefined) {
+        return verdict;
+      }
+
+      const jobs = yield* fenceJobs(
+        get,
         `actions/runs/${workflow.id}/attempts/${workflow.run_attempt}/jobs?per_page=100`
       );
 
-      const decoded = yield* Schema.decodeEffect(FenceJobs)(jobs).pipe(
-        Effect.mapError(unavailable)
-      );
+      const fences = jobs.filter((job) => job.name === "fence");
 
-      const fences = decoded.jobs.filter((job) => job.name === "fence");
-
-      return (
+      const ok =
         fences.length === 1 &&
         fences.every(
           (job) =>
             job.head_sha === sha &&
             job.status === "completed" &&
             job.conclusion === "success"
-        )
-      );
+        );
+
+      if (completed.size >= maxFirstParents * 2) {
+        completed.delete(completed.keys().next().value ?? "");
+      }
+
+      completed.set(key, ok);
+
+      if (ok) {
+        if (green.size >= maxFirstParents * 2) {
+          green.delete(green.keys().next().value ?? "");
+        }
+
+        green.add(sha);
+      }
+
+      return ok;
     }),
     firstParent: Effect.fn("Ship.pushedFirstParent")(function* firstParent(
       sha: string
@@ -214,9 +375,9 @@ export const preparedEvidence = (
         return parents.get(sha);
       }
 
-      const text = yield* github(repository, `git/commits/${sha}`);
+      const { text } = yield* get(`git/commits/${sha}`);
 
-      const commit = yield* Schema.decodeEffect(Commit)(text).pipe(
+      const commit = yield* Schema.decodeUnknownEffect(Commit)(text).pipe(
         Effect.mapError(unavailable)
       );
 
@@ -234,11 +395,19 @@ export const preparedEvidence = (
       return first;
     }),
     head: Effect.gen(function* pushedMain() {
-      const text = yield* github(repository, "git/ref/heads/main");
+      const { response, text } = yield* get("git/ref/heads/main", ref?.etag);
 
-      return (yield* Schema.decodeEffect(Ref)(text).pipe(
+      if (text === undefined && ref !== undefined) {
+        return ref.sha;
+      }
+
+      const { object } = yield* Schema.decodeUnknownEffect(Ref)(text).pipe(
         Effect.mapError(unavailable)
-      )).object.sha;
+      );
+
+      ref = { etag: response.headers.etag, sha: object.sha };
+
+      return ref.sha;
     }),
   };
 };

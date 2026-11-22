@@ -2,6 +2,7 @@ import { Effect, FileSystem, Path, Schema } from "effect";
 
 import { AbsolutePath } from "../../packages/alchemy-nest/src/files.ts";
 import { buildFleetModules } from "../../packages/alchemy-nest/src/fleet-build.ts";
+import { mailboxManifest } from "./prepared-manifest.ts";
 import {
   encodePrepared,
   maxPreparedBytes,
@@ -88,6 +89,7 @@ export const assertBuildEnvironment = Effect.fn("ShipBuild.environment")(
     return {
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_NOSYSTEM: "1",
+      GIT_OPTIONAL_LOCKS: "0",
       GIT_TERMINAL_PROMPT: "0",
       HOME,
       PATH,
@@ -154,7 +156,12 @@ export const shipBuildCommand = Effect.fn("ShipBuild.command")(
       version,
     });
 
-    const bytes = encodePrepared({ ...payloads, commit, version });
+    const bytes = encodePrepared({
+      ...payloads,
+      commit,
+      manifest: mailboxManifest,
+      version,
+    });
 
     if (bytes.length > maxPreparedBytes) {
       return yield* new FleetError({
@@ -164,6 +171,17 @@ export const shipBuildCommand = Effect.fn("ShipBuild.command")(
 
     const fs = yield* FileSystem.FileSystem;
 
-    return yield* fs.writeFile(output, bytes, { flag: "wx", mode: 0o600 });
+    return yield* Effect.scoped(
+      Effect.gen(function* publishBundle() {
+        const directory = yield* fs.makeTempDirectoryScoped({
+          directory: path.dirname(output),
+          prefix: ".bundle-",
+        });
+
+        const temporary = path.join(directory, "payload");
+        yield* fs.writeFile(temporary, bytes, { flag: "wx", mode: 0o600 });
+        yield* fs.rename(temporary, output);
+      })
+    );
   }
 );

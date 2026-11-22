@@ -2,6 +2,11 @@ import type { HostedBindings } from "@rat-king/agent-runtime/hosted";
 
 import type { Desk } from "./desk-object.ts";
 import type { Issuer } from "./issuer-object.ts";
+import {
+  bindings,
+  deskMigration,
+  issuerMigration,
+} from "./mailbox-declaration.ts";
 import type { Mailbox, AuthTokens } from "./worker.ts";
 
 export interface Bindings {
@@ -36,28 +41,7 @@ export interface Build {
   readonly documents: string;
 }
 
-const issuerMigration = { new_sqlite_classes: ["Issuer"], tag: "v2" };
-
-const deskMigration = { new_sqlite_classes: ["Desk"], tag: "v3" };
-
-export const bindings = {
-  compatibility_date: "2026-10-04",
-  compatibility_flags: ["nodejs_compat"],
-  durable_objects: {
-    bindings: [
-      { class_name: "Mailbox", name: "MAILBOX" },
-      { class_name: "AuthTokens", name: "AUTH_TOKENS" },
-      { class_name: "Issuer", name: "ISSUER" },
-      { class_name: "Desk", name: "DESK" },
-    ],
-  },
-  migrations: [
-    { new_sqlite_classes: ["Mailbox", "AuthTokens"], tag: "v1" },
-    issuerMigration,
-    deskMigration,
-  ],
-  name: "rat-king-mailbox",
-};
+export { bindings } from "./mailbox-declaration.ts";
 
 const hostedObjects = [
   ...bindings.durable_objects.bindings,

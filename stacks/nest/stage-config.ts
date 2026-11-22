@@ -237,3 +237,6 @@ export const stageProvider = (config: StageConfigValue) =>
     ),
     ...shipConfigFields(config),
   });
+
+export const preparedStageProvider = (config: StageConfigValue) =>
+  ConfigProvider.layerAdd(stageProvider(config), { asPrimary: true });

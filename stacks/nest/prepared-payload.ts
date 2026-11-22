@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect";
 
 import { digest } from "../../packages/alchemy-nest/src/files.ts";
 import { fleetCelldBinary } from "./celld-build.ts";
+import { PreparedManifest } from "./prepared-manifest.ts";
 import { Sha } from "./ship-config.ts";
 import { FleetError } from "./stage-config.ts";
 
@@ -34,7 +35,8 @@ const Container = Schema.fromJsonString(
   Schema.Struct({
     celld: Asset,
     commit: Sha,
-    format: Schema.Literal("rat-king/fleet/v1"),
+    format: Schema.Literal("rat-king/fleet/v2"),
+    manifest: PreparedManifest,
     payloads: Schema.Struct({
       backup: Payload,
       cli: Payload,
@@ -57,7 +59,9 @@ interface Identity {
   readonly version: string;
 }
 
-export interface PreparedFleetPayload extends Identity, Destinations {}
+export interface PreparedFleetPayload extends Identity, Destinations {
+  readonly manifest: typeof PreparedManifest.Type;
+}
 
 const celld = () => {
   const pin = fleetCelldBinary("");
@@ -79,6 +83,7 @@ export const encodePrepared = ({
   backup,
   cli,
   commit,
+  manifest,
   restart,
   version,
   worker,
@@ -87,7 +92,8 @@ export const encodePrepared = ({
     JSON.stringify({
       celld: celld(),
       commit,
-      format: "rat-king/fleet/v1",
+      format: "rat-king/fleet/v2",
+      manifest,
       payloads: {
         backup: encode(backup),
         cli: encode(cli),
@@ -111,7 +117,7 @@ const validPayload = (entry: typeof Payload.Type) => {
 
 const badContainer = () =>
   new FleetError({
-    reason: "Prepared fleet bundle format or identity refused",
+    reason: "BundleFormat: prepared fleet v2 format or identity refused",
   });
 
 export const decodePrepared = Effect.fn("Ship.decodePrepared")(
@@ -143,18 +149,26 @@ export const decodePrepared = Effect.fn("Ship.decodePrepared")(
     if (
       JSON.stringify(decoded) !== text ||
       commit !== expected.commit ||
-      decoded.celld.archive !== pin.archive ||
-      decoded.celld.binary !== pin.binary ||
-      decoded.celld.size !== pin.size ||
       !Object.values(payloads).every(validPayload)
     ) {
       return yield* badContainer();
+    }
+
+    if (
+      decoded.celld.archive !== pin.archive ||
+      decoded.celld.binary !== pin.binary ||
+      decoded.celld.size !== pin.size
+    ) {
+      return yield* new FleetError({
+        reason: "CelldPinMismatch: needs legacy ship",
+      });
     }
 
     return Object.freeze({
       backup: payloads.backup.text,
       cli: payloads.cli.text,
       commit,
+      manifest: decoded.manifest,
       restart: payloads.restart.text,
       version,
       worker: payloads.worker.text,

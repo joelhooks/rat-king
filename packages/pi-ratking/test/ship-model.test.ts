@@ -8,6 +8,7 @@ import type { AsyncCommand } from "fast-check";
 import { expect } from "vitest";
 import { initialTransition } from "xstate";
 
+import { mailboxManifest } from "../../../stacks/nest/prepared-manifest.ts";
 import type {
   ShipCheckpoint,
   ShipReceipt,
@@ -320,6 +321,7 @@ it.effect.prop(
                           backup: "backup",
                           cli: "cli",
                           commit: sha,
+                          manifest: mailboxManifest,
                           restart: "restart",
                           version: "1.2.3",
                           worker: "worker",
