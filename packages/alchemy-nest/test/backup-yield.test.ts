@@ -31,12 +31,13 @@ with tempfile.TemporaryDirectory() as tmp:
             exec(script, {})
         return out.getvalue().strip()
     if phase == 'idle':
+        before = os.getpriority(os.PRIO_PROCESS, 0) if hasattr(os, 'getpriority') else None
         staging = pathlib.Path(run('stage'))
         run('snapshot', str(staging))
         run('pack', str(staging))
         assert any(argv[:2] == ['ionice', '-c3'] for argv in calls), calls
-        if hasattr(os, 'getpriority'):
-            assert os.getpriority(os.PRIO_PROCESS, 0) == 19
+        if before is not None:
+            assert os.getpriority(os.PRIO_PROCESS, 0) == max(19, before)
         print('YIELD_PASSED')
         sys.exit(0)
     real = pathlib.Path.lstat
@@ -78,6 +79,7 @@ it.effect.prop(
         vanish,
       ]);
 
+      expect(result.code).toBe(0);
       expect(result.stdout.trim()).toBe("YIELD_PASSED");
     }).pipe(Effect.provide(NodeServices.layer))
 );

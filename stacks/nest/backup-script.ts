@@ -66,7 +66,7 @@ def write_synced(path, value):
 def fail(reason):
     raise RuntimeError(reason)
 def idle_priority():
-    if hasattr(os, 'setpriority'):
+    if hasattr(os, 'getpriority') and os.getpriority(os.PRIO_PROCESS, 0) < 19:
         os.setpriority(os.PRIO_PROCESS, 0, 19)
     try:
         subprocess.run(['ionice', '-c3', '-p', str(os.getpid())], capture_output=True)
