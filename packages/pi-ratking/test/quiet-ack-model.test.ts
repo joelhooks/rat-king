@@ -4,6 +4,7 @@ import { it } from "@effect/vitest";
 import type { Inbound } from "@rat-king/ratking-client/payload";
 import { RatKing } from "@rat-king/ratking-client/ratking";
 import type { Deliver } from "@rat-king/ratking-client/ratking";
+import { relayRecord, relayedInbound } from "@rat-king/ratking-client/relay";
 import {
   Arbitrary,
   Clock,
@@ -44,7 +45,16 @@ interface Session {
   readonly entries: HistoryEntry[];
 }
 
-const Kind = Schema.Literals(["direct", "sentBy", "quiet", "cc", "ruled"]);
+const Passive = Schema.Literals([
+  "quiet",
+  "cc",
+  "digest",
+  "ruled",
+  "priority",
+  "relayed",
+]);
+
+const Kind = Schema.Union([Schema.Literals(["direct", "sentBy"]), Passive]);
 
 const nothing = () => {};
 
@@ -65,7 +75,8 @@ const entryOf = (message: Message): HistoryEntry => ({
 const inboundOf = (kind: typeof Kind.Type, id: string): Inbound => {
   const inbound: Inbound = {
     body: "mail",
-    cc: kind === "cc",
+    cc: kind === "cc" || kind === "digest",
+    copy: kind === "cc" || kind === "digest",
     did: "did:web:sender.invalid",
     from: "sender",
     id,
@@ -80,8 +91,16 @@ const inboundOf = (kind: typeof Kind.Type, id: string): Inbound => {
     Object.assign(inbound, { sentBy: "muster/launcher" });
   }
 
-  if (kind === "quiet") {
-    Object.assign(inbound, { copy: true, quiet: true });
+  if (kind === "quiet" || kind === "priority" || kind === "relayed") {
+    Object.assign(inbound, { quiet: true });
+  }
+
+  if (kind === "digest") {
+    Object.assign(inbound, { digestMinutes: 20 / 60_000 });
+  }
+
+  if (kind === "priority") {
+    Object.assign(inbound, { levers: { enabled: true, owner: "sender" } });
   }
 
   if (kind === "ruled") {
@@ -95,7 +114,9 @@ const inboundOf = (kind: typeof Kind.Type, id: string): Inbound => {
     });
   }
 
-  return inbound;
+  return kind === "relayed"
+    ? relayedInbound(relayRecord(inbound, true))
+    : inbound;
 };
 
 const occurrences = (session: Session, id: string) =>
@@ -431,23 +452,6 @@ it.effect(
 );
 
 it.effect(
-  "two copies held for the next turn show as one digest and both are acked",
-  () =>
-    Effect.promise(async () => {
-      const setup = await fresh();
-      await setup.real.current.ready();
-      await setup.real.current.post("quiet", "a");
-      await setup.real.current.post("quiet", "b");
-      expect(setup.real.box.unacked.size).toBe(2);
-      await setup.real.current.begin();
-      await setup.real.current.finish();
-      expect(setup.real.box.acks.get("a")).toBe(1);
-      expect(setup.real.box.acks.get("b")).toBe(1);
-      expect(setup.real.session.entries).toHaveLength(1);
-    })
-);
-
-it.effect(
   "a crash before the entry is appended leaves the mail unacked and shows it once after restart",
   () =>
     Effect.promise(async () => {
@@ -466,9 +470,10 @@ it.effect(
     })
 );
 
-it.effect(
-  "an idle Pi shows and acks mail its own quiet rule held within a tick, without a turn",
-  () =>
+it.effect.prop(
+  "an idle Pi does not start a turn or ack quiet, cc or filter-held mail; the next real turn receives it once",
+  [Passive],
+  ([kind]) =>
     Effect.gen(function* idleAcknowledgment() {
       const clock = yield* Clock.Clock;
       const setup = yield* Effect.promise(async () => await fresh(clock));
@@ -479,11 +484,14 @@ it.effect(
       );
       yield* Effect.promise(async () => {
         await setup.real.current.ready();
-        await setup.real.current.post("ruled", "r1");
-        await setup.real.current.post("ruled", "r2");
+        await setup.real.current.post(kind, "r1");
+        await setup.real.current.post(kind, "r2");
       });
+      yield* TestClock.adjust(40);
+      expect(setup.real.current.turns()).toBe(0);
       expect(setup.real.box.unacked.size).toBe(2);
-      yield* TestClock.adjust(20);
+      expect(setup.real.session.entries).toEqual([]);
+      yield* Effect.promise(setup.real.current.begin);
       yield* Deferred.await(setup.real.box.acknowledged);
       expect(setup.real.box.unacked.size).toBe(0);
       expect(setup.real.box.acks.get("r1")).toBe(1);

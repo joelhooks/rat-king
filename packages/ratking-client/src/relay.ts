@@ -10,12 +10,14 @@ export const RelayRecord = Schema.Struct({
   body: Schema.String,
   cc: Schema.Boolean,
   ccNames: Schema.optionalKey(Schema.Array(Schema.String)),
+  copy: Schema.optionalKey(Schema.Literal(true)),
   did: Schema.String,
   encrypted: Schema.Boolean,
   from: Schema.String,
   id: Schema.String,
   kind: Kind,
   label: Schema.NullOr(Schema.String),
+  quiet: Schema.optionalKey(Schema.Literal(true)),
   replyTo: Schema.NullOr(Schema.String),
   summary: Schema.NullOr(Schema.String),
   thread: Schema.optionalKey(Schema.String),
@@ -53,6 +55,20 @@ export const RelayHandled = Schema.Struct({
   id: Schema.String,
 });
 
+const passiveFlags = (input: Pick<Inbound, "copy" | "quiet">) => {
+  const flags: Pick<typeof RelayRecord.Type, "copy" | "quiet"> = {};
+
+  if (input.copy === true) {
+    Object.assign(flags, { copy: true });
+  }
+
+  if (input.quiet === true) {
+    Object.assign(flags, { quiet: true });
+  }
+
+  return flags;
+};
+
 export const relayRecord = (
   inbound: Inbound,
   encrypted: boolean
@@ -61,6 +77,7 @@ export const relayRecord = (
     $type: "sh.mschf.ratking.relay#message",
     body: inbound.body,
     cc: inbound.cc,
+    ...passiveFlags(inbound),
     did: inbound.did,
     encrypted,
     from: inbound.from,
@@ -95,6 +112,7 @@ export const relayedInbound = (record: typeof RelayRecord.Type): Inbound => {
   const inbound: Inbound = {
     body: record.body,
     cc: record.cc,
+    ...passiveFlags(record),
     did: record.did,
     from: record.from,
     id: record.id,

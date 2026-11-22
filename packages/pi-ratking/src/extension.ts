@@ -234,6 +234,21 @@ const WakeEntry = Schema.Struct({
   summary: Schema.optional(Schema.String),
 });
 
+const passiveMail = (mail: Inbound) =>
+  mail.kind !== "ask" &&
+  mail.askSummary === undefined &&
+  (mail.copy === true || mail.quiet === true || mail.routedCopy === true);
+
+const noticeDelivery = (passive: boolean, verdict: Verdict) => ({
+  deliverAs:
+    passive ||
+    Predicate.isTagged(verdict, "Next") ||
+    Predicate.isTagged(verdict, "Later")
+      ? ("nextTurn" as const)
+      : ("followUp" as const),
+  triggerTurn: false,
+});
+
 const digestEntry = (mail: PendingMail) =>
   Schema.decodeUnknownOption(WakeEntry)(mail.details);
 
@@ -1220,7 +1235,6 @@ export const ratkingExtension = (options: ExtensionOptions) =>
     const controlRecords = new Map<string, string>();
     let isIdle = idle;
     let digestTick = DIGEST_TICK;
-    let flushing = false;
     const sweeps: (() => void)[] = [];
     let drain: ReturnType<typeof watchDrain> | undefined;
     let drainRelease: Promise<void> | undefined;
@@ -1271,7 +1285,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
 
     const dispatch: MailDispatch = {
       mail: inbox({
-        digest: (mails, variant, delivery) => {
+        digest: (mails, variant) => {
           dispatch.send(
             {
               content: renderDigest(tool, mails, variant),
@@ -1283,14 +1297,12 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               display: true,
             },
             {
-              deliverAs:
-                delivery?.deliverAs ??
-                (variant === "wake" ? "nextTurn" : "followUp"),
-              triggerTurn: delivery?.triggerTurn ?? variant !== "wake",
+              deliverAs: "nextTurn",
+              triggerTurn: false,
             }
           );
         },
-        show: (pending, deliverAs, triggerTurn) => {
+        show: (pending, deliverAs) => {
           dispatch.send(
             {
               content: pending.content,
@@ -1298,24 +1310,11 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               details: pending.details,
               display: true,
             },
-            { deliverAs, triggerTurn: triggerTurn ?? deliverAs !== "nextTurn" }
+            { deliverAs, triggerTurn: deliverAs !== "nextTurn" }
           );
         },
       }),
       send: (message, delivery) => {
-        if (delivery?.triggerTurn === true && !flushing) {
-          flushing = true;
-
-          try {
-            dispatch.mail.flushNext({
-              deliverAs: "followUp",
-              triggerTurn: !isIdle(),
-            });
-          } finally {
-            flushing = false;
-          }
-        }
-
         if (delivery?.triggerTurn === true) {
           resetDrain();
         }
@@ -1404,23 +1403,12 @@ export const ratkingExtension = (options: ExtensionOptions) =>
 
     sweeps.push(sweep);
 
-    pi.onTurnEnd?.(() => {
-      sweep();
-      mail.flushNext({ deliverAs: "followUp", triggerTurn: false });
-    });
+    pi.onTurnEnd?.(sweep);
 
     pi.onAgentStart?.(async () => {
       resetDrain();
       sweep();
       busy = true;
-      flushing = true;
-
-      try {
-        mail.flushNext({ deliverAs: "steer", triggerTurn: true });
-      } finally {
-        flushing = false;
-      }
-
       await reportTurn((reporter) => reporter.working());
     });
 
@@ -1456,21 +1444,6 @@ export const ratkingExtension = (options: ExtensionOptions) =>
           })
         ),
         Effect.repeat(Schedule.spaced(digestTick)),
-        Effect.forkScoped,
-        Effect.asVoid
-      )
-    );
-
-    const idleFlush = Effect.suspend(() =>
-      Effect.sleep(digestTick).pipe(
-        Effect.andThen(
-          Effect.sync(() => {
-            if (isIdle()) {
-              mail.flushNext({ deliverAs: "followUp", triggerTurn: false });
-            }
-          })
-        ),
-        Effect.forever,
         Effect.forkScoped,
         Effect.asVoid
       )
@@ -1697,6 +1670,8 @@ export const ratkingExtension = (options: ExtensionOptions) =>
           return;
         }
 
+        const passive = passiveMail(inbound);
+
         if (notice !== undefined) {
           dispatch.send(
             {
@@ -1705,24 +1680,20 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               details: inboundDetails(inbound, settled),
               display: true,
             },
-            { deliverAs: "followUp", triggerTurn: false }
+            noticeDelivery(passive, verdict)
           );
         }
 
         if (surfaces) {
           yield* applyDelivery(verdictToHold(verdict), {
-            inject: (hold) =>
+            inject: (verdictHold) =>
               Effect.sync(() => {
+                const hold =
+                  passive && verdictHold === "steer" ? "nextTurn" : verdictHold;
+
                 const pending = {
                   coalesce:
-                    pi.onBeforeAgentStart !== undefined &&
-                    hold === "nextTurn" &&
-                    ((Predicate.isTagged(verdict.reason, "lever") &&
-                      verdict.reason.rule !== undefined) ||
-                      inbound.cc ||
-                      inbound.copy === true ||
-                      inbound.quiet === true) &&
-                    inbound.kind !== "ask",
+                    pi.onBeforeAgentStart !== undefined && hold === "nextTurn",
                   content: renderInbound(tool, inbound),
                   details: inboundDetails(inbound, settled),
                   digestMinutes:
@@ -2479,7 +2450,6 @@ export const ratkingExtension = (options: ExtensionOptions) =>
                   })
                 );
               yield* digestTicks;
-              yield* idleFlush;
               yield* RatKing.use((ratking) =>
                 ratking.run(
                   facts,
