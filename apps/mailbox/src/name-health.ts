@@ -168,9 +168,9 @@ export const nameHealth = Effect.fn("Mailbox.nameHealth")(
     sql: Sql,
     params: Health.ParamsValue,
     issuer: string,
-    operators: readonly string[]
+    readers: readonly string[]
   ) {
-    if (!operators.includes(issuer)) {
+    if (!readers.includes(issuer)) {
       return yield* failure("Forbidden", 403);
     }
 

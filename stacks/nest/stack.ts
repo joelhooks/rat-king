@@ -71,6 +71,14 @@ const delegationVars = Config.Boolean("RAT_KING_DELEGATION").pipe(
   Config.map((enabled) => (enabled ? { DELEGATION: "true" } : {}))
 );
 
+const healthReaderVars = Config.schema(
+  Schema.fromJsonString(Schema.Array(Schema.NonEmptyString)),
+  "RAT_KING_HEALTH_READER_DIDS"
+).pipe(
+  Config.withDefault([]),
+  Config.map((dids) => ({ HEALTH_READER_DIDS: JSON.stringify(dids) }))
+);
+
 const issuerVars = Effect.gen(function* readIssuerVars() {
   const template = yield* Config.option(
     Config.schema(Schema.NonEmptyString, "RAT_KING_ISSUER_DID_TEMPLATE")
@@ -249,6 +257,8 @@ export const nestStack = (restore?: RestoreRequest) =>
       Object.assign(vars, yield* issuerVars);
 
       Object.assign(vars, yield* delegationVars);
+
+      Object.assign(vars, yield* healthReaderVars);
 
       if (mailboxOnly) {
         const publicDocuments = yield* Schema.decodeUnknownEffect(
