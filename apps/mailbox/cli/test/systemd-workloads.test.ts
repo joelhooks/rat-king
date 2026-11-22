@@ -76,6 +76,8 @@ const fixture = Effect.fn("Test.scopedWorkload")(function* fixture(
       ...base.runtime,
       HOME: home,
       RAT_KING_ENDPOINT: settings.endpoint,
+      RAT_KING_OFFLINE_PLAN: false,
+      RAT_KING_SECRET_SOURCE: "systemd" as const,
       RAT_KING_SERVICE_DID: settings.serviceDid,
       RAT_KING_STATE_DIR: home,
     },
@@ -84,7 +86,7 @@ const fixture = Effect.fn("Test.scopedWorkload")(function* fixture(
 
   yield* fs.writeFileString(
     `${home}/secrets`,
-    `#!/bin/sh\nprintf 'fallback' > "$FIXTURE_FALLBACK"\nexit 77\n`,
+    `#!/bin/sh\nprintf '%s' "$0" > "$FIXTURE_FALLBACK"\nexit 77\n`,
     { mode: 0o700 }
   );
   yield* fs.makeDirectory(credentials);
@@ -94,6 +96,19 @@ const fixture = Effect.fn("Test.scopedWorkload")(function* fixture(
     JSON.stringify(signer)
   );
   yield* fs.writeFileString(`${home}/peers.json`, JSON.stringify(docs));
+  yield* fs.writeFileString(
+    `${home}/operator-document.json`,
+    JSON.stringify(docs[0])
+  );
+  yield* fs.writeFileString(`${home}/retired.txt`, "example/row\n");
+  yield* fs.makeDirectory(`${home}/.config/rat-king/agents`, {
+    recursive: true,
+  });
+  yield* fs.writeFileString(
+    `${home}/.config/rat-king/agents/operator.jwk`,
+    JSON.stringify(signer),
+    { mode: 0o600 }
+  );
   yield* fs.writeFileString(notify.config, JSON.stringify(settings));
   yield* fs.writeFileString(
     stageFile,
@@ -180,7 +195,94 @@ it.effect.prop(
 
       expect(refused.code).not.toBe(0);
       expect(refused.stderr).toContain("Systemd credential slot is absent");
+
+      const badFlag = yield* fixtureChild(
+        [
+          "stacks/nest/cli.ts",
+          "mailbox",
+          "register",
+          "--did",
+          "did:web:peer.example.invalid",
+          "--document",
+          `${home}/peers.json`,
+          "--unknown-fixture",
+        ],
+        home,
+        { ...missing, RAT_KING_STAGE_CONFIG: env.FIXTURE_STAGE }
+      );
+
+      expect(badFlag.code).toBe(2);
+      expect(badFlag.stderr).toContain(
+        "Unrecognized flag: --unknown-fixture in command mailbox register"
+      );
+
+      const namedMailbox = yield* fixtureChild(
+        ["stacks/nest/cli.ts", "ops-health", "--name", "mailbox"],
+        home,
+        { ...env, RAT_KING_STAGE_CONFIG: env.FIXTURE_STAGE }
+      );
+
+      expect(namedMailbox.code).not.toBe(0);
+      expect(`${namedMailbox.stdout}${namedMailbox.stderr}`).toContain(
+        "Unknown ops health name"
+      );
+
+      const oldActions = [
+        [
+          "enroll-host",
+          "--did",
+          "did:web:operator.example.invalid",
+          "--document",
+          `${home}/operator-document.json`,
+        ],
+        [
+          "mark-read",
+          "--did",
+          "did:web:peer.example.invalid",
+          "--through",
+          "1",
+        ],
+        ["record-retired", "--file", `${home}/retired.txt`],
+        [
+          "provision",
+          "--agent",
+          "fixture",
+          "--did",
+          "did:web:fixture.example.invalid",
+        ],
+      ];
+
+      const scoped = yield* Effect.forEach(
+        oldActions,
+        (argv) =>
+          fixtureChild(["apps/mailbox/cli/main.ts", ...argv], home, {
+            ...missing,
+            RAT_KING_DOCUMENTS: `${home}/peers.json`,
+            RAT_KING_ENDPOINT: "https://mailbox.example.invalid",
+            RAT_KING_OPERATOR_IDENTITY: signer,
+            RAT_KING_SERVICE_DID: "did:web:service.example.invalid",
+          }),
+        { concurrency: "unbounded" }
+      );
+
+      for (const { code, stderr, stdout } of scoped) {
+        expect(code).not.toBe(0);
+        expect(`${stderr}${stdout}`).toContain(
+          "Systemd credential slot is absent"
+        );
+      }
+
       expect(yield* fs.exists(fallback)).toBe(false);
+
+      const legacy = yield* fixtureChild(
+        ["--input-type=module", "--eval", alarmAndDigest],
+        home,
+        { ...env, RAT_KING_SECRET_SOURCE: "agent-secrets" }
+      );
+
+      expect(legacy.code).toBe(0);
+      expect(legacy.stdout).toContain("Secret-store command refused");
+      expect(yield* fs.readFileString(fallback)).toBe(`${home}/secrets`);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 3 } }
 );

@@ -1,11 +1,14 @@
-import { Effect, FileSystem, Option, Path, Schema } from "effect";
+import { Effect, FileSystem, Layer, Option, Path, Schema } from "effect";
+import { Digest, Mac, SecureRandom } from "effect/crypto";
 
-import { cryptoOperation } from "../../packages/envelope/src/webcrypto.ts";
 import * as Defs from "../../packages/lexicon/src/defs.ts";
 import { withLock } from "../../packages/ratking-client/src/lock.ts";
 import { FleetError } from "./stage-config.ts";
 
-const Hex = Schema.String.check(Schema.isPattern(/^[0-9a-f]{64}$/u));
+const Hex = Schema.String.check(
+  Schema.isPattern(/^[0-9a-f]{64}$/u),
+  Schema.isMaxLength(64)
+);
 
 const Pending = Schema.Struct({
   copy: Defs.EncryptedEnvelope,
@@ -24,66 +27,99 @@ const Journal = Schema.fromJsonString(Schema.Union([Pending, Done]));
 
 const maxBytes = 262_144;
 
+const keyBytes = 32;
+
 export const frontDeskRefused = () =>
   new FleetError({ reason: "Front desk delivery not confirmed" });
 
-export const digestText = (text: string) =>
-  cryptoOperation(
-    crypto.subtle.digest.bind(
-      crypto.subtle,
-      "SHA-256",
-      new TextEncoder().encode(text)
-    )
-  ).pipe(
-    Effect.map((hash) =>
-      Array.from(new Uint8Array(hash), (byte) =>
-        byte.toString(16).padStart(2, "0")
-      ).join("")
-    ),
-    Effect.mapError(frontDeskRefused)
-  );
-
-const readJournal = Effect.fn("Nest.frontDeskJournal.read")(
-  function* readJournal(file: string) {
+const readBytes = Effect.fn("Nest.frontDeskJournal.readBytes")(
+  function* readBytes(file: string, limit: number) {
     const fs = yield* FileSystem.FileSystem;
 
-    const stat = yield* fs
-      .stat(file)
+    const listed = yield* fs
+      .lstat(file)
       .pipe(
         Effect.catchReason("PlatformError", "NotFound", () =>
           Effect.succeed(null)
         )
       );
 
-    if (stat === null) {
+    if (listed === null) {
       return null;
     }
 
-    if (stat.type !== "File" || stat.size > BigInt(maxBytes)) {
+    if (
+      listed.type !== "File" ||
+      listed.size > BigInt(limit) ||
+      listed.mode % 512 !== 0o600
+    ) {
       return yield* frontDeskRefused();
     }
 
     const handle = yield* fs.open(file, { flag: "r", noFollow: true });
-    const bytes = yield* handle.readAlloc(maxBytes + 1);
+    const stat = yield* handle.stat;
+
+    if (
+      stat.type !== "File" ||
+      stat.size !== listed.size ||
+      stat.mode % 512 !== 0o600
+    ) {
+      return yield* frontDeskRefused();
+    }
+
+    const bytes = yield* handle.readAlloc(limit + 1);
 
     if (Option.isNone(bytes) || bytes.value.byteLength !== Number(stat.size)) {
       return yield* frontDeskRefused();
     }
 
-    return yield* Schema.decodeEffect(Journal)(
-      new TextDecoder().decode(bytes.value),
-      { onExcessProperty: "error" }
-    );
+    return bytes.value;
   },
   Effect.scoped
 );
 
-const writeJournal = Effect.fn("Nest.frontDeskJournal.write")(
-  function* writeJournal(file: string, row: typeof Journal.Type) {
+const syncDirectory = Effect.fn("Nest.frontDeskJournal.syncDirectory")(
+  function* syncDirectory(directory: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const file = yield* fs.open(directory, { flag: "r" });
+
+    return yield* file.sync;
+  },
+  Effect.scoped
+);
+
+const writeBytes = Effect.fn("Nest.frontDeskJournal.writeBytes")(
+  function* writeBytes(file: string, bytes: Uint8Array) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const directory = path.dirname(file);
+    const temp = yield* fs.makeTempFileScoped({ directory, prefix: ".send-" });
+    yield* fs.chmod(temp, 0o600);
 
+    const handle = yield* fs.open(temp, { flag: "w", noFollow: true });
+    yield* handle.writeAll(bytes);
+    yield* handle.sync;
+    yield* fs.rename(temp, file);
+
+    return yield* syncDirectory(directory);
+  },
+  Effect.scoped
+);
+
+const readJournal = Effect.fn("Nest.frontDeskJournal.read")(
+  function* readJournal(file: string) {
+    const bytes = yield* readBytes(file, maxBytes);
+
+    return bytes === null
+      ? null
+      : yield* Schema.decodeEffect(Journal)(new TextDecoder().decode(bytes), {
+          onExcessProperty: "error",
+        });
+  }
+);
+
+const writeJournal = Effect.fn("Nest.frontDeskJournal.write")(
+  function* writeJournal(file: string, row: typeof Journal.Type) {
     const text = yield* Schema.encodeEffect(Journal)(row, {
       onExcessProperty: "error",
     });
@@ -94,35 +130,69 @@ const writeJournal = Effect.fn("Nest.frontDeskJournal.write")(
       return yield* frontDeskRefused();
     }
 
-    const temp = yield* fs.makeTempFileScoped({ directory, prefix: ".send-" });
-    yield* fs.chmod(temp, 0o600);
+    return yield* writeBytes(file, bytes);
+  }
+);
 
-    const handle = yield* fs.open(temp, { flag: "w", noFollow: true });
-    yield* handle.writeAll(bytes);
-    yield* handle.sync;
-    yield* fs.rename(temp, file);
+const loadKey = Effect.fn("Nest.frontDeskJournal.loadKey")(function* loadKey(
+  directory: string
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const random = yield* SecureRandom.SecureRandom;
+  const file = path.join(directory, ".journal-key");
 
-    const parent = yield* fs.open(directory, { flag: "r" });
+  const before = yield* readBytes(file, keyBytes);
 
-    return yield* parent.sync;
-  },
-  Effect.scoped
+  if (before !== null) {
+    if (before.byteLength !== keyBytes) {
+      return yield* frontDeskRefused();
+    }
+
+    return yield* Mac.key(Mac.hmacSha256, before);
+  }
+
+  const entries = yield* fs.readDirectory(directory);
+
+  if (entries.some((entry) => entry.endsWith(".json"))) {
+    return yield* frontDeskRefused();
+  }
+
+  const fresh = yield* random.randomBytes(keyBytes);
+  yield* writeBytes(file, fresh);
+
+  return yield* Mac.key(Mac.hmacSha256, fresh);
+});
+
+const hex = (bytes: Uint8Array) =>
+  Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+
+interface JournalSession {
+  readonly read: ReturnType<typeof readJournal>;
+  readonly sign: (text: string) => Effect.Effect<string, FleetError>;
+  readonly write: (row: typeof Journal.Type) => ReturnType<typeof writeJournal>;
+}
+
+const cryptoLayer = Layer.mergeAll(
+  Digest.layerWebCrypto,
+  Mac.layerWebCrypto.pipe(Layer.provideMerge(SecureRandom.layerWebCrypto))
 );
 
 export const withFrontDeskJournal = <A, E, R>(
   state: string,
   id: string,
-  run: (methods: {
-    readonly read: ReturnType<typeof readJournal>;
-    readonly write: (
-      row: typeof Journal.Type
-    ) => ReturnType<typeof writeJournal>;
-  }) => Effect.Effect<A, E, R>
+  run: (session: JournalSession) => Effect.Effect<A, E, R>
 ) =>
   Effect.gen(function* journal() {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
-    const key = yield* digestText(id);
+    const digest = yield* Digest.Digest;
+    const mac = yield* Mac.Mac;
+
+    const entry = yield* digest.digestHex(
+      Digest.sha256,
+      new TextEncoder().encode(id)
+    );
 
     const directory = path.join(state, "front-desk-send");
     const root = path.resolve(import.meta.dirname, "../..");
@@ -139,11 +209,20 @@ export const withFrontDeskJournal = <A, E, R>(
       return yield* frontDeskRefused();
     }
 
-    const file = path.join(canonical, `${key}.json`);
+    yield* syncDirectory(canonicalState);
+    const key = yield* withLock(canonical, "key", loadKey(canonical));
+    const file = path.join(canonical, `${entry}.json`);
 
     return yield* withLock(
       canonical,
-      key,
-      run({ read: readJournal(file), write: (row) => writeJournal(file, row) })
+      entry,
+      run({
+        read: readJournal(file),
+        sign: (text) =>
+          mac
+            .sign(key, new TextEncoder().encode(text))
+            .pipe(Effect.map(hex), Effect.mapError(frontDeskRefused)),
+        write: (row) => writeJournal(file, row),
+      })
     );
-  });
+  }).pipe(Effect.provide(cryptoLayer));

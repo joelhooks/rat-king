@@ -14,7 +14,6 @@ import { PayloadJson } from "../../packages/ratking-client/src/payload.ts";
 import { secretStoreLayer } from "../../packages/ratking-client/src/secrets.ts";
 import { secretSource } from "../../packages/ratking-client/src/systemd-credentials.ts";
 import {
-  digestText,
   frontDeskRefused as refused,
   withFrontDeskJournal,
 } from "./front-desk-journal.ts";
@@ -124,15 +123,20 @@ export const sendFrontDesk = Effect.fn("Nest.frontDeskSend")(
   function* frontDeskSend(payload: typeof Payload.Type) {
     const settings = yield* Settings;
 
-    const hash = yield* digestText(
-      JSON.stringify([payload.id, payload.summary, payload.body, payload.quiet])
-    );
-
     return yield* withFrontDeskJournal(
       settings.state,
       payload.id,
-      ({ read, write }) =>
+      ({ read, sign, write }) =>
         Effect.gen(function* deliver() {
+          const hash = yield* sign(
+            JSON.stringify([
+              payload.id,
+              payload.summary,
+              payload.body,
+              payload.quiet,
+            ])
+          );
+
           const prior = yield* read;
 
           if (prior !== null && prior.hash !== hash) {

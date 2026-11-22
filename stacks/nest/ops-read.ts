@@ -205,6 +205,18 @@ export const projectMailboxOpsHealth = (
   status: health.status,
 });
 
+export const opsMailboxHealth = <E, R>(
+  health: Effect.Effect<HealthDigest, E, R>
+) =>
+  health.pipe(
+    Effect.flatMap((value) =>
+      boundedPrint(MailboxOpsHealth, projectMailboxOpsHealth(value))
+    ),
+    Effect.provide(Logger.layer([])),
+    Effect.timeout("20 seconds"),
+    Effect.mapError(unavailable)
+  );
+
 export const readOpsName = Effect.fn("Nest.opsHealth.name")(function* readName(
   config: StageConfigValue,
   name: string
@@ -244,15 +256,6 @@ export const opsHealth = <E, R>(
     const name = yield* Schema.decodeEffect(OpsName)(input).pipe(
       Effect.mapError(unknownName)
     );
-
-    if (name === "mailbox") {
-      const mailbox = yield* health.pipe(Effect.mapError(unavailable));
-
-      return yield* boundedPrint(
-        MailboxOpsHealth,
-        projectMailboxOpsHealth(mailbox)
-      );
-    }
 
     const facts = yield* readOpsName(config, name);
     const mailbox = yield* health.pipe(Effect.mapError(unavailable));

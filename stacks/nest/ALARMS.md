@@ -4,6 +4,8 @@
 
 `alarm-plist` prints the launchd plist. `alarm-unit` prints a systemd service for the configured unit filename. Both run the lock-owning launcher. Systemd defaults to the user manager. `alarm.systemd.scope: system` requires dedicated non-root `user` and `group` and selects `multi-user.target`; the desk's kit installs it in `/etc/systemd/system` and uses the system manager to reload and enable it. The renderer does not install, reload, or enable either kind. Set `alarm.enabled: true` to run. `alarm-check` reports sanitized source readings and service state without writing alarm state or sending notifications. The CLI `doctor` also checks the configured supervisor. For systemd, an enabled alarm must be active and persistently enabled, not just `enabled-runtime`. These service checks do not feed the worker's issuer alarms.
 
+`ops-digest` is a read-only summary. It does not append to or use the regular digest's `health.jsonl`. `ops-health --name <name>` checks the exact mailbox identity. Its `status: ok` means the mailbox snapshot is complete and has a live lease; it does not mean the agent is taking turns. `ops-health --service mailbox` reports the mailbox service and storage instead, with fixed service states, PID presence (not the PID), restart counts and memory limits.
+
 ## Lifecycle and delivery
 
 One XState machine per stable key holds `ok`, `firing` and `recovered`. SHA changes, different diagnostic text and repeated known failures do not create new keys. A key sends on entry, a severity increase or the reminder interval (default 120 minutes). Recovery sends once with incident duration. Unknown measurements retain the previous alarm instead of claiming recovery.

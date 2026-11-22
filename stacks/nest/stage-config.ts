@@ -211,34 +211,56 @@ export const loadStageConfig = Effect.gen(function* loadStageConfig() {
   }).pipe(Effect.mapError(invalid));
 });
 
-export const stageProvider = (
-  config: StageConfigValue,
-  env: Parameters<typeof credentialEnvironment>[0]
-) =>
-  ConfigProvider.fromUnknown({
-    ...config.runtime,
-    ...credentialEnvironment(env),
-    ALCHEMY_TELEMETRY_DISABLED: "1",
-    RAT_KING_HEALTH_READER_DIDS: JSON.stringify(
-      config.runtime.RAT_KING_HEALTH_READER_DIDS ?? []
-    ),
-    RAT_KING_ISSUER_RESERVED: JSON.stringify(
-      config.runtime.RAT_KING_ISSUER_RESERVED
-    ),
-    RAT_KING_LEASE_RESOLVERS: JSON.stringify(
-      config.runtime.RAT_KING_LEASE_RESOLVERS
-    ),
-    RAT_KING_OBSERVER_DIDS: JSON.stringify(
-      config.runtime.RAT_KING_OBSERVER_DIDS
-    ),
-    RAT_KING_OPERATOR_DIDS: JSON.stringify(
-      config.runtime.RAT_KING_OPERATOR_DIDS
-    ),
-    RAT_KING_SHIP_ATTEMPT:
-      config.shipAttempt === undefined
-        ? undefined
-        : JSON.stringify(config.shipAttempt),
-    RAT_KING_SHIP_CONFIG:
-      config.shipAttempt === undefined ? undefined : JSON.stringify(config),
-    RAT_KING_SHIP_MODE: config.shipAttempt !== undefined,
-  });
+export const stageProvider = Effect.fn("Nest.stageProvider")(
+  function* stageProvider(
+    config: StageConfigValue,
+    env: Parameters<typeof credentialEnvironment>[0]
+  ) {
+    const configured = config.runtime.RAT_KING_SECRET_SOURCE;
+    const supplied = env.RAT_KING_SECRET_SOURCE;
+
+    if (supplied !== undefined && !Schema.is(SecretSourceMode)(supplied)) {
+      return yield* new FleetError({
+        reason: "Invalid process credential source",
+      });
+    }
+
+    if (
+      configured !== undefined &&
+      supplied !== undefined &&
+      configured !== supplied
+    ) {
+      return yield* new FleetError({
+        reason: "Process and stage credential sources disagree",
+      });
+    }
+
+    return ConfigProvider.fromUnknown({
+      ...config.runtime,
+      ...credentialEnvironment(env),
+      ALCHEMY_TELEMETRY_DISABLED: "1",
+      RAT_KING_HEALTH_READER_DIDS: JSON.stringify(
+        config.runtime.RAT_KING_HEALTH_READER_DIDS ?? []
+      ),
+      RAT_KING_ISSUER_RESERVED: JSON.stringify(
+        config.runtime.RAT_KING_ISSUER_RESERVED
+      ),
+      RAT_KING_LEASE_RESOLVERS: JSON.stringify(
+        config.runtime.RAT_KING_LEASE_RESOLVERS
+      ),
+      RAT_KING_OBSERVER_DIDS: JSON.stringify(
+        config.runtime.RAT_KING_OBSERVER_DIDS
+      ),
+      RAT_KING_OPERATOR_DIDS: JSON.stringify(
+        config.runtime.RAT_KING_OPERATOR_DIDS
+      ),
+      RAT_KING_SHIP_ATTEMPT:
+        config.shipAttempt === undefined
+          ? undefined
+          : JSON.stringify(config.shipAttempt),
+      RAT_KING_SHIP_CONFIG:
+        config.shipAttempt === undefined ? undefined : JSON.stringify(config),
+      RAT_KING_SHIP_MODE: config.shipAttempt !== undefined,
+    });
+  }
+);

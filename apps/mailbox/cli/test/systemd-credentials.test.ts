@@ -105,7 +105,7 @@ it.effect.prop(
 );
 
 it.effect.prop(
-  "stage provider preserves configured source without environment overrides",
+  "stage provider preserves configured systemd and refuses an env downgrade or invalid source",
   [StageConfig],
   ([stage]) =>
     Effect.gen(function* verify() {
@@ -117,21 +117,20 @@ it.effect.prop(
         },
       };
 
+      const provider = yield* stageProvider(config, {});
       expect(
-        yield* secretSource.pipe(
-          Effect.provide(ConfigProvider.layer(stageProvider(config, {})))
-        )
+        yield* secretSource.pipe(Effect.provide(ConfigProvider.layer(provider)))
       ).toBe("systemd");
       expect(
-        yield* secretSource.pipe(
-          Effect.provide(
-            ConfigProvider.layer(
-              stageProvider(config, { RAT_KING_SECRET_SOURCE: "invalid" })
-            )
-          ),
-          Effect.isFailure
-        )
-      ).toBe(true);
+        (yield* stageProvider(config, {
+          RAT_KING_SECRET_SOURCE: "agent-secrets",
+        }).pipe(Effect.flip)).reason
+      ).toBe("Process and stage credential sources disagree");
+      expect(
+        (yield* stageProvider(config, {
+          RAT_KING_SECRET_SOURCE: "invalid",
+        }).pipe(Effect.flip)).reason
+      ).toBe("Invalid process credential source");
     }),
   { arbitrary: { runs: 5 } }
 );
@@ -187,6 +186,14 @@ it.effect(
         `${path}/relative.json`,
         JSON.stringify({ ...good, state: "relative" })
       );
+      yield* fs.writeFileString(
+        `${path}/relative-documents.json`,
+        JSON.stringify({ ...good, documents: ["~/peers.json"] })
+      );
+      yield* fs.writeFileString(
+        `${path}/relative-directory.json`,
+        JSON.stringify({ ...good, directory: "./directory.json" })
+      );
 
       const read = (config?: string) =>
         loadSettings().pipe(
@@ -206,6 +213,12 @@ it.effect(
       expect(yield* read(`${path}/relative.json`).pipe(Effect.isFailure)).toBe(
         true
       );
+      expect(
+        yield* read(`${path}/relative-documents.json`).pipe(Effect.isFailure)
+      ).toBe(true);
+      expect(
+        yield* read(`${path}/relative-directory.json`).pipe(Effect.isFailure)
+      ).toBe(true);
       expect((yield* read(`${path}/pi.json`)).state).toBe(home);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
 );

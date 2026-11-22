@@ -1,14 +1,11 @@
-/* oxlint-disable eslint/no-bitwise, eslint/no-await-in-loop */
-// @effect-diagnostics nodeBuiltinImport:off asyncFunction:off
-import { constants } from "node:fs";
-import { open, stat as fileStat } from "node:fs/promises";
-import path from "node:path";
-
+import { NodeFileSystem, NodePath } from "@effect/platform-node";
 import {
   Config,
   ConfigProvider,
   Effect,
+  FileSystem,
   Option,
+  Path,
   Redacted,
   Schema,
 } from "effect";
@@ -29,8 +26,6 @@ const absent = () =>
     kind: "absent",
     reason: "Systemd credential slot is absent",
   });
-
-const NotFound = Schema.Struct({ code: Schema.Literal("ENOENT") });
 
 export const SecretSourceMode = Schema.Literals(["agent-secrets", "systemd"]);
 
@@ -95,60 +90,14 @@ const credentialId = /^[a-z0-9_][a-z0-9_-]*$/u;
 
 const limit = 65_536;
 
-const readCredential = async (directory: string, id: string) => {
-  const info = await fileStat(directory);
-
-  if (!info.isDirectory()) {
-    throw unavailable();
-  }
-
-  const handle = await open(
-    path.join(directory, id),
-    constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK
-  ).catch((error: unknown) => {
-    throw Schema.is(NotFound)(error) ? absent() : unavailable();
-  });
-
-  try {
-    const stat = await handle.stat();
-
-    if (!stat.isFile() || stat.size < 1 || stat.size > limit) {
-      throw unavailable();
-    }
-
-    const buffer = Buffer.alloc(limit + 1);
-    let used = 0;
-
-    while (used < buffer.length) {
-      const { bytesRead } = await handle.read(
-        buffer,
-        used,
-        buffer.length - used
-      );
-
-      if (bytesRead === 0) {
-        break;
-      }
-
-      used += bytesRead;
-    }
-
-    if (used !== stat.size) {
-      throw unavailable();
-    }
-
-    return Redacted.make(
-      new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-        buffer.subarray(0, used)
-      )
-    );
-  } finally {
-    await handle.close();
-  }
-};
+const readable = (stat: FileSystem.File.Info) =>
+  stat.type === "File" && stat.size > 0n && stat.size <= BigInt(limit);
 
 export const systemdCredential = Effect.fn("Systemd.credential")(
   function* credential(id: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+
     const directory = yield* Config.String("CREDENTIALS_DIRECTORY").pipe(
       Effect.mapError(unavailable)
     );
@@ -157,10 +106,54 @@ export const systemdCredential = Effect.fn("Systemd.credential")(
       return yield* unavailable();
     }
 
-    return yield* Effect.tryPromise({
-      catch: (error) =>
-        Schema.is(CredentialError)(error) ? error : unavailable(),
-      try: async () => await readCredential(directory, id),
+    if ((yield* fs.lstat(directory)).type !== "Directory") {
+      return yield* unavailable();
+    }
+
+    const file = path.join(directory, id);
+
+    const listed = yield* fs
+      .lstat(file)
+      .pipe(
+        Effect.catchReason("PlatformError", "NotFound", () =>
+          Effect.fail(absent())
+        )
+      );
+
+    if (!readable(listed)) {
+      return yield* unavailable();
+    }
+
+    const handle = yield* fs.open(file, { flag: "r", noFollow: true });
+    const actual = yield* handle.stat;
+
+    if (!readable(actual)) {
+      return yield* unavailable();
+    }
+
+    const bytes = yield* handle.readAlloc(limit + 1);
+
+    if (
+      Option.isNone(bytes) ||
+      bytes.value.byteLength !== Number(actual.size)
+    ) {
+      return yield* unavailable();
+    }
+
+    return yield* Effect.try({
+      catch: unavailable,
+      try: () =>
+        Redacted.make(
+          new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+            bytes.value
+          )
+        ),
     });
-  }
+  },
+  Effect.scoped,
+  (effect) =>
+    effect.pipe(
+      Effect.provide([NodeFileSystem.layer, NodePath.layer]),
+      Effect.catchTag("PlatformError", () => Effect.fail(unavailable()))
+    )
 );

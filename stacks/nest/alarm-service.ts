@@ -43,7 +43,10 @@ const unitWord = (value: string) => {
   return `"${escaped}"`;
 };
 
-export const alarmUnit = (config: StageConfigValue, configPath: string) => {
+export const alarmUnit = (
+  config: Pick<StageConfigValue, "alarm">,
+  configPath: string
+) => {
   const launch = config.alarm?.systemd;
 
   if (launch === undefined || !Schema.is(SystemdAlarmSettings)(config.alarm)) {
@@ -52,7 +55,7 @@ export const alarmUnit = (config: StageConfigValue, configPath: string) => {
 
   const account =
     launch.scope === "system"
-      ? `User=${unitWord(launch.user)}\nGroup=${unitWord(launch.group)}\n`
+      ? `User=${launch.user}\nGroup=${launch.group}\n`
       : "";
 
   return `[Unit]

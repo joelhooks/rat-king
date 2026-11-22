@@ -181,6 +181,17 @@ export const readConfig = Effect.fn("RatKing.readConfig")(
       Effect.mapError(notConfigured(`Malformed Rat King config at ${file}`))
     );
 
+    if (
+      source === "systemd" &&
+      ((config.directory !== undefined && !path.isAbsolute(config.directory)) ||
+        config.documents?.some((document) => !path.isAbsolute(document)) ===
+          true)
+    ) {
+      return yield* notConfigured(
+        "Systemd mode requires absolute document and directory paths"
+      )();
+    }
+
     return { config, home };
   }
 );

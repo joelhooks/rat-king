@@ -36,7 +36,7 @@ import { frontDeskCommand } from "./front-desk-command.ts";
 import { DigestJson, summarize } from "./health.ts";
 import { maintenanceCommand } from "./maintenance-command.ts";
 import { mintHost } from "./mint-host.ts";
-import { opsDigest, opsHealth } from "./ops-read.ts";
+import { opsDigest, opsHealth, opsMailboxHealth } from "./ops-read.ts";
 import { restoreDrill } from "./restore.ts";
 import { sealCommand, sealedSendCommand } from "./seal.ts";
 import { sendCommand } from "./send.ts";
@@ -53,16 +53,22 @@ const checkFlags = Effect.fn("Nest.checkFlags")(function* checkFlags(
   if (action === "ops-health") {
     const [flag, name, ...rest] = flags;
 
-    if (
-      flag !== "--name" ||
-      name === undefined ||
-      name.startsWith("--") ||
-      rest.length !== 0
-    ) {
-      return yield* refuse("Expected ops-health --name <name>");
+    if (rest.length === 0 && flag === "--service" && name === "mailbox") {
+      return { service: "mailbox" } as const;
     }
 
-    return name;
+    if (
+      rest.length === 0 &&
+      flag === "--name" &&
+      name !== undefined &&
+      !name.startsWith("--")
+    ) {
+      return { name };
+    }
+
+    return yield* refuse(
+      "Expected ops-health --name <name> or ops-health --service mailbox"
+    );
   }
 
   if (
@@ -118,9 +124,14 @@ const program = Effect.gen(function* launcher() {
   )(process.argv[2]).pipe(Effect.mapError(() => refuse("Unknown nest action")));
 
   const flags = process.argv.slice(3);
-  const name = yield* checkFlags(action, flags);
+  const selector = yield* checkFlags(action, flags);
   const stageConfigPath = yield* Config.String("RAT_KING_STAGE_CONFIG");
   const config = yield* loadStageConfig;
+
+  const provider = yield* stageProvider(config, {
+    CREDENTIALS_DIRECTORY: process.env.CREDENTIALS_DIRECTORY,
+    RAT_KING_SECRET_SOURCE: process.env.RAT_KING_SECRET_SOURCE,
+  });
 
   if (config.runtime.RAT_KING_OFFLINE_PLAN === true && action !== "plan") {
     return yield* refuse("Offline shell supports plan only");
@@ -294,11 +305,15 @@ const program = Effect.gen(function* launcher() {
         }
 
         if (operation === "ops-health") {
-          return yield* opsHealth(
-            config,
-            name ?? "",
-            runtime.healthDigest(undefined, config)
-          );
+          if (selector === null) {
+            return yield* refuse("Missing ops health selector");
+          }
+
+          const facts = runtime.healthDigest(undefined, config);
+
+          return yield* "service" in selector
+            ? opsMailboxHealth(facts)
+            : opsHealth(config, selector.name, facts);
         }
 
         if (operation === "health") {
@@ -319,16 +334,7 @@ const program = Effect.gen(function* launcher() {
     )
   );
 
-  return yield* dispatch.pipe(
-    Effect.provide(
-      ConfigProvider.layer(
-        stageProvider(config, {
-          CREDENTIALS_DIRECTORY: process.env.CREDENTIALS_DIRECTORY,
-          RAT_KING_SECRET_SOURCE: process.env.RAT_KING_SECRET_SOURCE,
-        })
-      )
-    )
-  );
+  return yield* dispatch.pipe(Effect.provide(ConfigProvider.layer(provider)));
 });
 
 const scriptCommand = () => {

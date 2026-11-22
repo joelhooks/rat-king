@@ -29,16 +29,24 @@ const program = Effect.gen(function* doctor() {
   const path = yield* Path.Path;
   const { config, home } = yield* readConfig();
 
-  const expand = (value: string) =>
-    home !== undefined && value.startsWith("~/")
-      ? path.join(home, value.slice(2))
-      : value;
+  const expand = (value: string) => {
+    if (!value.startsWith("~/")) {
+      return value;
+    }
 
-  const readable = (reference: string) =>
-    fs.access(expand(reference), { readable: true }).pipe(
-      Effect.as(true),
-      Effect.orElseSucceed(() => false)
-    );
+    return home === undefined ? null : path.join(home, value.slice(2));
+  };
+
+  const readable = (reference: string) => {
+    const file = expand(reference);
+
+    return file === null
+      ? Effect.succeed(false)
+      : fs.access(file, { readable: true }).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false)
+        );
+  };
 
   const executable = Effect.fn("Doctor.executable")(
     function* executable(name: string) {
@@ -52,10 +60,11 @@ const program = Effect.gen(function* doctor() {
 
       for (const candidate of candidates) {
         if (
-          yield* runCommand(["/bin/test", "-x", candidate]).pipe(
+          candidate !== null &&
+          (yield* runCommand(["/bin/test", "-x", candidate]).pipe(
             Effect.map((result) => result.code === 0),
             Effect.orElseSucceed(() => false)
-          )
+          ))
         ) {
           return true;
         }

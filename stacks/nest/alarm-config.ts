@@ -72,7 +72,10 @@ const SystemdPath = Schema.NonEmptyString.check(
 );
 
 const ServiceAccount = Schema.String.check(
-  Schema.isPattern(/^[a-z_][a-z0-9_-]{0,30}$/u)
+  Schema.isPattern(/^[a-z_][a-z0-9_-]{0,30}$/u),
+  Schema.makeFilter(
+    (value) => !/\s/u.test(value) || "Expected a system unit account"
+  )
 );
 
 const SystemdUnit = Schema.Struct({

@@ -1,6 +1,14 @@
-import { NodePath } from "@effect/platform-node";
+import { NodePath, NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
-import { Effect, Ref, Schema, Sink, Stream } from "effect";
+import {
+  ConfigProvider,
+  Effect,
+  FileSystem,
+  Ref,
+  Schema,
+  Sink,
+  Stream,
+} from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { expect } from "vitest";
 
@@ -10,8 +18,12 @@ import {
   SystemdAlarmSettings,
 } from "../../../stacks/nest/alarm-config.ts";
 import { alarmCheck, alarmUnit } from "../../../stacks/nest/alarm-service.ts";
-import { stageDoctor } from "../../../stacks/nest/config-doctor.ts";
+import {
+  configDoctor,
+  stageDoctor,
+} from "../../../stacks/nest/config-doctor.ts";
 import { StageConfig } from "../../../stacks/nest/stage-config.ts";
+import { runCommand } from "../../ratking-client/src/process.ts";
 
 it.prop(
   "alarm config requires one and only one supervisor on the wire",
@@ -59,7 +71,7 @@ it.prop(
         "Restart=always",
         "RestartSec=60",
         ...(systemd.scope === "system"
-          ? [`User="${systemd.user}"`, `Group="${systemd.group}"`]
+          ? [`User=${systemd.user}`, `Group=${systemd.group}`]
           : []),
         `WantedBy=${systemd.scope === "system" ? "multi-user.target" : "default.target"}`,
       ])
@@ -81,7 +93,68 @@ it.prop(
         systemd: { ...invalid.systemd, group: "service", user: "root" },
       })
     ).toBe(false);
+    expect(
+      Schema.is(AlarmSettings)({
+        ...invalid,
+        systemd: { ...invalid.systemd, group: "root", user: "service" },
+      })
+    ).toBe(false);
+    expect(
+      Schema.is(AlarmSettings)({
+        ...invalid,
+        systemd: { ...invalid.systemd, group: "service\n", user: "service" },
+      })
+    ).toBe(false);
   }
+);
+
+it.effect.skipIf(process.platform !== "linux")(
+  "Linux systemd-analyze verifies the rendered system alarm unit",
+  (context) =>
+    Effect.gen(function* verify() {
+      const fs = yield* FileSystem.FileSystem;
+      const analyze = "/usr/bin/systemd-analyze";
+
+      if (!(yield* fs.exists(analyze))) {
+        context.skip("systemd-analyze is not installed");
+
+        return yield* Effect.void;
+      }
+
+      const dir = yield* fs.makeTempDirectoryScoped();
+
+      const alarm = yield* Schema.decodeEffect(SystemdAlarmSettings)({
+        broadcast: "fixture",
+        enabled: true,
+        musterDesk: "fixture",
+        notify: { directory: dir, secret: "fixture" },
+        owners: {},
+        page: { node: process.execPath, script: dir },
+        systemd: {
+          errorLog: `${dir}/err.log`,
+          group: "users",
+          node: process.execPath,
+          outputLog: `${dir}/out.log`,
+          path: "/usr/bin",
+          scope: "system",
+          source: dir,
+          unit: "fixture-alarm.service",
+          user: "nobody",
+        },
+      });
+
+      const file = `${dir}/fixture-alarm.service`;
+      yield* fs.writeFileString(
+        file,
+        alarmUnit({ alarm }, `${dir}/stage.json`)
+      );
+      expect(
+        (yield* runCommand([analyze, "verify", "--recursive-errors=no", file]))
+          .code
+      ).toBe(0);
+
+      return yield* Effect.void;
+    }).pipe(Effect.provide(NodeServices.layer))
 );
 
 const handle = (output: string, code: number) => {
@@ -199,4 +272,61 @@ it.effect.prop(
       });
     }).pipe(Effect.provide(NodePath.layer)),
   { arbitrary: { runs: 12 } }
+);
+
+it.effect.prop(
+  "doctor forwards the mount only to the local probe and refuses legacy mode on the remote probe",
+  [StageConfig],
+  ([base]) =>
+    Effect.gen(function* verify() {
+      const commands: ChildProcess.StandardCommand[] = [];
+
+      const spawner = ChildProcessSpawner.make((command) => {
+        if (!ChildProcess.isStandardCommand(command)) {
+          return Effect.die("Unexpected pipeline");
+        }
+
+        commands.push(command);
+
+        return Effect.succeed(handle('{"status":"ok","reasons":[]}', 0));
+      });
+
+      const result = yield* configDoctor({
+        ...base,
+        doctor: {
+          primary: { config: "/fixture/local-config.json", node: "node" },
+          secondary: {
+            config: "/fixture/remote-config.json",
+            ssh: "second.invalid",
+          },
+        },
+      }).pipe(
+        Effect.provide([
+          NodePath.layer,
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({
+              CREDENTIALS_DIRECTORY: "/fixture/mount",
+              RAT_KING_SECRET_SOURCE: "systemd",
+            })
+          ),
+        ]),
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)
+      );
+
+      expect(result.status).toBe("ok");
+      expect(
+        commands.find((command) => command.command === "node")?.options.env
+      ).toEqual({
+        CREDENTIALS_DIRECTORY: "/fixture/mount",
+        RAT_KING_SECRET_SOURCE: "systemd",
+      });
+
+      const remote = commands.find((command) => command.command === "ssh");
+      expect(remote?.options.env).toEqual({});
+      expect(remote?.args.at(-1)).toContain(
+        "'env' '-u' 'CREDENTIALS_DIRECTORY' 'RAT_KING_SECRET_SOURCE=systemd'"
+      );
+      expect(remote?.args.at(-1)).not.toContain("/fixture/mount");
+    }),
+  { arbitrary: { runs: 2 } }
 );

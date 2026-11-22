@@ -86,9 +86,17 @@ export const prepareShipNotification = Effect.fn("Ship.prepareNotification")(
         HOME: config.runtime.HOME,
         RATKING_CONFIG: ship.notify.config,
       }).pipe(
-        Effect.mapError(
-          () =>
-            new NotConfigured({ reason: "Notification settings unavailable" })
+        Effect.mapError((error) =>
+          Schema.is(NotConfigured)(error)
+            ? new NotConfigured({
+                reason: error.reason.replace(
+                  / at \/[\s\S]*$/u,
+                  " at [path withheld]"
+                ),
+              })
+            : new NotConfigured({
+                reason: "Credential selection settings could not be read",
+              })
         )
       )
     );
