@@ -265,7 +265,13 @@ it.effect.prop(
         ).toHaveLength(2);
       }
 
-      expect(check).toEqual({ ...readings, service: expected });
+      const checked = { ...readings, service: expected };
+
+      expect(check).toEqual(
+        settings.page === undefined
+          ? { ...checked, page: "not configured" }
+          : checked
+      );
       expect(doctor).toMatchObject({
         service: expected,
         status: active && (systemd === undefined || enabled) ? "ok" : "fail",

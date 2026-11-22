@@ -38,7 +38,14 @@ const fixture = Effect.fn("Test.scopedWorkload")(function* fixture(
 ) {
   const fs = yield* FileSystem.FileSystem;
   const home = yield* fs.makeTempDirectoryScoped();
-  const { push: _push, readerHeartbeats: _remote, ...safeAlarm } = alarm;
+
+  const {
+    page: _page,
+    push: _push,
+    readerHeartbeats: _remote,
+    ...safeAlarm
+  } = alarm;
+
   const { mintHost: _mintHost, ...safeStage } = base;
 
   const signer = yield* identity("did:web:operator.example.invalid");

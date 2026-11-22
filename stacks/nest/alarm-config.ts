@@ -137,10 +137,12 @@ const AlarmCommon = Schema.Struct({
     sender: Schema.optionalKey(AgentName),
   }),
   owners: Schema.Record(Schema.NonEmptyString, AgentName),
-  page: Schema.Struct({
-    node: Schema.NonEmptyString,
-    script: Schema.NonEmptyString,
-  }),
+  page: Schema.optionalKey(
+    Schema.Struct({
+      node: Schema.NonEmptyString,
+      script: Schema.NonEmptyString,
+    })
+  ),
   push: Schema.optionalKey(
     Schema.Struct({
       names: Schema.NonEmptyArray(AgentName),

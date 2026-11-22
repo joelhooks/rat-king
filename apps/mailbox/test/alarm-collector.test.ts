@@ -32,7 +32,6 @@ it.effect.prop(
           musterDesk: alarm.musterDesk,
           notify: alarm.notify,
           owners: alarm.owners,
-          page: alarm.page,
         },
         ship: { ...ship, restart },
       };
@@ -98,7 +97,6 @@ it.effect.prop(
           musterDesk: alarm.musterDesk,
           notify: alarm.notify,
           owners: alarm.owners,
-          page: alarm.page,
         },
         ship,
       };
