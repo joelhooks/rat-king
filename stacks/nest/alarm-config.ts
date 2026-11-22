@@ -105,6 +105,7 @@ const AlarmCommon = Schema.Struct({
     config: Schema.optionalKey(Schema.NonEmptyString),
     directory: Schema.NonEmptyString,
     secret: Schema.NonEmptyString,
+    sender: Schema.optionalKey(AgentName),
   }),
   owners: Schema.Record(Schema.NonEmptyString, AgentName),
   page: Schema.Struct({
@@ -154,17 +155,24 @@ const AlarmCommon = Schema.Struct({
   ),
 });
 
+const operatorPush = Schema.makeFilter<typeof AlarmCommon.Type>(
+  ({ notify, push }) =>
+    notify.sender === undefined ||
+    push === undefined ||
+    "alarm.push requires the default operator sender; omit alarm.notify.sender or remove alarm.push"
+);
+
 export const LaunchdAlarmSettings = Schema.Struct({
   ...AlarmCommon.fields,
   launchd: LaunchdAlarm,
   systemd: Schema.optionalKey(Schema.Never),
-});
+}).check(operatorPush);
 
 export const SystemdAlarmSettings = Schema.Struct({
   ...AlarmCommon.fields,
   launchd: Schema.optionalKey(Schema.Never),
   systemd: SystemdAlarm,
-});
+}).check(operatorPush);
 
 export const AlarmSettings = Schema.Union([
   LaunchdAlarmSettings,

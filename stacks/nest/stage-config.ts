@@ -34,6 +34,7 @@ export const RuntimeConfig = Schema.Struct({
   RAT_KING_DELEGATION: OptionalBoolean,
   RAT_KING_DOCUMENTS: Text,
   RAT_KING_ENDPOINT: Text,
+  RAT_KING_HEALTH_READER_DIDS: Schema.optionalKey(Schema.Array(Text)),
   RAT_KING_ISSUER_DID_TEMPLATE: OptionalText,
   RAT_KING_ISSUER_RESERVED: Schema.Array(Text),
   RAT_KING_LEASE_RESOLVERS: Schema.Array(Text),
@@ -209,6 +210,9 @@ export const stageProvider = (config: StageConfigValue) =>
   ConfigProvider.fromUnknown({
     ...config.runtime,
     ALCHEMY_TELEMETRY_DISABLED: "1",
+    RAT_KING_HEALTH_READER_DIDS: JSON.stringify(
+      config.runtime.RAT_KING_HEALTH_READER_DIDS ?? []
+    ),
     RAT_KING_ISSUER_RESERVED: JSON.stringify(
       config.runtime.RAT_KING_ISSUER_RESERVED
     ),

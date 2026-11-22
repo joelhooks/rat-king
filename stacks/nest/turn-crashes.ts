@@ -260,27 +260,29 @@ export const crashCycle = Effect.fn("Alarm.crashCycle")(function* crashCycle<
   return next;
 });
 
-const prepareCrash = Effect.fn("Alarm.prepareCrash")(function* prepareCrash(
-  config: StageConfigValue,
-  notice: CrashNotice
-) {
-  const prepared = yield* prepareAlarmMail(config, [notice.owner], "");
-  const target = prepared.targets.find((item) => item.name === notice.owner);
+export const prepareCrash = Effect.fn("Alarm.prepareCrash")(
+  function* prepareCrash(config: StageConfigValue, notice: CrashNotice) {
+    const prepared = yield* prepareAlarmMail(config, [notice.owner], "");
+    const target = prepared.targets.find((item) => item.name === notice.owner);
 
-  if (target === undefined) {
-    return yield* new FleetError({ reason: "Crash record owner unresolved" });
-  }
+    if (target === undefined) {
+      return yield* new FleetError({ reason: "Crash record owner unresolved" });
+    }
 
-  const body = yield* Schema.encodeEffect(Schema.fromJsonString(Turn))(
-    notice.record
-  );
+    const body = yield* Schema.encodeEffect(Schema.fromJsonString(Turn))(
+      notice.record
+    );
 
-  return {
-    envelope: yield* prepared.client.seal(target.did, body, { encrypt: false }),
-    key: "readers.stuck" as const,
-    recipient: notice.owner,
-  };
-}, Effect.scoped);
+    return {
+      envelope: yield* prepared.client.seal(target.did, body, {
+        encrypt: false,
+      }),
+      key: "readers.stuck" as const,
+      recipient: notice.owner,
+    };
+  },
+  Effect.scoped
+);
 
 export const readerCrashSources = (config: Pick<StageConfigValue, "alarm">) =>
   config.alarm?.turnRecords === true

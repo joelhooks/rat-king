@@ -69,7 +69,7 @@ import {
   LeaseAuthority,
   leaseLayer,
 } from "./mailbox.ts";
-import { nameHealthRequest } from "./name-health-http.ts";
+import { nameHealthReaders, nameHealthRequest } from "./name-health-http.ts";
 import { nameHealth } from "./name-health.ts";
 import { replayLayer } from "./replay.ts";
 import { confirmResolution } from "./resolution.ts";
@@ -319,7 +319,7 @@ export class Mailbox extends DurableObject<Bindings> {
           sql,
           params,
           issuer,
-          didAllowlist(env.OPERATOR_DIDS)
+          nameHealthReaders(env)
         );
 
         return {

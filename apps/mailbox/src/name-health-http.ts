@@ -6,13 +6,35 @@ import type { Bindings } from "./bindings.ts";
 import { didAllowlist } from "./documents.ts";
 import { failure } from "./failure.ts";
 
+type ReaderBindings = Pick<Bindings, "OPERATOR_DIDS" | "HEALTH_READER_DIDS">;
+
+interface NameHealthBindings extends ReaderBindings {
+  readonly MAILBOX: {
+    readonly getByName: (did: string) => {
+      readonly readNameHealth: (
+        params: string,
+        issuer: string
+      ) => PromiseLike<{ readonly body: string; readonly status: number }>;
+    };
+  };
+}
+
+export const nameHealthReaders = (env: ReaderBindings) => [
+  ...didAllowlist(env.OPERATOR_DIDS),
+  ...didAllowlist(env.HEALTH_READER_DIDS),
+];
+
 export const nameHealthRequest = Effect.fn("Mailbox.nameHealthRequest")(
-  function* nameHealthRequest(request: Request, env: Bindings, issuer: string) {
+  function* nameHealthRequest(
+    request: Request,
+    env: NameHealthBindings,
+    issuer: string
+  ) {
     if (request.method !== "GET") {
       return yield* failure("InvalidRequest");
     }
 
-    if (!didAllowlist(env.OPERATOR_DIDS).includes(issuer)) {
+    if (!nameHealthReaders(env).includes(issuer)) {
       return yield* failure("Forbidden", 403);
     }
 

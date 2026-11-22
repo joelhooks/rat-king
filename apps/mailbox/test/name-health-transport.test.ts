@@ -32,18 +32,24 @@ it.effect.prop(
     legacy: Schema.Boolean,
     retired: Schema.Boolean,
     ship: ShipSettings,
+    useDefault: Schema.Boolean,
   },
-  ({ alarm, base, legacy, retired, ship }) =>
+  ({ alarm, base, legacy, retired, ship, useDefault }) =>
     Effect.gen(function* transportProof() {
-      const operator = yield* identity("did:web:operator.invalid");
+      const sender = useDefault ? "operator" : "fixture/alarm";
+
+      const signer = yield* identity(
+        `did:web:fixture.invalid:${useDefault ? "operator" : "alarm"}`
+      );
+
       const target = yield* identity("did:web:target.invalid");
-      const operatorDocument = yield* document(operator);
+      const signerDocument = yield* document(signer);
       const targetDocument = yield* document(target);
       const storage = yield* testStoreFor(target.did);
       const store = yield* MailboxStore.pipe(Effect.provide(storage.layer));
       const replayed = new Set<string>();
       const requests: string[] = [];
-      const resolver = staticResolver([operatorDocument]);
+      const resolver = staticResolver([signerDocument]);
 
       const replay = ReplayAuthority.of({
         consume: (claims) =>
@@ -56,9 +62,7 @@ it.effect.prop(
       const setRetired = (value: boolean) =>
         store.transaction((tx) => {
           tx.setRetirement(
-            value
-              ? { by: operator.did, name: "target", retiredAt: 0 }
-              : undefined
+            value ? { by: signer.did, name: "target", retiredAt: 0 } : undefined
           );
         });
 
@@ -83,7 +87,7 @@ it.effect.prop(
             Effect.provideService(ReplayAuthority, replay)
           );
 
-          expect(caller).toBe(operator.did);
+          expect(caller).toBe(signer.did);
 
           const params = yield* Health.decodeParams([
             ...url.searchParams.entries(),
@@ -95,7 +99,7 @@ it.effect.prop(
           });
 
           const result = yield* nameHealth(storage.sql, params, caller, [
-            operator.did,
+            signer.did,
           ]);
 
           const encoded = yield* Schema.encodeEffect(Health.Output)(result);
@@ -120,19 +124,21 @@ it.effect.prop(
       };
 
       const entries = {
-        operator: { did: operator.did, document: operatorDocument },
+        [sender]: { did: signer.did, document: signerDocument },
         target: { did: target.did, document: targetDocument },
+      };
+
+      const notify = {
+        config: "/fixture.invalid/config.json",
+        directory: "/fixture.invalid/directory.json",
+        secret: alarm.notify.secret,
       };
 
       const config = {
         ...base,
         alarm: {
           ...alarm,
-          notify: {
-            ...alarm.notify,
-            config: "/fixture.invalid/config.json",
-            directory: "/fixture.invalid/directory.json",
-          },
+          notify: useDefault ? notify : { ...notify, sender },
           wakeTargets: [{ name: "target", owner: "owner-invalid" }],
         },
         runtime: {
@@ -163,7 +169,7 @@ it.effect.prop(
           SecretStore.of({
             add: () => Effect.void,
             exists: () => Effect.succeed(true),
-            lease: () => Effect.succeed(JSON.stringify(operator)),
+            lease: () => Effect.succeed(JSON.stringify(signer)),
           })
         )
       );

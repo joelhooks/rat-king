@@ -16,6 +16,7 @@ export interface Bindings {
   readonly DID_DOCUMENTS?: string;
   readonly LEASE_RESOLVERS?: string;
   readonly OPERATOR_DIDS?: string;
+  readonly HEALTH_READER_DIDS?: string;
   readonly OBSERVER_DIDS?: string;
   readonly HOSTED_AGENTS?: string;
   readonly AGENT?: {
