@@ -19,6 +19,9 @@ import {
   socketLayer,
 } from "./fixture.ts";
 
+const heldBody = (seq: number) =>
+  `message ${seq}\n${"body ".repeat(820)}end ${seq}`;
+
 const State = Schema.Literals(["accepted", "delivered", "acked", "expired"]);
 
 const Document = Schema.Struct({
@@ -184,7 +187,7 @@ it.live.prop(
         Array.from({ length: count }, (_, index) => index + 1),
         (seq) =>
           mail(who, seq, "accepted", {
-            body: `message ${seq}`,
+            body: heldBody(seq),
             cc: [],
             thread: `thread-${seq}`,
           })
@@ -239,7 +242,7 @@ it.live.prop(
         Effect.provideService(Wiring, wiring)
       );
 
-      expect(read.stdout.join("\n")).toContain(`message ${last}`);
+      expect(read.stdout.join("\n")).toContain(heldBody(last));
 
       const result = yield* Effect.gen(function* readInPi() {
         yield* Inbox.use((inbox) => inbox.attach("tester"));
@@ -248,7 +251,7 @@ it.live.prop(
       }).pipe(Effect.provide(wiring));
 
       expect(result.isError).toBe(false);
-      expect(result.text).toBe(`message ${last}`);
+      expect(result.text).toBe(heldBody(last));
       expect(
         fake.calls
           .slice(beforeRead)

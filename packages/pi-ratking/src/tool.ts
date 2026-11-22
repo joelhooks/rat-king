@@ -932,7 +932,10 @@ export const runAction = Effect.fn("RatKing.runAction")(function* runAction(
         );
 
         return ok(
-          withPresence(receiptText("Delivered to", delivered), delivered),
+          [
+            withPresence(receiptText("Delivered to", delivered), delivered),
+            ...(delivered.hint === undefined ? [] : [delivered.hint]),
+          ].join("\n"),
           {
             id: delivered.id,
             recipients: recipientsOf(delivered),

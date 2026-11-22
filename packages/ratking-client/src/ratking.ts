@@ -64,7 +64,7 @@ import type {
   AttentionChange,
   AttentionValue,
 } from "./attention.ts";
-import { AskAimedAtCc, ccLint, ccRefusal } from "./cc-lint.ts";
+import { AskAimedAtCc, ccLint, ccRefusal, fyiHint } from "./cc-lint.ts";
 import { CommandIssuer, ServiceIssuer, Settings } from "./config.ts";
 import type { ThreadRoutingValue } from "./config.ts";
 import { injects, recipientLevels } from "./delivery.ts";
@@ -379,6 +379,7 @@ export interface HandledAck {
 }
 
 export interface Delivered extends Admitted {
+  readonly hint?: string;
   readonly presence?: string;
   readonly recipients?: readonly RecipientLevelValue[];
 }
@@ -633,6 +634,17 @@ const unsettled = (event: Defs.MessageEventValue) =>
   event.receipt.state !== "acked" &&
   event.receipt.state !== "expired" &&
   event.receipt.state !== "failed";
+
+const isCarbonCopy = (
+  message: OpenedMessage,
+  to: string | undefined,
+  ownName: string,
+  reserved: Parameters<typeof addressedElsewhere>[0]
+) =>
+  message.cc !== undefined ||
+  (message.delegatedFor === undefined &&
+    to !== undefined &&
+    addressedElsewhere(reserved, to, ownName));
 
 const custodyOf = (message: OpenedMessage) => {
   const custody: Pick<
@@ -1215,15 +1227,20 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         template: settings.didTemplate,
       });
 
+      const to = Option.getOrUndefined(
+        Option.flatMapNullishOr(payload, (value) => value.to)
+      );
+
+      const cc = isCarbonCopy(message, to, own.name, settings.reserved);
+
       const inbound: Inbound = {
         ...custodyOf(message),
         body: Option.match(payload, {
           onNone: () => message.body,
           onSome: (value) => value.body,
         }),
-        cc:
-          message.cc !== undefined ||
-          Option.exists(payload, (value) => (value.cc?.length ?? 0) > 0),
+        cc,
+        copy: cc,
         did: message.senderDid,
         from: claimed,
         id: message.tid,
@@ -1264,23 +1281,19 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           Object.assign(inbound, { ccNames: payload.value.cc });
         }
 
-        if (payload.value.to !== undefined) {
-          const copy =
-            message.delegatedFor === undefined &&
-            addressedElsewhere(settings.reserved, payload.value.to, own.name);
-
-          Object.assign(inbound, { copy, to: payload.value.to });
-
-          const digest = digestFor(settings.ccDigestMinutes ?? {}, own.name);
-
-          if ((copy || inbound.quiet === true) && Option.isSome(digest)) {
-            Object.assign(inbound, { digestMinutes: digest.value });
-          }
+        if (to !== undefined) {
+          Object.assign(inbound, { to });
         }
 
         if (payload.value.thread !== undefined) {
           Object.assign(inbound, { thread: payload.value.thread });
         }
+      }
+
+      const digest = digestFor(settings.ccDigestMinutes ?? {}, own.name);
+
+      if ((cc || inbound.quiet === true) && Option.isSome(digest)) {
+        Object.assign(inbound, { digestMinutes: digest.value });
       }
 
       return { inbound, payload };
@@ -4277,7 +4290,18 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       yield* copyOut(delivered, sent);
       yield* closeLoops(sent);
 
-      return delivered;
+      const hint =
+        sent.kind === "message" &&
+        options?.quiet !== true &&
+        options?.copyTo === undefined
+          ? fyiHint({
+              body: sent.body,
+              summary: sent.summary ?? undefined,
+              to: sent.to,
+            })
+          : undefined;
+
+      return hint === undefined ? delivered : { ...delivered, hint };
     }, foreground),
     status: Effect.gen(function* status() {
       const current = yield* Ref.get(established);

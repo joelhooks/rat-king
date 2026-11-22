@@ -5,6 +5,7 @@ import { ownIdentity, prepare } from "@rat-king/mailbox-client";
 import { attend, Reasons, Verdicts } from "@rat-king/ratking-client/attend";
 import { Directory } from "@rat-king/ratking-client/directory";
 import { secretName } from "@rat-king/ratking-client/name";
+import { COPY_NOTE, renderInbound } from "@rat-king/ratking-client/payload";
 import { Inbox, RatKing } from "@rat-king/ratking-client/ratking";
 import { Arbitrary, Effect, FileSystem, Layer, Option, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -23,9 +24,12 @@ import {
 } from "./fixture.ts";
 
 it.live.prop(
-  "forwarded mail addresses and wakes the resolved row; reply-all omits self aliases but explicit self-cc still refuses",
-  [Arbitrary.schema(Schema.Boolean), Arbitrary.schema(Schema.Boolean)],
-  ([successor, legacyCc]) =>
+  "direct role mail wakes without a cc note even with a cc list; real copies are labeled quiet and reply-all omits self aliases",
+  [
+    Arbitrary.schema(Schema.Boolean),
+    Schema.Literals(["plain", "listed", "copy"]),
+  ],
+  ([successor, delivery]) =>
     Effect.gen(function* roundTrip() {
       const fs = yield* FileSystem.FileSystem;
       const who = yield* people;
@@ -92,16 +96,18 @@ it.live.prop(
         serviceDid: SERVICE,
       });
 
-      const envelope = legacyCc
-        ? yield* source.seal(
-            TESTER,
-            yield* Schema.encodeEffect(PayloadJson)({
-              ...payload,
-              cc: ["proj"],
-            }),
-            { encrypt: false }
-          )
-        : sent;
+      const envelope =
+        delivery === "plain"
+          ? sent
+          : yield* source.seal(
+              TESTER,
+              yield* Schema.encodeEffect(PayloadJson)({
+                ...payload,
+                cc: ["proj"],
+                to: delivery === "copy" ? "peer" : "tester",
+              }),
+              { encrypt: false }
+            );
 
       const event = yield* Schema.decodeUnknownEffect(
         Schema.toType(Defs.MessageEvent)
@@ -147,6 +153,17 @@ it.live.prop(
         expect(received).not.toHaveProperty("record");
 
         if (received === undefined || "record" in received) {
+          return;
+        }
+
+        const rendered = renderInbound("ratking", received);
+
+        expect(received.cc).toBe(delivery === "copy");
+        expect(rendered.includes(COPY_NOTE)).toBe(delivery === "copy");
+
+        if (delivery === "copy") {
+          expect(rendered).toContain("quiet: cc");
+
           return;
         }
 

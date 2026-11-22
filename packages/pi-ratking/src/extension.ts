@@ -930,31 +930,10 @@ const forwardSend = (request: typeof SendRequest.Type) =>
 
 const parameters = Type.Object({
   action: Type.Union(
-    [
-      "attention",
-      "filter",
-      "list",
-      "list-cwd",
-      "send",
-      "record",
-      "ask",
-      "handover",
-      "reply",
-      "pending",
-      "handled",
-      "status",
-      "claim",
-      "connect",
-      "cancel",
-      "retire",
-      "thread-claim",
-      "thread-release",
-      "thread-escalate",
-      "thread-handback",
-    ].map((action) => Type.Literal(action)),
+    ToolParams.fields.action.literals.map((action) => Type.Literal(action)),
     {
       description:
-        "send, ask (returns immediately; the reply arrives as a message), reply, handled (confirm a relayed original id), pending, list, status, claim (retry a blocked lease once), retire (retire this Pi's own name, optionally naming a successor, and stop its reader). handover and cancel are refused on Rat King.",
+        "send, ask (returns immediately; the reply arrives as a message), reply, read (full body of recent local mail by id), handled (confirm a relayed original id), pending, list, status, claim (retry a blocked lease once), retire (retire this Pi's own name, optionally naming a successor, and stop its reader). handover and cancel are refused on Rat King.",
     }
   ),
   all: Type.Optional(
@@ -1039,7 +1018,7 @@ const parameters = Type.Object({
   quiet: Type.Optional(
     Type.Boolean({
       description:
-        "Deliver without waking: the recipient sees it next turn or in their digest. Not for asks.",
+        "Deliver without waking: the recipient sees it on their next turn, individually or in a digest. Not for asks.",
     })
   ),
   record: Type.Optional(

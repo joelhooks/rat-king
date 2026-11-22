@@ -118,6 +118,26 @@ export const ccLint = (input: LintInput) => {
   });
 };
 
+const FYI =
+  /^\s*(?:fyi|for your information|for awareness|heads[ -]up|no action (?:needed|required))\b[ .,;:—-]*/iu;
+
+const REQUEST =
+  /\?|(?:^|[.!;:\n])\s*(?:[-*]\s*)?(?:please|(?:can|could|would|will) you|ack|approve|check|confirm|deploy|investigate|review|reply|send|update|verify)\b/iu;
+
+export const fyiHint = (input: {
+  readonly body: string;
+  readonly summary?: string | undefined;
+  readonly to: string;
+}) => {
+  const texts = [input.summary ?? "", input.body];
+
+  return texts.some((text) => FYI.test(text)) &&
+    !texts.some((text) => REQUEST.test(text.replace(FYI, ""))) &&
+    forms(input.to).every((form) => Option.isNone(firstMatch(texts, form)))
+    ? "This reads like an FYI. Next time use cc or quiet to avoid starting a turn."
+    : undefined;
+};
+
 const ccWhy = (addressed: AskAimedAtCcValue) =>
   `you sent to ${addressed.to} with ${addressed.name} in cc, and the text addresses ${addressed.name} (${addressed.snippet}), so ${addressed.name} would get a quiet copy and not wake.`;
 
