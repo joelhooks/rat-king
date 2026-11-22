@@ -76,6 +76,7 @@ const SystemdAlarm = Schema.Struct({
   node: SystemdPath,
   outputLog: SystemdPath,
   path: Schema.NonEmptyString,
+  scope: Schema.optionalKey(Schema.Literals(["user", "system"])),
   source: SystemdPath,
   unit: Schema.NonEmptyString.check(
     Schema.isPattern(/^[A-Za-z0-9_.-]+\.service$/u)

@@ -30,6 +30,7 @@ import { drainCommand } from "./drain.ts";
 import { DigestJson, summarize } from "./health.ts";
 import { maintenanceCommand } from "./maintenance-command.ts";
 import { mintHost } from "./mint-host.ts";
+import { opsDigest, opsHealth } from "./ops-read.ts";
 import { restoreDrill } from "./restore.ts";
 import { sealCommand, sealedSendCommand } from "./seal.ts";
 import { sendCommand } from "./send.ts";
@@ -39,10 +40,42 @@ import { FleetError, loadStageConfig, stageProvider } from "./stage-config.ts";
 import { throwawayCommand } from "./throwaway.ts";
 import { usageCommand } from "./usage.ts";
 
-const program = Effect.gen(function* launcher() {
-  const stageConfigPath = yield* Config.String("RAT_KING_STAGE_CONFIG");
-  const config = yield* loadStageConfig;
+const checkFlags = Effect.fn("Nest.checkFlags")(function* checkFlags(
+  action: string,
+  flags: readonly string[]
+) {
+  if (action === "ops-health") {
+    const [flag, name, ...rest] = flags;
 
+    if (
+      flag !== "--name" ||
+      name === undefined ||
+      name.startsWith("--") ||
+      rest.length !== 0
+    ) {
+      return yield* refuse("Expected ops-health --name <name>");
+    }
+
+    return name;
+  }
+
+  if (
+    flags.length === 0 ||
+    action === "provision" ||
+    action === "mailbox" ||
+    action === "maintenance" ||
+    (action === "health" &&
+      flags.length === 2 &&
+      flags[0] === "--previous" &&
+      flags[1]?.startsWith("--") === false)
+  ) {
+    return null;
+  }
+
+  return yield* refuse("Unknown nest flags");
+});
+
+const program = Effect.gen(function* launcher() {
   const action = yield* Schema.decodeUnknownEffect(
     Schema.Literals([
       "stop",
@@ -60,6 +93,8 @@ const program = Effect.gen(function* launcher() {
       "alarm-worker",
       "maintenance",
       "digest",
+      "ops-digest",
+      "ops-health",
       "doctor",
       "done-bar",
       "mint-host",
@@ -77,16 +112,9 @@ const program = Effect.gen(function* launcher() {
   )(process.argv[2]).pipe(Effect.mapError(() => refuse("Unknown nest action")));
 
   const flags = process.argv.slice(3);
-
-  if (
-    flags.length > 0 &&
-    action !== "provision" &&
-    action !== "mailbox" &&
-    action !== "maintenance" &&
-    (action !== "health" || flags.length !== 2 || flags[0] !== "--previous")
-  ) {
-    return yield* refuse("Only health accepts --previous <file>");
-  }
+  const name = yield* checkFlags(action, flags);
+  const stageConfigPath = yield* Config.String("RAT_KING_STAGE_CONFIG");
+  const config = yield* loadStageConfig;
 
   if (config.runtime.RAT_KING_OFFLINE_PLAN === true && action !== "plan") {
     return yield* refuse("Offline shell supports plan only");
@@ -239,13 +267,23 @@ const program = Effect.gen(function* launcher() {
           );
         }
 
-        if (operation === "digest") {
-          return yield* Console.log(
-            yield* digest(
-              config,
-              (prior) => runtime.healthDigest(prior, config),
-              collectDigestWaitingMail(config)
-            )
+        if (operation === "digest" || operation === "ops-digest") {
+          const result = digest(
+            config,
+            (prior) => runtime.healthDigest(prior, config),
+            collectDigestWaitingMail(config)
+          );
+
+          return yield* operation === "ops-digest"
+            ? opsDigest(result)
+            : result.pipe(Effect.flatMap(Console.log));
+        }
+
+        if (operation === "ops-health") {
+          return yield* opsHealth(
+            config,
+            name ?? "",
+            runtime.healthDigest(undefined, config)
           );
         }
 

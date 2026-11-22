@@ -58,7 +58,7 @@ it.prop(
         `StandardError=append:${escaped}/error.log`,
         "Restart=always",
         "RestartSec=60",
-        "WantedBy=default.target",
+        `WantedBy=${systemd.scope === "system" ? "multi-user.target" : "default.target"}`,
       ])
     );
   }
@@ -144,6 +144,8 @@ it.effect.prop(
           ? { active, kind: "launchd" }
           : { active, enabled, kind: "systemd" };
 
+      const scope = systemd?.scope === "system" ? "--system" : "--user";
+
       const commands =
         systemd === undefined
           ? [
@@ -154,14 +156,8 @@ it.effect.prop(
               ],
             ]
           : [
-              ["/usr/bin/systemctl", "--user", "is-active", "--", systemd.unit],
-              [
-                "/usr/bin/systemctl",
-                "--user",
-                "is-enabled",
-                "--",
-                systemd.unit,
-              ],
+              ["/usr/bin/systemctl", scope, "is-active", "--", systemd.unit],
+              ["/usr/bin/systemctl", scope, "is-enabled", "--", systemd.unit],
             ];
 
       const recorded = yield* Ref.get(calls);

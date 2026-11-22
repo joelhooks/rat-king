@@ -64,7 +64,7 @@ Restart=always
 RestartSec=60
 
 [Install]
-WantedBy=default.target
+WantedBy=${launch.scope === "system" ? "multi-user.target" : "default.target"}
 `;
 };
 
@@ -138,10 +138,16 @@ const systemdState = (
 export const checkAlarmService = Effect.fn("Alarm.checkService")(
   function* checkAlarmService(settings: AlarmSettingsValue) {
     if (settings.systemd !== undefined) {
-      const { unit } = settings.systemd;
+      const { scope, unit } = settings.systemd;
 
       const systemctl = (action: string) =>
-        probe(["/usr/bin/systemctl", "--user", action, "--", unit]);
+        probe([
+          "/usr/bin/systemctl",
+          scope === "system" ? "--system" : "--user",
+          action,
+          "--",
+          unit,
+        ]);
 
       const { active, enabled } = yield* Effect.all(
         { active: systemctl("is-active"), enabled: systemctl("is-enabled") },
