@@ -53,6 +53,8 @@ export type DigestVariant = "cc" | "wake";
 
 export interface PendingMail {
   readonly coalesce?: boolean;
+  readonly deferToStart?: boolean;
+  readonly expiring?: boolean;
   readonly watch?: string;
   readonly wake?: boolean;
   readonly wakeSender?: string;
@@ -204,7 +206,7 @@ export const inbox = (host: MailHost) => {
     flushNext: (delivery: FlushDelivery = NEXT_TURN_DELIVERY) => {
       const due = [...pending.values()].filter(
         (mail) =>
-          mail.deliverAs === "nextTurn" &&
+          (mail.deliverAs === "nextTurn" || mail.deferToStart === true) &&
           mail.coalesce === true &&
           !digested.has(mail.id)
       );
@@ -238,12 +240,20 @@ export const inbox = (host: MailHost) => {
 
       pending.set(mail.id, mail);
 
+      const delivery = mail.deferToStart === true ? "nextTurn" : hold;
+
       if (
-        hold !== "digest" &&
-        !(hold === "nextTurn" && mail.coalesce === true)
+        mail.expiring === true &&
+        (delivery === "nextTurn" || delivery === "digest")
       ) {
-        host.show(mail, hold);
         digested.add(mail.id);
+        host.show(mail, "followUp", false);
+      } else if (
+        delivery !== "digest" &&
+        !(delivery === "nextTurn" && mail.coalesce === true)
+      ) {
+        digested.add(mail.id);
+        host.show(mail, delivery);
       }
     },
     tick: (now: number) => {

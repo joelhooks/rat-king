@@ -240,12 +240,15 @@ const intent = (arrival: Arrival): Verdict => {
   return quiet ? Verdicts.Next({ reason }) : Verdicts.Now({ reason });
 };
 
-const ownerVerdict = (arrival: Arrival, levers: Levers): Verdict | undefined =>
+export const ownerPrioritizes = (arrival: Arrival, levers: Levers) =>
   levers.enabled === true &&
   levers.owner !== undefined &&
   arrival.copy !== true &&
   arrival.verified === true &&
-  senderOf(arrival) === levers.owner
+  senderOf(arrival) === levers.owner;
+
+const ownerVerdict = (arrival: Arrival, levers: Levers): Verdict | undefined =>
+  ownerPrioritizes(arrival, levers)
     ? Verdicts.Now({ reason: intent(arrival).reason })
     : undefined;
 

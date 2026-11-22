@@ -635,25 +635,41 @@ const unsettled = (event: Defs.MessageEventValue) =>
   event.receipt.state !== "expired" &&
   event.receipt.state !== "failed";
 
+const legacyCc = (
+  to: string | undefined,
+  cc: readonly string[] | undefined,
+  ownName: string,
+  reserved: Parameters<typeof addressedElsewhere>[0]
+) =>
+  to === undefined
+    ? cc?.some((name) => !addressedElsewhere(reserved, name, ownName)) === true
+    : addressedElsewhere(reserved, to, ownName);
+
 const isCarbonCopy = (
   message: OpenedMessage,
-  to: string | undefined,
+  address: {
+    readonly to: string | undefined;
+    readonly cc: readonly string[] | undefined;
+  },
   ownName: string,
   reserved: Parameters<typeof addressedElsewhere>[0]
 ) =>
   message.cc !== undefined ||
   (message.delegatedFor === undefined &&
-    to !== undefined &&
-    addressedElsewhere(reserved, to, ownName));
+    legacyCc(address.to, address.cc, ownName, reserved));
 
 const custodyOf = (message: OpenedMessage) => {
   const custody: Pick<
     Inbound,
-    "delegatedFor" | "delegatedTo" | "originalId" | "via"
+    "delegatedFor" | "delegatedTo" | "expiresAt" | "originalId" | "via"
   > = {};
 
   if (message.via !== undefined) {
     Object.assign(custody, { via: message.via });
+  }
+
+  if (message.expiresAt !== undefined) {
+    Object.assign(custody, { expiresAt: message.expiresAt });
   }
 
   if (message.delegatedTo !== undefined) {
@@ -1231,7 +1247,16 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         Option.flatMapNullishOr(payload, (value) => value.to)
       );
 
-      const cc = isCarbonCopy(message, to, own.name, settings.reserved);
+      const ccNames = Option.getOrUndefined(
+        Option.flatMapNullishOr(payload, (value) => value.cc)
+      );
+
+      const cc = isCarbonCopy(
+        message,
+        { cc: ccNames, to },
+        own.name,
+        settings.reserved
+      );
 
       const inbound: Inbound = {
         ...custodyOf(message),
@@ -1240,7 +1265,6 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           onSome: (value) => value.body,
         }),
         cc,
-        copy: cc,
         did: message.senderDid,
         encrypted: message.encrypted ?? true,
         from: claimed,
@@ -1260,6 +1284,10 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         summary: Option.flatMapNullishOr(payload, (value) => value.summary),
         verified,
       };
+
+      if (!cc) {
+        Object.assign(inbound, { copy: false });
+      }
 
       if (settings.attentionLevers === true) {
         Object.assign(inbound, {
@@ -1359,7 +1387,8 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
           if (Option.isSome(record)) {
             yield* threads.remember(inbound);
-            yield* route.record({
+
+            const direct: InboundRecord = {
               did: inbound.did,
               encrypted: message.encrypted ?? true,
               from: inbound.from,
@@ -1367,7 +1396,13 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               record: record.value,
               replyTo: inbound.replyTo,
               verified: inbound.verified,
-            });
+            };
+
+            if (message.expiresAt !== undefined) {
+              Object.assign(direct, { expiresAt: message.expiresAt });
+            }
+
+            yield* route.record(direct);
           } else {
             const journal = yield* Deferred.await(asks);
             const original = yield* journal.match(inbound);
@@ -1377,6 +1412,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                 askSummary: original.value.summary,
                 copy: false,
                 kind: "reply",
+                quiet: false,
               });
               const acknowledgment = acknowledgments.get(inbound.id);
 

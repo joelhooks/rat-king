@@ -13,6 +13,10 @@ import { expect } from "vitest";
 
 import { plaintextBody } from "../../../packages/envelope/src/signed.ts";
 import { PayloadJson } from "../../../packages/mailbox-client/src/payload.ts";
+import {
+  inboundDetails,
+  renderDigest,
+} from "../../../packages/pi-ratking/src/extension.ts";
 import { harness } from "../../../packages/pi-ratking/test/harness.ts";
 import {
   ENDPOINT,
@@ -27,7 +31,7 @@ it.live.prop(
   "direct role mail wakes without a cc note even with a cc list; real copies are labeled quiet and reply-all omits self aliases",
   [
     Arbitrary.schema(Schema.Boolean),
-    Schema.Literals(["plain", "listed", "copy"]),
+    Schema.Literals(["plain", "listed", "copy", "legacyCc", "envelope"]),
   ],
   ([successor, delivery]) =>
     Effect.gen(function* roundTrip() {
@@ -96,18 +100,47 @@ it.live.prop(
         serviceDid: SERVICE,
       });
 
-      const envelope =
-        delivery === "plain"
-          ? sent
-          : yield* source.seal(
+      const address = { body: payload.body, from: payload.from };
+
+      const copyRef = {
+        messageId: sent.aad.messageId,
+        senderDid: sent.aad.senderDid,
+      };
+
+      const copyBody = yield* Schema.encodeEffect(PayloadJson)(address);
+
+      const sign = (body: string) =>
+        source.seal(TESTER, body, { encrypt: false });
+
+      const wire = yield* Schema.encodeEffect(PayloadJson)(
+        delivery === "legacyCc"
+          ? { ...address, cc: ["tester"] }
+          : {
+              ...address,
+              cc: ["proj"],
+              to: delivery === "copy" ? "peer" : "tester",
+            }
+      );
+
+      const expiresAt = "2099-01-01T00:00:00.000Z";
+
+      const envelope = yield* Effect.suspend(() => {
+        if (delivery === "plain") {
+          return Effect.succeed(sent);
+        }
+
+        return delivery === "envelope"
+          ? source.seal(
               TESTER,
-              yield* Schema.encodeEffect(PayloadJson)({
-                ...payload,
-                cc: ["proj"],
-                to: delivery === "copy" ? "peer" : "tester",
+              JSON.stringify({
+                $type: "sh.mschf.ratking.mailbox.cc",
+                body: copyBody,
+                primary: { ...copyRef, recipientDid: who.peer.did },
               }),
-              { encrypt: false }
-            );
+              { encrypt: false, expiresAt, replyTo: copyRef }
+            )
+          : sign(wire);
+      });
 
       const event = yield* Schema.decodeUnknownEffect(
         Schema.toType(Defs.MessageEvent)
@@ -158,19 +191,38 @@ it.live.prop(
 
         const rendered = renderInbound("ratking", received);
 
-        expect(received.cc).toBe(delivery === "copy");
-        expect(rendered.includes(COPY_NOTE)).toBe(delivery === "copy");
+        const cc =
+          delivery === "copy" ||
+          delivery === "legacyCc" ||
+          delivery === "envelope";
 
-        if (delivery === "copy") {
+        expect(received.cc).toBe(cc);
+        expect(rendered.includes(COPY_NOTE)).toBe(cc);
+        expect(received.copy).toBe(cc ? undefined : false);
+        expect(received.expiresAt).toBe(
+          delivery === "envelope" ? expiresAt : undefined
+        );
+        expect(attend(received, {}, 0, undefined, Option.none())).toEqual(
+          Verdicts.Now({ reason: Reasons.intent({ facts: ["to"] }) })
+        );
+
+        if (cc) {
           expect(rendered).toContain("quiet: cc");
+
+          const digest = renderDigest("ratking", [
+            {
+              content: rendered,
+              details: inboundDetails(received, false),
+              id: received.id,
+            },
+          ]);
+
+          expect(digest).toContain(COPY_NOTE);
+          expect(digest).toContain(received.body);
 
           return;
         }
 
-        expect(received.copy).toBe(false);
-        expect(attend(received, {}, 0, undefined, Option.none())).toEqual(
-          Verdicts.Now({ reason: Reasons.intent({ facts: ["to"] }) })
-        );
         const ratking = yield* RatKing;
         yield* ratking.reply(received.id, "Invented reply", { replyAll: true });
         expect(inbound.sends.map((entry) => entry.aad.recipientDid)).toEqual([
@@ -188,5 +240,5 @@ it.live.prop(
       Effect.scoped,
       Effect.provide(Layer.merge(NodeServices.layer, FetchHttpClient.layer))
     ),
-  { arbitrary: { runs: 6 }, timeout: 60_000 }
+  { arbitrary: { runs: 12 }, timeout: 60_000 }
 );

@@ -26,6 +26,7 @@ export const decodeRecord = (body: string) =>
 
 export interface InboundRecord {
   readonly encrypted?: boolean;
+  readonly expiresAt?: string;
   readonly levers?: unknown;
   readonly id: string;
   readonly did: string;
@@ -105,6 +106,7 @@ export interface Inbound {
   readonly verified: boolean;
   readonly body: string;
   readonly encrypted?: boolean;
+  readonly expiresAt?: string;
   readonly kind: KindValue;
   readonly quiet?: boolean;
   readonly reply?: ReplyRefValue;

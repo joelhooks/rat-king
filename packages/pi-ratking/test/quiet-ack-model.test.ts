@@ -45,16 +45,18 @@ interface Session {
   readonly entries: HistoryEntry[];
 }
 
-const Passive = Schema.Literals([
-  "quiet",
-  "cc",
-  "digest",
-  "ruled",
-  "priority",
-  "relayed",
-]);
+const Passive = Schema.Literals(["quiet", "cc", "digest", "ruled", "relayed"]);
 
-const Kind = Schema.Union([Schema.Literals(["direct", "sentBy"]), Passive]);
+const Priority = Schema.Literals(["owner", "ruleWake"]);
+
+const Expiring = Schema.Literals(["expiringQuiet", "expiringDigest"]);
+
+const Kind = Schema.Union([
+  Schema.Literals(["direct", "sentBy"]),
+  Passive,
+  Priority,
+  Expiring,
+]);
 
 const nothing = () => {};
 
@@ -91,24 +93,37 @@ const inboundOf = (kind: typeof Kind.Type, id: string): Inbound => {
     Object.assign(inbound, { sentBy: "muster/launcher" });
   }
 
-  if (kind === "quiet" || kind === "priority" || kind === "relayed") {
+  const priority = Schema.is(Priority)(kind);
+  const expiring = Schema.is(Expiring)(kind);
+
+  if (kind === "quiet" || priority || kind === "relayed" || expiring) {
     Object.assign(inbound, { quiet: true });
   }
 
-  if (kind === "digest") {
+  if (kind === "digest" || kind === "expiringDigest") {
     Object.assign(inbound, { digestMinutes: 20 / 60_000 });
   }
 
-  if (kind === "priority") {
+  if (expiring) {
+    Object.assign(inbound, { expiresAt: "1970-01-01T00:01:00.000Z" });
+  }
+
+  if (kind === "owner") {
     Object.assign(inbound, { levers: { enabled: true, owner: "sender" } });
   }
 
-  if (kind === "ruled") {
+  if (kind === "ruled" || kind === "ruleWake") {
     Object.assign(inbound, {
       levers: {
         enabled: true,
         prefs: {
-          rules: [{ id: "hold", match: { from: "sender" }, route: "quiet" }],
+          rules: [
+            {
+              id: "filter",
+              match: { from: "sender" },
+              route: kind === "ruled" ? "quiet" : "wake",
+            },
+          ],
         },
       },
     });
@@ -468,6 +483,42 @@ it.effect(
       expect(occurrences(setup.real.session, "q1")).toBe(1);
       expect(setup.real.box.acks.get("q1")).toBe(1);
     })
+);
+
+it.effect.prop(
+  "expiry-bearing quiet mail is displayed and acked while idle without starting a turn or replaying on the next start",
+  [Expiring],
+  ([kind]) =>
+    Effect.gen(function* expiringAcknowledgment() {
+      const setup = yield* Effect.promise(async () => await fresh());
+      yield* Effect.addFinalizer(() => Effect.promise(setup.real.current.stop));
+      yield* Effect.promise(setup.real.current.ready);
+      yield* Effect.promise(async () => {
+        await setup.real.current.post(kind, "deadline");
+      });
+      yield* Deferred.await(setup.real.box.acknowledged);
+      expect(setup.real.current.turns()).toBe(0);
+      expect(occurrences(setup.real.session, "deadline")).toBe(1);
+      yield* Effect.promise(setup.real.current.begin);
+      expect(occurrences(setup.real.session, "deadline")).toBe(1);
+      verify(setup.real);
+    }).pipe(Effect.scoped)
+);
+
+it.effect.prop(
+  "owner priority and a wake filter still start an idle Pi even for quiet mail",
+  [Priority],
+  ([kind]) =>
+    Effect.gen(function* explicitWake() {
+      const setup = yield* Effect.promise(async () => await fresh());
+      yield* Effect.addFinalizer(() => Effect.promise(setup.real.current.stop));
+      yield* Effect.promise(setup.real.current.ready);
+      yield* Effect.promise(async () => {
+        await setup.real.current.post(kind, "priority");
+      });
+      expect(setup.real.current.turns()).toBe(1);
+      verify(setup.real);
+    }).pipe(Effect.scoped)
 );
 
 it.effect.prop(

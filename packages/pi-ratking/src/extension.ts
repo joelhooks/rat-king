@@ -11,7 +11,12 @@ import { Transport } from "@rat-king/lexicon/transport";
 import { Identity, recordType, transportLayer } from "@rat-king/mailbox-client";
 import { ownerCid } from "@rat-king/mailbox-client/owner-queue";
 import { decodeAgentGraphBody } from "@rat-king/ratking-client/agentgraph";
-import { attend, formatReason, Reasons } from "@rat-king/ratking-client/attend";
+import {
+  attend,
+  formatReason,
+  ownerPrioritizes,
+  Reasons,
+} from "@rat-king/ratking-client/attend";
 import type { Verdict } from "@rat-king/ratking-client/attend";
 import { countFilterHit, filterHits } from "@rat-king/ratking-client/attention";
 import {
@@ -235,16 +240,28 @@ const WakeEntry = Schema.Struct({
   summary: Schema.optional(Schema.String),
 });
 
-const passiveMail = (mail: Inbound) =>
+const waitsForIndependentTurn = (mail: Inbound, verdict: Verdict) =>
+  Predicate.isTagged(verdict, "Now") &&
+  Reasons.$is("intent")(verdict.reason) &&
+  mail.routedWake !== true &&
   mail.kind !== "ask" &&
   mail.askSummary === undefined &&
-  (mail.copy === true || mail.quiet === true || mail.routedCopy === true);
+  (mail.cc ||
+    mail.copy === true ||
+    mail.quiet === true ||
+    mail.routedCopy === true) &&
+  !ownerPrioritizes(mail, mail.levers ?? {});
 
-const noticeDelivery = (passive: boolean, verdict: Verdict) => ({
+const noticeDelivery = (
+  wait: boolean,
+  verdict: Verdict,
+  expiring: boolean
+) => ({
   deliverAs:
-    passive ||
-    Predicate.isTagged(verdict, "Next") ||
-    Predicate.isTagged(verdict, "Later")
+    !expiring &&
+    (wait ||
+      Predicate.isTagged(verdict, "Next") ||
+      Predicate.isTagged(verdict, "Later"))
       ? ("nextTurn" as const)
       : ("followUp" as const),
   triggerTurn: false,
@@ -1284,7 +1301,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
             }
           );
         },
-        show: (pending, deliverAs) => {
+        show: (pending, deliverAs, triggerTurn = deliverAs !== "nextTurn") => {
           dispatch.send(
             {
               content: pending.content,
@@ -1292,7 +1309,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               details: pending.details,
               display: true,
             },
-            { deliverAs, triggerTurn: deliverAs !== "nextTurn" }
+            { deliverAs, triggerTurn }
           );
         },
       }),
@@ -1521,6 +1538,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               coalesce: quiet,
               content: renderInbound(tool, message),
               details: inboundDetails(message, settled),
+              expiring: message.expiresAt !== undefined,
               id: message.id,
             },
             quiet ? "nextTurn" : "steer"
@@ -1652,7 +1670,8 @@ export const ratkingExtension = (options: ExtensionOptions) =>
           return;
         }
 
-        const passive = passiveMail(inbound);
+        const deferToStart = waitsForIndependentTurn(inbound, verdict);
+        const expiring = inbound.expiresAt !== undefined;
 
         if (notice !== undefined) {
           dispatch.send(
@@ -1662,21 +1681,20 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               details: inboundDetails(inbound, settled),
               display: true,
             },
-            noticeDelivery(passive, verdict)
+            noticeDelivery(deferToStart, verdict, expiring)
           );
         }
 
         if (surfaces) {
           yield* applyDelivery(verdictToHold(verdict), {
-            inject: (verdictHold) =>
+            inject: (hold) =>
               Effect.sync(() => {
-                const hold =
-                  passive && verdictHold === "steer" ? "nextTurn" : verdictHold;
-
                 const pending = {
                   coalesce:
-                    pi.onBeforeAgentStart !== undefined && hold === "nextTurn",
+                    pi.onBeforeAgentStart !== undefined &&
+                    (hold === "nextTurn" || deferToStart),
                   content: renderInbound(tool, inbound),
+                  deferToStart,
                   details: inboundDetails(inbound, settled),
                   digestMinutes:
                     Predicate.isTagged(verdict, "Later") &&
@@ -1684,6 +1702,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
                       Predicate.isTagged(verdict.reason, "delegated"))
                       ? verdict.window / 60_000
                       : inbound.digestMinutes,
+                  expiring,
                   id: inbound.id,
                   line: digestLine(inbound),
                   reason: verdict.reason,
@@ -2788,8 +2807,10 @@ const production = ratkingExtension({
   tool: toolName.pipe(Effect.provide(NodeServices.layer)),
 });
 
-const extension: ExtensionFactory = async (pi) => {
-  await production(piHost(pi));
-};
+export const asPiExtension =
+  (install: ReturnType<typeof ratkingExtension>): ExtensionFactory =>
+  async (pi) => {
+    await install(piHost(pi));
+  };
 
-export default extension;
+export default asPiExtension(production);

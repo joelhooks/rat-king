@@ -283,6 +283,8 @@ it.effect.prop(
           cc: true,
         });
         yield* r.post("b", message("b"));
+        expect(acksOf(box, ids)).toEqual(zeros(2));
+        r.before();
         r.display();
         yield* r.settle;
         expect(acksOf(box, ids)).toEqual(ones(2));
