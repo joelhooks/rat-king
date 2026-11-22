@@ -3,7 +3,7 @@ import { it } from "@effect/vitest";
 import { EnvelopeFailure } from "@rat-king/envelope/failure";
 import { openPlaintext } from "@rat-king/envelope/signed";
 import * as Send from "@rat-king/lexicon/mailbox.send";
-import { Clock, Effect, FileSystem, Schema } from "effect";
+import { Clock, ConfigProvider, Effect, FileSystem, Schema } from "effect";
 import { HttpBody, HttpClient, HttpClientResponse } from "effect/http";
 import { expect } from "vitest";
 
@@ -21,7 +21,9 @@ import {
   prepareAlarmMail,
   sendAlarmDelivery,
 } from "../../../stacks/nest/alarm-mail.ts";
+import { readOpsName } from "../../../stacks/nest/ops-read.ts";
 import { ShipSettings } from "../../../stacks/nest/ship-config.ts";
+import { prepareShipNotification } from "../../../stacks/nest/ship-notify.ts";
 import { StageConfig } from "../../../stacks/nest/stage-config.ts";
 import type { StageConfigValue } from "../../../stacks/nest/stage-config.ts";
 import { prepareCrash } from "../../../stacks/nest/turn-crashes.ts";
@@ -131,6 +133,89 @@ const arb = {
   ship: ShipSettings,
   useDefault: Schema.Boolean,
 };
+
+it.effect.prop(
+  "ops health refuses a cached name whose authoritative peer document is missing before reading name health",
+  arb,
+  ({ alarm, base, ship, useDefault }) =>
+    Effect.gen(function* check() {
+      const { config, files, secrets } = yield* fixture(
+        base,
+        alarm,
+        ship,
+        useDefault
+      );
+
+      const calls: string[] = [];
+
+      const http = HttpClient.make((request) =>
+        Effect.sync(() => {
+          calls.push(request.url);
+
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({ error: "DocumentNotFound" }, { status: 404 })
+          );
+        })
+      );
+
+      const failure = yield* readOpsName(config, "target").pipe(
+        Effect.provide([files, NodePath.layer]),
+        Effect.provideService(SecretStore, secrets(false)),
+        Effect.provideService(HttpClient.HttpClient, http),
+        Effect.flip
+      );
+
+      expect(failure.reason).toBe("Unknown ops health name");
+      expect(calls).toHaveLength(1);
+      expect(calls[0]).toContain("mailbox.getPeerDocument");
+    }),
+  { arbitrary: { runs: 5 } }
+);
+
+it.effect.prop(
+  "ship notify preserves the malformed config reason but not its path in either credential mode",
+  [StageConfig, ShipSettings, Schema.Literals(["agent-secrets", "systemd"])],
+  ([base, ship, mode]) =>
+    Effect.gen(function* verify() {
+      const path = "/fixture/private-config-probe.json";
+
+      const files = FileSystem.layerNoop({
+        readFileString: () => Effect.succeed("not-json"),
+      });
+
+      const config = {
+        ...base,
+        ship: { ...ship, notify: { ...ship.notify, config: path } },
+      };
+
+      const result = yield* prepareShipNotification(config, "").pipe(
+        Effect.provide([
+          files,
+          NodePath.layer,
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({ RAT_KING_SECRET_SOURCE: mode })
+          ),
+        ]),
+        Effect.provideService(SecretStore, {
+          add: () => Effect.die("Unexpected credential mutation"),
+          exists: () => Effect.die("Unexpected credential lookup"),
+          lease: () => Effect.die("Unexpected credential lease"),
+        }),
+        Effect.provideService(
+          HttpClient.HttpClient,
+          HttpClient.make(() => Effect.die("Unexpected request"))
+        ),
+        Effect.flip
+      );
+
+      expect(result.reason).toBe(
+        "Ship notification settings: NotConfigured: Malformed Rat King config at [path withheld]"
+      );
+      expect(result.reason).not.toContain("private-config-probe");
+    }),
+  { arbitrary: { runs: 5 } }
+);
 
 it.effect.prop(
   "alarm notices, pruned broadcasts, typed desk wakes and reader-crash records sign at both wire boundaries as the selected sender",

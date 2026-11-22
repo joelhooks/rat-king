@@ -1,5 +1,10 @@
 import { Identity } from "@rat-king/mailbox-client";
-import { Effect, FileSystem, Path, Schema } from "effect";
+import { Config, Effect, FileSystem, Path, Redacted, Schema } from "effect";
+
+import {
+  secretSource,
+  systemdCredential,
+} from "../../../packages/ratking-client/src/systemd-credentials.ts";
 
 export {
   Identity,
@@ -17,6 +22,10 @@ export class CliError extends Schema.TaggedError<CliError>()("CliError", {
     return this.reason;
   }
 }
+
+export const identitySource = secretSource.pipe(
+  Effect.mapError(() => new CliError({ reason: "Invalid secret source" }))
+);
 
 export const readIdentity = Effect.fn("MailboxCli.readIdentity")(
   function* readIdentity(home: string, agent: string) {
@@ -40,6 +49,25 @@ export const readIdentity = Effect.fn("MailboxCli.readIdentity")(
     ).pipe(
       Effect.mapError(
         () => new CliError({ reason: "Invalid private identity file" })
+      )
+    );
+  }
+);
+
+export const readCliIdentity = Effect.fn("MailboxCli.readCliIdentity")(
+  function* readCliIdentity(id: string) {
+    if ((yield* identitySource) === "agent-secrets") {
+      return yield* readIdentity(yield* Config.String("HOME"), id);
+    }
+
+    return yield* systemdCredential(id).pipe(
+      Effect.map(Redacted.value),
+      Effect.flatMap(
+        Schema.decodeUnknownEffect(Schema.fromJsonString(Identity))
+      ),
+      Effect.mapError(
+        () =>
+          new CliError({ reason: "Systemd identity unavailable or invalid" })
       )
     );
   }

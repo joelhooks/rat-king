@@ -1,6 +1,6 @@
 import * as Health from "@rat-king/lexicon/mailbox.nameHealth";
 import type { Transport } from "@rat-king/lexicon/transport";
-import { Effect, Schema } from "effect";
+import { DateTime, Effect, Schema } from "effect";
 
 import * as Deadline from "./deadline.ts";
 import { clientError, MailboxClientError } from "./error.ts";
@@ -68,6 +68,16 @@ export const healthVerdict = (facts: HealthFacts, now: number) => {
   return facts.reader === "unknown" ? "unknown (reader unavailable)" : "ok";
 };
 
+const LeaseExpiryMillis = Schema.Int.check(
+  Schema.isGreaterThanOrEqualTo(Date.UTC(2000, 0, 1))
+);
+
+const decodeLeaseExpiry = (value: typeof Health.Lease.Type.expiresAt) =>
+  Schema.decodeEffect(Schema.DateTimeUtcFromString)(value).pipe(
+    Effect.map(DateTime.toEpochMillis),
+    Effect.flatMap(Schema.decodeEffect(LeaseExpiryMillis))
+  );
+
 export const readMailboxHealth = Effect.fn("Mailbox.readHealth")(
   function* readMailboxHealth(
     transport: Transport["Service"],
@@ -107,7 +117,7 @@ export const readMailboxHealth = Effect.fn("Mailbox.readHealth")(
         value.lease === undefined
           ? null
           : {
-              expiresAt: Date.parse(value.lease.expiresAt),
+              expiresAt: yield* decodeLeaseExpiry(value.lease.expiresAt),
               generation: value.lease.generation,
               holder: value.lease.holder,
               pane: value.lease.pane ?? null,

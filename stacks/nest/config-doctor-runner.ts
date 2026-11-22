@@ -15,7 +15,7 @@ import type { ChildProcessSpawner } from "effect/process";
 import { Identity } from "../../packages/mailbox-client/src/identity.ts";
 import { inspectConfig } from "../../packages/ratking-client/src/config-doctor.ts";
 import {
-  PiConfig,
+  readConfig,
   settingsLayer,
 } from "../../packages/ratking-client/src/config.ts";
 import { runCommand } from "../../packages/ratking-client/src/process.ts";
@@ -27,24 +27,26 @@ import {
 const program = Effect.gen(function* doctor() {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const home = yield* Config.String("HOME");
+  const { config, home } = yield* readConfig();
 
-  const file = yield* Config.String("RATKING_CONFIG").pipe(
-    Config.withDefault(path.join(home, ".config/rat-king/pi.json"))
-  );
+  const expand = (value: string) => {
+    if (!value.startsWith("~/")) {
+      return value;
+    }
 
-  const config = yield* Schema.decodeUnknownEffect(
-    Schema.fromJsonString(PiConfig)
-  )(yield* fs.readFileString(file));
+    return home === undefined ? null : path.join(home, value.slice(2));
+  };
 
-  const expand = (value: string) =>
-    value.startsWith("~/") ? path.join(home, value.slice(2)) : value;
+  const readable = (reference: string) => {
+    const file = expand(reference);
 
-  const readable = (reference: string) =>
-    fs.access(expand(reference), { readable: true }).pipe(
-      Effect.as(true),
-      Effect.orElseSucceed(() => false)
-    );
+    return file === null
+      ? Effect.succeed(false)
+      : fs.access(file, { readable: true }).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false)
+        );
+  };
 
   const executable = Effect.fn("Doctor.executable")(
     function* executable(name: string) {
@@ -58,10 +60,11 @@ const program = Effect.gen(function* doctor() {
 
       for (const candidate of candidates) {
         if (
-          yield* runCommand(["/bin/test", "-x", candidate]).pipe(
+          candidate !== null &&
+          (yield* runCommand(["/bin/test", "-x", candidate]).pipe(
             Effect.map((result) => result.code === 0),
             Effect.orElseSucceed(() => false)
-          )
+          ))
         ) {
           return true;
         }

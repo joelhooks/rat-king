@@ -27,6 +27,11 @@ import { directoryLayer } from "../../packages/ratking-client/src/directory.ts";
 import { AgentName } from "../../packages/ratking-client/src/name.ts";
 import { secretStoreLayer } from "../../packages/ratking-client/src/secrets.ts";
 import {
+  CredentialSlot,
+  secretSource,
+  systemdCredential,
+} from "../../packages/ratking-client/src/systemd-credentials.ts";
+import {
   billingBody,
   BillingRelay,
   billingSummary,
@@ -39,6 +44,41 @@ import { scriptSeal } from "./seal.ts";
 const failure = (operation: string) => () => new RelayFailure({ operation });
 
 const JournalJson = Schema.fromJsonString(JournalEntry);
+
+const signer = "rat_king_script_billing-alerts_identity";
+
+export const billingCredentials = Effect.fn("Nest.billingCredentials")(
+  function* billingCredentials() {
+    const source = yield* secretSource.pipe(
+      Effect.mapError(failure("secret-source"))
+    );
+
+    if (source === "agent-secrets") {
+      return {
+        identity: yield* Config.String("RAT_KING_BILLING_IDENTITY").pipe(
+          Config.withDefault(signer)
+        ),
+        token: yield* Config.Redacted("BILLING_PULL_CREDENTIAL"),
+      };
+    }
+
+    const token = yield* Config.schema(
+      CredentialSlot,
+      "RAT_KING_BILLING_PULL_SLOT"
+    ).pipe(
+      Effect.flatMap(systemdCredential),
+      Effect.mapError(failure("pull-credential"))
+    );
+
+    const bearer = Redacted.value(token);
+
+    if (/^[A-Za-z0-9._~+/-]+=*$/u.exec(bearer)?.[0] !== bearer) {
+      return yield* new RelayFailure({ operation: "invalid-pull-credential" });
+    }
+
+    return { identity: signer, token };
+  }
+);
 
 export const billingCommand = Effect.fn("Nest.billing-relay")(
   function* billingCommand(argv: readonly string[]) {
@@ -72,16 +112,12 @@ export const billingCommand = Effect.fn("Nest.billing-relay")(
         );
       }
 
-      const token = yield* Config.Redacted("BILLING_PULL_CREDENTIAL");
+      const { identity, token } = yield* billingCredentials();
 
       const recipient = yield* Config.schema(
         AgentName,
         "RAT_KING_BILLING_RECIPIENT"
       ).pipe(Config.withDefault("switchboard"));
-
-      const identity = yield* Config.String("RAT_KING_BILLING_IDENTITY").pipe(
-        Config.withDefault("rat_king_script_billing-alerts_identity")
-      );
 
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;

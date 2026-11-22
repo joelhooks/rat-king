@@ -44,9 +44,28 @@ const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
 const Instant = Schema.DateTimeUtcFromString;
 
+const memoryDecimal = /^(?:0|[1-9][0-9]{0,19})$/u;
+
+const LargeMemoryMax = Schema.String.check(
+  Schema.isPattern(memoryDecimal),
+  Schema.makeFilter(
+    (value) =>
+      memoryDecimal.exec(value)?.[0] === value &&
+      BigInt(value) > BigInt(Number.MAX_SAFE_INTEGER)
+  )
+);
+
+export const MemoryMax = Schema.Union([
+  Count.check(Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
+  Schema.Literal("infinity"),
+  LargeMemoryMax,
+]);
+
 export const UnitState = Schema.Struct({
   activeEnterTimestamp: Schema.NullOr(Instant),
   activeState: Schema.String,
+  mainPidPresent: Schema.optionalKey(Schema.Boolean),
+  memoryMax: Schema.optionalKey(MemoryMax),
   nRestarts: Count,
 });
 
@@ -404,6 +423,35 @@ export const unixInstant = (value: string | undefined) => {
 const count = (value: string | undefined) =>
   /^\d+$/u.test(value ?? "") ? Number(value) : null;
 
+interface ServiceLimits {
+  mainPidPresent?: boolean;
+  memoryMax?: typeof MemoryMax.Type;
+}
+
+export const serviceLimits = (
+  props: ReadonlyMap<string, string>
+): ServiceLimits => {
+  const result: ServiceLimits = {};
+
+  const pid = count(props.get("MainPID"));
+  const memory = props.get("MemoryMax");
+
+  const limit =
+    memory === "infinity" || Schema.is(LargeMemoryMax)(memory)
+      ? memory
+      : count(memory);
+
+  if (pid !== null && Number.isSafeInteger(pid)) {
+    result.mainPidPresent = pid > 0;
+  }
+
+  if (limit !== null && Schema.is(MemoryMax)(limit)) {
+    result.memoryMax = limit;
+  }
+
+  return result;
+};
+
 export const backupAgeHours = (name: string, observedAt: DateTime.Utc) => {
   const match =
     /^(?<y>\d{4})(?<mo>\d{2})(?<d>\d{2})T(?<h>\d{2})(?<mi>\d{2})(?<s>\d{2})/u.exec(
@@ -551,7 +599,13 @@ export const collectHealth = Effect.fn("Nest.health")(function* collectHealth(
     ]).pipe(Effect.map(parseShow));
 
   const unitState = (unit: string) =>
-    show(unit, ["ActiveState", "NRestarts", "ActiveEnterTimestamp"]).pipe(
+    show(unit, [
+      "ActiveState",
+      "NRestarts",
+      "ActiveEnterTimestamp",
+      "MainPID",
+      "MemoryMax",
+    ]).pipe(
       Effect.flatMap((props) => {
         const activeState = props.get("ActiveState");
         const nRestarts = count(props.get("NRestarts"));
@@ -563,6 +617,7 @@ export const collectHealth = Effect.fn("Nest.health")(function* collectHealth(
                 props.get("ActiveEnterTimestamp")
               ),
               activeState,
+              ...serviceLimits(props),
               nRestarts,
             });
       })

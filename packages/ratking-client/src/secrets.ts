@@ -5,6 +5,7 @@ import { ChildProcessSpawner } from "effect/process";
 import { Settings } from "./config.ts";
 import { scriptSecretName, secretName } from "./name.ts";
 import { runCommand } from "./process.ts";
+import { secretSource, systemdCredential } from "./systemd-credentials.ts";
 
 export class SecretError extends Schema.TaggedError<SecretError>()(
   "SecretError",
@@ -49,9 +50,44 @@ const Listing = Schema.Struct({
   }),
 });
 
+const systemdLease = (name: string) =>
+  systemdCredential(name).pipe(
+    Effect.mapError(({ reason }) => new SecretError({ reason }))
+  );
+
+const systemdStore = SecretStore.of({
+  add: () =>
+    Effect.fail(
+      new SecretError({ reason: "Systemd credentials are read only" })
+    ),
+  exists: (name) =>
+    systemdCredential(name).pipe(
+      Effect.as(true),
+      Effect.catchIf(
+        ({ kind }) => kind === "absent",
+        () => Effect.succeed(false)
+      ),
+      Effect.mapError(({ reason }) => new SecretError({ reason }))
+    ),
+  lease: systemdLease,
+});
+
 export const secretStoreLayer = Layer.effect(
   SecretStore,
   Effect.gen(function* makeSecretStore() {
+    const source = yield* secretSource.pipe(Effect.orElseSucceed(() => null));
+
+    if (source === "systemd") {
+      return systemdStore;
+    }
+
+    if (source === null) {
+      const refuse = () =>
+        Effect.fail(new SecretError({ reason: "Invalid secret source" }));
+
+      return SecretStore.of({ add: refuse, exists: refuse, lease: refuse });
+    }
+
     const settings = yield* Settings;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 

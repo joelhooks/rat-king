@@ -8,6 +8,11 @@ import {
   SchemaIssue,
 } from "effect";
 
+import {
+  CredentialSlot,
+  credentialEnvironment,
+  SecretSourceMode,
+} from "../../packages/ratking-client/src/systemd-credentials.ts";
 import { AlarmSettings } from "./alarm-config.ts";
 import { ShipAttempt, ShipSettings } from "./ship-config.ts";
 
@@ -49,6 +54,7 @@ export const RuntimeConfig = Schema.Struct({
   RAT_KING_RECOVER_STATE: OptionalBoolean,
   RAT_KING_REMOTE_AGENT: OptionalText,
   RAT_KING_REMOTE_DID: OptionalText,
+  RAT_KING_SECRET_SOURCE: Schema.optionalKey(SecretSourceMode),
   RAT_KING_SERVICE_DID: Text,
   RAT_KING_SIDECAR_OUTPUT: OptionalText,
   RAT_KING_SLICE_MEMORY_MAX: Text,
@@ -206,30 +212,86 @@ export const loadStageConfig = Effect.gen(function* loadStageConfig() {
   }).pipe(Effect.mapError(invalid));
 });
 
-export const stageProvider = (config: StageConfigValue) =>
-  ConfigProvider.fromUnknown({
-    ...config.runtime,
-    ALCHEMY_TELEMETRY_DISABLED: "1",
-    RAT_KING_HEALTH_READER_DIDS: JSON.stringify(
-      config.runtime.RAT_KING_HEALTH_READER_DIDS ?? []
-    ),
-    RAT_KING_ISSUER_RESERVED: JSON.stringify(
-      config.runtime.RAT_KING_ISSUER_RESERVED
-    ),
-    RAT_KING_LEASE_RESOLVERS: JSON.stringify(
-      config.runtime.RAT_KING_LEASE_RESOLVERS
-    ),
-    RAT_KING_OBSERVER_DIDS: JSON.stringify(
-      config.runtime.RAT_KING_OBSERVER_DIDS
-    ),
-    RAT_KING_OPERATOR_DIDS: JSON.stringify(
-      config.runtime.RAT_KING_OPERATOR_DIDS
-    ),
-    RAT_KING_SHIP_ATTEMPT:
-      config.shipAttempt === undefined
-        ? undefined
-        : JSON.stringify(config.shipAttempt),
-    RAT_KING_SHIP_CONFIG:
-      config.shipAttempt === undefined ? undefined : JSON.stringify(config),
-    RAT_KING_SHIP_MODE: config.shipAttempt !== undefined,
-  });
+const invalidSlotField = (config: StageConfigValue) => {
+  const { alarm, mintHost, runtime, ship } = config;
+
+  const slots = {
+    "alarm.notify.secret": alarm?.notify.secret,
+    "alarm.push.secret": alarm?.push?.secret,
+    "mintHost.secretName": mintHost?.secretName,
+    "runtime.RAT_KING_AGENT_SECRET_TEMPLATE":
+      runtime.RAT_KING_AGENT_SECRET_TEMPLATE.replaceAll("{agent}", "example"),
+    "runtime.RAT_KING_MODEL_GATEWAY_SECRET_NAME":
+      runtime.RAT_KING_MODEL_GATEWAY_SECRET_NAME,
+    "runtime.RAT_KING_OPERATOR_IDENTITY": runtime.RAT_KING_OPERATOR_IDENTITY,
+    "ship.notify.secret": ship?.notify.secret,
+  };
+
+  return Object.entries(slots).find(
+    ([, slot]) => slot !== undefined && !Schema.is(CredentialSlot)(slot)
+  )?.[0];
+};
+
+export const stageProvider = Effect.fn("Nest.stageProvider")(
+  function* stageProvider(
+    config: StageConfigValue,
+    env: Parameters<typeof credentialEnvironment>[0]
+  ) {
+    const configured = config.runtime.RAT_KING_SECRET_SOURCE;
+    const supplied = env.RAT_KING_SECRET_SOURCE;
+
+    if (supplied !== undefined && !Schema.is(SecretSourceMode)(supplied)) {
+      return yield* new FleetError({
+        reason: "Invalid process credential source",
+      });
+    }
+
+    if (
+      configured !== undefined &&
+      supplied !== undefined &&
+      configured !== supplied
+    ) {
+      return yield* new FleetError({
+        reason: "Process and stage credential sources disagree",
+      });
+    }
+
+    if ((configured ?? supplied) === "systemd") {
+      const invalidField = invalidSlotField(config);
+
+      if (invalidField !== undefined) {
+        return yield* new FleetError({
+          reason: `Invalid systemd credential reference in ${invalidField}`,
+        });
+      }
+    }
+
+    return ConfigProvider.fromUnknown({
+      ...config.runtime,
+      ...credentialEnvironment(env),
+      ALCHEMY_TELEMETRY_DISABLED: "1",
+      RAT_KING_HEALTH_READER_DIDS: JSON.stringify(
+        config.runtime.RAT_KING_HEALTH_READER_DIDS ?? []
+      ),
+      RAT_KING_ISSUER_RESERVED: JSON.stringify(
+        config.runtime.RAT_KING_ISSUER_RESERVED
+      ),
+      RAT_KING_LEASE_RESOLVERS: JSON.stringify(
+        config.runtime.RAT_KING_LEASE_RESOLVERS
+      ),
+      RAT_KING_OBSERVER_DIDS: JSON.stringify(
+        config.runtime.RAT_KING_OBSERVER_DIDS
+      ),
+      RAT_KING_OPERATOR_DIDS: JSON.stringify(
+        config.runtime.RAT_KING_OPERATOR_DIDS
+      ),
+      RAT_KING_SHIP_ATTEMPT:
+        config.shipAttempt === undefined
+          ? undefined
+          : JSON.stringify(config.shipAttempt),
+      RAT_KING_SHIP_CONFIG:
+        config.shipAttempt === undefined ? undefined : JSON.stringify(config),
+      RAT_KING_SHIP_MODE: config.shipAttempt !== undefined,
+    });
+  }
+);

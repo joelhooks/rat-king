@@ -12,6 +12,7 @@ import {
 
 import { AgentName, Did, Reserved } from "./name.ts";
 import type { ReservedValue } from "./name.ts";
+import { secretSource } from "./systemd-credentials.ts";
 
 export const ToolName = Schema.String.check(
   Schema.isPattern(/^[a-z][a-z0-9_]{0,63}$/u)
@@ -137,33 +138,63 @@ export class NotConfigured extends Schema.TaggedError<NotConfigured>()(
 
 const notConfigured = (reason: string) => () => new NotConfigured({ reason });
 
-const readConfig = Effect.fn("RatKing.readConfig")(function* readConfig() {
-  const fs = yield* FileSystem.FileSystem;
-  const path = yield* Path.Path;
+export const readConfig = Effect.fn("RatKing.readConfig")(
+  function* readConfig() {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
 
-  const home = yield* Config.String("HOME").pipe(
-    Effect.mapError(notConfigured("HOME is unset"))
-  );
+    const source = yield* secretSource.pipe(
+      Effect.mapError(notConfigured("Invalid secret source"))
+    );
 
-  const file = Option.getOrElse(
-    yield* Config.option(Config.String("RATKING_CONFIG")).pipe(
-      Effect.mapError(notConfigured("RATKING_CONFIG is unreadable"))
-    ),
-    () => path.join(home, ".config/rat-king/pi.json")
-  );
+    const configured = yield* Config.option(
+      Config.String("RATKING_CONFIG")
+    ).pipe(Effect.mapError(notConfigured("RATKING_CONFIG is unreadable")));
 
-  const text = yield* fs
-    .readFileString(file)
-    .pipe(Effect.mapError(notConfigured(`No Rat King config at ${file}`)));
+    if (
+      source === "systemd" &&
+      (!Option.isSome(configured) || !path.isAbsolute(configured.value))
+    ) {
+      return yield* notConfigured(
+        "Systemd mode requires an explicit absolute RATKING_CONFIG"
+      )();
+    }
 
-  const config = yield* Schema.decodeEffect(Schema.fromJsonString(PiConfig))(
-    text
-  ).pipe(
-    Effect.mapError(notConfigured(`Malformed Rat King config at ${file}`))
-  );
+    const home =
+      source === "systemd"
+        ? undefined
+        : yield* Config.String("HOME").pipe(
+            Effect.mapError(notConfigured("HOME is unset"))
+          );
 
-  return { config, home };
-});
+    const file =
+      Option.getOrUndefined(configured) ??
+      path.join(home ?? "", ".config/rat-king/pi.json");
+
+    const text = yield* fs
+      .readFileString(file)
+      .pipe(Effect.mapError(notConfigured(`No Rat King config at ${file}`)));
+
+    const config = yield* Schema.decodeEffect(Schema.fromJsonString(PiConfig))(
+      text
+    ).pipe(
+      Effect.mapError(notConfigured(`Malformed Rat King config at ${file}`))
+    );
+
+    if (
+      source === "systemd" &&
+      ((config.directory !== undefined && !path.isAbsolute(config.directory)) ||
+        config.documents?.some((document) => !path.isAbsolute(document)) ===
+          true)
+    ) {
+      return yield* notConfigured(
+        "Systemd mode requires absolute document and directory paths"
+      )();
+    }
+
+    return { config, home };
+  }
+);
 
 export const toolName = Effect.gen(function* resolveToolName() {
   const env = yield* Config.option(Config.schema(ToolName, "RATKING_TOOL"));
@@ -232,7 +263,19 @@ export const loadSettings = Effect.fn("RatKing.loadSettings")(
   function* loadSettings() {
     const path = yield* Path.Path;
     const { config, home } = yield* readConfig();
-    const state = config.state ?? path.join(home, ".local/state/rat-king/pi");
+
+    if (
+      home === undefined &&
+      (config.state === undefined || !path.isAbsolute(config.state))
+    ) {
+      return yield* notConfigured(
+        "Systemd mode requires an explicit absolute state path"
+      )();
+    }
+
+    const state =
+      config.state ?? path.join(home ?? "", ".local/state/rat-king/pi");
+
     const turnRecords = yield* resolveTurnRecords(config);
     const attentionLevers = yield* resolveAttentionLevers(config);
 

@@ -8,6 +8,10 @@ import {
   Schema,
 } from "effect";
 
+import {
+  CredentialSlot,
+  secretSource,
+} from "../../ratking-client/src/systemd-credentials.ts";
 import { InventoryError } from "./inventory-error.ts";
 import { Instance } from "./inventory-schema.ts";
 import type { Node } from "./inventory-schema.ts";
@@ -26,6 +30,16 @@ export class Host extends Context.Service<
   }
 >()("@rat-king/RatsNest.Host") {}
 
+const SystemdInventory = Instance.check(
+  Schema.makeFilter(
+    ({ s3Credentials }) =>
+      s3Credentials === undefined ||
+      (Schema.is(CredentialSlot)(s3Credentials.accessKey) &&
+        Schema.is(CredentialSlot)(s3Credentials.secretKey)) ||
+      "Invalid systemd credential slot in s3Credentials"
+  )
+);
+
 export const layer = Layer.effect(
   Host,
   Effect.gen(function* layer() {
@@ -42,6 +56,9 @@ export const layer = Layer.effect(
       )
     );
 
+    const source = yield* secretSource;
+    const schema = source === "systemd" ? SystemdInventory : Instance;
+
     const inventory = yield* Effect.gen(function* inventory() {
       const stat = yield* fs.stat(location);
 
@@ -51,7 +68,7 @@ export const layer = Layer.effect(
         });
       }
 
-      return yield* Schema.decodeEffect(Schema.fromJsonString(Instance), {
+      return yield* Schema.decodeEffect(Schema.fromJsonString(schema), {
         onExcessProperty: "error",
       })(yield* fs.readFileString(location));
     }).pipe(

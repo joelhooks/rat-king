@@ -9,11 +9,17 @@ import {
   Effect,
   FileSystem,
   Match,
+  Predicate,
   Path,
   Schema,
 } from "effect";
+import { FetchHttpClient } from "effect/http";
 
 import { refuse } from "../../packages/alchemy-nest/src/files.ts";
+import {
+  credentialProvider,
+  secretSource,
+} from "../../packages/ratking-client/src/systemd-credentials.ts";
 import { alarmReadings, alarmWorker } from "./alarm-command.ts";
 import {
   alarmCheck,
@@ -27,9 +33,15 @@ import { stageDoctor } from "./config-doctor.ts";
 import { collectDigestWaitingMail } from "./digest-mail-collector.ts";
 import { commsCounts, digest } from "./digest.ts";
 import { drainCommand } from "./drain.ts";
+import {
+  frontDeskCommand,
+  frontDeskServiceHealth,
+} from "./front-desk-command.ts";
+import { frontDeskReviewReason } from "./front-desk-journal.ts";
 import { DigestJson, summarize } from "./health.ts";
 import { maintenanceCommand } from "./maintenance-command.ts";
 import { mintHost } from "./mint-host.ts";
+import { opsDigest, opsHealth, opsMailboxHealth } from "./ops-read.ts";
 import { restoreDrill } from "./restore.ts";
 import { sealCommand, sealedSendCommand } from "./seal.ts";
 import { sendCommand } from "./send.ts";
@@ -39,10 +51,48 @@ import { FleetError, loadStageConfig, stageProvider } from "./stage-config.ts";
 import { throwawayCommand } from "./throwaway.ts";
 import { usageCommand } from "./usage.ts";
 
-const program = Effect.gen(function* launcher() {
-  const stageConfigPath = yield* Config.String("RAT_KING_STAGE_CONFIG");
-  const config = yield* loadStageConfig;
+const checkFlags = Effect.fn("Nest.checkFlags")(function* checkFlags(
+  action: string,
+  flags: readonly string[]
+) {
+  if (action === "ops-health") {
+    const [flag, name, ...rest] = flags;
 
+    if (rest.length === 0 && flag === "--service" && name === "mailbox") {
+      return { service: "mailbox" } as const;
+    }
+
+    if (
+      rest.length === 0 &&
+      flag === "--name" &&
+      name !== undefined &&
+      !name.startsWith("--")
+    ) {
+      return { name };
+    }
+
+    return yield* refuse(
+      "Expected ops-health --name <name> or ops-health --service mailbox"
+    );
+  }
+
+  if (
+    flags.length === 0 ||
+    action === "provision" ||
+    action === "mailbox" ||
+    action === "maintenance" ||
+    (action === "health" &&
+      flags.length === 2 &&
+      flags[0] === "--previous" &&
+      flags[1]?.startsWith("--") === false)
+  ) {
+    return null;
+  }
+
+  return yield* refuse("Unknown nest flags");
+});
+
+const program = Effect.gen(function* launcher() {
   const action = yield* Schema.decodeUnknownEffect(
     Schema.Literals([
       "stop",
@@ -60,6 +110,8 @@ const program = Effect.gen(function* launcher() {
       "alarm-worker",
       "maintenance",
       "digest",
+      "ops-digest",
+      "ops-health",
       "doctor",
       "done-bar",
       "mint-host",
@@ -77,16 +129,14 @@ const program = Effect.gen(function* launcher() {
   )(process.argv[2]).pipe(Effect.mapError(() => refuse("Unknown nest action")));
 
   const flags = process.argv.slice(3);
+  const selector = yield* checkFlags(action, flags);
+  const stageConfigPath = yield* Config.String("RAT_KING_STAGE_CONFIG");
+  const config = yield* loadStageConfig;
 
-  if (
-    flags.length > 0 &&
-    action !== "provision" &&
-    action !== "mailbox" &&
-    action !== "maintenance" &&
-    (action !== "health" || flags.length !== 2 || flags[0] !== "--previous")
-  ) {
-    return yield* refuse("Only health accepts --previous <file>");
-  }
+  const provider = yield* stageProvider(config, {
+    CREDENTIALS_DIRECTORY: process.env.CREDENTIALS_DIRECTORY,
+    RAT_KING_SECRET_SOURCE: process.env.RAT_KING_SECRET_SOURCE,
+  });
 
   if (config.runtime.RAT_KING_OFFLINE_PLAN === true && action !== "plan") {
     return yield* refuse("Offline shell supports plan only");
@@ -103,8 +153,21 @@ const program = Effect.gen(function* launcher() {
     return yield* refuse("State must remain outside the public repository");
   }
 
-  yield* fs.makeDirectory(directory, { mode: 0o700, recursive: true });
-  const canonical = yield* fs.realPath(directory);
+  const readOnly = action === "ops-digest" || action === "ops-health";
+
+  if (!readOnly) {
+    yield* fs.makeDirectory(directory, { mode: 0o700, recursive: true });
+  }
+
+  const canonical = yield* fs
+    .realPath(directory)
+    .pipe(
+      Effect.mapError((error) =>
+        readOnly && Predicate.isTagged(error.reason, "NotFound")
+          ? new FleetError({ reason: "unavailable: state directory missing" })
+          : error
+      )
+    );
 
   if (canonical === root || canonical.startsWith(`${root}/`)) {
     return yield* refuse("State resolves inside the public repository");
@@ -152,11 +215,13 @@ const program = Effect.gen(function* launcher() {
         ? refuse("Alarm launchd configuration required")
         : Console.log(alarmPlist(config, resolvedConfigPath))
     ),
-    Match.when("alarm-unit", () =>
-      config.alarm?.systemd === undefined
+    Match.when("alarm-unit", () => {
+      const unit = alarmUnit(config, resolvedConfigPath);
+
+      return unit === ""
         ? refuse("Alarm systemd configuration required")
-        : Console.log(alarmUnit(config, resolvedConfigPath))
-    ),
+        : Console.log(unit);
+    }),
     Match.when("ship-plist", () =>
       Effect.gen(function* printShipPlist() {
         if (config.ship === undefined) {
@@ -239,14 +304,31 @@ const program = Effect.gen(function* launcher() {
           );
         }
 
-        if (operation === "digest") {
-          return yield* Console.log(
-            yield* digest(
-              config,
-              (prior) => runtime.healthDigest(prior, config),
-              collectDigestWaitingMail(config)
-            )
+        if (operation === "ops-digest") {
+          return yield* opsDigest(
+            config,
+            runtime.healthDigest(undefined, config)
           );
+        }
+
+        if (operation === "digest") {
+          return yield* digest(
+            config,
+            (prior) => runtime.healthDigest(prior, config),
+            collectDigestWaitingMail(config)
+          ).pipe(Effect.flatMap(Console.log));
+        }
+
+        if (operation === "ops-health") {
+          if (selector === null) {
+            return yield* refuse("Missing ops health selector");
+          }
+
+          const facts = runtime.healthDigest(undefined, config);
+
+          return yield* "service" in selector
+            ? opsMailboxHealth(facts)
+            : opsHealth(config, selector.name, facts);
         }
 
         if (operation === "health") {
@@ -267,9 +349,7 @@ const program = Effect.gen(function* launcher() {
     )
   );
 
-  return yield* dispatch.pipe(
-    Effect.provide(ConfigProvider.layer(stageProvider(config)))
-  );
+  return yield* dispatch.pipe(Effect.provide(ConfigProvider.layer(provider)));
 });
 
 const scriptCommand = () => {
@@ -295,6 +375,29 @@ const scriptCommand = () => {
     return billingCommand(process.argv.slice(3));
   }
 
+  if (process.argv[2] === "ops-front-desk-send") {
+    return frontDeskCommand(process.argv.slice(3)).pipe(
+      Effect.provide(FetchHttpClient.layer),
+      Effect.catchIf(
+        (error) => error.reason === frontDeskReviewReason,
+        () =>
+          Effect.gen(function* needsReview() {
+            yield* Console.error(frontDeskReviewReason);
+            process.exitCode = 65;
+          })
+      )
+    );
+  }
+
+  if (
+    process.argv[2] === "ops-health" &&
+    process.argv[3] === "--service" &&
+    process.argv[4] === "front-desk" &&
+    process.argv.length === 5
+  ) {
+    return frontDeskServiceHealth;
+  }
+
   if (process.argv[2] === "seal") {
     return sealCommand(process.argv.slice(3));
   }
@@ -304,7 +407,15 @@ const scriptCommand = () => {
 
     return flags.includes("--sealed")
       ? sealedSendCommand(flags)
-      : sendCommand(flags);
+      : Effect.gen(function* legacySend() {
+          if ((yield* secretSource) === "systemd") {
+            return yield* refuse(
+              "Legacy send is disabled with systemd credentials"
+            );
+          }
+
+          return yield* sendCommand(flags);
+        });
   }
 
   if (process.argv[2] === "drain" || process.argv[2] === "ack") {
@@ -319,5 +430,16 @@ const main = Effect.gen(function* command() {
 });
 
 NodeRuntime.runMain(
-  main.pipe(Effect.provide([NodeServices.layer, AuthProvidersLive]))
+  main.pipe(
+    Effect.provide([
+      NodeServices.layer,
+      AuthProvidersLive,
+      ConfigProvider.layer(
+        credentialProvider({
+          CREDENTIALS_DIRECTORY: process.env.CREDENTIALS_DIRECTORY,
+          RAT_KING_SECRET_SOURCE: process.env.RAT_KING_SECRET_SOURCE,
+        })
+      ),
+    ])
+  )
 );
