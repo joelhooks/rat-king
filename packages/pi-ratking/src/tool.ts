@@ -558,7 +558,9 @@ const readMail = Effect.fn("RatKing.readMail")(function* readMail(
         if (found === undefined) {
           return Result.isFailure(local)
             ? loud(local.failure.reason)
-            : loud(`No recently delivered message ${id} on this machine`);
+            : loud(
+                `No message ${id} found. If shown earlier, it may have expired from the local journal.`
+              );
         }
 
         const { received } = found;

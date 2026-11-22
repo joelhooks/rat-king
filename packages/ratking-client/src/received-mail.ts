@@ -62,6 +62,29 @@ const RECEIVED_MAIL_LIMIT = 64;
 
 class JournalTooLarge extends Data.TaggedError("JournalTooLarge") {}
 
+const journalEntry = (entry: ReceivedMail): ReceivedMail => {
+  const { levers: _levers, ...received } = {
+    levers: undefined,
+    ...entry.received,
+  };
+
+  if ("alarmCrashDid" in received) {
+    Reflect.deleteProperty(received, "alarmCrashDid");
+  }
+
+  const normalized = { ...entry, received };
+
+  for (const object of [normalized, received]) {
+    for (const [key, value] of Object.entries(object)) {
+      if (value === undefined) {
+        Reflect.deleteProperty(object, key);
+      }
+    }
+  }
+
+  return normalized;
+};
+
 const Stored = Schema.Struct({ entry: ReceivedEntry, savedAt: Schema.Int });
 
 const Journal = Schema.fromJsonString(Schema.Array(Stored));
@@ -118,8 +141,27 @@ export const receivedMail = (state: string, name: string) =>
         path.join(state, "locks"),
         `${key}-received`,
         Effect.gen(function* updateReceivedMail() {
-          const entries = yield* load;
           const now = yield* Clock.currentTimeMillis;
+
+          const recover = (error: JournalTooLarge | Schema.SchemaError) =>
+            fs
+              .rename(file, `${file}.corrupt-${now}`)
+              .pipe(
+                Effect.andThen(
+                  entry === undefined
+                    ? Effect.fail(error)
+                    : Effect.logWarning(
+                        "Rat King moved a corrupt received mail journal aside"
+                      ).pipe(Effect.as([]))
+                )
+              );
+
+          const entries = yield* load.pipe(
+            Effect.catchTags({
+              JournalTooLarge: recover,
+              SchemaError: recover,
+            })
+          );
 
           const safe = entries.filter(
             (other) =>
@@ -136,7 +178,7 @@ export const receivedMail = (state: string, name: string) =>
                         (other) => other.entry.received.id !== entry.received.id
                       )
                       .slice(1 - RECEIVED_MAIL_LIMIT),
-                    { entry, savedAt: now },
+                    { entry: journalEntry(entry), savedAt: now },
                   ]
                 : safe;
 

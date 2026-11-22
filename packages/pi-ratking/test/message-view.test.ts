@@ -118,13 +118,45 @@ it.prop(
         ?.render(120)
         .join("\n") ?? "";
 
-    expect(text).toContain("clipped");
-    expect(text).not.toContain("omitted-tail");
+    expect(text.includes("clipped")).toBe(!encrypted);
+    expect(text.includes("omitted-tail")).toBe(encrypted);
     expect(text.includes('ratking({ action: "read", id: "copy" })')).toBe(
       !encrypted
     );
   }
 );
+
+it("expanded data mail shows its typed record and full JSON fields", () => {
+  const body = JSON.stringify({
+    $type: "sh.mschf.agentgraph.outcome",
+    checkIn: "proof",
+    gate: "pass",
+    outcome: "committed",
+    version: "0.1",
+  });
+
+  const lines =
+    messageView({
+      details: {
+        body,
+        cc: true,
+        did: "sender",
+        encrypted: false,
+        from: "peer",
+        id: "data",
+        kind: "data",
+        verified: true,
+      },
+      expanded: true,
+      theme: plainTheme,
+      tool: "ratking",
+    })?.render(120) ?? [];
+
+  const text = lines.join("\n");
+  expect(text).toContain("```json");
+  expect(text).toContain('"outcome": "committed"');
+  expect(text).not.toContain('action: "read"');
+});
 
 const Readable = Schema.Struct({
   body: Schema.String.check(

@@ -101,7 +101,7 @@ it.live.prop(
           Schema.Struct({ delivered: Schema.JsonObject, hint: Schema.String })
         )(sent);
 
-        expect(hint).toContain("use cc or quiet");
+        expect(hint).toContain("use cc for context or quiet");
         expect(
           yield* mcp.call("ask", {
             message: body,

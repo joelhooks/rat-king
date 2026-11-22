@@ -63,7 +63,10 @@ export const consumerMachine = createMachine({
 
 export interface MessageMeta {
   readonly ack: Effect.Effect<void, MailboxClientError>;
-  readonly ackConfirmed: Effect.Effect<boolean, MailboxClientError>;
+  readonly ackOutcome: Effect.Effect<
+    "acked" | "settled" | "delegated" | "expired",
+    MailboxClientError
+  >;
   readonly redelivered: boolean;
   readonly seq: number;
 }
@@ -624,22 +627,31 @@ export const consume = <E, R>(
                   return;
                 }
 
-                const ackConfirmed =
+                const ackOutcome =
                   event.receipt.delegatedTo === undefined
                     ? mailbox.ack(input).pipe(
-                        Effect.map(({ receipt }) => receipt.state === "acked"),
+                        Effect.map(({ receipt }) =>
+                          Match.value(receipt.state).pipe(
+                            Match.when("acked", () => "acked" as const),
+                            Match.when("expired", () => "expired" as const),
+                            Match.orElse(() => "settled" as const)
+                          )
+                        ),
+                        Effect.catchIf(expiredRefusal, () =>
+                          Effect.succeed("expired" as const)
+                        ),
                         Effect.catchIf(settledRefusal, () =>
-                          Effect.succeed(false)
+                          Effect.succeed("settled" as const)
                         )
                       )
-                    : Effect.succeed(false);
+                    : Effect.succeed("delegated" as const);
 
-                const ack = Effect.asVoid(ackConfirmed);
+                const ack = Effect.asVoid(ackOutcome);
 
                 handed.add(key);
                 yield* handler(message, {
                   ack,
-                  ackConfirmed,
+                  ackOutcome,
                   redelivered: event.receipt.state === "delivered",
                   seq: event.seq,
                 }).pipe(

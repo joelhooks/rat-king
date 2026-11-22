@@ -1,5 +1,7 @@
 import { promisify } from "node:util";
 
+import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import {
   createAgentSession,
   createEventBus,
@@ -152,7 +154,16 @@ const proveWake = (source: "mail" | "watch" | "typed", quietBody: string) =>
     );
 
     const deliver = yield* Deferred.await(ready);
-    yield* deliver({ ...mail("quiet"), body: quietBody, quiet: true }, false);
+
+    const body =
+      source === "typed"
+        ? `${quietBody}${"x".repeat(5000)}encrypted-tail`
+        : quietBody;
+
+    yield* deliver(
+      { ...mail("quiet"), body, encrypted: true, quiet: true },
+      false
+    );
     yield* deliver(ownerCopy("copy"), false);
     expect(prompt).not.toHaveBeenCalled();
     expect(session.isStreaming).toBe(false);
@@ -166,8 +177,52 @@ const proveWake = (source: "mail" | "watch" | "typed", quietBody: string) =>
         Deferred.doneUnsafe(streaming, Effect.succeed(true));
       });
 
+      let first = true;
+
       const requests = vi.fn(() => {
-        throw new Error("Fixture stream completed");
+        const message: AssistantMessage = {
+          api: "openai-completions",
+          content: first
+            ? [
+                {
+                  arguments: { action: "status" },
+                  id: "fixture-call",
+                  name: "ratking",
+                  type: "toolCall",
+                },
+              ]
+            : [{ text: "fixture finished", type: "text" }],
+          model: "fixture",
+          provider: "openai",
+          role: "assistant",
+          stopReason: first ? "toolUse" : "stop",
+          timestamp: 1,
+          usage: {
+            cacheRead: 0,
+            cacheWrite: 0,
+            cost: {
+              cacheRead: 0,
+              cacheWrite: 0,
+              input: 0,
+              output: 0,
+              total: 0,
+            },
+            input: 1,
+            output: 1,
+            totalTokens: 2,
+          },
+        };
+
+        first = false;
+
+        const stream = createAssistantMessageEventStream();
+        stream.push({
+          message,
+          reason: message.stopReason === "toolUse" ? "toolUse" : "stop",
+          type: "done",
+        });
+
+        return stream;
       });
 
       const stopWatching = session.agent.subscribe(
@@ -203,9 +258,17 @@ const proveWake = (source: "mail" | "watch" | "typed", quietBody: string) =>
         )
       );
       expect(session.isStreaming).toBe(true);
-      expect(shownInHistory(session.sessionManager.getEntries())).toEqual(
-        new Set(["quiet", "copy"])
-      );
+      const entries = session.sessionManager.getEntries();
+      expect(shownInHistory(entries)).toEqual(new Set(["quiet", "copy"]));
+      expect(
+        entries.some(
+          (entry) =>
+            entry.type === "custom_message" &&
+            entry.customType === "ratking_message" &&
+            Schema.is(Schema.String)(entry.content) &&
+            entry.content.includes(body)
+        )
+      ).toBe(true);
 
       const now = yield* Clock.currentTimeMillis;
 
@@ -231,7 +294,11 @@ const proveWake = (source: "mail" | "watch" | "typed", quietBody: string) =>
       expect(session.agent.hasQueuedMessages()).toBe(false);
       gate.resume();
       yield* Fiber.join(run);
-      expect(requests).toHaveBeenCalledTimes(1);
+      expect(requests).toHaveBeenCalledTimes(2);
+      expect(session.messages.at(-1)).toMatchObject({
+        role: "assistant",
+        stopReason: "stop",
+      });
       expect(shownInHistory(session.sessionManager.getEntries())).toEqual(
         new Set(["quiet", "copy", "near", "far"])
       );

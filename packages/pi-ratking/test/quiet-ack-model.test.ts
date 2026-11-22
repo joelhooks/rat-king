@@ -42,17 +42,17 @@ interface Mailbox {
 }
 
 interface Session {
-  readonly entries: HistoryEntry[];
+  readonly entries: (HistoryEntry & Pick<Message, "content">)[];
 }
 
-const Passive = Schema.Literals(["quiet", "cc", "digest", "ruled", "relayed"]);
+const Passive = Schema.Literals(["quiet", "cc", "ruled", "relayed"]);
 
 const Priority = Schema.Literals(["owner", "ruleWake"]);
 
 const Expiring = Schema.Literals(["expiringQuiet", "expiringDigest"]);
 
 const Kind = Schema.Union([
-  Schema.Literals(["direct", "sentBy", "expiryLater"]),
+  Schema.Literals(["direct", "sentBy", "expiryLater", "digest", "notice"]),
   Passive,
   Priority,
   Expiring,
@@ -68,21 +68,29 @@ const ignoreShown = (_id: string) => {};
 
 const ignoreDelivery: Deliver = () => Effect.void;
 
-const entryOf = (message: Message): HistoryEntry => ({
+const entryOf = (
+  message: Message
+): HistoryEntry & Pick<Message, "content"> => ({
+  content: message.content,
   customType: message.customType,
   details: message.details,
   type: "custom_message",
 });
 
+const copyKind = (kind: typeof Kind.Type) => kind === "cc" || kind === "digest";
+
 const inboundOf = (kind: typeof Kind.Type, id: string): Inbound => {
   const inbound: Inbound = {
-    body: "mail",
-    cc: kind === "cc" || kind === "digest",
-    copy: kind === "cc" || kind === "digest",
+    body:
+      kind === "notice"
+        ? '{"$type":"example.ordinary.record","value":"record-body"}'
+        : "mail",
+    cc: copyKind(kind),
+    copy: copyKind(kind),
     did: "did:web:sender.invalid",
     from: "sender",
     id,
-    kind: "message",
+    kind: kind === "notice" ? "data" : "message",
     label: Option.none(),
     replyTo: Option.none(),
     summary: Option.none(),
@@ -98,6 +106,7 @@ const inboundOf = (kind: typeof Kind.Type, id: string): Inbound => {
 
   if (
     kind === "quiet" ||
+    kind === "notice" ||
     priority ||
     kind === "relayed" ||
     kind === "expiryLater" ||
@@ -107,7 +116,7 @@ const inboundOf = (kind: typeof Kind.Type, id: string): Inbound => {
   }
 
   if (kind === "digest" || kind === "expiringDigest") {
-    Object.assign(inbound, { digestMinutes: 1 });
+    Object.assign(inbound, { digestMinutes: 4 });
   }
 
   if (expiring) {
@@ -238,6 +247,7 @@ const rig = (
       }
     },
     shownInSession: () => shownInHistory(session.entries),
+    toolRegistered: () => false,
   };
 
   const ready = async () => {
@@ -535,19 +545,20 @@ it.effect(
       const clock = yield* Clock.Clock;
 
       const setup = yield* Effect.promise(
-        async () => await fresh(clock, 60_000)
+        async () => await fresh(clock, 90_000)
       );
 
       const { box, current, session } = setup.real;
 
       yield* Effect.addFinalizer(() => Effect.promise(current.stop));
       yield* Effect.promise(current.ready);
+      yield* TestClock.adjust(45_000);
 
       yield* Effect.promise(async () => {
         await current.post("expiryLater", "deadline");
       });
       expect(box.acks.get("deadline")).toBeUndefined();
-      yield* TestClock.adjust(120_000);
+      yield* TestClock.adjust(45_000);
       yield* Effect.promise(settle);
       expect(box.acks.get("deadline")).toBe(1);
       expect(yield* Clock.currentTimeMillis).toBeLessThan(
@@ -559,8 +570,62 @@ it.effect(
     }).pipe(Effect.scoped)
 );
 
+it.effect(
+  "an unclaimed quiet record without a listener displays both its notice and surfaced body",
+  () =>
+    Effect.gen(function* recordNoticeProof() {
+      const setup = yield* Effect.promise(async () => await fresh());
+      const { current, session } = setup.real;
+
+      yield* Effect.addFinalizer(() => Effect.promise(current.stop));
+      yield* Effect.promise(current.ready);
+      yield* Effect.promise(async () => {
+        await current.post("notice", "notice-id");
+      });
+      yield* Effect.promise(current.begin);
+      const content = session.entries[0]?.content;
+
+      expect(content).toContain("📦 record example.ordinary.record");
+      expect(content).toContain("record-body");
+      expect(current.turns()).toBe(0);
+      expect(occurrences(session, "notice-id")).toBe(1);
+    }).pipe(Effect.scoped)
+);
+
+it.effect(
+  "cc digest stays held across independent turns and delivers at the configured window without waking",
+  () =>
+    Effect.gen(function* digestWindow() {
+      const clock = yield* Clock.Clock;
+
+      const setup = yield* Effect.promise(
+        async () => await fresh(clock, 30_000)
+      );
+
+      const { box, current, session } = setup.real;
+
+      yield* Effect.addFinalizer(() => Effect.promise(current.stop));
+      yield* Effect.promise(current.ready);
+      yield* Effect.promise(async () => {
+        await current.post("digest", "copy-window");
+      });
+      yield* Effect.promise(current.begin);
+      yield* Effect.promise(current.finish);
+      yield* TestClock.adjust(210_000);
+      yield* Effect.promise(settle);
+      expect(occurrences(session, "copy-window")).toBe(0);
+      expect(box.acks.get("copy-window")).toBeUndefined();
+      yield* TestClock.adjust(30_000);
+      yield* Effect.promise(settle);
+      expect(occurrences(session, "copy-window")).toBe(1);
+      expect(box.acks.get("copy-window")).toBe(1);
+      expect(current.turns()).toBe(0);
+      verify(setup.real);
+    }).pipe(Effect.scoped)
+);
+
 it.effect.prop(
-  "owner priority and a wake filter still start an idle Pi even for quiet mail",
+  "explicit quiet outranks owner priority and a wake filter",
   [Priority],
   ([kind]) =>
     Effect.gen(function* explicitWake() {
@@ -570,7 +635,9 @@ it.effect.prop(
       yield* Effect.promise(async () => {
         await setup.real.current.post(kind, "priority");
       });
-      expect(setup.real.current.turns()).toBe(1);
+      expect(setup.real.current.turns()).toBe(0);
+      yield* Effect.promise(setup.real.current.begin);
+      expect(occurrences(setup.real.session, "priority")).toBe(1);
       verify(setup.real);
     }).pipe(Effect.scoped)
 );

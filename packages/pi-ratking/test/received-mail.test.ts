@@ -31,14 +31,14 @@ it.live.prop(
         expiresAt: "2099-01-01T00:00:00Z",
         from: "peer",
         id: "signed",
-        kind: "message" as const,
+        kind: "ask" as const,
         label: Option.none<string>(),
         originalId: "before-routing",
         quiet: true,
         reply: { parent: "parent", root: "root" },
         replyTo: Option.some("parent"),
         sentBy: "proxy",
-        summary: Option.some("for review"),
+        summary: Option.none<string>(),
         thread: "original-thread",
         to: "owner",
         verified: true,
@@ -50,7 +50,9 @@ it.live.prop(
       const dir = path.join(state, "received-mail");
       expect(yield* fs.exists(dir)).toBe(false);
 
-      yield* journal.save({ encrypted: false, received });
+      const absentSummary = { ...received };
+      Reflect.set(absentSummary, "askSummary", undefined);
+      yield* journal.save({ encrypted: false, received: absentSummary });
       const [name] = yield* fs.readDirectory(dir);
       expect(name).toBeDefined();
       const file = path.join(dir, name ?? "missing");
@@ -75,6 +77,22 @@ it.live.prop(
           encrypted: false,
           received: { ...received, body: `${body}!` },
         })
+      );
+
+      yield* fs.writeFileString(file, "{");
+      yield* journal.save({ encrypted: false, received });
+      expect(yield* journal.find(received.id)).toEqual(
+        Option.some({ encrypted: false, received })
+      );
+      const files = yield* fs.readDirectory(dir);
+
+      const moved = files.find((candidate) =>
+        candidate.startsWith(`${name}.corrupt-`)
+      );
+
+      expect(moved).toBeDefined();
+      expect(yield* fs.readFileString(path.join(dir, moved ?? "missing"))).toBe(
+        "{"
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 5 } }

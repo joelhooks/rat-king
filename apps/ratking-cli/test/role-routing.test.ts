@@ -114,7 +114,7 @@ it.live.prop(
 
       const wire = yield* Schema.encodeEffect(PayloadJson)(
         delivery === "legacyCc"
-          ? { ...address, cc: ["tester"] }
+          ? { ...address, cc: [successor ? "tester" : "other"] }
           : {
               ...address,
               cc: ["proj"],
@@ -262,5 +262,5 @@ it.live.prop(
       Effect.scoped,
       Effect.provide(Layer.merge(NodeServices.layer, FetchHttpClient.layer))
     ),
-  { arbitrary: { runs: 12 }, timeout: 60_000 }
+  { arbitrary: { runs: 25 }, timeout: 60_000 }
 );

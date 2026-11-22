@@ -296,7 +296,7 @@ it.live.prop(
         expect(original.body).toBe(body);
         expect(original.quiet).toBe(true);
         expect(original.copy).toBe(false);
-        expect(original.digestMinutes).toBe(15);
+        expect(original.digestMinutes).toBeUndefined();
         expect(original.levers?.prefs?.forward).toEqual(["copy/desk"]);
         expect(original.levers?.owner).toBe("peer");
         expect(acks).toBe(0);

@@ -33,7 +33,7 @@ const base: Inbound = {
 };
 
 it.prop(
-  "quiet direct mail keeps its body up to the per-item cap without a cc note",
+  "quiet direct mail is full alone and can be clipped when journalable in a digest",
   [Schema.Int.check(Schema.isBetween({ maximum: 40, minimum: -20 }))],
   ([tail]) => {
     const body = "x".repeat(QUIET_BODY_MAX + tail);
@@ -46,8 +46,11 @@ it.prop(
       line: "- quiet direct mail",
     };
 
+    expect(mail.content).toContain(body);
+    expect(mail.content).not.toContain('action: "read"');
+    expect(mail.content).not.toContain(COPY_NOTE);
+
     for (const text of [
-      mail.content,
       renderDigest("intercom", [mail]),
       renderDigest("intercom", [mail], "wake"),
     ]) {
@@ -77,19 +80,21 @@ it.prop(
 );
 
 it.prop(
-  "a digest for a real CC never splits a surrogate pair or advertises a journal lookup for encrypted mail",
+  "plaintext preview stops at a whole grapheme; encrypted context keeps the tail and offers no journal lookup",
   [Schema.Boolean],
   ([encrypted]) => {
     const prefix = "x".repeat(COPY_BODY_MAX - 1);
-    const inbound = { ...base, body: `${prefix}🙂tail`, encrypted };
+    const inbound = { ...base, body: `${prefix}e\u0301tail`, encrypted };
     const details = inboundDetails(inbound, false);
 
     const text = renderDigest("intercom", [
       { content: "", details, id: inbound.id, line: "- Summary: cc" },
     ]);
 
-    expect(text).toContain(`Summary: cc\n\n${prefix}…`);
-    expect(text).not.toMatch(/[\uD800-\uDFFF]/u);
+    expect(text).toContain(
+      `Summary: cc\n\n${encrypted ? inbound.body : `${prefix}…`}`
+    );
+    expect(text.includes("e\u0301tail")).toBe(encrypted);
     expect(text.includes('action: "read"')).toBe(!encrypted);
   }
 );

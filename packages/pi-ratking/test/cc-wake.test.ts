@@ -285,9 +285,11 @@ it.live.prop(
         const request = yield* send(`FYI: please review ${before}`, false);
 
         expect(fyi.isError).toBe(false);
-        expect(fyi.text).toContain("Next time use cc or quiet");
+        expect(fyi.text).toContain("Next time use cc for context or quiet");
         expect(request.isError).toBe(false);
-        expect(request.text).not.toContain("Next time use cc or quiet");
+        expect(request.text).not.toContain(
+          "Next time use cc for context or quiet"
+        );
         expect(envelopes).toHaveLength(8);
       }).pipe(Effect.provide(harness(state, http)));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),

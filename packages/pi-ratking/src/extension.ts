@@ -241,6 +241,7 @@ const WakeEntry = Schema.Struct({
   encrypted: Schema.optional(Schema.Boolean),
   from: Schema.String,
   kind: Schema.optionalKey(Kind),
+  quiet: Schema.optional(Schema.Boolean),
   replyTo: Schema.optional(Schema.String),
   summary: Schema.optional(Schema.String),
 });
@@ -251,13 +252,35 @@ const isHeld = (verdict: Verdict) =>
 const holdTiming = (
   held: boolean,
   expiresAt: string | undefined,
-  now: number
-) => ({
-  expiring: held && expiresDuringHold(expiresAt, now),
-  holdUntil: held
-    ? now + MAIL_HOLD_MS - Duration.toMillis(DIGEST_TICK)
-    : undefined,
-});
+  now: number,
+  tick: Duration.Duration,
+  window?: number
+) => {
+  const margin = Duration.toMillis(tick);
+  const deadline = expiresAt === undefined ? Infinity : Date.parse(expiresAt);
+  const due = window === undefined ? now + MAIL_HOLD_MS : now + window;
+
+  if (!held) {
+    return {};
+  }
+
+  if (window === undefined) {
+    return {
+      expiring: expiresDuringHold(expiresAt, now) || now + margin >= due,
+      holdUntil: Math.max(now, Math.min(due, deadline) - margin),
+    };
+  }
+
+  return {
+    expiring: now + margin >= deadline,
+    holdUntil:
+      deadline <= due + margin ? Math.max(now, deadline - margin) : undefined,
+    notBefore: due,
+  };
+};
+
+const laterWindow = (verdict: Verdict) =>
+  Verdicts.$is("Later")(verdict) ? verdict.window : undefined;
 
 const digestEntry = (mail: PendingMail) =>
   Schema.decodeUnknownOption(WakeEntry)(mail.details);
@@ -272,8 +295,9 @@ const digestBody = (tool: string, mail: PendingMail, max: number) =>
     ? ["", mail.content, ""]
     : Option.match(digestEntry(mail), {
         onNone: () => [],
-        onSome: ({ body, cc, encrypted, kind }) => [
+        onSome: ({ body, cc, encrypted, kind, quiet }) => [
           "",
+          ...(mail.notice === undefined ? [] : [mail.notice, ""]),
           renderInboundBody(
             tool,
             {
@@ -282,6 +306,7 @@ const digestBody = (tool: string, mail: PendingMail, max: number) =>
               encrypted,
               id: mail.id,
               kind: kind ?? "message",
+              quiet,
             },
             Math.min(max, cc === true ? COPY_BODY_MAX : QUIET_BODY_MAX)
           ),
@@ -1291,13 +1316,52 @@ export const ratkingExtension = (options: ExtensionOptions) =>
     const dispatch: MailDispatch = {
       mail: inbox({
         digest: (mails, variant, delivery = DISPLAY_ONLY) => {
+          const budget = Math.min(
+            QUIET_BODY_MAX,
+            Math.floor(DIGEST_BODY_MAX / mails.length)
+          );
+
+          const inline = mails.filter((pending) => {
+            if (
+              Option.exists(
+                digestEntry(pending),
+                (entry) =>
+                  entry.encrypted !== false &&
+                  renderInboundBody(tool, {
+                    ...entry,
+                    cc: entry.cc === true,
+                    id: pending.id,
+                    kind: entry.kind ?? "message",
+                  }).length > budget
+              )
+            ) {
+              dispatch.send(
+                {
+                  content: pending.content,
+                  customType: pending.customType ?? MAIL_MESSAGE,
+                  details: pending.details,
+                  display: true,
+                },
+                delivery
+              );
+
+              return false;
+            }
+
+            return true;
+          });
+
+          if (inline.length === 0) {
+            return;
+          }
+
           dispatch.send(
             {
-              content: renderDigest(tool, mails, variant),
+              content: renderDigest(tool, inline, variant),
               customType: DIGEST_MESSAGE,
               details: {
-                ...digestDetails(mails, variant),
-                messages: mails.map((held) => held.details),
+                ...digestDetails(inline, variant),
+                messages: inline.map((held) => held.details),
               },
               display: true,
             },
@@ -1547,7 +1611,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               coalesce: quiet,
               content: renderInbound(tool, message),
               details: inboundDetails(message, settled),
-              ...holdTiming(quiet, message.expiresAt, now),
+              ...holdTiming(quiet, message.expiresAt, now, digestTick),
               id: message.id,
             },
             quiet ? "nextTurn" : "steer"
@@ -1580,7 +1644,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       const notice =
         inbound.kind === "data" ? recordNotice(inbound, false) : undefined;
 
-      const unrendered = !injects(inbound, false) && notice === undefined;
+      const unrendered = !injects(inbound, false);
       const claim = { taken: false };
 
       pi.events.emit(
@@ -1679,9 +1743,15 @@ export const ratkingExtension = (options: ExtensionOptions) =>
           return;
         }
 
-        const timing = holdTiming(isHeld(verdict), inbound.expiresAt, now);
+        const timing = holdTiming(
+          isHeld(verdict),
+          inbound.expiresAt,
+          now,
+          digestTick,
+          laterWindow(verdict)
+        );
 
-        if (notice !== undefined) {
+        if (notice !== undefined && !surfaces) {
           const details = inboundDetails(inbound, settled);
 
           if (isHeld(verdict)) {
@@ -1694,7 +1764,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
                 details,
                 id: inbound.id,
               },
-              "nextTurn"
+              Verdicts.$is("Later")(verdict) ? "digest" : "nextTurn"
             );
           } else {
             dispatch.send(
@@ -1720,7 +1790,10 @@ export const ratkingExtension = (options: ExtensionOptions) =>
                   cc: inbound.cc,
                   coalesce:
                     pi.onBeforeAgentStart !== undefined && hold === "nextTurn",
-                  content: renderInbound(tool, inbound),
+                  content:
+                    notice === undefined
+                      ? renderInbound(tool, inbound)
+                      : `${notice}\n\n${renderInbound(tool, inbound)}`,
                   details: inboundDetails(inbound, settled),
                   digestMinutes:
                     Predicate.isTagged(verdict, "Later") &&
@@ -1730,16 +1803,9 @@ export const ratkingExtension = (options: ExtensionOptions) =>
                       : inbound.digestMinutes,
                   id: inbound.id,
                   line: digestLine(inbound),
+                  notice,
                   reason: verdict.reason,
                 };
-
-                if (
-                  Predicate.isTagged(verdict, "Later") &&
-                  (Predicate.isTagged(verdict.reason, "lever") ||
-                    Predicate.isTagged(verdict.reason, "delegated"))
-                ) {
-                  Object.assign(pending, { notBefore: now + verdict.window });
-                }
 
                 mail.take(pending, hold);
               }),

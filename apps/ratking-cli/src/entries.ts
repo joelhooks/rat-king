@@ -16,7 +16,7 @@ export const entryDocument = (
 
   if (isRecord(received)) {
     return {
-      ...received,
+      did: received.did,
       encrypted: entry.encrypted,
       from: received.from,
       id: received.id,
@@ -31,9 +31,10 @@ export const entryDocument = (
   }
 
   return {
-    ...received,
+    body: received.body,
     carbonCopy: received.cc,
     cc: received.ccNames ?? [],
+    did: received.did,
     encrypted: entry.encrypted,
     from: received.from,
     id: received.id,
@@ -44,7 +45,7 @@ export const entryDocument = (
     seq: entry.seq,
     state: entry.state,
     summary: Option.getOrNull(received.summary),
-    thread: received.thread ?? threadOf(received),
+    thread: threadOf(received),
     to: received.to ?? null,
     verified: received.verified,
   };

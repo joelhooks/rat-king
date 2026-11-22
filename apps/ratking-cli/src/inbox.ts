@@ -153,13 +153,11 @@ export const readCommand = Command.make(
           ? { ...saved.value, state: "acked" }
           : (yield* locate(args.id).pipe(
               Effect.mapError((error) =>
-                warning === undefined ||
-                !Schema.is(AskFailed)(error) ||
-                error.code !== "NoSuchMessage"
+                !Schema.is(AskFailed)(error) || error.code !== "NoSuchMessage"
                   ? error
                   : new AskFailed({
                       code: error.code,
-                      reason: `${error.reason}; ${warning}`,
+                      reason: `${error.reason}; ${warning ?? "if shown earlier, it may have expired from the local journal"}`,
                     })
               )
             )).entry;

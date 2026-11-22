@@ -160,16 +160,10 @@ export const QUIET_BODY_MAX = 4000;
 export const COPY_NOTE =
   "You are cc'd. No action is expected unless it names you; the sender uses to: for whoever must act.";
 
-const bodyLimit = (inbound: {
-  readonly cc: boolean;
-  readonly quiet?: boolean | undefined;
-}) => {
-  if (inbound.cc) {
-    return COPY_BODY_MAX;
-  }
+const bodyLimit = (inbound: { readonly cc: boolean }) =>
+  inbound.cc ? COPY_BODY_MAX : Infinity;
 
-  return inbound.quiet === true ? QUIET_BODY_MAX : Infinity;
-};
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
 
 export const renderInboundBody = (
   tool: string,
@@ -183,20 +177,14 @@ export const renderInboundBody = (
   const body =
     inbound.kind === "data" ? renderRecordBody(inbound.body) : inbound.body;
 
-  if (body.length <= max) {
+  if (body.length <= max || inbound.encrypted !== false) {
     return body;
   }
 
   const end =
-    /[\uD800-\uDBFF]/u.test(body.charAt(max - 1)) &&
-    /[\uDC00-\uDFFF]/u.test(body.charAt(max))
-      ? max - 1
-      : max;
+    max === 0 ? 0 : (graphemes.segment(body).containing(max)?.index ?? max);
 
-  const hint =
-    inbound.encrypted === false
-      ? `read the full body with ${tool}({ action: "read", id: ${JSON.stringify(inbound.id)} })`
-      : "the full body is not saved to the local mail journal";
+  const hint = `read the full body with ${tool}({ action: "read", id: ${JSON.stringify(inbound.id)} })`;
 
   return `${body.slice(0, end)}…\n(clipped; ${hint})`;
 };

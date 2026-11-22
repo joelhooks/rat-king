@@ -642,7 +642,7 @@ const legacyCc = (
   reserved: Parameters<typeof addressedElsewhere>[0]
 ) =>
   to === undefined
-    ? cc?.some((name) => !addressedElsewhere(reserved, name, ownName)) === true
+    ? (cc?.length ?? 0) > 0
     : addressedElsewhere(reserved, to, ownName);
 
 const isCarbonCopy = (
@@ -886,7 +886,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
   const front = yield* Ref.make(Option.none<FrontLoops>());
   const seen = recentMap<string, true>(4096);
-  const acknowledgments = new Map<string, MessageMeta["ackConfirmed"]>();
+  const acknowledgments = new Map<string, MessageMeta["ackOutcome"]>();
   let observeDrain: ((drained: boolean) => void) | undefined;
   let caughtUp = false;
 
@@ -924,7 +924,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
   const displayAck = (id: string, onAcked = Effect.void) =>
     acknowledgments.get(id)?.pipe(
-      Effect.tap((acked) => (acked ? onAcked : Effect.void)),
+      Effect.tap((outcome) => (outcome === "acked" ? onAcked : Effect.void)),
       Effect.asVoid,
       Effect.tap(() =>
         Effect.sync(() => {
@@ -941,21 +941,14 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     name: string,
     inbound: Inbound | InboundRecord,
     id = inbound.id
-  ) => {
-    const { levers: _levers, ...message } = inbound;
-
-    if ("record" in message) {
-      Reflect.deleteProperty(message, "alarmCrashDid");
-    }
-
-    return displayAck(
+  ) =>
+    displayAck(
       id,
       cacheDelivery(name, {
         encrypted: inbound.encrypted ?? true,
-        received: message,
+        received: inbound,
       })
     );
-  };
 
   const relayed = new Map<string, string>();
 
@@ -1349,7 +1342,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
       const digest = digestFor(settings.ccDigestMinutes ?? {}, own.name);
 
-      if ((cc || inbound.quiet === true) && Option.isSome(digest)) {
+      if (cc && Option.isSome(digest)) {
         Object.assign(inbound, { digestMinutes: digest.value });
       }
 
@@ -1370,7 +1363,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         ) {
           acknowledgments.set(
             message.tid,
-            Deferred.await(checkpoint).pipe(Effect.andThen(meta.ackConfirmed))
+            Deferred.await(checkpoint).pipe(Effect.andThen(meta.ackOutcome))
           );
           const { inbound, payload } = yield* inboundOf(own, message);
           const displayKey = JSON.stringify([message.senderDid, message.tid]);
@@ -1399,7 +1392,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                     )
                   )
               ),
-              Effect.andThen(meta.ackConfirmed)
+              Effect.andThen(meta.ackOutcome)
             )
           );
 
@@ -1441,30 +1434,32 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
             if (Option.isSome(original)) {
               Object.assign(inbound, {
-                askSummary: original.value.summary,
                 copy: false,
                 kind: "reply",
                 quiet: false,
               });
+
+              if (original.value.summary !== undefined) {
+                Object.assign(inbound, { askSummary: original.value.summary });
+              }
+
               const acknowledgment = acknowledgments.get(inbound.id);
 
               if (acknowledgment !== undefined) {
                 acknowledgments.set(
                   inbound.id,
                   acknowledgment.pipe(
-                    Effect.tap((acked) =>
-                      acked
-                        ? journal
-                            .ack(original.value.id)
-                            .pipe(
-                              Effect.catchTag("NotDelivered", (failure) =>
-                                Effect.logWarning(
-                                  "Rat King ask acknowledgment not saved",
-                                  failure
-                                )
-                              )
+                    Effect.tap(() =>
+                      journal
+                        .ack(original.value.id)
+                        .pipe(
+                          Effect.catchTag("NotDelivered", (failure) =>
+                            Effect.logWarning(
+                              "Rat King ask acknowledgment not saved",
+                              failure
                             )
-                        : Effect.void
+                          )
+                        )
                     )
                   )
                 );
@@ -3486,6 +3481,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     }
 
     const direct: InboundRecord = {
+      alarmCrashDid: settings.alarmCrashDid,
       did: inbound.did,
       encrypted: message.encrypted ?? true,
       from: inbound.from,
@@ -3718,21 +3714,27 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
                 yield* deliver(
                   entry,
-                  meta.ackConfirmed.pipe(
+                  meta.ackOutcome.pipe(
                     Effect.mapError(unreachable),
-                    Effect.flatMap((acked) =>
-                      acked
-                        ? cacheDelivery(own.name, {
+                    Effect.flatMap((outcome) =>
+                      Match.value(outcome).pipe(
+                        Match.when("acked", () =>
+                          cacheDelivery(own.name, {
                             encrypted: message.encrypted ?? true,
                             received: entry.received,
                             redelivered: meta.redelivered,
                             seq: meta.seq,
                           })
-                        : Effect.fail(
+                        ),
+                        Match.when("expired", () =>
+                          Effect.fail(
                             refused("NotAttempted")(
-                              "Mailbox did not acknowledge the displayed message"
+                              "Mailbox expired the displayed message"
                             )
                           )
+                        ),
+                        Match.orElse(() => Effect.void)
+                      )
                     )
                   )
                 );

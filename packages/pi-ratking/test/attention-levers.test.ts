@@ -116,11 +116,11 @@ const dnd = (until?: string) =>
   );
 
 it.prop(
-  "Joel cannot be demoted by a lever or judge",
+  "Direct non-quiet operator mail cannot be demoted by a lever or judge",
   [prefs, status],
   ([preferences, publicStatus]) => {
     const actual = attend(
-      { ...arrival, copy: true, from: "joel" },
+      { ...arrival, from: "joel" },
       {
         enabled: true,
         prefs: { ...preferences, refuse: ["joel"] },

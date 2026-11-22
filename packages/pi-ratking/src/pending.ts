@@ -60,6 +60,7 @@ export interface PendingMail {
   readonly cc?: boolean;
   readonly coalesce?: boolean;
   readonly customType?: "ratking_record_notice";
+  readonly notice?: string | undefined;
   readonly holdUntil?: number | undefined;
   readonly expiring?: boolean;
   readonly watch?: string;
@@ -211,7 +212,7 @@ const intervalMs = (mails: readonly PendingMail[]) =>
     ...mails.map((mail) =>
       mail.notBefore === undefined
         ? (mail.digestMinutes ?? DEFAULT_DIGEST_MINUTES)
-        : 0
+        : Infinity
     )
   ) * 60_000;
 
@@ -231,7 +232,7 @@ export const inbox = (host: MailHost) => {
       const due = [...pending.values()].filter(
         (mail) =>
           mail.holdUntil !== undefined &&
-          (boundary || now >= mail.holdUntil) &&
+          ((boundary && !held(mail)) || now >= mail.holdUntil) &&
           !digested.has(mail.id)
       );
 
@@ -312,19 +313,26 @@ export const inbox = (host: MailHost) => {
         return;
       }
 
-      if (due.length === 0 || now - last.value < intervalMs(due)) {
+      const lastAt = last.value;
+
+      const ready = due.filter(
+        (mail) =>
+          mail.notBefore !== undefined || now - lastAt >= intervalMs(due)
+      );
+
+      if (ready.length === 0) {
         return;
       }
 
       last = Option.some(now);
 
-      for (const mail of due) {
+      for (const mail of ready) {
         digested.add(mail.id);
       }
 
       host.digest(
-        due.toReversed(),
-        due.every((mail) => mail.wake === true) ? "wake" : "cc",
+        ready.toReversed(),
+        ready.every((mail) => mail.wake === true) ? "wake" : "cc",
         DISPLAY_ONLY
       );
     },
