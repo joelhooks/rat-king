@@ -24,8 +24,11 @@ import { boundDeploy, observeAttempt, startAttempt } from "./ship-attempt.ts";
 import { Sha, ShipCheckpoint } from "./ship-config.ts";
 import { sanitizeCandidateStderr } from "./ship-diagnostics.ts";
 import { durableGithubBudget } from "./ship-github-budget.ts";
+import { recordHeldReceipts } from "./ship-hold-receipts.ts";
+import { verifyPreparedInputs } from "./ship-inputs.ts";
 import { installDependencies, quarantineInstall } from "./ship-install.ts";
 import { sendShipNotification } from "./ship-notify.ts";
+import { durableParentCache } from "./ship-parent-cache.ts";
 import {
   preparedEvidence,
   verifyShipWorkspace,
@@ -305,34 +308,39 @@ export const shipCommand = Effect.fn("Ship.command")(
       saved.preparedHolds ?? {}
     );
 
+    const writeCheckpoint = (
+      state: typeof ShipCheckpoint.Type,
+      preparedHolds: Readonly<Record<string, string>>
+    ) =>
+      writePrivateJson(
+        ship.checkpoint,
+        JSON.stringify({
+          deferred: state.deferred ?? "",
+          failed: state.failed,
+          failedGate: state.failedGate ?? "",
+          preparedHolds:
+            Object.keys(preparedHolds).length === 0 ? undefined : preparedHolds,
+          preparedRetries:
+            Object.keys(state.preparedRetries ?? {}).length === 0
+              ? undefined
+              : state.preparedRetries,
+          retryAt: state.retryAt ?? 0,
+          successful: state.successful,
+        })
+      ).pipe(
+        Effect.mapError(
+          (cause) =>
+            new FleetError({
+              reason: `Ship checkpoint write failed: ${causeDetail(cause)}`,
+            })
+        )
+      );
+
     const shared: Omit<ShipPorts<Services>, "fetch" | "ci" | "deploy"> = {
       checkpoint: (state) =>
         Ref.get(holds).pipe(
           Effect.flatMap((preparedHolds) =>
-            writePrivateJson(
-              ship.checkpoint,
-              JSON.stringify({
-                deferred: state.deferred ?? "",
-                failed: state.failed,
-                failedGate: state.failedGate ?? "",
-                preparedHolds:
-                  Object.keys(preparedHolds).length === 0
-                    ? undefined
-                    : preparedHolds,
-                preparedRetries:
-                  Object.keys(state.preparedRetries ?? {}).length === 0
-                    ? undefined
-                    : state.preparedRetries,
-                retryAt: state.retryAt ?? 0,
-                successful: state.successful,
-              })
-            )
-          ),
-          Effect.mapError(
-            (cause) =>
-              new FleetError({
-                reason: `Ship checkpoint write failed: ${causeDetail(cause)}`,
-              })
+            writeCheckpoint(state, preparedHolds)
           )
         ),
       notify: (receipt) =>
@@ -353,20 +361,30 @@ export const shipCommand = Effect.fn("Ship.command")(
         `${config.runtime.RAT_KING_STATE_DIR}/ship.github-rate.json`
       );
 
+      const parents = yield* durableParentCache(
+        `${config.runtime.RAT_KING_STATE_DIR}/ship.github-parents.json`
+      );
+
       const github = preparedEvidence(
         ship.repository,
         prepared,
         ship.releases,
-        budget
+        budget,
+        parents
       );
 
       const evidence = fixture.evidence ?? {
         ...github,
         artifact: (sha: string) =>
           github.artifact(sha).pipe(Effect.tap(() => preparedBinaries)),
+        eligible: verifyPreparedInputs(prepared).pipe(
+          Effect.andThen(github.eligible)
+        ),
       };
 
       const backoff = preparedBackoff();
+      const poll = yield* Ref.make(Math.max(300, ship.intervalSeconds));
+      const compacted = yield* Ref.make(false);
 
       const ports: PreparedShipPorts<Services> = {
         ...shared,
@@ -415,11 +433,22 @@ export const shipCommand = Effect.fn("Ship.command")(
               state,
               now,
               (sha, reason) => {
-                observed.set(sha || "global", reason);
+                observed.set(
+                  reason === "GitHubRateLimited" ? "global" : sha || "global",
+                  reason
+                );
               },
               backoff
             );
 
+            const waiting =
+              Option.isSome(selection) ||
+              [...observed.keys()].some((key) => key !== "global");
+
+            yield* Ref.set(
+              poll,
+              Math.max(waiting ? 120 : 300, ship.intervalSeconds)
+            );
             const previous = yield* Ref.get(holds);
 
             const changed = [...observed].filter(
@@ -428,13 +457,17 @@ export const shipCommand = Effect.fn("Ship.command")(
 
             if (
               changed.length === 0 &&
-              observed.size === Object.keys(previous).length
+              observed.size === Object.keys(previous).length &&
+              (yield* Ref.get(compacted))
             ) {
               return selection;
             }
 
-            yield* Ref.set(holds, Object.fromEntries(observed));
-            yield* shared.checkpoint(state);
+            const nextHolds = Object.fromEntries(observed);
+            yield* writeCheckpoint(state, nextHolds);
+            yield* recordHeldReceipts(ship.receipts, observed, now);
+            yield* Ref.set(holds, nextHolds);
+            yield* Ref.set(compacted, true);
 
             const previousReasons = new Set(Object.values(previous));
 
@@ -445,22 +478,20 @@ export const shipCommand = Effect.fn("Ship.command")(
 
             for (const [key, reason] of changed) {
               yield* Console.error("SHIP_PREPARED_HOLD", key, reason);
-
-              if (key !== "global") {
-                yield* shared.record({
-                  celldRestarted: null,
-                  end: now,
-                  hold: reason,
-                  restartSeconds: null,
-                  result: "held",
-                  sha: key,
-                  start: now,
-                });
-              }
             }
 
-            if (reasons.length > 0) {
-              const message = `Prepared ship hold: ${reasons.slice(0, 8).join("; ").slice(0, 1500)} SR 🐀`;
+            const pages = reasons.filter(
+              (reason) =>
+                reason !== "GitHubRateLimited" ||
+                budget.ratePage(Math.floor(now * 1000))
+            );
+
+            if (pages.includes("GitHubRateLimited")) {
+              yield* budget.save;
+            }
+
+            if (pages.length > 0) {
+              const message = `Prepared ship hold: ${pages.slice(0, 8).join("; ").slice(0, 1500)} SR 🐀`;
               yield* (
                 fixture.page?.(message) ??
                 sendShipNotification(config, message, false).pipe(
@@ -485,12 +516,7 @@ export const shipCommand = Effect.fn("Ship.command")(
           ),
       };
 
-      return yield* shipLoop(
-        ports,
-        saved,
-        Math.max(120, ship.intervalSeconds),
-        drifted
-      );
+      return yield* shipLoop(ports, saved, Ref.get(poll), drifted);
     }
 
     const ports: ShipPorts<Services> = {

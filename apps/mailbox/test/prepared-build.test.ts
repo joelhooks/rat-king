@@ -4,8 +4,15 @@ import { Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { expect } from "vitest";
 
-import { Sha256 } from "../../../stacks/nest/prepared-payload.ts";
-import { boundedOutput } from "../../../stacks/nest/ship-process.ts";
+import { digest } from "../../../packages/alchemy-nest/src/files.ts";
+import {
+  decodePrepared,
+  Sha256,
+} from "../../../stacks/nest/prepared-payload.ts";
+import {
+  boundedOutput,
+  readCommand,
+} from "../../../stacks/nest/ship-process.ts";
 
 const sha = "a".repeat(40);
 
@@ -34,7 +41,9 @@ const populateRoot = Effect.fn("Fixture.copyBuildInputs")(
     }
 
     for (const dependency of [
+      "apps/billing-ingress",
       "apps/mailbox/node_modules",
+      "apps/ratking-cli",
       "node_modules",
       "packages",
     ]) {
@@ -102,6 +111,136 @@ it.live(
 
       expect(hashes[0]).toBe(hashes[1]);
     }).pipe(Effect.provide(NodeServices.layer))
+);
+
+const loadOnly = `
+import { registerHooks } from "node:module";
+import { Socket } from "node:net";
+import { pathToFileURL } from "node:url";
+const deny = () => { throw new Error("payload tried network I/O at import"); };
+globalThis.fetch = deny;
+Socket.prototype.connect = deny;
+registerHooks({
+  resolve(specifier, context, next) {
+    return specifier === "cloudflare:workers"
+      ? { shortCircuit: true, url: "data:text/javascript,export class DurableObject {}" }
+      : next(specifier, context);
+  }
+});
+const [workerPath, cliPath, backupPath, restartPath] = process.argv.slice(1);
+const read = (path) => import(pathToFileURL(path).href);
+const [worker, cli, backup, restart] = await Promise.all([workerPath, cliPath, backupPath, restartPath].map(read));
+if (typeof worker.Mailbox !== "function" || typeof cli.runMailbox !== "function" || !backup.program || !restart.program) {
+  throw new Error("fleet exports missing");
+}
+process.stdout.write("loaded four fleet payloads");
+`;
+
+it.live(
+  "real ship-build output imports all four payloads without network I/O",
+  () =>
+    Effect.gen(function* smoke() {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const origin = path.resolve(import.meta.dirname, "../../..");
+      const parent = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const root = `${parent}/source`;
+      const home = `${parent}/home`;
+      const runtime = `${parent}/runtime`;
+      yield* populateRoot(origin, root);
+      yield* fs.makeDirectory(home);
+      yield* fs.makeDirectory(runtime);
+      yield* fs.writeFileString(`${root}/.gitignore`, "node_modules\n");
+
+      const env = {
+        HOME: home,
+        PATH: "/usr/bin:/bin",
+        XDG_RUNTIME_DIR: runtime,
+      };
+
+      const git = (args: readonly string[]) =>
+        readCommand("git", args, root, 8192, {
+          ...env,
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+        });
+
+      yield* git(["init", "-q"]);
+      yield* git([
+        "add",
+        "--",
+        ".gitignore",
+        "apps",
+        "package.json",
+        "packages",
+        "stacks",
+        "tsconfig.base.json",
+      ]);
+      yield* git([
+        "-c",
+        "user.email=fixture",
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-qm",
+        "fleet fixture",
+      ]);
+      const commit = (yield* git(["rev-parse", "HEAD"])).trim();
+      const output = `${parent}/fleet.bundle`;
+
+      const built = yield* nodeFixture(
+        [
+          `${root}/stacks/nest/cli.ts`,
+          "ship-build",
+          "--sha",
+          commit,
+          "--output",
+          output,
+        ],
+        root,
+        env
+      );
+
+      expect(built.code, built.stderr).toBe(0);
+
+      const bytes = yield* fs.readFile(output);
+
+      const payload = yield* decodePrepared(bytes, {
+        commit,
+        sha256: digest(bytes),
+      });
+
+      const files: string[] = [];
+
+      for (const key of ["worker", "cli", "backup", "restart"] as const) {
+        const file = `${parent}/${key}.mjs`;
+        yield* fs.writeFileString(file, payload[key]);
+        files.push(file);
+      }
+
+      const loaded = yield* nodeFixture(
+        ["--input-type=module", "--eval", loadOnly, ...files],
+        parent,
+        env
+      );
+
+      expect(loaded.code, loaded.stderr).toBe(0);
+      expect(loaded.stdout).toBe("loaded four fleet payloads");
+
+      for (const name of ["backup", "restart"]) {
+        const invoked = yield* nodeFixture(
+          [`${parent}/${name}.mjs`],
+          parent,
+          env
+        );
+
+        expect(invoked.code).not.toBe(0);
+        expect(`${invoked.stdout}\n${invoked.stderr}`).toContain("SchemaError");
+      }
+    }).pipe(Effect.provide(NodeServices.layer)),
+  { timeout: 30_000 }
 );
 
 const Forbidden = Schema.Literals([

@@ -97,11 +97,11 @@ export const deployOutcome = (
   events: readonly (typeof RestartEvent.Type)[]
 ): Pick<
   typeof ShipReceipt.Type,
-  "result" | "celldRestarted" | "restartSeconds" | "retryAt" | "override"
-> => {
+  "celldRestarted" | "restartSeconds" | "retryAt" | "override"
+> & { readonly result: "success" | "failed" | "deferred" } => {
   const lastGate = events.at(-1);
   const deferral = events.findLast((event) => event.phase === "deferred");
-  let result: (typeof ShipReceipt.Type)["result"] = "failed";
+  let result: "success" | "failed" | "deferred" = "failed";
 
   if (code === 0) {
     result = "success";

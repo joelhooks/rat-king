@@ -14,6 +14,8 @@ import {
 import { Sha } from "./ship-config.ts";
 import type { GithubBudget } from "./ship-github-budget.ts";
 import { githubBudget } from "./ship-github-budget.ts";
+import { parentCache } from "./ship-parent-cache.ts";
+import type { ParentCache } from "./ship-parent-cache.ts";
 import { boundedOutput, decodeUtf8, readCommand } from "./ship-process.ts";
 import { maxFirstParents } from "./ship-select.ts";
 import { FleetError } from "./stage-config.ts";
@@ -121,7 +123,9 @@ const github = Effect.fn("Ship.githubEvidence")(
     budget: GithubBudget,
     etag?: string
   ) {
-    if (!budget.charge(yield* Clock.currentTimeMillis)) {
+    const now = yield* Clock.currentTimeMillis;
+
+    if (!budget.charge(now)) {
       return yield* rateLimited();
     }
 
@@ -140,6 +144,17 @@ const github = Effect.fn("Ship.githubEvidence")(
           etag === undefined ? headers : { ...headers, "If-None-Match": etag },
       }
     );
+
+    const remaining =
+      response.status === 429
+        ? 0
+        : Number(response.headers["x-ratelimit-remaining"]);
+
+    const reset = Number(response.headers["x-ratelimit-reset"]) * 1000;
+
+    if (budget.observe?.(now, remaining, reset) === true) {
+      yield* budget.save;
+    }
 
     if (response.status === 304 && etag !== undefined) {
       return { response, text: undefined };
@@ -276,6 +291,11 @@ const exactFence = Effect.fn("Ship.exactFence")(function* exactFence(
 const artifactMissing = () =>
   new FleetError({ reason: "ArtifactMissingOrUnreadable" });
 
+const ephemeralParents = (): ParentCache => ({
+  parents: parentCache(),
+  save: Effect.void,
+});
+
 const ephemeralBudget = (): GithubBudget => ({
   charge: githubBudget(),
   save: Effect.void,
@@ -285,7 +305,8 @@ export const preparedEvidence = (
   repository: string,
   args: PreparedArgs,
   workspace: string,
-  budget: GithubBudget = ephemeralBudget()
+  budget: GithubBudget = ephemeralBudget(),
+  cache: ParentCache = ephemeralParents()
 ) => {
   const [, list, , helper] = args;
 
@@ -299,7 +320,7 @@ export const preparedEvidence = (
       )
     );
 
-  const parents = new Map<string, string | undefined>();
+  const { parents } = cache;
   const completed = new Map<string, boolean>();
 
   const runs = new Map<
@@ -431,6 +452,7 @@ export const preparedEvidence = (
 
       const first = commit.parents[0]?.sha;
       parents.set(sha, first);
+      yield* cache.save;
 
       return first;
     }),

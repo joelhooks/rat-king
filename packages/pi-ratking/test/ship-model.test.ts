@@ -1,7 +1,6 @@
 /* oxlint-disable typescript/promise-function-async -- fast-check commands and asyncModelRun are Promise boundaries. */
 import { it } from "@effect/vitest";
-import { Clock, Duration, Effect, Schema } from "effect";
-import type { Context } from "effect";
+import { Clock, Duration, Effect, FiberSet, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { asyncModelRun } from "fast-check";
 import type { AsyncCommand } from "fast-check";
@@ -68,16 +67,12 @@ class ModelFailure extends Schema.TaggedError<ModelFailure>()("ModelFailure", {
   reason: Schema.String,
 }) {}
 
-const capturedRunner = <R>(context: Context.Context<R>) =>
-  // oxlint-disable-next-line effect-tests/no-manual-effect-runtime-in-tests -- asyncModelRun needs a Promise per command; reuse the test context.
-  Effect.runPromiseWith(context);
-
 it.effect.prop(
   "ship serializes deploys, retries busy maintenance, holds a failed SHA until a new SHA and tries recovery after every failed deploy",
   [Schema.Array(Cycle)],
   ([cycles]) =>
     Effect.gen(function* modelRun() {
-      const context = yield* Effect.context();
+      const execute = yield* FiberSet.makeRuntimePromise();
 
       const command = (
         cycle: typeof Cycle.Type
@@ -186,7 +181,7 @@ it.effect.prop(
             expect(real.notes).toBe(real.deployed);
           });
 
-          return capturedRunner(context)(operation);
+          return execute(operation);
         },
         toString: () => JSON.stringify(cycle),
       });
@@ -254,8 +249,7 @@ it.effect.prop(
   [Schema.Array(PreparedStep).check(Schema.isMaxLength(15))],
   ([suffix]) =>
     Effect.gen(function* preparedModel() {
-      const context = yield* Effect.context();
-      const execute = capturedRunner(context);
+      const execute = yield* FiberSet.makeRuntimePromise();
 
       const command = (
         step: typeof PreparedStep.Type

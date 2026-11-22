@@ -432,7 +432,11 @@ it.effect(
           Schema.decodeSync(Schema.fromJsonString(ShipReceipt))(line)
         );
 
-      expect(receipts).toHaveLength(512);
+      expect(receipts).toHaveLength(256);
+      expect(new Set(receipts.map((receipt) => receipt.sha)).size).toBe(256);
+      expect(
+        receipts.every((receipt) => receipt.hold === "ExactFencePendingOverdue")
+      ).toBe(true);
       expect(
         receipts.every(
           (receipt) =>

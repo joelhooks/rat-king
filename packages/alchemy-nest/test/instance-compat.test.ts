@@ -8,16 +8,19 @@ import { operatorBundle } from "../src/operator-build.ts";
 import { nodeUnit, storeUnit } from "../src/service-units.ts";
 import { renderUnit } from "../src/systemd.ts";
 
-it.live("mailbox restart gate pins Effect 4.1.4 bundle bytes", () =>
-  Effect.gen(function* baseline() {
-    const bundle = yield* operatorBundle(
-      new URL("../../../stacks/nest/restart-gate.ts", import.meta.url).pathname
-    );
+it.live(
+  "the import-safe mailbox restart gate pins Effect 4.1.4 bundle bytes",
+  () =>
+    Effect.gen(function* baseline() {
+      const bundle = yield* operatorBundle(
+        new URL("../../../stacks/nest/restart-gate.ts", import.meta.url)
+          .pathname
+      );
 
-    expect(textDigest(bundle)).toBe(
-      "b67537a7f07afc15277606c4050980eeff1b21bad2ddd3fbd15ddf3f9e267c2b"
-    );
-  }).pipe(Effect.provide(NodePath.layer))
+      expect(textDigest(bundle)).toBe(
+        "f335fc7e39e64bd1c85765af1c3b68332ec205f4fbea089d1fc23b85d47a37a8"
+      );
+    }).pipe(Effect.provide(NodePath.layer))
 );
 
 it("gated mailbox units keep main 920884e bytes", () => {

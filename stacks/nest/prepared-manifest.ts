@@ -1,7 +1,4 @@
-// @effect-diagnostics nodeBuiltinImport:off -- Compare inert decoded manifest objects, not JSON key order.
-import { isDeepStrictEqual } from "node:util";
-
-import { Effect, Schema } from "effect";
+import { Effect, Equal, Schema } from "effect";
 
 import { bindings } from "../../apps/mailbox/src/mailbox-declaration.ts";
 import {
@@ -36,7 +33,7 @@ export const manifestChange = () =>
   new FleetError({ reason: "ManifestChange: needs legacy ship" });
 
 export const allowManifest = (candidate: typeof PreparedManifest.Type) =>
-  isDeepStrictEqual(
+  Equal.equals(
     {
       ...candidate,
       declaration: {

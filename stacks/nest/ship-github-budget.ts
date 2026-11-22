@@ -26,12 +26,19 @@ export const githubBudget =
 
 export interface GithubBudget {
   readonly charge: ReturnType<typeof githubBudget>;
+  readonly observe?: (now: number, remaining: number, reset: number) => boolean;
   readonly save: Effect.Effect<void, FleetError>;
 }
 
-const Ledger = Schema.fromJsonString(
-  Schema.Array(Schema.Int).check(Schema.isMaxLength(maxCharges))
-);
+const Charges = Schema.Array(Schema.Int).check(Schema.isMaxLength(maxCharges));
+
+const State = Schema.Struct({
+  blockedUntil: Schema.Int,
+  charges: Charges,
+  pagedUntil: Schema.Int,
+});
+
+const Ledger = Schema.fromJsonString(Schema.Union([State, Charges]));
 
 const ledgerError = () => new FleetError({ reason: "GitHubBudgetUnavailable" });
 
@@ -40,19 +47,57 @@ export const durableGithubBudget = Effect.fn("Ship.githubBudget")(
     const services = yield* Effect.context<FileSystem.FileSystem | Path.Path>();
     const fs = yield* FileSystem.FileSystem;
 
-    const charges = (yield* fs.exists(path))
-      ? (yield* readBoundedRegularFile(path, 2048).pipe(
+    const saved = (yield* fs.exists(path))
+      ? yield* readBoundedRegularFile(path, 2048).pipe(
           Effect.map((bytes) => new TextDecoder().decode(bytes)),
           Effect.flatMap(Schema.decodeEffect(Ledger))
-        )).toSorted((a, b) => a - b)
+        )
       : [];
 
+    const decoded = Schema.is(State)(saved)
+      ? saved
+      : { blockedUntil: 0, charges: saved, pagedUntil: 0 };
+
+    const charges = decoded.charges.toSorted((a, b) => a - b);
+    const reserve = githubBudget(charges);
+    let { blockedUntil, pagedUntil } = decoded;
+
     return {
-      charge: githubBudget(charges),
+      charge: (now: number) => now >= blockedUntil && reserve(now),
+      observe: (now: number, remaining: number, reset: number) => {
+        if (!Number.isSafeInteger(remaining) || remaining > 3) {
+          return false;
+        }
+
+        const until =
+          Number.isSafeInteger(reset) && reset > now
+            ? Math.min(reset, now + 3_600_000)
+            : now + 300_000;
+
+        if (until <= blockedUntil) {
+          return false;
+        }
+
+        blockedUntil = until;
+
+        return true;
+      },
+      ratePage: (now: number) => {
+        if (now < pagedUntil) {
+          return false;
+        }
+
+        pagedUntil = blockedUntil > now ? blockedUntil : now + 3_600_000;
+
+        return true;
+      },
       save: Effect.suspend(() =>
-        writePrivateJson(path, JSON.stringify(charges))
+        writePrivateJson(
+          path,
+          JSON.stringify({ blockedUntil, charges, pagedUntil })
+        )
       ).pipe(Effect.provide(services), Effect.mapError(ledgerError)),
-    } satisfies GithubBudget;
+    };
   },
   Effect.mapError(ledgerError)
 );

@@ -7,15 +7,23 @@ import {
   Option,
   Path,
   Result,
+  Schedule,
+  Schema,
   Stream,
 } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { expect } from "vitest";
 
 import { runtimeDrift } from "../../../stacks/nest/runner-drift.ts";
+import {
+  ShipCheckpoint,
+  ShipReceipt,
+} from "../../../stacks/nest/ship-config.ts";
+import { verifyPreparedInputs } from "../../../stacks/nest/ship-inputs.ts";
 import { withShipLock } from "../../../stacks/nest/ship-lock.ts";
 import { fenceJobName } from "../../../stacks/nest/ship-prepared-evidence.ts";
 import { readCommand } from "../../../stacks/nest/ship-process.ts";
+import { FleetError } from "../../../stacks/nest/stage-config.ts";
 
 const rootUrl = new URL("../../../", import.meta.url);
 
@@ -135,7 +143,11 @@ it.effect("legacy and prepared ship use the same owned process lock", () =>
         root
       ).pipe(Effect.result);
 
-      expect(Result.isFailure(contended)).toBe(true);
+      expect(
+        Result.isFailure(contended) &&
+          Schema.is(FleetError)(contended.failure) &&
+          contended.failure.reason
+      ).toBe("ShipLockContended");
     }
 
     expect(yield* fs.exists(`${root}/observed`)).toBe(false);
@@ -144,4 +156,101 @@ it.effect("legacy and prepared ship use the same owned process lock", () =>
     yield* withShipLock(root, entry, `${root}/stage`, ["ship"], root);
     expect(yield* fs.readFileString(`${root}/observed`)).toBe(`${root} ship`);
   }).pipe(Effect.provide(NodeServices.layer))
+);
+
+it.effect(
+  "a builder-owned helper is refused before reading the candidate list",
+  () =>
+    Effect.gen(function* checkCustody() {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const helper = `${root}/helper`;
+      const list = `${root}/list`;
+      const builder = (process.getuid?.() ?? 0) + 1000;
+      yield* fs.writeFileString(helper, "", { mode: 0o555 });
+      const stat = yield* fs.lstat(helper);
+      const checked: string[] = [];
+
+      const fixture = FileSystem.makeNoop({
+        lstat: (path) =>
+          Effect.sync(() => {
+            checked.push(path);
+
+            return { ...stat, uid: Option.some(builder) };
+          }),
+        realPath: (path) => Effect.succeed(path),
+      });
+
+      const result = yield* verifyPreparedInputs([
+        "--candidate-file",
+        list,
+        "--artifact-helper",
+        helper,
+      ]).pipe(
+        Effect.provideService(FileSystem.FileSystem, fixture),
+        Effect.result
+      );
+
+      expect(Result.isFailure(result) && result.failure.reason).toBe(
+        "ArtifactHelperCustody"
+      );
+      expect(checked).toEqual([helper]);
+    }).pipe(Effect.provide(NodeServices.layer))
+);
+
+it.live(
+  "SIGTERM stops the armed apply process and records interrupted without a barrier",
+  () =>
+    Effect.gen(function* checkInterrupted() {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+
+      const parent = yield* spawner.spawn(
+        ChildProcess.make(
+          process.execPath,
+          [`${import.meta.dirname}/fixtures/prepared-sigterm.ts`, root],
+          { stderr: "inherit", stdin: "ignore" }
+        )
+      );
+
+      yield* fs.exists(`${root}/child-ready`).pipe(
+        Effect.filterOrFail(
+          (ready) => ready,
+          () => "child not ready"
+        ),
+        Effect.retry(Schedule.spaced("10 millis")),
+        Effect.timeout("8 seconds")
+      );
+
+      const readState = fs
+        .readFileString(`${root}/checkpoint`)
+        .pipe(
+          Effect.flatMap(
+            Schema.decodeEffect(Schema.fromJsonString(ShipCheckpoint))
+          )
+        );
+
+      expect((yield* readState).failed).toBe("a".repeat(40));
+
+      yield* Effect.sync(() => process.kill(Number(parent.pid), "SIGTERM"));
+      yield* parent.exitCode.pipe(Effect.timeout("8 seconds"));
+      expect(yield* fs.readFileString(`${root}/child-stopped`)).toBe("yes");
+      const saved = yield* readState;
+      expect(saved.failed).toBe("");
+      expect(saved.successful).toBe("b".repeat(40));
+      expect(saved.preparedRetries?.["a".repeat(40)]).toBeGreaterThan(0);
+      expect(saved.preparedRetries?.["c".repeat(40)]).toBeUndefined();
+
+      const verified = yield* fs
+        .readFileString(`${root}/receipt`)
+        .pipe(
+          Effect.flatMap(
+            Schema.decodeEffect(Schema.fromJsonString(ShipReceipt))
+          )
+        );
+
+      expect(verified.result).toBe("interrupted");
+    }).pipe(Effect.provide(NodeServices.layer)),
+  { timeout: 20_000 }
 );

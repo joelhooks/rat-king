@@ -30,7 +30,11 @@ export const withShipLock = Effect.fn("Ship.lock")(function* withShipLock(
 
   const mac = process.platform === "darwin";
   const executable = mac ? "/usr/bin/lockf" : "/usr/bin/flock";
-  const flags = mac ? ["-k", "-t", "0"] : ["--nonblock", "--no-fork", "--"];
+
+  const flags = mac
+    ? ["-k", "-t", "0"]
+    : ["--nonblock", "--no-fork", "--conflict-exit-code", "75", "--"];
+
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
   if (!mac) {
@@ -65,9 +69,11 @@ export const withShipLock = Effect.fn("Ship.lock")(function* withShipLock(
     )
   );
 
-  if (Number(yield* handle.exitCode) !== 0) {
+  const code = Number(yield* handle.exitCode);
+
+  if (code !== 0) {
     return yield* new FleetError({
-      reason: "Ship checkpoint lock unavailable or ship worker failed",
+      reason: code === 75 ? "ShipLockContended" : "ShipWorkerFailed",
     });
   }
 

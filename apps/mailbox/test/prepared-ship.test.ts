@@ -6,6 +6,7 @@ import {
   Effect,
   FileSystem,
   Option,
+  Result,
   Schema,
   Sink,
   Stream,
@@ -13,7 +14,7 @@ import {
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { expect } from "vitest";
-import { initialTransition } from "xstate";
+import { initialTransition, transition } from "xstate";
 
 import { digest } from "../../../packages/alchemy-nest/src/files.ts";
 import { ReleaseSource } from "../../../packages/alchemy-nest/src/release.ts";
@@ -31,7 +32,9 @@ import {
   durableGithubBudget,
   githubBudget,
 } from "../../../stacks/nest/ship-github-budget.ts";
+import { recordHeldReceipts } from "../../../stacks/nest/ship-hold-receipts.ts";
 import { shipMachine } from "../../../stacks/nest/ship-machine.ts";
+import { durableParentCache } from "../../../stacks/nest/ship-parent-cache.ts";
 import { preparedEvidence } from "../../../stacks/nest/ship-prepared-evidence.ts";
 import { selectPrepared } from "../../../stacks/nest/ship-select.ts";
 import { shipCycle } from "../../../stacks/nest/ship.ts";
@@ -655,6 +658,120 @@ it.effect("first-parent proof refuses both a cycle and a 257th commit", () =>
   })
 );
 
+it.effect("prepared selection refuses an unproven payload before arming", () =>
+  Effect.gen(function* refusesDrift() {
+    const [snapshot] = initialTransition(shipMachine, {
+      failed: "",
+      successful: checkpoint,
+    });
+
+    const [fetching] = transition(shipMachine, snapshot, {
+      now: 1,
+      type: "tick",
+    });
+
+    const [waiting] = transition(shipMachine, fetching, {
+      ahead: [eligible],
+      sha: eligible,
+      type: "prepared",
+    });
+
+    const [deploying] = transition(shipMachine, waiting, { type: "ready" });
+
+    for (const [state, ahead] of [
+      [snapshot, [head]],
+      [deploying, [eligible]],
+    ] as const) {
+      const result = yield* shipCycle(state, {
+        checkpoint: () => Effect.die("unproven payload must not arm"),
+        deployPrepared: () => Effect.die("unproven payload must not apply"),
+        notify: () => Effect.void,
+        record: () => Effect.void,
+        recover: Effect.succeed("running"),
+        select: () =>
+          Effect.succeed(
+            Option.some({
+              ahead,
+              payload: { ...programs, commit: eligible, version: "1.2.3" },
+            })
+          ),
+      }).pipe(Effect.result);
+
+      expect(Result.isFailure(result) && result.failure.reason).toContain(
+        "PreparedStateMismatch"
+      );
+    }
+  })
+);
+
+it.effect(
+  "holds only retain the latest active rows and leave deploy outcomes intact",
+  () =>
+    Effect.gen(function* compactHeld() {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const file = `${root}/receipts`;
+
+      const row = {
+        celldRestarted: null,
+        end: 1,
+        restartSeconds: null,
+        sha: before,
+        start: 0,
+      };
+
+      const prior = JSON.stringify({ ...row, result: "success" });
+      yield* fs.writeFileString(
+        file,
+        `${[
+          prior,
+          JSON.stringify({ ...row, hold: "older", result: "held" }),
+          JSON.stringify({
+            ...row,
+            hold: "previous",
+            result: "held",
+            sha: eligible,
+          }),
+          JSON.stringify({
+            ...row,
+            hold: "latest",
+            result: "held",
+            sha: eligible,
+          }),
+        ].join("\n")}\n`
+      );
+      yield* recordHeldReceipts(
+        file,
+        new Map([
+          [eligible, "latest"],
+          ["global", "NoPinnedCandidates"],
+        ]),
+        2
+      );
+      const held = (yield* fs.readFileString(file)).trimEnd().split("\n");
+      expect(held).toHaveLength(2);
+      expect(held[0]).toBe(prior);
+      expect(held[1]).toContain(`"sha":"${eligible}"`);
+      expect(held[1]).toContain('"hold":"latest"');
+    }).pipe(Effect.provide(NodeServices.layer))
+);
+
+it.effect("immutable parent witnesses persist across signer restarts", () =>
+  Effect.gen(function* persistedParents() {
+    const fs = yield* FileSystem.FileSystem;
+    const directory = yield* fs.makeTempDirectoryScoped();
+    const path = `${directory}/parents`;
+    const cache = yield* durableParentCache(path);
+    cache.parents.set(eligible, checkpoint);
+    cache.parents.set(before, undefined);
+    yield* cache.save;
+    const restarted = yield* durableParentCache(path);
+    expect(restarted.parents.has(before)).toBe(true);
+    expect(restarted.parents.get(before)).toBeUndefined();
+    expect(restarted.parents.get(eligible)).toBe(checkpoint);
+  }).pipe(Effect.provide(NodeServices.layer))
+);
+
 it.effect("GitHub request debt survives restarting the signer", () =>
   Effect.gen(function* restartBudget() {
     const fs = yield* FileSystem.FileSystem;
@@ -671,6 +788,14 @@ it.effect("GitHub request debt survives restarting the signer", () =>
     const restarted = yield* durableGithubBudget(file);
     expect(restarted.charge(3_600_999)).toBe(false);
     expect(restarted.charge(3_601_000)).toBe(true);
+    expect(restarted.observe(3_601_001, 3, 3_700_000)).toBe(true);
+    expect(restarted.charge(3_601_002)).toBe(false);
+    expect(restarted.ratePage(3_601_002)).toBe(true);
+    yield* restarted.save;
+    const afterRateLimit = yield* durableGithubBudget(file);
+    expect(afterRateLimit.ratePage(3_601_003)).toBe(false);
+    expect(afterRateLimit.charge(3_699_999)).toBe(false);
+    expect(afterRateLimit.charge(3_700_000)).toBe(true);
   }).pipe(Effect.provide(NodeServices.layer))
 );
 
