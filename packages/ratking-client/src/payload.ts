@@ -155,32 +155,43 @@ const renderSent = (inbound: Inbound, by: string) =>
 
 export const COPY_BODY_MAX = 4000;
 
+export const QUIET_BODY_MAX = 4000;
+
 export const COPY_NOTE =
   "You are cc'd. No action is expected unless it names you; the sender uses to: for whoever must act.";
+
+const bodyLimit = (inbound: {
+  readonly cc: boolean;
+  readonly quiet?: boolean | undefined;
+}) => {
+  if (inbound.cc) {
+    return COPY_BODY_MAX;
+  }
+
+  return inbound.quiet === true ? QUIET_BODY_MAX : Infinity;
+};
 
 export const renderInboundBody = (
   tool: string,
   inbound: Pick<Inbound, "body" | "cc" | "id" | "kind"> & {
     readonly encrypted?: boolean | undefined;
+    readonly quiet?: boolean | undefined;
     readonly sentBy?: string | undefined;
-  }
+  },
+  max = bodyLimit(inbound)
 ) => {
   const body =
     inbound.kind === "data" ? renderRecordBody(inbound.body) : inbound.body;
 
-  if (
-    !inbound.cc ||
-    inbound.sentBy !== undefined ||
-    body.length <= COPY_BODY_MAX
-  ) {
+  if (body.length <= max) {
     return body;
   }
 
   const end =
-    /[\uD800-\uDBFF]/u.test(body.charAt(COPY_BODY_MAX - 1)) &&
-    /[\uDC00-\uDFFF]/u.test(body.charAt(COPY_BODY_MAX))
-      ? COPY_BODY_MAX - 1
-      : COPY_BODY_MAX;
+    /[\uD800-\uDBFF]/u.test(body.charAt(max - 1)) &&
+    /[\uDC00-\uDFFF]/u.test(body.charAt(max))
+      ? max - 1
+      : max;
 
   const hint =
     inbound.encrypted === false

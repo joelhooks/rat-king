@@ -46,6 +46,7 @@ const reader = async () => {
   let streaming = false;
   const entries: HistoryEntry[] = [];
   const next: Message[] = [];
+  const boundary: Message[] = [];
   const sent: Message[] = [];
   const acks = new Map<string, number>();
   const early: string[] = [];
@@ -75,8 +76,10 @@ const reader = async () => {
     sendMessage: (message, delivery) => {
       sent.push(message);
 
-      expect(delivery).toEqual({ deliverAs: "nextTurn", triggerTurn: false });
-      next.push(message);
+      expect(delivery?.triggerTurn).toBe(false);
+      expect(["nextTurn", "followUp"]).toContain(delivery?.deliverAs);
+      const queue = delivery?.deliverAs === "nextTurn" ? next : boundary;
+      queue.push(message);
     },
     shownInSession: () => shownInHistory(entries),
   };
@@ -158,14 +161,25 @@ const reader = async () => {
       }
 
       turnEnd();
+
+      for (const message of boundary.splice(0)) {
+        entries.push({
+          customType: message.customType,
+          details: message.details,
+          type: "custom_message",
+        });
+
+        for (const id of shownIds({ ...message, role: "custom" })) {
+          shown(id);
+        }
+      }
+
       await settle();
     },
     run: async (kind: typeof Run.Type) => {
       streaming = true;
 
-      if (kind === "continuation") {
-        turnEnd();
-      } else {
+      if (kind !== "continuation") {
         before();
         await agentStart();
       }
@@ -238,13 +252,11 @@ const runCommand = (kind: typeof Run.Type): AsyncCommand<Model, Real> => ({
 
     if (kind === "continuation") {
       expect(ids).toEqual([]);
-      verify(model, real);
-
-      return;
+    } else {
+      expect(new Set(ids)).toEqual(model.pending);
+      expect(ids).toHaveLength(model.pending.size);
     }
 
-    expect(new Set(ids)).toEqual(model.pending);
-    expect(ids).toHaveLength(model.pending.size);
     verify(model, real);
     await real.reader.record(messages);
 
@@ -259,7 +271,7 @@ const runCommand = (kind: typeof Run.Type): AsyncCommand<Model, Real> => ({
 });
 
 it.effect.prop(
-  "quiet copies only enter an independent prompt or custom run, and events without a display entry never ack them",
+  "quiet copies enter an independent run or are appended at a turn boundary, and are never acked from events alone",
   [
     Arbitrary.schema(Kind),
     Arbitrary.schema(Run),

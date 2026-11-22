@@ -1,3 +1,5 @@
+import { promisify } from "node:util";
+
 import {
   createAgentSession,
   createEventBus,
@@ -11,12 +13,22 @@ import { it } from "@effect/vitest";
 import type { Inbound } from "@rat-king/ratking-client/payload";
 import { RatKing } from "@rat-king/ratking-client/ratking";
 import type { Deliver } from "@rat-king/ratking-client/ratking";
-import { Deferred, Effect, FileSystem, Layer, Option, Schema } from "effect";
+import {
+  Clock,
+  DateTime,
+  Deferred,
+  Effect,
+  Fiber,
+  FileSystem,
+  Layer,
+  Option,
+  Schema,
+} from "effect";
 import { HttpClient } from "effect/http";
 import { expect, vi } from "vitest";
 
 import { asPiExtension, ratkingExtension } from "../src/extension.ts";
-import { shownIds } from "../src/pending.ts";
+import { MAIL_HOLD_MS, shownIds, shownInHistory } from "../src/pending.ts";
 import { harness } from "./harness.ts";
 
 const mail = (id: string): Inbound => ({
@@ -39,7 +51,14 @@ const wakeInPi = (api: ExtensionAPI) => {
   );
 };
 
-const proveWake = (source: "mail" | "watch", quietBody: string) =>
+const ownerCopy = (id: string): Inbound => ({
+  ...mail(id),
+  cc: true,
+  copy: true,
+  levers: { enabled: true, owner: "sender" },
+});
+
+const proveWake = (source: "mail" | "watch" | "typed", quietBody: string) =>
   Effect.gen(function* actualPiWake() {
     const fs = yield* FileSystem.FileSystem;
     const cwd = yield* fs.makeTempDirectoryScoped();
@@ -95,6 +114,18 @@ const proveWake = (source: "mail" | "watch", quietBody: string) =>
       createAgentSession.bind(undefined, {
         agentDir: cwd,
         cwd,
+        model: {
+          api: "openai-completions",
+          baseUrl: "",
+          contextWindow: 16_384,
+          cost: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 },
+          id: "fixture",
+          input: ["text"],
+          maxTokens: 1024,
+          name: "Fixture",
+          provider: "openai",
+          reasoning: false,
+        },
         noTools: "builtin",
         resourceLoader: loader,
         sessionManager: SessionManager.inMemory(cwd),
@@ -102,7 +133,11 @@ const proveWake = (source: "mail" | "watch", quietBody: string) =>
       })
     );
 
-    const prompt = vi.spyOn(session.agent, "prompt").mockResolvedValue();
+    const prompt = vi.spyOn(session.agent, "prompt");
+
+    if (source !== "typed") {
+      prompt.mockResolvedValue();
+    }
 
     yield* Effect.addFinalizer(() =>
       Effect.promise(
@@ -118,9 +153,91 @@ const proveWake = (source: "mail" | "watch", quietBody: string) =>
 
     const deliver = yield* Deferred.await(ready);
     yield* deliver({ ...mail("quiet"), body: quietBody, quiet: true }, false);
-    yield* deliver({ ...mail("copy"), cc: true }, false);
+    yield* deliver(ownerCopy("copy"), false);
     expect(prompt).not.toHaveBeenCalled();
     expect(session.isStreaming).toBe(false);
+
+    if (source === "typed") {
+      const streaming = yield* Deferred.make<boolean>();
+      const gate = { resume: () => {} };
+
+      const pause = promisify((resume: () => void) => {
+        gate.resume = resume;
+        Deferred.doneUnsafe(streaming, Effect.succeed(true));
+      });
+
+      const requests = vi.fn(() => {
+        throw new Error("Fixture stream completed");
+      });
+
+      const stopWatching = session.agent.subscribe(
+        (event): Promise<void> | undefined =>
+          event.type === "message_end" &&
+          shownIds(event.message).includes("copy")
+            ? pause()
+            : undefined
+      );
+
+      yield* Effect.addFinalizer(() =>
+        Effect.sync(() => {
+          stopWatching();
+          gate.resume();
+        })
+      );
+
+      vi.spyOn(session.modelRuntime, "hasConfiguredAuth").mockReturnValue(true);
+      session.agent.streamFunction = requests;
+      delete session.agent.getApiKey;
+      delete session.agent.prepareRequest;
+
+      const sends = vi.spyOn(session, "sendCustomMessage");
+
+      const run = yield* Effect.promise(
+        session.prompt.bind(session, "typed prompt", {})
+      ).pipe(Effect.forkScoped);
+
+      yield* Effect.raceFirst(
+        Deferred.await(streaming),
+        Fiber.join(run).pipe(
+          Effect.andThen(Effect.die("Prompt stopped before the fixture stream"))
+        )
+      );
+      expect(session.isStreaming).toBe(true);
+      expect(shownInHistory(session.sessionManager.getEntries())).toEqual(
+        new Set(["quiet", "copy"])
+      );
+
+      const now = yield* Clock.currentTimeMillis;
+
+      const expiry = (ms: number) =>
+        DateTime.formatIso(DateTime.makeUnsafe(now + ms));
+
+      const before = sends.mock.calls.length;
+
+      yield* deliver(
+        { ...ownerCopy("far"), expiresAt: expiry(MAIL_HOLD_MS * 3) },
+        false
+      );
+      expect(sends).toHaveBeenCalledTimes(before);
+      yield* deliver(
+        { ...ownerCopy("near"), expiresAt: expiry(MAIL_HOLD_MS / 2) },
+        false
+      );
+      expect(sends).toHaveBeenCalledTimes(before + 1);
+      expect(sends.mock.calls.at(-1)?.[1]).toEqual({
+        deliverAs: "followUp",
+        triggerTurn: false,
+      });
+      expect(session.agent.hasQueuedMessages()).toBe(false);
+      gate.resume();
+      yield* Fiber.join(run);
+      expect(requests).toHaveBeenCalledTimes(1);
+      expect(shownInHistory(session.sessionManager.getEntries())).toEqual(
+        new Set(["quiet", "copy", "near", "far"])
+      );
+
+      return;
+    }
 
     yield* source === "mail"
       ? deliver(mail("direct"), false)
@@ -138,11 +255,12 @@ const proveWake = (source: "mail" | "watch", quietBody: string) =>
   }).pipe(Effect.scoped);
 
 it.live.prop(
-  "the installed Pi starts no run for held mail and carries it into both a mail wake and a watch wake",
+  "the installed Pi holds owner cc without a wake while idle or streaming, bypassing only near expiry without another request",
   [Schema.String],
   ([body]) =>
     proveWake("mail", body).pipe(
       Effect.andThen(proveWake("watch", body)),
+      Effect.andThen(proveWake("typed", body)),
       Effect.provide(NodeServices.layer),
       Effect.timeout("8 seconds")
     ),

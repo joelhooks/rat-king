@@ -13,6 +13,11 @@ export const WAKE_REASON = Reasons.intent({ facts: ["wake"] });
 
 export const DEFAULT_DIGEST_MINUTES = 30;
 
+export const MAIL_HOLD_MS = 2 * 60_000;
+
+export const expiresDuringHold = (expiresAt: string | undefined, now: number) =>
+  expiresAt !== undefined && Date.parse(expiresAt) <= now + MAIL_HOLD_MS;
+
 export type DeliverAs = "followUp" | "nextTurn" | "steer";
 
 export type Hold = DeliverAs | "digest";
@@ -52,8 +57,10 @@ export const applyDelivery = <A>(
 export type DigestVariant = "cc" | "wake";
 
 export interface PendingMail {
+  readonly cc?: boolean;
   readonly coalesce?: boolean;
-  readonly deferToStart?: boolean;
+  readonly customType?: "ratking_record_notice";
+  readonly holdUntil?: number | undefined;
   readonly expiring?: boolean;
   readonly watch?: string;
   readonly wake?: boolean;
@@ -81,11 +88,23 @@ export const digestLabel = (reason: Reason = DIGEST_REASON) => {
 };
 
 export const digestReason = (mails: readonly PendingMail[]): Reason => {
-  if (mails.every((mail) => digestLabel(mail.reason) === "cc digest")) {
+  if (
+    mails.every(
+      (mail) =>
+        (mail.reason === undefined || Reasons.$is("intent")(mail.reason)) &&
+        (mail.cc ?? (mail.reason ?? DIGEST_REASON).facts.includes("cc"))
+    )
+  ) {
     return DIGEST_REASON;
   }
 
-  if (mails.every((mail) => digestLabel(mail.reason) === "quiet digest")) {
+  if (
+    mails.every(
+      (mail) =>
+        mail.reason?.facts.includes("quiet") === true &&
+        !Reasons.$is("lever")(mail.reason)
+    )
+  ) {
     return Reasons.intent({ facts: ["quiet", "digest"] });
   }
 
@@ -162,8 +181,13 @@ export interface FlushDelivery {
   readonly triggerTurn: boolean;
 }
 
-const NEXT_TURN_DELIVERY: FlushDelivery = {
+export const NEXT_TURN_DELIVERY: FlushDelivery = {
   deliverAs: "nextTurn",
+  triggerTurn: false,
+};
+
+export const DISPLAY_ONLY: FlushDelivery = {
+  deliverAs: "followUp",
   triggerTurn: false,
 };
 
@@ -203,10 +227,28 @@ export const inbox = (host: MailHost) => {
       last = Option.none();
     },
     empty: () => pending.size === 0,
+    flushHeld: (now: number, boundary = false, delivery = DISPLAY_ONLY) => {
+      const due = [...pending.values()].filter(
+        (mail) =>
+          mail.holdUntil !== undefined &&
+          (boundary || now >= mail.holdUntil) &&
+          !digested.has(mail.id)
+      );
+
+      for (const mail of due) {
+        digested.add(mail.id);
+      }
+
+      if (due.length === 1 && due[0]?.deliverAs === "nextTurn") {
+        host.show(due[0], delivery.deliverAs, delivery.triggerTurn);
+      } else if (due.length > 0) {
+        host.digest(due.toReversed(), "cc", delivery);
+      }
+    },
     flushNext: (delivery: FlushDelivery = NEXT_TURN_DELIVERY) => {
       const due = [...pending.values()].filter(
         (mail) =>
-          (mail.deliverAs === "nextTurn" || mail.deferToStart === true) &&
+          mail.deliverAs === "nextTurn" &&
           mail.coalesce === true &&
           !digested.has(mail.id)
       );
@@ -240,7 +282,7 @@ export const inbox = (host: MailHost) => {
 
       pending.set(mail.id, mail);
 
-      const delivery = mail.deferToStart === true ? "nextTurn" : hold;
+      const delivery = hold;
 
       if (
         mail.expiring === true &&
@@ -282,7 +324,8 @@ export const inbox = (host: MailHost) => {
 
       host.digest(
         due.toReversed(),
-        due.every((mail) => mail.wake === true) ? "wake" : "cc"
+        due.every((mail) => mail.wake === true) ? "wake" : "cc",
+        DISPLAY_ONLY
       );
     },
     withdraw: (watch: string, sender: string): readonly string[] => {

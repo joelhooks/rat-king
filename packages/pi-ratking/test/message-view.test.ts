@@ -1,6 +1,6 @@
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { it } from "@effect/vitest";
-import { Kind } from "@rat-king/ratking-client/payload";
+import { COPY_BODY_MAX, Kind } from "@rat-king/ratking-client/payload";
 import { Arbitrary, Effect, Schema } from "effect";
 import { describe, expect } from "vitest";
 
@@ -94,6 +94,37 @@ it.effect.prop(
 );
 
 const squash = (input: string) => input.replaceAll(/[\s│]+/gu, "");
+
+it.prop(
+  "expanded TUI cc clips at the body cap with an exact read hint for plaintext",
+  [Schema.Boolean],
+  ([encrypted]) => {
+    const text =
+      messageView({
+        details: {
+          body: `${"x".repeat(COPY_BODY_MAX)}omitted-tail`,
+          cc: true,
+          did: "sender",
+          encrypted,
+          from: "peer",
+          id: "copy",
+          kind: "message",
+          verified: true,
+        },
+        expanded: true,
+        theme: plainTheme,
+        tool: "ratking",
+      })
+        ?.render(120)
+        .join("\n") ?? "";
+
+    expect(text).toContain("clipped");
+    expect(text).not.toContain("omitted-tail");
+    expect(text.includes('ratking({ action: "read", id: "copy" })')).toBe(
+      !encrypted
+    );
+  }
+);
 
 const Readable = Schema.Struct({
   body: Schema.String.check(

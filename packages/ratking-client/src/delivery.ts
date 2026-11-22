@@ -51,16 +51,8 @@ export const DIGEST_REASON: Reason = Reasons.intent({
   facts: ["cc", "digest"],
 });
 
-export const deliveryReason = (
-  arrival: Arrival & { readonly cc?: boolean }
-): Reason =>
-  attend(
-    arrival.cc === true ? { ...arrival, copy: true } : arrival,
-    {},
-    0,
-    undefined,
-    Option.none()
-  ).reason;
+export const deliveryReason = (arrival: Arrival): Reason =>
+  attend(arrival, {}, 0, undefined, Option.none()).reason;
 
 export const storedReason = (
   reason: Reason | string | undefined

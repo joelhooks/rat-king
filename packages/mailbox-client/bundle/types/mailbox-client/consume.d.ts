@@ -147,6 +147,7 @@ export declare const consumerMachine: import("xstate").StateMachine<{}, {
 };
 export interface MessageMeta {
     readonly ack: Effect.Effect<void, MailboxClientError>;
+    readonly ackConfirmed: Effect.Effect<boolean, MailboxClientError>;
     readonly redelivered: boolean;
     readonly seq: number;
 }

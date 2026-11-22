@@ -2,7 +2,7 @@
 import { it } from "@effect/vitest";
 import { renderInbound } from "@rat-king/ratking-client/payload";
 import type { Inbound } from "@rat-king/ratking-client/payload";
-import { deliverRelay } from "@rat-king/ratking-client/relay";
+import { deliverRelay, RelayRecord } from "@rat-king/ratking-client/relay";
 import { Effect, Option, Schema } from "effect";
 import { asyncModelRun } from "fast-check";
 import type { AsyncCommand } from "fast-check";
@@ -19,6 +19,46 @@ const Step = Schema.Struct({
   sent: Schema.Boolean,
   verified: Schema.Boolean,
 });
+
+const {
+  copy: _copy,
+  expiresAt: _expiresAt,
+  quiet: _quiet,
+  ...legacyFields
+} = RelayRecord.fields;
+
+const LegacyRelay = Schema.Struct(legacyFields);
+
+it.prop(
+  "old relay readers accept new optional fields and new readers accept old records",
+  [Schema.String],
+  ([body]) => {
+    const legacy = {
+      $type: "sh.mschf.ratking.relay#message",
+      body,
+      cc: true,
+      did: "sender",
+      encrypted: false,
+      from: "peer",
+      id: "copy",
+      kind: "message",
+      label: null,
+      replyTo: null,
+      summary: null,
+      verified: true,
+    } satisfies typeof LegacyRelay.Encoded;
+
+    const current = {
+      ...legacy,
+      copy: true,
+      expiresAt: "2099-01-01T00:00:00Z",
+      quiet: true,
+    };
+
+    expect(Schema.decodeUnknownSync(LegacyRelay)(current)).toEqual(legacy);
+    expect(Schema.decodeUnknownSync(RelayRecord)(legacy)).toEqual(legacy);
+  }
+);
 
 interface Model {
   deliveries: number;

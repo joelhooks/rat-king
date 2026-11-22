@@ -14,8 +14,8 @@ import { decodeAgentGraphBody } from "@rat-king/ratking-client/agentgraph";
 import {
   attend,
   formatReason,
-  ownerPrioritizes,
   Reasons,
+  Verdicts,
 } from "@rat-king/ratking-client/attend";
 import type { Verdict } from "@rat-king/ratking-client/attend";
 import { countFilterHit, filterHits } from "@rat-king/ratking-client/attention";
@@ -48,8 +48,10 @@ import {
   socketPath,
 } from "@rat-king/ratking-client/pass-socket";
 import {
+  COPY_BODY_MAX,
   COPY_NOTE,
   Kind,
+  QUIET_BODY_MAX,
   renderInboundBody,
   LexiconRecord,
   renderInbound,
@@ -132,8 +134,12 @@ import {
   DIGEST_MESSAGE,
   digestLabel,
   digestReason,
+  DISPLAY_ONLY,
+  expiresDuringHold,
   inbox,
+  MAIL_HOLD_MS,
   MAIL_MESSAGE,
+  NEXT_TURN_DELIVERY,
   shownIds,
   shownInHistory,
   verdictToHold,
@@ -239,31 +245,18 @@ const WakeEntry = Schema.Struct({
   summary: Schema.optional(Schema.String),
 });
 
-const waitsForIndependentTurn = (mail: Inbound, verdict: Verdict) =>
-  Predicate.isTagged(verdict, "Now") &&
-  Reasons.$is("intent")(verdict.reason) &&
-  mail.routedWake !== true &&
-  mail.kind !== "ask" &&
-  mail.askSummary === undefined &&
-  (mail.cc ||
-    mail.copy === true ||
-    mail.quiet === true ||
-    mail.routedCopy === true) &&
-  !ownerPrioritizes(mail, mail.levers ?? {});
+const isHeld = (verdict: Verdict) =>
+  Verdicts.$is("Next")(verdict) || Verdicts.$is("Later")(verdict);
 
-const noticeDelivery = (
-  wait: boolean,
-  verdict: Verdict,
-  expiring: boolean
+const holdTiming = (
+  held: boolean,
+  expiresAt: string | undefined,
+  now: number
 ) => ({
-  deliverAs:
-    !expiring &&
-    (wait ||
-      Predicate.isTagged(verdict, "Next") ||
-      Predicate.isTagged(verdict, "Later"))
-      ? ("nextTurn" as const)
-      : ("followUp" as const),
-  triggerTurn: false,
+  expiring: held && expiresDuringHold(expiresAt, now),
+  holdUntil: held
+    ? now + MAIL_HOLD_MS - Duration.toMillis(DIGEST_TICK)
+    : undefined,
 });
 
 const digestEntry = (mail: PendingMail) =>
@@ -272,21 +265,29 @@ const digestEntry = (mail: PendingMail) =>
 const isCc = (mail: PendingMail) =>
   Option.exists(digestEntry(mail), (entry) => entry.cc === true);
 
-const digestBody = (tool: string, mail: PendingMail) =>
-  Option.match(digestEntry(mail), {
-    onNone: () => [],
-    onSome: ({ body, cc, encrypted, kind }) => [
-      "",
-      renderInboundBody(tool, {
-        body,
-        cc: cc === true,
-        encrypted,
-        id: mail.id,
-        kind: kind ?? "message",
-      }),
-      "",
-    ],
-  });
+export const DIGEST_BODY_MAX = 16_000;
+
+const digestBody = (tool: string, mail: PendingMail, max: number) =>
+  mail.customType === "ratking_record_notice"
+    ? ["", mail.content, ""]
+    : Option.match(digestEntry(mail), {
+        onNone: () => [],
+        onSome: ({ body, cc, encrypted, kind }) => [
+          "",
+          renderInboundBody(
+            tool,
+            {
+              body,
+              cc: cc === true,
+              encrypted,
+              id: mail.id,
+              kind: kind ?? "message",
+            },
+            Math.min(max, cc === true ? COPY_BODY_MAX : QUIET_BODY_MAX)
+          ),
+          "",
+        ],
+      });
 
 const wakeLine = (mail: PendingMail) =>
   Option.match(digestEntry(mail), {
@@ -317,13 +318,17 @@ export const renderDigest = (
   tool: string,
   mails: readonly PendingMail[],
   variant: DigestVariant = "cc"
-) =>
-  variant === "wake"
+) => {
+  const perItem = Math.floor(DIGEST_BODY_MAX / Math.max(1, mails.length));
+
+  return variant === "wake"
     ? [
         `**🐀 ${mails.every((mail) => mail.wake === true) ? "wake" : "while you were away"}** · ${mails.length}`,
         ...mails.flatMap((mail) => [
           wakeLine(mail),
-          ...(mail.wake === true ? ["", mail.content] : digestBody(tool, mail)),
+          ...(mail.wake === true
+            ? ["", mail.content]
+            : digestBody(tool, mail, perItem)),
         ]),
         "",
         ...(mails.every((mail) => mail.wake === true)
@@ -339,12 +344,13 @@ export const renderDigest = (
         "",
         ...mails.flatMap((mail) => [
           mail.line ?? `- id ${mail.id}`,
-          ...digestBody(tool, mail),
+          ...digestBody(tool, mail, perItem),
         ]),
         "",
         ...heldNote(mails),
         `To answer one: ${tool}({ action: "reply", replyTo: "<id>", summary: "...", message: "..." })`,
       ].join("\n");
+};
 
 export const digestDetails = (
   mails: readonly PendingMail[],
@@ -589,6 +595,7 @@ export const inboundDetails = (inbound: Inbound, settled: boolean) => ({
   id: inbound.id,
   kind: inbound.kind,
   label: Option.getOrUndefined(inbound.label),
+  quiet: inbound.quiet,
   reason: deliveryReason(inbound),
   relay: inbound.relay,
   replyTo: Option.getOrUndefined(inbound.replyTo),
@@ -1283,7 +1290,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
 
     const dispatch: MailDispatch = {
       mail: inbox({
-        digest: (mails, variant) => {
+        digest: (mails, variant, delivery = DISPLAY_ONLY) => {
           dispatch.send(
             {
               content: renderDigest(tool, mails, variant),
@@ -1294,17 +1301,14 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               },
               display: true,
             },
-            {
-              deliverAs: "nextTurn",
-              triggerTurn: false,
-            }
+            delivery
           );
         },
         show: (pending, deliverAs, triggerTurn = deliverAs !== "nextTurn") => {
           dispatch.send(
             {
               content: pending.content,
-              customType: MAIL_MESSAGE,
+              customType: pending.customType ?? MAIL_MESSAGE,
               details: pending.details,
               display: true,
             },
@@ -1401,7 +1405,10 @@ export const ratkingExtension = (options: ExtensionOptions) =>
 
     sweeps.push(sweep);
 
-    pi.onTurnEnd?.(sweep);
+    pi.onTurnEnd?.(() => {
+      mail.flushHeld(0, true);
+      sweep();
+    });
 
     pi.onAgentStart?.(async () => {
       resetDrain();
@@ -1411,6 +1418,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
     });
 
     pi.onAgentEnd?.(async (messages) => {
+      mail.flushHeld(0, true);
       sweep();
       busy = false;
       wakes.flushNext();
@@ -1424,6 +1432,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       sweep();
       busy = true;
       mail.flushNext();
+      mail.flushHeld(0, true, NEXT_TURN_DELIVERY);
     });
 
     pi.onMessageShown?.((id) => {
@@ -1437,6 +1446,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
         Effect.flatMap((now) =>
           Effect.sync(() => {
             mail.tick(now);
+            mail.flushHeld(now);
             wakes.tick(now);
             drain?.check();
           })
@@ -1537,7 +1547,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               coalesce: quiet,
               content: renderInbound(tool, message),
               details: inboundDetails(message, settled),
-              expiring: message.expiresAt !== undefined,
+              ...holdTiming(quiet, message.expiresAt, now),
               id: message.id,
             },
             quiet ? "nextTurn" : "steer"
@@ -1669,19 +1679,36 @@ export const ratkingExtension = (options: ExtensionOptions) =>
           return;
         }
 
-        const deferToStart = waitsForIndependentTurn(inbound, verdict);
-        const expiring = inbound.expiresAt !== undefined;
+        const timing = holdTiming(isHeld(verdict), inbound.expiresAt, now);
 
         if (notice !== undefined) {
-          dispatch.send(
-            {
-              content: notice,
-              customType: "ratking_record_notice",
-              details: inboundDetails(inbound, settled),
-              display: true,
-            },
-            noticeDelivery(deferToStart, verdict, expiring)
-          );
+          const details = inboundDetails(inbound, settled);
+
+          if (isHeld(verdict)) {
+            mail.take(
+              {
+                ...timing,
+                coalesce: true,
+                content: notice,
+                customType: "ratking_record_notice",
+                details,
+                id: inbound.id,
+              },
+              "nextTurn"
+            );
+          } else {
+            dispatch.send(
+              {
+                content: notice,
+                customType: "ratking_record_notice",
+                details,
+                display: true,
+              },
+              DISPLAY_ONLY
+            );
+          }
+
+          return;
         }
 
         if (surfaces) {
@@ -1689,11 +1716,11 @@ export const ratkingExtension = (options: ExtensionOptions) =>
             inject: (hold) =>
               Effect.sync(() => {
                 const pending = {
+                  ...timing,
+                  cc: inbound.cc,
                   coalesce:
-                    pi.onBeforeAgentStart !== undefined &&
-                    (hold === "nextTurn" || deferToStart),
+                    pi.onBeforeAgentStart !== undefined && hold === "nextTurn",
                   content: renderInbound(tool, inbound),
-                  deferToStart,
                   details: inboundDetails(inbound, settled),
                   digestMinutes:
                     Predicate.isTagged(verdict, "Later") &&
@@ -1701,7 +1728,6 @@ export const ratkingExtension = (options: ExtensionOptions) =>
                       Predicate.isTagged(verdict.reason, "delegated"))
                       ? verdict.window / 60_000
                       : inbound.digestMinutes,
-                  expiring,
                   id: inbound.id,
                   line: digestLine(inbound),
                   reason: verdict.reason,
@@ -1731,7 +1757,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
                 )
               ),
           });
-        } else if (notice === undefined) {
+        } else {
           consume(inbound.id);
         }
       });

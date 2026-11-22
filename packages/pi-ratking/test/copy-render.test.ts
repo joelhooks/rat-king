@@ -3,13 +3,18 @@ import { addressedElsewhere } from "@rat-king/ratking-client/name";
 import {
   COPY_BODY_MAX,
   COPY_NOTE,
+  QUIET_BODY_MAX,
   renderInbound,
 } from "@rat-king/ratking-client/payload";
 import type { Inbound } from "@rat-king/ratking-client/payload";
 import { Option, Schema } from "effect";
 import { describe, expect } from "vitest";
 
-import { inboundDetails, renderDigest } from "../src/extension.ts";
+import {
+  DIGEST_BODY_MAX,
+  inboundDetails,
+  renderDigest,
+} from "../src/extension.ts";
 
 const base: Inbound = {
   body: "full progress note",
@@ -28,10 +33,10 @@ const base: Inbound = {
 };
 
 it.prop(
-  "quiet direct mail keeps the whole body without a cc note in either digest or alone",
-  [Schema.Int.check(Schema.isBetween({ maximum: 100, minimum: 1 }))],
+  "quiet direct mail keeps its body up to the per-item cap without a cc note",
+  [Schema.Int.check(Schema.isBetween({ maximum: 40, minimum: -20 }))],
   ([tail]) => {
-    const body = `Body: ${"x".repeat(COPY_BODY_MAX + tail)}`;
+    const body = "x".repeat(QUIET_BODY_MAX + tail);
     const inbound = { ...base, body, cc: false, quiet: true };
 
     const mail = {
@@ -46,7 +51,9 @@ it.prop(
       renderDigest("intercom", [mail]),
       renderDigest("intercom", [mail], "wake"),
     ]) {
-      expect(text).toContain(body);
+      expect(text).toContain(body.slice(0, QUIET_BODY_MAX));
+      expect(text.includes('action: "read"')).toBe(tail > 0);
+      expect(text).not.toContain("x".repeat(QUIET_BODY_MAX + 1));
       expect(text).not.toContain(COPY_NOTE);
     }
   }
@@ -84,6 +91,36 @@ it.prop(
     expect(text).toContain(`Summary: cc\n\n${prefix}…`);
     expect(text).not.toMatch(/[\uD800-\uDFFF]/u);
     expect(text.includes('action: "read"')).toBe(!encrypted);
+  }
+);
+
+it.prop(
+  "a 30-copy digest preserves every id without inlining more than 16,000 body characters",
+  [Schema.Int.check(Schema.isBetween({ maximum: 5000, minimum: 600 }))],
+  ([length]) => {
+    const mails = Array.from({ length: 30 }, (_, i) => {
+      const inbound = {
+        ...base,
+        body: "x".repeat(length),
+        copy: true,
+        id: `mail-${i}`,
+      };
+
+      return {
+        content: "",
+        details: inboundDetails(inbound, false),
+        id: inbound.id,
+      };
+    });
+
+    const rendered = renderDigest("ratking", mails);
+    const inlined = (rendered.match(/x{10,}/gu) ?? []).join("").length;
+    expect(inlined).toBeLessThanOrEqual(DIGEST_BODY_MAX);
+
+    for (const mail of mails) {
+      expect(rendered).toContain(`id ${mail.id}\n`);
+      expect(rendered).toContain(`action: "read", id: "${mail.id}"`);
+    }
   }
 );
 

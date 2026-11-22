@@ -537,19 +537,38 @@ const readMail = Effect.fn("RatKing.readMail")(function* readMail(
     return loud("Local received mail is unavailable in this runtime");
   }
 
-  return yield* inbox.value.readReceived(id).pipe(
+  const local = yield* inbox.value.readReceived(id).pipe(Effect.result);
+
+  if (Result.isSuccess(local) && Option.isSome(local.success)) {
+    const { received } = local.success.value;
+
+    return ok(
+      "record" in received
+        ? JSON.stringify(received.record, null, 2)
+        : received.body
+    );
+  }
+
+  return yield* inbox.value.peek({ all: true }).pipe(
     Effect.match({
       onFailure: (error) => loud(error.reason),
-      onSuccess: Option.match({
-        onNone: () =>
-          loud(`No recently delivered message ${id} on this machine`),
-        onSome: ({ received }) =>
-          ok(
-            "record" in received
-              ? JSON.stringify(received.record, null, 2)
-              : received.body
-          ),
-      }),
+      onSuccess: ({ messages }) => {
+        const found = messages.find(({ received }) => received.id === id);
+
+        if (found === undefined) {
+          return Result.isFailure(local)
+            ? loud(local.failure.reason)
+            : loud(`No recently delivered message ${id} on this machine`);
+        }
+
+        const { received } = found;
+
+        return ok(
+          "record" in received
+            ? JSON.stringify(received.record, null, 2)
+            : received.body
+        );
+      },
     })
   );
 });

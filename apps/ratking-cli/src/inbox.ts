@@ -1,6 +1,6 @@
 import { AskFailed, Inbox } from "@rat-king/ratking-client/ratking";
 import type { Peeked } from "@rat-king/ratking-client/ratking";
-import { Console, Effect, Option } from "effect";
+import { Console, Effect, Option, Result, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
 import { entryDocument, threadOf } from "./entries.ts";
@@ -141,15 +141,39 @@ export const readCommand = Command.make(
     named("read", args, () =>
       Effect.gen(function* read() {
         const inbox = yield* Inbox;
-        const local = yield* inbox.readReceived(args.id);
+        const local = yield* inbox.readReceived(args.id).pipe(Effect.result);
 
-        const entry = Option.isSome(local)
-          ? { ...local.value, state: "acked" }
-          : (yield* locate(args.id)).entry;
+        const warning = Result.isFailure(local)
+          ? local.failure.reason
+          : undefined;
+
+        const saved = Result.isSuccess(local) ? local.success : Option.none();
+
+        const entry = Option.isSome(saved)
+          ? { ...saved.value, state: "acked" }
+          : (yield* locate(args.id).pipe(
+              Effect.mapError((error) =>
+                warning === undefined ||
+                !Schema.is(AskFailed)(error) ||
+                error.code !== "NoSuchMessage"
+                  ? error
+                  : new AskFailed({
+                      code: error.code,
+                      reason: `${error.reason}; ${warning}`,
+                    })
+              )
+            )).entry;
 
         return {
-          document: { message: entryDocument(entry) },
-          lines: readLines(entry),
+          document: withField(
+            { message: entryDocument(entry) },
+            "warning",
+            warning
+          ),
+          lines:
+            warning === undefined
+              ? readLines(entry)
+              : [warning, ...readLines(entry)],
         } satisfies Report;
       })
     )

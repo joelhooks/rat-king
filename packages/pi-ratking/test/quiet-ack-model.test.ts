@@ -52,7 +52,7 @@ const Priority = Schema.Literals(["owner", "ruleWake"]);
 const Expiring = Schema.Literals(["expiringQuiet", "expiringDigest"]);
 
 const Kind = Schema.Union([
-  Schema.Literals(["direct", "sentBy"]),
+  Schema.Literals(["direct", "sentBy", "expiryLater"]),
   Passive,
   Priority,
   Expiring,
@@ -96,16 +96,26 @@ const inboundOf = (kind: typeof Kind.Type, id: string): Inbound => {
   const priority = Schema.is(Priority)(kind);
   const expiring = Schema.is(Expiring)(kind);
 
-  if (kind === "quiet" || priority || kind === "relayed" || expiring) {
+  if (
+    kind === "quiet" ||
+    priority ||
+    kind === "relayed" ||
+    kind === "expiryLater" ||
+    expiring
+  ) {
     Object.assign(inbound, { quiet: true });
   }
 
   if (kind === "digest" || kind === "expiringDigest") {
-    Object.assign(inbound, { digestMinutes: 20 / 60_000 });
+    Object.assign(inbound, { digestMinutes: 1 });
   }
 
   if (expiring) {
     Object.assign(inbound, { expiresAt: "1970-01-01T00:01:00.000Z" });
+  }
+
+  if (kind === "expiryLater") {
+    Object.assign(inbound, { expiresAt: "1970-01-01T00:03:00.000Z" });
   }
 
   if (kind === "owner") {
@@ -146,7 +156,8 @@ const rig = (
   box: Mailbox,
   session: Session,
   drop: boolean,
-  clock?: Clock.Clock
+  clock?: Clock.Clock,
+  digestTickMillis = 20
 ) => {
   const { state } = box;
   let streaming = false;
@@ -246,7 +257,7 @@ const rig = (
       tool: Effect.succeed("ratking"),
     })(pi);
     await startSession(start, {
-      digestTickMillis: 20,
+      digestTickMillis,
       isIdle: () => !streaming,
       session: "quiet-ack",
       warn: nothing,
@@ -257,24 +268,29 @@ const rig = (
   const post = async (kind: typeof Kind.Type, id: string) => {
     box.unacked.add(id);
     box.posted.push(id);
+
+    const operation = deliver(
+      inboundOf(kind, id),
+      kind === "sentBy",
+      Effect.sync(() => {
+        if (occurrences(session, id) === 0) {
+          box.early.push(id);
+        }
+
+        box.unacked.delete(id);
+        box.acks.set(id, (box.acks.get(id) ?? 0) + 1);
+
+        if (box.unacked.size === 0) {
+          Deferred.doneUnsafe(box.acknowledged, Effect.succeed(true));
+        }
+      })
+    );
+
     // oxlint-disable-next-line effect-tests/no-manual-effect-runtime-in-tests -- Pi's deliver callback is driven from a fast-check command.
     await Effect.runPromise(
-      deliver(
-        inboundOf(kind, id),
-        kind === "sentBy",
-        Effect.sync(() => {
-          if (occurrences(session, id) === 0) {
-            box.early.push(id);
-          }
-
-          box.unacked.delete(id);
-          box.acks.set(id, (box.acks.get(id) ?? 0) + 1);
-
-          if (box.unacked.size === 0) {
-            Deferred.doneUnsafe(box.acknowledged, Effect.succeed(true));
-          }
-        })
-      )
+      clock === undefined
+        ? operation
+        : operation.pipe(Effect.provideService(Clock.Clock, clock))
     );
     await settle();
   };
@@ -389,7 +405,10 @@ interface Setup {
   real: Real;
 }
 
-const fresh = async (clock?: Clock.Clock): Promise<Setup> => {
+const fresh = async (
+  clock?: Clock.Clock,
+  digestTickMillis?: number
+): Promise<Setup> => {
   // oxlint-disable-next-line effect-tests/no-manual-effect-runtime-in-tests -- the rig is built inside a fast-check async model, outside an Effect test body.
   const state = await Effect.runPromise(
     FileSystem.FileSystem.pipe(
@@ -411,7 +430,11 @@ const fresh = async (clock?: Clock.Clock): Promise<Setup> => {
 
   return {
     model: { ids: 0 },
-    real: { box, current: rig(box, session, false, clock), session },
+    real: {
+      box,
+      current: rig(box, session, false, clock, digestTickMillis),
+      session,
+    },
   };
 };
 
@@ -501,6 +524,37 @@ it.effect.prop(
       expect(occurrences(setup.real.session, "deadline")).toBe(1);
       yield* Effect.promise(setup.real.current.begin);
       expect(occurrences(setup.real.session, "deadline")).toBe(1);
+      verify(setup.real);
+    }).pipe(Effect.scoped)
+);
+
+it.effect(
+  "idle mail with a server expiry beyond the two-minute hold is appended and acked before expiry without a turn",
+  () =>
+    Effect.gen(function* idleDeadline() {
+      const clock = yield* Clock.Clock;
+
+      const setup = yield* Effect.promise(
+        async () => await fresh(clock, 60_000)
+      );
+
+      const { box, current, session } = setup.real;
+
+      yield* Effect.addFinalizer(() => Effect.promise(current.stop));
+      yield* Effect.promise(current.ready);
+
+      yield* Effect.promise(async () => {
+        await current.post("expiryLater", "deadline");
+      });
+      expect(box.acks.get("deadline")).toBeUndefined();
+      yield* TestClock.adjust(120_000);
+      yield* Effect.promise(settle);
+      expect(box.acks.get("deadline")).toBe(1);
+      expect(yield* Clock.currentTimeMillis).toBeLessThan(
+        Date.parse("1970-01-01T00:03:00.000Z")
+      );
+      expect(current.turns()).toBe(0);
+      expect(occurrences(session, "deadline")).toBe(1);
       verify(setup.real);
     }).pipe(Effect.scoped)
 );

@@ -41,6 +41,7 @@ import { expect } from "vitest";
 import { keypair } from "../../lexicon/test/pass-helpers.ts";
 import { WebSocketPort } from "../../mailbox-client/src/watch.ts";
 import { document, identity } from "../../mailbox-client/test/identity.ts";
+import { receivedMail } from "../../ratking-client/src/received-mail.ts";
 import type { PiHost, SessionStart } from "../src/extension.ts";
 import {
   collectFacts,
@@ -834,7 +835,8 @@ it.live.prop(
           body,
           cc: false,
           did: person.did,
-          encrypted: true,
+          encrypted: false,
+          expiresAt: "2099-01-01T00:00:00.000Z",
           from: "person",
           id: "3m7x2ka4xv22a",
           kind: "ask",
@@ -873,6 +875,7 @@ it.live.prop(
         });
 
         return yield* client.seal(own.did, record, {
+          encrypt: mode !== "relay",
           replyTo: yield* Schema.decodeUnknownEffect(
             Schema.toType(Defs.MessageRef)
           )({ messageId: "3m7x2ka4xv22a", senderDid: own.did }),
@@ -1078,6 +1081,25 @@ it.live.prop(
       yield* Deferred.await(acked).pipe(Effect.timeout("5 seconds"));
 
       if (mode === "relay") {
+        const journal = yield* receivedMail(state, "tester");
+
+        const stored = yield* journal.find("3m7x2ka4xv22a").pipe(
+          Effect.repeat({
+            schedule: Schedule.spaced("10 millis"),
+            until: Option.isSome,
+          }),
+          Effect.timeout("2 seconds")
+        );
+
+        expect(Option.getOrUndefined(stored)).toMatchObject({
+          encrypted: false,
+          received: {
+            body,
+            encrypted: false,
+            expiresAt: "2099-01-01T00:00:00.000Z",
+          },
+        });
+
         const answered = yield* Deferred.make<
           typeof Result.Type,
           Schema.SchemaError
@@ -1127,7 +1149,7 @@ it.live.prop(
           messageId: "3m7x2ka4xv22a",
           senderDid: person.did,
         });
-        expect(answerOpened.encrypted).toBe(true);
+        expect(answerOpened.encrypted).toBe(false);
         expect(
           (yield* Schema.decodeEffect(PayloadJson)(answerOpened.body)).thread
         ).toBe("3m7x2ka4xv22a");
@@ -1146,7 +1168,7 @@ it.live.prop(
           Effect.provideService(HttpClient.HttpClient, http)
         );
 
-        expect(confirmationOpened.encrypted).toBe(true);
+        expect(confirmationOpened.encrypted).toBe(false);
         expect(
           yield* Schema.decodeEffect(Schema.fromJsonString(RelayHandled))(
             confirmationOpened.body

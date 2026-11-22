@@ -13,6 +13,7 @@ export const RelayRecord = Schema.Struct({
   copy: Schema.optionalKey(Schema.Literal(true)),
   did: Schema.String,
   encrypted: Schema.Boolean,
+  expiresAt: Schema.optionalKey(Schema.String),
   from: Schema.String,
   id: Schema.String,
   kind: Kind,
@@ -89,6 +90,10 @@ export const relayRecord = (
     verified: inbound.verified,
   };
 
+  if (inbound.expiresAt !== undefined) {
+    Object.assign(record, { expiresAt: inbound.expiresAt });
+  }
+
   if (inbound.via !== undefined) {
     Object.assign(record, { via: inbound.via });
   }
@@ -114,6 +119,7 @@ export const relayedInbound = (record: typeof RelayRecord.Type): Inbound => {
     cc: record.cc,
     ...passiveFlags(record),
     did: record.did,
+    encrypted: record.encrypted,
     from: record.from,
     id: record.id,
     kind: record.kind,
@@ -122,6 +128,10 @@ export const relayedInbound = (record: typeof RelayRecord.Type): Inbound => {
     summary: Option.fromNullishOr(record.summary),
     verified: record.verified,
   };
+
+  if (record.expiresAt !== undefined) {
+    Object.assign(inbound, { expiresAt: record.expiresAt });
+  }
 
   if (record.via !== undefined) {
     Object.assign(inbound, { via: record.via });
@@ -150,6 +160,7 @@ const sentCopy = (
   cc: false,
   ccNames: record.cc,
   did: inbound.did,
+  encrypted: inbound.encrypted !== false || record.encrypted,
   from: inbound.from,
   id: record.id,
   kind: record.kind,
@@ -185,11 +196,15 @@ export const projectRelay = (
     Option.filter((record) => record.kind !== "data"),
     Option.map((record) => ({
       ...relayedInbound(record),
+      encrypted: inbound.encrypted !== false || record.encrypted,
       relay: {
         did: inbound.did,
         encrypted: record.encrypted,
         name: config.name,
       },
+      routedCopy:
+        record.kind !== "ask" &&
+        (record.copy === true || record.quiet === true),
     }))
   );
 };

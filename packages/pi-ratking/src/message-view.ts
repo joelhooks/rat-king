@@ -45,6 +45,7 @@ const Details = Schema.Struct({
   id: Schema.String,
   kind: Kind,
   label: Schema.optional(Schema.String),
+  quiet: Schema.optional(Schema.Boolean),
   reason: Schema.optional(Schema.Union([DeliveryReason, Schema.String])),
   relay: Schema.optional(RelaySource),
   replyTo: Schema.optional(Schema.String),

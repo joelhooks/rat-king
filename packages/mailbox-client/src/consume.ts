@@ -63,6 +63,7 @@ export const consumerMachine = createMachine({
 
 export interface MessageMeta {
   readonly ack: Effect.Effect<void, MailboxClientError>;
+  readonly ackConfirmed: Effect.Effect<boolean, MailboxClientError>;
   readonly redelivered: boolean;
   readonly seq: number;
 }
@@ -623,17 +624,22 @@ export const consume = <E, R>(
                   return;
                 }
 
-                const ack =
+                const ackConfirmed =
                   event.receipt.delegatedTo === undefined
                     ? mailbox.ack(input).pipe(
-                        Effect.catchIf(settledRefusal, () => Effect.void),
-                        Effect.asVoid
+                        Effect.map(({ receipt }) => receipt.state === "acked"),
+                        Effect.catchIf(settledRefusal, () =>
+                          Effect.succeed(false)
+                        )
                       )
-                    : Effect.void;
+                    : Effect.succeed(false);
+
+                const ack = Effect.asVoid(ackConfirmed);
 
                 handed.add(key);
                 yield* handler(message, {
                   ack,
+                  ackConfirmed,
                   redelivered: event.receipt.state === "delivered",
                   seq: event.seq,
                 }).pipe(

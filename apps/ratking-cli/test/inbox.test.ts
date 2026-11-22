@@ -3,6 +3,7 @@ import { it } from "@effect/vitest";
 import { Directory } from "@rat-king/ratking-client/directory";
 import { Inbox } from "@rat-king/ratking-client/ratking";
 import { Console, Effect, FileSystem, Layer, Schema } from "effect";
+import { HttpClient, HttpClientResponse } from "effect/http";
 import { expect } from "vitest";
 
 import { runAction } from "../../../packages/pi-ratking/src/tool.ts";
@@ -35,6 +36,13 @@ const Document = Schema.Struct({
   ok: Schema.Boolean,
 });
 
+const ReadDocument = Schema.fromJsonString(
+  Schema.Struct({
+    message: Schema.Struct({ body: Schema.String, state: Schema.String }),
+    warning: Schema.optionalKey(Schema.String),
+  })
+);
+
 const WRITES = [
   ".acquireLease",
   ".renewLease",
@@ -46,6 +54,85 @@ const WRITES = [
 
 const writes = (calls: readonly { readonly nsid: string }[]) =>
   calls.filter((call) => WRITES.some((write) => call.nsid.endsWith(write)));
+
+it.live.prop(
+  "read falls back to the server for a corrupt journal or a failed display acknowledgment",
+  [Schema.Literals(["corrupt", "refused", "expired"])],
+  ([mode]) =>
+    Effect.gen(function* readAfterFailure() {
+      const fs = yield* FileSystem.FileSystem;
+      const state = yield* fs.makeTempDirectoryScoped();
+      const who = yield* people;
+
+      const entry = yield* mail(who, 1, "accepted", {
+        body: "recoverable from server",
+      });
+
+      const id = entry.event.receipt.message.messageId;
+      const fake = fakeMailbox([entry]);
+
+      const http = HttpClient.make((request) => {
+        if (!new URL(request.url).pathname.endsWith(".ack")) {
+          return fake.http.execute(request);
+        }
+
+        const response =
+          mode === "expired"
+            ? Response.json({
+                receipt: { ...entry.event.receipt, state: "expired" },
+              })
+            : Response.json(
+                { error: "LeaseMismatch", message: "Lease changed" },
+                { status: 409 }
+              );
+
+        return Effect.succeed(HttpClientResponse.fromWeb(request, response));
+      });
+
+      const wiring = harness(state, http, [], { secrets: seeded(who) }).pipe(
+        Layer.provideMerge(socketLayer)
+      );
+
+      yield* Directory.use((directory) =>
+        directory.record("peer", who.peerDocument)
+      ).pipe(Effect.provide(wiring));
+
+      if (mode === "corrupt") {
+        yield* fs.makeDirectory(`${state}/received-mail`, { recursive: true });
+        yield* fs.writeFileString(`${state}/received-mail/tester.json`, "{");
+      } else {
+        const held = yield* Effect.gen(function* tryHold() {
+          const inbox = yield* Inbox;
+          yield* inbox.attach("tester");
+
+          return yield* inbox.hold((_entry, ack) => ack, {
+            session: "tester-cli",
+          });
+        }).pipe(Effect.provide(wiring), Effect.flip);
+
+        expect(held.reason.length).toBeGreaterThan(0);
+      }
+
+      const out = captured();
+      yield* runRatking(["read", id, "--as", "tester", "--json"]).pipe(
+        Effect.provideService(Console.Console, out.console),
+        Effect.provideService(Wiring, wiring)
+      );
+
+      const document = yield* Schema.decodeEffect(ReadDocument)(
+        out.stdout.join("\n")
+      );
+
+      expect(document.message).toEqual({
+        body: "recoverable from server",
+        state: mode === "corrupt" ? "accepted" : "delivered",
+      });
+      expect(
+        document.warning?.includes("local received mail journal") ?? false
+      ).toBe(mode === "corrupt");
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  { arbitrary: { runs: 10 }, timeout: 30_000 }
+);
 
 const exitCode = Effect.sync(() => {
   const { exitCode: code } = process;

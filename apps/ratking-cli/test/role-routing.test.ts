@@ -170,7 +170,10 @@ it.live.prop(
         yield* fs.makeTempDirectoryScoped(),
         inbound.http,
         [],
-        { secrets: seeded(who) }
+        {
+          ccDigestMinutes: successor ? { tester: 3 } : {},
+          secrets: seeded(who),
+        }
       );
 
       yield* Effect.gen(function* receiveAndReply() {
@@ -198,25 +201,44 @@ it.live.prop(
 
         expect(received.cc).toBe(cc);
         expect(rendered.includes(COPY_NOTE)).toBe(cc);
-        expect(received.copy).toBe(cc ? undefined : false);
+        expect(received.copy).toBe(cc);
         expect(received.expiresAt).toBe(
           delivery === "envelope" ? expiresAt : undefined
         );
-        expect(attend(received, {}, 0, undefined, Option.none())).toEqual(
-          Verdicts.Now({ reason: Reasons.intent({ facts: ["to"] }) })
-        );
+        const owner = { enabled: true, owner: received.from };
+        const verdict = attend(received, owner, 0, undefined, Option.none());
+
+        if (cc && successor) {
+          expect(received.digestMinutes).toBe(3);
+          expect(verdict).toEqual(
+            Verdicts.Later({
+              reason: Reasons.intent({ facts: ["cc", "digest"] }),
+              window: 180_000,
+            })
+          );
+        } else {
+          expect(verdict).toEqual(
+            cc
+              ? Verdicts.Next({ reason: Reasons.intent({ facts: ["cc"] }) })
+              : Verdicts.Now({ reason: Reasons.intent({ facts: ["to"] }) })
+          );
+        }
 
         if (cc) {
-          expect(rendered).toContain("quiet: cc");
+          expect(rendered).toContain(
+            successor ? "held: cc digest" : "quiet: cc"
+          );
 
           const digest = renderDigest("ratking", [
             {
               content: rendered,
               details: inboundDetails(received, false),
               id: received.id,
+              reason: verdict.reason,
             },
           ]);
 
+          expect(digest.split("\n")[1]).toBe("held: cc digest");
           expect(digest).toContain(COPY_NOTE);
           expect(digest).toContain(received.body);
 

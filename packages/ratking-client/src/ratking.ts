@@ -886,7 +886,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
   const front = yield* Ref.make(Option.none<FrontLoops>());
   const seen = recentMap<string, true>(4096);
-  const acknowledgments = new Map<string, MessageMeta["ack"]>();
+  const acknowledgments = new Map<string, MessageMeta["ackConfirmed"]>();
   let observeDrain: ((drained: boolean) => void) | undefined;
   let caughtUp = false;
 
@@ -904,17 +904,28 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       Effect.provideService(Path.Path, path)
     );
 
+  const saveFailures = recentMap<string, string>(64);
+
   const cacheDelivery = (name: string, entry: ReceivedMail) =>
     localMail(name).pipe(
       Effect.flatMap((mail) => mail.save(entry)),
-      Effect.tapError(() =>
-        Effect.logWarning("Rat King could not save a local received message")
-      ),
-      Effect.ignore
+      Effect.matchEffect({
+        onFailure: (error) => {
+          const reason = `Could not save the received message to the local journal (${error._tag})`;
+          saveFailures.set(entry.received.id, reason);
+
+          return Effect.logWarning(reason).pipe(
+            Effect.annotateLogs({ id: entry.received.id })
+          );
+        },
+        onSuccess: () => Effect.void,
+      })
     );
 
-  const displayAck = (id: string) =>
+  const displayAck = (id: string, onAcked = Effect.void) =>
     acknowledgments.get(id)?.pipe(
+      Effect.tap((acked) => (acked ? onAcked : Effect.void)),
+      Effect.asVoid,
       Effect.tap(() =>
         Effect.sync(() => {
           acknowledgments.delete(id);
@@ -925,6 +936,26 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         Effect.logWarning("Rat King display acknowledgment failed", failure)
       )
     );
+
+  const acknowledgeShown = (
+    name: string,
+    inbound: Inbound | InboundRecord,
+    id = inbound.id
+  ) => {
+    const { levers: _levers, ...message } = inbound;
+
+    if ("record" in message) {
+      Reflect.deleteProperty(message, "alarmCrashDid");
+    }
+
+    return displayAck(
+      id,
+      cacheDelivery(name, {
+        encrypted: inbound.encrypted ?? true,
+        received: message,
+      })
+    );
+  };
 
   const relayed = new Map<string, string>();
 
@@ -1265,6 +1296,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           onSome: (value) => value.body,
         }),
         cc,
+        copy: cc,
         did: message.senderDid,
         encrypted: message.encrypted ?? true,
         from: claimed,
@@ -1284,10 +1316,6 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         summary: Option.flatMapNullishOr(payload, (value) => value.summary),
         verified,
       };
-
-      if (!cc) {
-        Object.assign(inbound, { copy: false });
-      }
 
       if (settings.attentionLevers === true) {
         Object.assign(inbound, {
@@ -1342,7 +1370,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         ) {
           acknowledgments.set(
             message.tid,
-            Deferred.await(checkpoint).pipe(Effect.andThen(meta.ack))
+            Deferred.await(checkpoint).pipe(Effect.andThen(meta.ackConfirmed))
           );
           const { inbound, payload } = yield* inboundOf(own, message);
           const displayKey = JSON.stringify([message.senderDid, message.tid]);
@@ -1371,7 +1399,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                     )
                   )
               ),
-              Effect.andThen(meta.ack)
+              Effect.andThen(meta.ackConfirmed)
             )
           );
 
@@ -1424,17 +1452,19 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                 acknowledgments.set(
                   inbound.id,
                   acknowledgment.pipe(
-                    Effect.andThen(
-                      journal
-                        .ack(original.value.id)
-                        .pipe(
-                          Effect.catchTag("NotDelivered", (failure) =>
-                            Effect.logWarning(
-                              "Rat King ask acknowledgment not saved",
-                              failure
+                    Effect.tap((acked) =>
+                      acked
+                        ? journal
+                            .ack(original.value.id)
+                            .pipe(
+                              Effect.catchTag("NotDelivered", (failure) =>
+                                Effect.logWarning(
+                                  "Rat King ask acknowledgment not saved",
+                                  failure
+                                )
+                              )
                             )
-                          )
-                        )
+                        : Effect.void
                     )
                   )
                 );
@@ -2569,7 +2599,11 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                     relayed.set(received.id, inbound.id);
                   }).pipe(
                     Effect.andThen(
-                      deliver(received, settled, displayAck(inbound.id))
+                      deliver(
+                        received,
+                        settled,
+                        acknowledgeShown(own.name, received, inbound.id)
+                      )
                     )
                   ),
                 remember: threads.remember,
@@ -2764,7 +2798,11 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           deliver(
             inbound,
             settled,
-            displayAck(relayed.get(inbound.id) ?? inbound.id)
+            acknowledgeShown(
+              own.name,
+              inbound,
+              relayed.get(inbound.id) ?? inbound.id
+            )
           ),
         fallback: fallback.message,
         forward: (owner, record, encrypted) =>
@@ -2905,7 +2943,11 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
             relayed.set(projected.value.id, inbound.id);
             yield* threads.remember(projected.value);
-            yield* deliver(projected.value, false, displayAck(inbound.id));
+            yield* deliver(
+              projected.value,
+              false,
+              acknowledgeShown(own.name, projected.value, inbound.id)
+            );
           }),
       } satisfies RelayRoute;
     });
@@ -3243,17 +3285,10 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             Object.assign(levers, { owner: owner.value });
           }
 
-          const acknowledge = ack ?? displayAck(inbound.id);
-
           yield* deliver(
             { ...inbound, levers },
             settled,
-            acknowledge === undefined
-              ? undefined
-              : cacheDelivery(own.name, {
-                  encrypted: inbound.encrypted ?? true,
-                  received: inbound,
-                }).pipe(Effect.andThen(acknowledge))
+            ack ?? acknowledgeShown(own.name, inbound)
           );
 
           if (!("record" in inbound) && injects(inbound, settled)) {
@@ -3446,17 +3481,25 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
     yield* threads.remember(inbound);
 
-    return Option.isSome(record)
-      ? ({
-          alarmCrashDid: settings.alarmCrashDid,
-          did: inbound.did,
-          from: inbound.from,
-          id: inbound.id,
-          record: record.value,
-          replyTo: inbound.replyTo,
-          verified: inbound.verified,
-        } satisfies InboundRecord)
-      : inbound;
+    if (Option.isNone(record)) {
+      return inbound;
+    }
+
+    const direct: InboundRecord = {
+      did: inbound.did,
+      encrypted: message.encrypted ?? true,
+      from: inbound.from,
+      id: inbound.id,
+      record: record.value,
+      replyTo: inbound.replyTo,
+      verified: inbound.verified,
+    };
+
+    if (message.expiresAt !== undefined) {
+      Object.assign(direct, { expiresAt: message.expiresAt });
+    }
+
+    return direct;
   });
 
   const afterSeqOf = (
@@ -3675,9 +3718,22 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
                 yield* deliver(
                   entry,
-                  cacheDelivery(own.name, entry).pipe(
-                    Effect.andThen(meta.ack),
-                    Effect.mapError(unreachable)
+                  meta.ackConfirmed.pipe(
+                    Effect.mapError(unreachable),
+                    Effect.flatMap((acked) =>
+                      acked
+                        ? cacheDelivery(own.name, {
+                            encrypted: message.encrypted ?? true,
+                            received: entry.received,
+                            redelivered: meta.redelivered,
+                            seq: meta.seq,
+                          })
+                        : Effect.fail(
+                            refused("NotAttempted")(
+                              "Mailbox did not acknowledge the displayed message"
+                            )
+                          )
+                    )
                   )
                 );
                 yield* settle(message.tid);
@@ -4414,15 +4470,20 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           awaitSelf.pipe(
             Effect.flatMap(({ name }) => localMail(name)),
             Effect.flatMap((mail) =>
-              mail
-                .find(id)
-                .pipe(
-                  Effect.mapError(() =>
-                    refused("NotAttempted")(
-                      "Could not read the local received mail journal"
-                    )
+              mail.find(id).pipe(
+                Effect.mapError(() =>
+                  refused("NotAttempted")(
+                    "Could not read the local received mail journal"
                   )
-                )
+                ),
+                Effect.flatMap((found) => {
+                  const failure = saveFailures.get(id);
+
+                  return Option.isNone(found) && failure !== undefined
+                    ? Effect.fail(refused("NotAttempted")(failure))
+                    : Effect.succeed(found);
+                })
+              )
             )
           ),
         statusOf,
