@@ -1,7 +1,7 @@
 {
   "effect": "4.1.4",
   "generatorVersion": "0.1.0",
-  "sourceDigest": "2611fdbb9a0a26973dd42d2387bf99af94f130ceb53d34741c18e5e89114e610",
+  "sourceDigest": "9274bf45d55a176dfe39f59a67755ed3d6c5267f293b8845a22077cfa9f401f6",
   "sources": [
     "lexicons/sh/mschf/agentgraph/checkin.json",
     "lexicons/sh/mschf/agentgraph/friction.json",

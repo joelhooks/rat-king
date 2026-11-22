@@ -4,7 +4,7 @@
   "defs": {
     "main": {
       "type": "query",
-      "description": "Operator-only health metadata for exactly one recipient. Name is the operator's directory-resolved name for recipientDid. Never returns message content.",
+      "description": "Health metadata for exactly one recipient, available to operators and configured health readers. Name is the caller's directory-resolved name for recipientDid. Never returns message content.",
       "parameters": { "type": "params", "required": ["recipientDid", "name"], "properties": {
         "recipientDid": { "type": "string", "format": "did" },
         "name": { "type": "string", "maxLength": 128 }
@@ -15,6 +15,7 @@
         "retired": { "type": "boolean" },
         "undelivered": { "type": "integer", "minimum": 0 },
         "oldestUndeliveredAt": { "type": "string", "format": "datetime" },
+        "lastTurnStartedAt": { "type": "string", "format": "datetime", "description": "Latest observed working record for the current lease holder." },
         "lastAck": { "type": "string", "format": "datetime" },
         "lease": { "type": "ref", "ref": "#lease" },
         "oldestWake": { "type": "ref", "ref": "#wake" },

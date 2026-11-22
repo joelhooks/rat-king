@@ -103,6 +103,47 @@ import {
   trafficPermission,
   trafficWatermark,
 } from "./traffic-store.ts";
+import { lastTurnStart } from "./turn-starts.ts";
+
+const TurnStartKey = Schema.Struct({
+  did: Schema.String,
+  name: Schema.String,
+  session: Schema.String,
+});
+
+const withTurnStart = Effect.fn("Mailbox.withTurnStart")(
+  function* withTurnStart(
+    env: Bindings,
+    params: NameHealth.ParamsValue,
+    result: NameHealth.OutputValue
+  ) {
+    const { lease } = result;
+    const now = yield* Clock.currentTimeMillis;
+
+    if (lease === undefined || Date.parse(lease.expiresAt) <= now) {
+      return result;
+    }
+
+    const at = yield* Effect.tryPromise({
+      catch: () => failure("MailboxUnavailable", 503),
+      try: () =>
+        env.MAILBOX.getByName(trafficDid).readLastTurnStart(
+          JSON.stringify({
+            did: params.recipientDid,
+            name: params.name,
+            session: lease.holder,
+          })
+        ),
+    }).pipe(Effect.orElseSucceed(() => null));
+
+    return at === null || at === undefined
+      ? result
+      : yield* Schema.decodeUnknownEffect(NameHealth.Output)({
+          ...result,
+          lastTurnStartedAt: at,
+        });
+  }
+);
 
 declare const __BUNDLE_VERSION__: string;
 
@@ -302,6 +343,18 @@ export class Mailbox extends DurableObject<Bindings> {
     );
   }
 
+  readLastTurnStart(json: string) {
+    if (this.ctx.id.name !== trafficDid) {
+      throw failure("Forbidden", 403);
+    }
+
+    const { did, name, session } = Schema.decodeSync(
+      Schema.fromJsonString(TurnStartKey)
+    )(json);
+
+    return lastTurnStart(this.sql, did, name, session);
+  }
+
   readNameHealth(json: string, issuer: string) {
     const { ctx, sql, env } = this;
 
@@ -324,7 +377,9 @@ export class Mailbox extends DurableObject<Bindings> {
 
         return {
           body: JSON.stringify(
-            yield* Schema.encodeEffect(NameHealth.Output)(result)
+            yield* Schema.encodeEffect(NameHealth.Output)(
+              yield* withTurnStart(env, params, result)
+            )
           ),
           status: 200,
         };

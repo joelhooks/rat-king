@@ -10,6 +10,7 @@ export declare const Wake: Schema.Struct<{
 export declare const MailboxHealth: Schema.Struct<{
     readonly complete: Schema.Boolean;
     readonly lastAck: Schema.NullOr<Schema.Finite>;
+    readonly lastTurnStartedAt: Schema.optionalKey<Schema.Finite>;
     readonly lease: Schema.NullOr<Schema.Struct<{
         readonly expiresAt: Schema.Finite;
         readonly generation: Schema.Int;
@@ -44,6 +45,7 @@ export declare const readMailboxHealth: (transport: {
 }, did: string, name: string) => Effect.Effect<{
     readonly complete: boolean;
     readonly lastAck: number | null;
+    readonly lastTurnStartedAt?: number;
     readonly lease: {
         readonly expiresAt: number;
         readonly generation: number;

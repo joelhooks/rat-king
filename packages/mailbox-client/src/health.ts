@@ -17,6 +17,7 @@ export const Wake = Schema.Struct({
 export const MailboxHealth = Schema.Struct({
   complete: Schema.Boolean,
   lastAck: Schema.NullOr(Schema.Finite),
+  lastTurnStartedAt: Schema.optionalKey(Schema.Finite),
   lease: Schema.NullOr(
     Schema.Struct({
       expiresAt: Schema.Finite,
@@ -86,7 +87,8 @@ export const readMailboxHealth = Effect.fn("Mailbox.readHealth")(
 
     if (response.status !== 200 || response.kind !== "json") {
       return yield* new MailboxClientError({
-        reason: "Health projection unavailable (operator credentials required)",
+        reason:
+          "Health projection unavailable (operator or health reader credentials required)",
       });
     }
 
@@ -98,6 +100,9 @@ export const readMailboxHealth = Effect.fn("Mailbox.readHealth")(
       complete: value.complete,
       ...(value.retired === undefined ? undefined : { retired: value.retired }),
       lastAck: value.lastAck === undefined ? null : Date.parse(value.lastAck),
+      ...(value.lastTurnStartedAt === undefined
+        ? undefined
+        : { lastTurnStartedAt: Date.parse(value.lastTurnStartedAt) }),
       lease:
         value.lease === undefined
           ? null

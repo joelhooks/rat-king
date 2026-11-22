@@ -46,13 +46,19 @@ const sameProject = (receiver: string | undefined, agent: string): boolean => {
   return project !== undefined && project === projectOf(agent);
 };
 
+const inboundTurn = (inbound: InboundRecord) =>
+  signedTurn(inbound.record, inbound.from, inbound.verified, {
+    alarmDid: inbound.alarmCrashDid,
+    senderDid: inbound.did,
+  });
+
 export const turnWake = (
   inbound: InboundRecord,
   settled: boolean,
   seen: ReadonlySet<string>,
   receiver: string | undefined
 ): Option.Option<TurnValue> =>
-  signedTurn(inbound.record, inbound.from, inbound.verified).pipe(
+  inboundTurn(inbound).pipe(
     Option.filter(
       (turn) =>
         !settled &&
@@ -153,11 +159,7 @@ export const turnInbox = (
       }
 
       if (Option.isNone(turn)) {
-        const duplicate = signedTurn(
-          inbound.record,
-          inbound.from,
-          inbound.verified
-        ).pipe(
+        const duplicate = inboundTurn(inbound).pipe(
           Option.filter((value) => sameProject(receiver(), value.agent)),
           Option.flatMap((value) =>
             Option.fromUndefinedOr(pending.get(turnKey(value)))

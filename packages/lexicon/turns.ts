@@ -25,14 +25,26 @@ export type TurnValue = typeof Turn.Type;
 export const signedTurn = (
   record: { readonly $type: string },
   sender: string,
-  verified: boolean
+  verified: boolean,
+  crashAuthority?: {
+    readonly senderDid: string;
+    readonly alarmDid: string | undefined;
+  }
 ) =>
   Schema.decodeUnknownOption(
     Turn.check(
       Schema.makeFilter(
         (value) =>
-          verified && (sender === "operator" || value.agent === sender),
-        { expected: "verified sender matching agent, or operator" }
+          verified &&
+          (sender === "operator" ||
+            value.agent === sender ||
+            (value.state === "crashed" &&
+              crashAuthority !== undefined &&
+              crashAuthority.senderDid === crashAuthority.alarmDid)),
+        {
+          expected:
+            "verified agent, operator, or configured crash signer for crash records",
+        }
       )
     )
   )(record);

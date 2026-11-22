@@ -69,6 +69,7 @@ export const ThreadRouting = Schema.Struct({
 export type ThreadRoutingValue = typeof ThreadRouting.Type;
 
 export const PiConfig = Schema.Struct({
+  alarmCrashDid: Schema.optionalKey(Did),
   askTimeoutMs: Schema.optionalKey(
     Schema.Int.check(Schema.isGreaterThanOrEqualTo(1))
   ),
@@ -104,6 +105,7 @@ export const PiConfig = Schema.Struct({
 export type PiConfigValue = typeof PiConfig.Type;
 
 export interface SettingsValue {
+  readonly alarmCrashDid?: string;
   readonly attentionLevers?: boolean;
   readonly askTimeoutMs: number;
   readonly ccDigestMinutes?: Readonly<Record<string, number>>;
@@ -252,6 +254,10 @@ export const loadSettings = Effect.fn("RatKing.loadSettings")(
       threadRouting: config.threadRouting ?? [],
       turnRecords,
     });
+
+    if (config.alarmCrashDid !== undefined) {
+      Object.assign(settings, { alarmCrashDid: config.alarmCrashDid });
+    }
 
     if (config.ccDigestMinutes !== undefined) {
       Object.assign(settings, { ccDigestMinutes: config.ccDigestMinutes });

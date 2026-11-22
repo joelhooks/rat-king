@@ -1287,7 +1287,10 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
           const turn = (yield* decodeRecord(message.body)).pipe(
             Option.flatMap((record) =>
-              signedTurn(record, inbound.from, inbound.verified)
+              signedTurn(record, inbound.from, inbound.verified, {
+                alarmDid: settings.alarmCrashDid,
+                senderDid: inbound.did,
+              })
             ),
             Option.map((value) => JSON.stringify([value.turnId, value.state])),
             Option.getOrUndefined
@@ -1326,6 +1329,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           if (Option.isSome(record)) {
             yield* threads.remember(inbound);
             yield* route.record({
+              alarmCrashDid: settings.alarmCrashDid,
               did: inbound.did,
               encrypted: message.encrypted ?? true,
               from: inbound.from,
@@ -3367,6 +3371,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
     return Option.isSome(record)
       ? ({
+          alarmCrashDid: settings.alarmCrashDid,
           did: inbound.did,
           from: inbound.from,
           id: inbound.id,

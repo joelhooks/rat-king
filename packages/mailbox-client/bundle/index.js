@@ -5421,6 +5421,13 @@ var Output18 = Schema55.StructWithRest(
         Schema55.brand("Lexicon:datetime")
       )
     ),
+    lastTurnStartedAt: Schema55.optionalKey(
+      lexString({
+        description: "Latest observed working record for the current lease holder.",
+        format: "datetime",
+        type: "string"
+      }).pipe(Schema55.brand("Lexicon:datetime"))
+    ),
     lease: Schema55.optionalKey(Lease),
     oldestUndeliveredAt: Schema55.optionalKey(
       lexString({ format: "datetime", type: "string" }).pipe(
@@ -5494,6 +5501,7 @@ var Wake2 = Schema56.Struct({
 var MailboxHealth = Schema56.Struct({
   complete: Schema56.Boolean,
   lastAck: Schema56.NullOr(Schema56.Finite),
+  lastTurnStartedAt: Schema56.optionalKey(Schema56.Finite),
   lease: Schema56.NullOr(
     Schema56.Struct({
       expiresAt: Schema56.Finite,
@@ -5522,7 +5530,7 @@ var readMailboxHealth = Effect34.fn("Mailbox.readHealth")(
     });
     if (response.status !== 200 || response.kind !== "json") {
       return yield* new MailboxClientError({
-        reason: "Health projection unavailable (operator credentials required)"
+        reason: "Health projection unavailable (operator or health reader credentials required)"
       });
     }
     const value = yield* Schema56.decodeUnknownEffect(Output18)(
@@ -5532,6 +5540,7 @@ var readMailboxHealth = Effect34.fn("Mailbox.readHealth")(
       complete: value.complete,
       ...value.retired === void 0 ? void 0 : { retired: value.retired },
       lastAck: value.lastAck === void 0 ? null : Date.parse(value.lastAck),
+      ...value.lastTurnStartedAt === void 0 ? void 0 : { lastTurnStartedAt: Date.parse(value.lastTurnStartedAt) },
       lease: value.lease === void 0 ? null : {
         expiresAt: Date.parse(value.lease.expiresAt),
         generation: value.lease.generation,
