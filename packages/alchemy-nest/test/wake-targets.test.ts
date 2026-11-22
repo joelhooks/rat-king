@@ -2,7 +2,7 @@ import { it } from "@effect/vitest";
 import { Schema } from "effect";
 import { expect } from "vitest";
 
-import { AlarmSettings } from "../../../stacks/nest/alarm-config.ts";
+import { ConfiguredWakeTargets } from "../../../stacks/nest/alarm-config.ts";
 import {
   mergeWakeTargets,
   wakeReading,
@@ -132,7 +132,7 @@ it.prop(
   [Minutes],
   ([unackedMinutes]) => {
     const decode = Schema.decodeUnknownSync(
-      Schema.Struct({ wakeTargets: AlarmSettings.fields.wakeTargets }),
+      Schema.Struct({ wakeTargets: ConfiguredWakeTargets }),
       { onExcessProperty: "error" }
     );
 

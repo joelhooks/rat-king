@@ -14,15 +14,16 @@ import {
 } from "effect";
 
 import { refuse } from "../../packages/alchemy-nest/src/files.ts";
+import { alarmReadings, alarmWorker } from "./alarm-command.ts";
 import {
-  alarmCommand,
-  alarmWorker,
-  alarmPlist,
   alarmCheck,
-} from "./alarm-command.ts";
+  alarmCommand,
+  alarmPlist,
+  alarmUnit,
+} from "./alarm-service.ts";
 import { billingCommand } from "./billing-command.ts";
 import { doneBar } from "./comms.ts";
-import { configDoctor } from "./config-doctor.ts";
+import { stageDoctor } from "./config-doctor.ts";
 import { collectDigestWaitingMail } from "./digest-mail-collector.ts";
 import { commsCounts, digest } from "./digest.ts";
 import { drainCommand } from "./drain.ts";
@@ -54,6 +55,7 @@ const program = Effect.gen(function* launcher() {
       "ship-plist",
       "alarm",
       "alarm-plist",
+      "alarm-unit",
       "alarm-check",
       "alarm-worker",
       "maintenance",
@@ -146,9 +148,14 @@ const program = Effect.gen(function* launcher() {
     Match.when("alarm", () => alarmCommand(config, resolvedConfigPath)),
     Match.when("maintenance", () => maintenanceCommand(config, flags)),
     Match.when("alarm-plist", () =>
-      config.alarm === undefined
-        ? refuse("Alarm configuration required")
+      config.alarm?.launchd === undefined
+        ? refuse("Alarm launchd configuration required")
         : Console.log(alarmPlist(config, resolvedConfigPath))
+    ),
+    Match.when("alarm-unit", () =>
+      config.alarm?.systemd === undefined
+        ? refuse("Alarm systemd configuration required")
+        : Console.log(alarmUnit(config, resolvedConfigPath))
     ),
     Match.when("ship-plist", () =>
       Effect.gen(function* printShipPlist() {
@@ -160,7 +167,7 @@ const program = Effect.gen(function* launcher() {
       })
     ),
     Match.when("doctor", () =>
-      configDoctor(config).pipe(
+      stageDoctor(config).pipe(
         Effect.tap((facts) =>
           Effect.sync(() => {
             if (facts.status === "fail") {
@@ -215,16 +222,20 @@ const program = Effect.gen(function* launcher() {
             );
           }
 
+          if (config.alarm === undefined) {
+            return yield* refuse("Alarm configuration required");
+          }
+
+          const readings = alarmReadings(
+            config,
+            runtime.healthDigest(),
+            marker,
+            windows,
+            runtime.mailboxStatus
+          );
+
           return yield* Console.log(
-            JSON.stringify(
-              yield* alarmCheck(
-                config,
-                runtime.healthDigest(),
-                marker,
-                windows,
-                runtime.mailboxStatus
-              )
-            )
+            JSON.stringify(yield* alarmCheck(config.alarm, readings))
           );
         }
 

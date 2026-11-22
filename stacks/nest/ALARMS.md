@@ -1,6 +1,8 @@
 # Fleet alarms
 
-`alarm` launches one lock-owning Effect worker through macOS `lockf`. `alarm-plist` prints its launchd declaration. The desk installs it; this lane does not install, enable or send live messages. Configuration must explicitly set `alarm.enabled: true` to run. `alarm-check` reads and prints sanitized source conditions without writing alarm state or sending notifications.
+`alarm` starts one Effect worker under a nonblocking `alarm.lock` in the private state directory. It uses `lockf` with launchd and `flock` with systemd. The lock belongs to that state directory, not to copies on other hosts. Stop the old supervisor before copying the journal and starting the new one.
+
+`alarm-plist` prints the launchd plist. `alarm-unit` prints a systemd user service for the configured unit filename. Both run the lock-owning launcher. The desk installs and enables the job; the renderer does neither. Set `alarm.enabled: true` to run. `alarm-check` reports sanitized source readings and service state without writing alarm state or sending notifications. The CLI `doctor` also checks the configured supervisor. For systemd, an enabled alarm must be active and persistently enabled, not just `enabled-runtime`. These service checks do not feed the worker's issuer alarms.
 
 ## Lifecycle and delivery
 
@@ -23,7 +25,7 @@ Pages go to Joel's phone and grokbot, so they carry real incidents only. Warn ne
 - `renotifyMinutes`: optional positive integer, default 120.
 - `notify`: operator identity secret, directory path and optional Pi config path. The sender is always `operator`; its identity must match the directory's operator DID.
 - `page`: Node executable and the approved notification gateway script path.
-- `launchd`: label, Node executable, checkout `source`, PATH and output/error log paths.
+- Set exactly one supervisor. `launchd` takes `label`, `node`, checkout `source`, `path` (PATH), `outputLog` and `errorLog`. `systemd` takes `unit` (the `.service` filename) instead of `label`, plus the same remaining fields. Systemd needs absolute executable, checkout and log paths. Its user manager must start at boot for the alarm to run before login.
 - `readerHeartbeats`: one entry per host, with a display `host`, the Pi state's `readers` directory as `dir`, and an `ssh` destination for every host but the alarm's own. The worker reads each host's heartbeats with one bounded call per check (10 seconds, `BatchMode=yes`). Pid liveness is checked on that host. If the list is omitted, reader monitoring is unknown, not healthy. If a host's directory is missing, that host has no readers. The older `readers` list with `aliveCommand` is ignored. It is accepted only so existing configs keep loading, so delete it when you add `readerHeartbeats`.
 
 Optional `alarm.wakeTargets: [{ name, owner, unackedMinutes?, page? }]` preserves explicit owner opt-ins. The threshold defaults to `alarm.wakeUnackedMinutes` (15 minutes when omitted). Each overdue target fires `mail.owner/<name>` to its owner only, never to broadcast, the desk or the operator gateway. The legacy `page` option still decodes but no longer grants operator paging authority. Owner notices and their recovery use the normal durable outbox.
@@ -75,7 +77,7 @@ Source probes have bounded deadlines. The worker targets a 60-second cadence and
 
 ## Qualification
 
-Run property/model tests, then `alarm-check` with approved private selectors. Run `alarm-check` and confirm that each configured host's heartbeats are read. The desk should test operator fan-out and the configured Joel gateway under its live-message approval, install the printed plist once, and inspect journal delivery/page claims. Roll back by disabling or unloading this one desk-owned job; no infrastructure or mailbox data rollback is involved.
+Run property/model tests, then `alarm-check` and `doctor` with approved private selectors. Confirm the expected supervisor is active, systemd is persistently enabled if selected, and each configured host's heartbeats are read. After cutover, prove one synthetic alarm and one wake under live-message approval. Roll back by stopping and disabling the new job, transferring the current journal back and restoring the previous job. Never leave both jobs active.
 
 Untested by this lane: live fan-out, a real Joel page, launchd restart supervision and the ssh path to a remote heartbeat host. The property suite covers lifecycle/restart replay, stable-key dedupe, page budgets, source thresholds, deploy grace and encoded envelope replay. Filesystem quarantine freshness uses modification time, not a claim about file birth time.
 
@@ -83,5 +85,5 @@ Untested by this lane: live fan-out, a real Joel page, launchd restart supervisi
 
 - A crash notice whose recipient the mailbox refuses as `Retired` or `UnknownName` is terminal. With a successor named in the refusal, the notice is re-sealed to the successor once. Otherwise, or if the successor refuses too, the key moves to `sent` and is recorded under `dropped` with the reason.
 - Other send failures back off per entry: 2 s doubling, jittered down by up to half, capped at 10 minutes. The journal's `attempts` and `nextAt` are optional, so older journals read as due now. Only the first failure and the recovery are logged.
-- The alarm and ship runners exit for a launchd restart when the ship checkpoint's `successful` sha changes, meaning a commit from `origin/main` was deployed. Commits made in the local checkout do not restart them.
-- Once per cycle the worker checks `alarm.out.log` and `alarm.err.log`. Past 16 MiB it gzips the file's current bytes to `<name>.<utc>.log.gz` beside it, fsyncs the archive, and truncates the live file. launchd owns those files and keeps appending through its open descriptor, so renaming would send new output into the archive. Copy then truncate keeps launchd's descriptor valid. Archives older than 30 days are removed. The first rotation after deploy archives the existing large log.
+- The alarm and ship runners exit for a supervisor restart when the ship checkpoint's `successful` sha changes, meaning a commit from `origin/main` was deployed. Commits made in the local checkout do not restart them.
+- Once per cycle the worker checks `alarm.out.log` and `alarm.err.log`. Past 16 MiB it gzips the file's current bytes to `<name>.<utc>.log.gz` beside it, fsyncs the archive, and truncates the live file. The supervisor keeps appending through its open descriptors, so renaming would send new output into the archive. Copy then truncate keeps those descriptors valid. Archives older than 30 days are removed. The first rotation after deploy archives the existing large log.
