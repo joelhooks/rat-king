@@ -101,7 +101,7 @@ export const ShipReceipt = Schema.Struct({
 export const PreparedRetries = Schema.Record(Sha, Schema.Finite);
 
 export const PreparedHolds = Schema.Record(
-  Schema.Union([Sha, Schema.Literal("global")]),
+  Schema.String.check(Schema.isPattern(/^(?:global|[a-f0-9]{40})$/u)),
   Text
 );
 

@@ -2,7 +2,7 @@ import { Effect, Schema } from "effect";
 
 import { digest } from "../../packages/alchemy-nest/src/files.ts";
 import { fleetCelldBinary } from "./celld-build.ts";
-import { PreparedManifest } from "./prepared-manifest.ts";
+import { manifestChange, PreparedManifest } from "./prepared-manifest.ts";
 import { Sha } from "./ship-config.ts";
 import { FleetError } from "./stage-config.ts";
 
@@ -36,7 +36,7 @@ const Container = Schema.fromJsonString(
     celld: Asset,
     commit: Sha,
     format: Schema.Literal("rat-king/fleet/v2"),
-    manifest: PreparedManifest,
+    manifest: Schema.Unknown,
     payloads: Schema.Struct({
       backup: Payload,
       cli: Payload,
@@ -164,11 +164,15 @@ export const decodePrepared = Effect.fn("Ship.decodePrepared")(
       });
     }
 
+    const manifest = yield* Schema.decodeUnknownEffect(PreparedManifest, {
+      onExcessProperty: "error",
+    })(decoded.manifest).pipe(Effect.mapError(manifestChange));
+
     return Object.freeze({
       backup: payloads.backup.text,
       cli: payloads.cli.text,
       commit,
-      manifest: decoded.manifest,
+      manifest,
       restart: payloads.restart.text,
       version,
       worker: payloads.worker.text,

@@ -125,18 +125,6 @@ const walkEligible = Effect.fn("Ship.walkEligible")(function* walkEligible<R>(
   hold: ((sha: string, reason: string) => void) | undefined,
   backoff: ReturnType<typeof preparedBackoff>
 ) {
-  const known = new Set(ahead);
-
-  for (const sha of eligible) {
-    if (sha === saved.successful) {
-      break;
-    }
-
-    if (!known.has(sha)) {
-      hold?.(sha, "NotAheadOnFirstParent");
-    }
-  }
-
   for (const sha of ahead) {
     if (sha === saved.failed) {
       hold?.(sha, "DeployFailureBarrier");
@@ -208,14 +196,6 @@ export const selectPrepared = Effect.fn("Ship.selectPrepared")(
       const reason = Result.isFailure(proof)
         ? proof.failure.reason
         : proof.success.reason;
-
-      for (const sha of eligible.success) {
-        if (sha === saved.successful) {
-          break;
-        }
-
-        hold?.(sha, reason);
-      }
 
       hold?.("", reason);
 

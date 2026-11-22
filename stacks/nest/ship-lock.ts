@@ -7,7 +7,8 @@ export const withShipLock = Effect.fn("Ship.lock")(function* withShipLock(
   state: string,
   entry: string,
   config: string,
-  args: readonly string[]
+  args: readonly string[],
+  cwd: string = process.cwd()
 ) {
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
@@ -32,16 +33,33 @@ export const withShipLock = Effect.fn("Ship.lock")(function* withShipLock(
   const flags = mac ? ["-k", "-t", "0"] : ["--nonblock", "--no-fork", "--"];
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
+  if (!mac) {
+    const capable = yield* spawner
+      .exitCode(
+        ChildProcess.make(executable, ["--no-fork", "--version"], {
+          stderr: "ignore",
+          stdout: "ignore",
+        })
+      )
+      .pipe(Effect.option);
+
+    if (!Option.isSome(capable) || Number(capable.value) !== 0) {
+      return yield* new FleetError({
+        reason: "ShipLockUnsupported: flock must support --no-fork",
+      });
+    }
+  }
+
   const handle = yield* spawner.spawn(
     ChildProcess.make(
       executable,
-      [...flags, lock, process.execPath, entry, ...args],
+      [...flags, lock, process.execPath, ...process.execArgv, entry, ...args],
       {
-        cwd: state,
+        cwd,
         env: { RAT_KING_STAGE_CONFIG: config },
         extendEnv: true,
         stderr: "inherit",
-        stdin: "ignore",
+        stdin: "pipe",
         stdout: "inherit",
       }
     )

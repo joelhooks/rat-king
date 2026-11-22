@@ -175,6 +175,7 @@ const program = Effect.gen(function* launcher() {
     return yield* refuse("State resolves inside the public repository");
   }
 
+  const callerDirectory = process.cwd();
   process.chdir(canonical);
   process.env.ALCHEMY_TELEMETRY_DISABLED = "1";
 
@@ -206,7 +207,8 @@ const program = Effect.gen(function* launcher() {
         canonical,
         `${import.meta.dirname}/ship-worker.ts`,
         resolvedConfigPath,
-        [mode, ...flags]
+        [mode, ...flags],
+        callerDirectory
       )
     ),
     Match.when("alarm", () => alarmCommand(config, resolvedConfigPath)),

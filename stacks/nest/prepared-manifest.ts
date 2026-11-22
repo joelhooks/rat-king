@@ -1,3 +1,6 @@
+// @effect-diagnostics nodeBuiltinImport:off -- Compare inert decoded manifest objects, not JSON key order.
+import { isDeepStrictEqual } from "node:util";
+
 import { Effect, Schema } from "effect";
 
 import { bindings } from "../../apps/mailbox/src/mailbox-declaration.ts";
@@ -29,26 +32,19 @@ export const mailboxManifest: typeof PreparedManifest.Type = {
   ],
 };
 
-const same = (left: readonly string[], right: readonly string[]) =>
-  JSON.stringify(left.toSorted()) === JSON.stringify(right.toSorted());
+export const manifestChange = () =>
+  new FleetError({ reason: "ManifestChange: needs legacy ship" });
 
-const objects = (declaration: typeof Declaration.Type) =>
-  declaration.durable_objects.bindings.map(
-    ({ name, class_name }) => `${name}:${class_name}`
-  );
-
-export const allowManifest = (candidate: typeof PreparedManifest.Type) => {
-  const expected = mailboxManifest.declaration;
-  const actual = candidate.declaration;
-
-  return actual.name === expected.name &&
-    same(actual.compatibility_flags, expected.compatibility_flags) &&
-    same(objects(actual), objects(expected)) &&
-    JSON.stringify(actual.migrations) === JSON.stringify(expected.migrations) &&
-    same(candidate.secrets, mailboxManifest.secrets) &&
-    same(candidate.variables, mailboxManifest.variables)
+export const allowManifest = (candidate: typeof PreparedManifest.Type) =>
+  isDeepStrictEqual(
+    {
+      ...candidate,
+      declaration: {
+        ...candidate.declaration,
+        compatibility_date: mailboxManifest.declaration.compatibility_date,
+      },
+    },
+    mailboxManifest
+  )
     ? Effect.void
-    : Effect.fail(
-        new FleetError({ reason: "ManifestChange: needs legacy ship" })
-      );
-};
+    : Effect.fail(manifestChange());

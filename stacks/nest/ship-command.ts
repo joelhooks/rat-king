@@ -17,11 +17,13 @@ import {
 } from "../../apps/mailbox/cli/secrets.ts";
 import { digest } from "../../packages/alchemy-nest/src/files.ts";
 import { writePrivateJson } from "../../packages/ratking-client/src/directory.ts";
+import { preparedBinaries } from "./prepared-binaries.ts";
 import { encodePrepared } from "./prepared-payload.ts";
 import { readShippedSha, runtimeDrift, shippedDrift } from "./runner-drift.ts";
 import { boundDeploy, observeAttempt, startAttempt } from "./ship-attempt.ts";
 import { Sha, ShipCheckpoint } from "./ship-config.ts";
 import { sanitizeCandidateStderr } from "./ship-diagnostics.ts";
+import { durableGithubBudget } from "./ship-github-budget.ts";
 import { installDependencies, quarantineInstall } from "./ship-install.ts";
 import { sendShipNotification } from "./ship-notify.ts";
 import {
@@ -31,6 +33,7 @@ import {
 import type { PreparedArgs } from "./ship-prepared-evidence.ts";
 import { prepareReleases, recordReceipt } from "./ship-prune.ts";
 import type { ReleaseCurrent } from "./ship-prune.ts";
+import type { PreparedEvidence } from "./ship-select.ts";
 import { preparedBackoff, selectPrepared } from "./ship-select.ts";
 import { shipLoop } from "./ship.ts";
 import type { PreparedShipPorts, ShipPorts } from "./ship.ts";
@@ -241,11 +244,25 @@ const recoveryNote = (recovered: boolean | undefined) => {
     : "; RECOVERY FAILED: celld or seaweedfs is still down after the failed deploy, start them by hand";
 };
 
+type Services =
+  | FileSystem.FileSystem
+  | Path.Path
+  | ChildProcessSpawner.ChildProcessSpawner
+  | HttpClient.HttpClient;
+
+interface PreparedCommandPorts {
+  readonly evidence?: PreparedEvidence<Services>;
+  readonly drifted?: Effect.Effect<boolean>;
+  readonly page?: (text: string) => Effect.Effect<void, FleetError, Services>;
+  readonly workspace?: typeof verifyShipWorkspace;
+}
+
 export const shipCommand = Effect.fn("Ship.command")(
   function* shipCommand(
     config: StageConfigValue,
     recover: ShipPorts["recover"],
-    prepared?: PreparedArgs
+    prepared?: PreparedArgs,
+    fixture: PreparedCommandPorts = {}
   ) {
     const { ship } = config;
 
@@ -264,7 +281,7 @@ export const shipCommand = Effect.fn("Ship.command")(
     const store = yield* SecretStore;
 
     if (prepared !== undefined) {
-      yield* verifyShipWorkspace(ship.releases);
+      yield* (fixture.workspace ?? verifyShipWorkspace)(ship.releases);
     }
 
     yield* prepareReleases(ship.releases);
@@ -287,12 +304,6 @@ export const shipCommand = Effect.fn("Ship.command")(
     const holds = yield* Ref.make<Readonly<Record<string, string>>>(
       saved.preparedHolds ?? {}
     );
-
-    type Services =
-      | FileSystem.FileSystem
-      | Path.Path
-      | ChildProcessSpawner.ChildProcessSpawner
-      | HttpClient.HttpClient;
 
     const shared: Omit<ShipPorts<Services>, "fetch" | "ci" | "deploy"> = {
       checkpoint: (state) =>
@@ -336,13 +347,24 @@ export const shipCommand = Effect.fn("Ship.command")(
     };
 
     if (prepared !== undefined) {
-      const { drifted } = yield* runtimeDrift;
+      const drifted = fixture.drifted ?? (yield* runtimeDrift).drifted;
 
-      const evidence = preparedEvidence(
+      const budget = yield* durableGithubBudget(
+        `${config.runtime.RAT_KING_STATE_DIR}/ship.github-rate.json`
+      );
+
+      const github = preparedEvidence(
         ship.repository,
         prepared,
-        ship.releases
+        ship.releases,
+        budget
       );
+
+      const evidence = fixture.evidence ?? {
+        ...github,
+        artifact: (sha: string) =>
+          github.artifact(sha).pipe(Effect.tap(() => preparedBinaries)),
+      };
 
       const backoff = preparedBackoff();
 
@@ -393,9 +415,7 @@ export const shipCommand = Effect.fn("Ship.command")(
               state,
               now,
               (sha, reason) => {
-                if (observed.size < 256) {
-                  observed.set(sha || "global", reason);
-                }
+                observed.set(sha || "global", reason);
               },
               backoff
             );
@@ -416,34 +436,37 @@ export const shipCommand = Effect.fn("Ship.command")(
             yield* Ref.set(holds, Object.fromEntries(observed));
             yield* shared.checkpoint(state);
 
-            const reasons = changed.map(
-              ([sha, reason]) => `${sha.slice(0, 12)}: ${reason}`
+            const previousReasons = new Set(Object.values(previous));
+
+            const reasons = [...new Set(observed.values())].filter(
+              (reason) =>
+                reason !== "ExactFencePending" && !previousReasons.has(reason)
             );
 
             for (const [key, reason] of changed) {
               yield* Console.error("SHIP_PREPARED_HOLD", key, reason);
-              const sha = key === "global" ? state.successful : key;
 
-              if (sha !== "") {
+              if (key !== "global") {
                 yield* shared.record({
                   celldRestarted: null,
                   end: now,
                   hold: reason,
                   restartSeconds: null,
                   result: "held",
-                  sha,
+                  sha: key,
                   start: now,
                 });
               }
             }
 
             if (reasons.length > 0) {
-              yield* sendShipNotification(
-                config,
-                `Prepared ship hold: ${reasons.slice(0, 8).join("; ").slice(0, 1500)} SR 🐀`,
-                false
+              const message = `Prepared ship hold: ${reasons.slice(0, 8).join("; ").slice(0, 1500)} SR 🐀`;
+              yield* (
+                fixture.page?.(message) ??
+                sendShipNotification(config, message, false).pipe(
+                  Effect.provideService(SecretStore, store)
+                )
               ).pipe(
-                Effect.provideService(SecretStore, store),
                 Effect.catch(() =>
                   Console.error("SHIP_PREPARED_HOLD_NOTIFICATION_FAILED")
                 )

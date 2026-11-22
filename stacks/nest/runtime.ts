@@ -36,7 +36,7 @@ import type { WindowReceipt } from "./alarm-sources.ts";
 import { readWindowReceipts } from "./alarm-windows.ts";
 import { stageName, workerIPv4, workerUrl } from "./config.ts";
 import { assess, collectHealth, DigestJson } from "./health.ts";
-import type { nestProviders } from "./nest-providers.ts";
+import { nestProviders } from "./nest-providers.ts";
 import { qualifyPlanActions } from "./plan-guard.ts";
 import type { PreparedFleetPayload } from "./prepared-payload.ts";
 import { isDeferredAdoption, qualifyRecoveryPlan } from "./recovery-plan.ts";
@@ -201,7 +201,10 @@ const beforeShipDeploy = Effect.fn("Ship.beforeDeploy")(
 );
 
 export interface PreparedRuntimePorts {
-  readonly providers?: ReturnType<typeof nestProviders>;
+  readonly beforeDeploy?: typeof beforeShipDeploy;
+  readonly providers?: (
+    trusted: ReturnType<typeof nestProviders>
+  ) => ReturnType<typeof nestProviders>;
   readonly listener?: typeof listenerProbe;
 }
 
@@ -215,7 +218,13 @@ const deploymentStack = Effect.fn("Nest.deploymentStack")(
     if (payload !== undefined) {
       yield* requireFleet(stage);
 
-      return nestStack(undefined, payload, ports.providers);
+      const trusted = nestProviders(undefined, payload);
+
+      return nestStack(
+        undefined,
+        payload,
+        ports.providers?.(trusted) ?? trusted
+      );
     }
 
     if (action !== "restore") {
@@ -260,7 +269,7 @@ const deployNest = Effect.fn("Nest.deploy")(function* deployNest(
 
   const stack = yield* deploymentStack(action, stage, payload, ports);
 
-  yield* beforeShipDeploy(action, stack, stage);
+  yield* (ports.beforeDeploy ?? beforeShipDeploy)(action, stack, stage);
 
   yield* deploy({ stack, stage }).pipe(adopt(true));
   const shell = yield* HostShell;

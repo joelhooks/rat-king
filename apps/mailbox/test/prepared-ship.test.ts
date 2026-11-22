@@ -27,7 +27,10 @@ import type {
   ShipCheckpoint,
   ShipReceipt,
 } from "../../../stacks/nest/ship-config.ts";
-import { githubBudget } from "../../../stacks/nest/ship-github-budget.ts";
+import {
+  durableGithubBudget,
+  githubBudget,
+} from "../../../stacks/nest/ship-github-budget.ts";
 import { shipMachine } from "../../../stacks/nest/ship-machine.ts";
 import { preparedEvidence } from "../../../stacks/nest/ship-prepared-evidence.ts";
 import { selectPrepared } from "../../../stacks/nest/ship-select.ts";
@@ -50,6 +53,7 @@ const Case = Schema.Literals([
   "apply-failed",
   "pin-mismatch",
   "new-binding",
+  "unknown-manifest-field",
   "candidate-date",
   "embedded-sha-mismatch",
   "invalid-format",
@@ -63,6 +67,7 @@ const Case = Schema.Literals([
   "wrong-event",
   "wrong-workflow",
   "pending-fence",
+  "overdue-fence",
   "pending-head",
   "paginated-jobs",
   "non-tip",
@@ -91,8 +96,12 @@ const run = (sha: string, scenario: Scenario) => ({
       ? ".github/workflows/another.yml"
       : ".github/workflows/fence.yml",
   run_attempt: 1,
+  run_started_at:
+    scenario === "overdue-fence" ? "1969-12-31T23:00:00Z" : undefined,
   status:
-    scenario === "pending-fence" || sha === head ? "in_progress" : "completed",
+    scenario === "pending-fence" || scenario === "overdue-fence" || sha === head
+      ? "in_progress"
+      : "completed",
 });
 
 const client = (scenario: Scenario) =>
@@ -275,6 +284,10 @@ const fixture = Effect.fn("PreparedShip.fixture")(function* fixture(
   const variants = new Map<Scenario, string>([
     ["invalid-format", tampered],
     ["invalid-length", wrongLength],
+    [
+      "unknown-manifest-field",
+      serialized.replace('"manifest":{', '"manifest":{"unexpected":true,'),
+    ],
   ]);
 
   const bytes = new TextEncoder().encode(variants.get(scenario) ?? serialized);
@@ -322,100 +335,177 @@ const fixture = Effect.fn("PreparedShip.fixture")(function* fixture(
   };
 });
 
-it.effect.prop(
-  "prepared ship proves pushed ancestry and exact green fence, rehashes the private snapshot before arming, and applies only inert bytes",
-  [Case],
-  ([scenario]) =>
-    Effect.gen(function* checkPrepared() {
-      const { evidence, programs: commands } = yield* fixture(scenario);
-      const liveSha = scenario === "absent-checkpoint" ? unrelated : checkpoint;
+const malformed = [
+  eligible,
+  "Prepared ship evidence unavailable or malformed",
+] as const;
 
-      const [initial] = initialTransition(shipMachine, {
-        failed: "",
-        preparedRetries:
-          scenario === "apply-failed"
-            ? { [head]: Number.MAX_SAFE_INTEGER }
-            : {},
+const manifestChange = [eligible, "ManifestChange: needs legacy ship"] as const;
+
+const bundleFormat = [eligible, "BundleFormat"] as const;
+
+const reasonByCase: Record<Scenario, readonly [string, string] | undefined> = {
+  "absent-checkpoint": ["", "CheckpointNotFirstParent"],
+  "apply-failed": undefined,
+  "behind-checkpoint": undefined,
+  "candidate-date": undefined,
+  "embedded-sha-mismatch": bundleFormat,
+  "invalid-format": bundleFormat,
+  "invalid-length": bundleFormat,
+  "list-symlink": ["", "Prepared ship evidence unavailable or malformed"],
+  "new-binding": manifestChange,
+  "non-tip": [eligible, "NotPushTip"],
+  "not-main": undefined,
+  "overdue-fence": [eligible, "ExactFencePendingOverdue"],
+  "paginated-jobs": undefined,
+  "payload-symlink": [eligible, "ArtifactMissingOrUnreadable"],
+  "pending-fence": [eligible, "ExactFencePending"],
+  "pending-head": [head, "ExactFencePending"],
+  "pin-mismatch": [eligible, "Prepared fleet bundle pin mismatch"],
+  ready: undefined,
+  "skipped-fence-job": [eligible, "ExactFenceNotGreen"],
+  "unknown-manifest-field": manifestChange,
+  "wrong-branch": malformed,
+  "wrong-event": malformed,
+  "wrong-fence-sha": malformed,
+  "wrong-workflow": malformed,
+};
+
+const checkPrepared = (scenario: Scenario) =>
+  Effect.gen(function* runScenario() {
+    const { evidence, programs: commands } = yield* fixture(scenario);
+    const liveSha = scenario === "absent-checkpoint" ? unrelated : checkpoint;
+
+    const [initial] = initialTransition(shipMachine, {
+      failed: "",
+      preparedRetries:
+        scenario === "apply-failed" ? { [head]: Number.MAX_SAFE_INTEGER } : {},
+      successful: liveSha,
+    });
+
+    const checkpoints: (typeof ShipCheckpoint.Type)[] = [];
+    const receipts: (typeof ShipReceipt.Type)[] = [];
+    const holds = new Map<string, string>();
+    let recoveries = 0;
+
+    const cycle = yield* shipCycle<
+      | FileSystem.FileSystem
+      | Path.Path
+      | ChildProcessSpawner.ChildProcessSpawner
+      | HttpClient.HttpClient
+    >(initial, {
+      checkpoint: (state) =>
+        Effect.sync(() => {
+          checkpoints.push(state);
+        }),
+      deployPrepared: Effect.fn("Fixture.apply")(function* apply(payload) {
+        expect(checkpoints).toHaveLength(1);
+        expect(checkpoints[0]?.failed).toBe(payload.commit);
+
+        const stage = yield* preparedDeployment(payload, {
+          SERVICE_DID: "fixture",
+        });
+
+        const download = yield* Effect.gen(function* attemptDownload() {
+          const releases = yield* ReleaseSource;
+
+          return yield* releases.get({
+            size: 1,
+            url: "https://example.invalid/asset",
+          });
+        }).pipe(Effect.provide(deploymentReleaseSource(payload)), Effect.flip);
+
+        expect(download.reason).toContain("already-pinned host binaries");
+
+        expect(stage.backup).toBe(programs.backup);
+        expect(stage.cli).toBe(programs.cli);
+        expect(stage.restart).toBe(programs.restart);
+        expect(stage.deployment.bundle).toBe(programs.worker);
+        expect(stage.deployment.configuration).toContain(
+          '"vars":{"SERVICE_DID":"fixture"}'
+        );
+
+        if (scenario === "candidate-date") {
+          expect(stage.deployment.configuration).toContain(
+            '"compatibility_date":"2026-11-10"'
+          );
+        }
+
+        return {
+          celldRestarted: false,
+          restartSeconds: 0,
+          result:
+            scenario === "apply-failed"
+              ? ("failed" as const)
+              : ("success" as const),
+        };
+      }, Effect.orDie),
+      notify: () => Effect.void,
+      record: (receipt) =>
+        Effect.sync(() => {
+          receipts.push(receipt);
+        }),
+      recover: Effect.sync(() => {
+        recoveries += 1;
+
+        return "recovered" as const;
+      }),
+      select: (saved, now) =>
+        selectPrepared<
+          ChildProcessSpawner.ChildProcessSpawner | HttpClient.HttpClient
+        >(evidence, saved, now, (sha, reason) => {
+          holds.set(sha, reason);
+        }),
+    }).pipe(
+      Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, commands),
+      Effect.provideService(HttpClient.HttpClient, client(scenario))
+    );
+
+    const success =
+      scenario === "ready" ||
+      scenario === "pending-head" ||
+      scenario === "candidate-date" ||
+      scenario === "paginated-jobs";
+
+    const expectedHold = reasonByCase[scenario];
+
+    if (expectedHold === undefined) {
+      expect(holds.size).toBe(0);
+    } else {
+      const [key, expected] = expectedHold;
+      expect(holds.get(key)).toContain(expected);
+    }
+
+    const failed = scenario === "apply-failed";
+    expect(checkpoints).toHaveLength(success || failed ? 2 : 0);
+    expect(receipts.map((receipt) => receipt.sha)).toEqual(
+      success || failed ? [eligible] : []
+    );
+    expect(recoveries).toBe(failed ? 1 : 0);
+    expect(cycle.context.successful).toBe(success ? eligible : liveSha);
+
+    if (failed) {
+      expect(receipts[0]).toMatchObject({
+        gate: "deploy",
+        recovered: true,
+        result: "failed",
+      });
+      expect(checkpoints[1]).toMatchObject({
+        failed: eligible,
+        preparedRetries: { [head]: Number.MAX_SAFE_INTEGER },
         successful: liveSha,
       });
 
-      const checkpoints: (typeof ShipCheckpoint.Type)[] = [];
-      const receipts: (typeof ShipReceipt.Type)[] = [];
-      const holds = new Map<string, string>();
-      let recoveries = 0;
-
-      const cycle = yield* shipCycle<
-        | FileSystem.FileSystem
-        | Path.Path
-        | ChildProcessSpawner.ChildProcessSpawner
-        | HttpClient.HttpClient
-      >(initial, {
-        checkpoint: (state) =>
-          Effect.sync(() => {
-            checkpoints.push(state);
-          }),
-        deployPrepared: Effect.fn("Fixture.apply")(function* apply(payload) {
-          expect(checkpoints).toHaveLength(1);
-          expect(checkpoints[0]?.failed).toBe(payload.commit);
-
-          const stage = yield* preparedDeployment(payload, {
-            SERVICE_DID: "fixture",
-          });
-
-          const download = yield* Effect.gen(function* attemptDownload() {
-            const releases = yield* ReleaseSource;
-
-            return yield* releases.get({
-              size: 1,
-              url: "https://example.invalid/asset",
-            });
-          }).pipe(
-            Effect.provide(deploymentReleaseSource(payload)),
-            Effect.flip
-          );
-
-          expect(download.reason).toContain("already-pinned host binaries");
-
-          expect(stage.backup).toBe(programs.backup);
-          expect(stage.cli).toBe(programs.cli);
-          expect(stage.restart).toBe(programs.restart);
-          expect(stage.deployment.bundle).toBe(programs.worker);
-          expect(stage.deployment.configuration).toContain(
-            '"vars":{"SERVICE_DID":"fixture"}'
-          );
-
-          if (scenario === "candidate-date") {
-            expect(stage.deployment.configuration).toContain(
-              '"compatibility_date":"2026-11-10"'
-            );
-          }
-
-          return {
-            celldRestarted: false,
-            restartSeconds: 0,
-            result:
-              scenario === "apply-failed"
-                ? ("failed" as const)
-                : ("success" as const),
-          };
-        }, Effect.orDie),
-        notify: () => Effect.void,
-        record: (receipt) =>
-          Effect.sync(() => {
-            receipts.push(receipt);
-          }),
-        recover: Effect.sync(() => {
-          recoveries += 1;
-
-          return "recovered" as const;
-        }),
-        select: (saved, now) =>
-          selectPrepared<
-            ChildProcessSpawner.ChildProcessSpawner | HttpClient.HttpClient
-          >(evidence, saved, now, (sha, reason) => {
-            holds.set(sha, reason);
-          }),
-      }).pipe(
+      const next = yield* selectPrepared<
+        ChildProcessSpawner.ChildProcessSpawner | HttpClient.HttpClient
+      >(
+        evidence,
+        cycle.context,
+        (yield* Clock.currentTimeMillis) / 1000,
+        (sha, reason) => {
+          holds.set(sha, reason);
+        }
+      ).pipe(
         Effect.provideService(
           ChildProcessSpawner.ChildProcessSpawner,
           commands
@@ -423,78 +513,172 @@ it.effect.prop(
         Effect.provideService(HttpClient.HttpClient, client(scenario))
       );
 
-      const success =
-        scenario === "ready" ||
-        scenario === "pending-head" ||
-        scenario === "candidate-date" ||
-        scenario === "paginated-jobs";
+      expect(Option.isNone(next)).toBe(true);
+      expect(holds.get(eligible)).toBe("DeployFailureBarrier");
+    }
+  });
 
-      if (scenario === "new-binding") {
-        expect(holds.get(eligible)).toBe("ManifestChange: needs legacy ship");
+for (const scenario of Case.literals) {
+  it.effect(
+    `prepared ship requires exact ancestry, fence and bytes: ${scenario}`,
+    () => checkPrepared(scenario).pipe(Effect.provide(NodeServices.layer))
+  );
+}
+
+it.effect("a newer fence attempt invalidates a cached success", () =>
+  Effect.gen(function* checkRerun() {
+    let attempt = 1;
+    let charged = 0;
+    const jobRequests: string[] = [];
+
+    const evidence = preparedEvidence(
+      repository,
+      [
+        "--candidate-file",
+        "/fixture/list",
+        "--artifact-helper",
+        "/fixture/helper",
+      ],
+      "/fixture",
+      {
+        charge: githubBudget(),
+        save: Effect.sync(() => {
+          charged += 1;
+        }),
       }
+    );
 
-      if (scenario === "non-tip") {
-        expect(holds.get(eligible)).toContain("NotPushTip");
-      }
+    const http = HttpClient.make((request) => {
+      const path = new URL(request.url).pathname;
 
-      if (scenario === "invalid-format") {
-        expect(holds.get(eligible)).toContain("BundleFormat");
-      }
+      if (path.endsWith("/runs")) {
+        if (request.headers["if-none-match"] === `"attempt-${attempt}"`) {
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(
+              request,
+              new Response(null, { status: 304 })
+            )
+          );
+        }
 
-      const failed = scenario === "apply-failed";
-      expect(checkpoints).toHaveLength(success || failed ? 2 : 0);
-      expect(receipts.map((receipt) => receipt.sha)).toEqual(
-        success || failed ? [eligible] : []
-      );
-      expect(recoveries).toBe(failed ? 1 : 0);
-      expect(cycle.context.successful).toBe(success ? eligible : liveSha);
-
-      if (failed) {
-        expect(receipts[0]).toMatchObject({
-          gate: "deploy",
-          recovered: true,
-          result: "failed",
-        });
-        expect(checkpoints[1]).toMatchObject({
-          failed: eligible,
-          preparedRetries: { [head]: Number.MAX_SAFE_INTEGER },
-          successful: liveSha,
-        });
-
-        const next = yield* selectPrepared<
-          ChildProcessSpawner.ChildProcessSpawner | HttpClient.HttpClient
-        >(
-          evidence,
-          cycle.context,
-          (yield* Clock.currentTimeMillis) / 1000,
-          (sha, reason) => {
-            holds.set(sha, reason);
-          }
-        ).pipe(
-          Effect.provideService(
-            ChildProcessSpawner.ChildProcessSpawner,
-            commands
-          ),
-          Effect.provideService(HttpClient.HttpClient, client(scenario))
+        return Effect.succeed(
+          HttpClientResponse.fromWeb(
+            request,
+            Response.json(
+              {
+                workflow_runs: [
+                  { ...run(eligible, "ready"), run_attempt: attempt },
+                ],
+              },
+              { headers: { ETag: `"attempt-${attempt}"` } }
+            )
+          )
         );
-
-        expect(Option.isNone(next)).toBe(true);
-        expect(holds.get(eligible)).toBe("DeployFailureBarrier");
       }
-    }).pipe(Effect.provide(NodeServices.layer)),
-  { arbitrary: { runs: 100 } }
+
+      jobRequests.push(path);
+
+      return Effect.succeed(
+        HttpClientResponse.fromWeb(
+          request,
+          Response.json({
+            jobs: [
+              {
+                conclusion: attempt === 1 ? "success" : "failure",
+                head_sha: eligible,
+                name: "fence",
+                status: "completed",
+              },
+            ],
+          })
+        )
+      );
+    });
+
+    const fence = evidence
+      .fence(eligible)
+      .pipe(Effect.provideService(HttpClient.HttpClient, http));
+
+    expect(yield* fence).toBe(true);
+    expect(yield* fence).toBe(true);
+    attempt = 2;
+    expect(yield* fence).toBe(false);
+    expect(yield* fence).toBe(false);
+    expect(charged).toBe(6);
+    expect(jobRequests.map((path) => path.split("/").at(-2))).toEqual([
+      "1",
+      "2",
+    ]);
+  })
+);
+
+it.effect("first-parent proof refuses both a cycle and a 257th commit", () =>
+  Effect.gen(function* boundedProof() {
+    const commits = Array.from({ length: 257 }, (_, index) =>
+      index.toString(16).padStart(40, "0")
+    );
+
+    const tip = commits[256] ?? head;
+
+    for (const cycle of [true, false]) {
+      const holds = new Map<string, string>();
+      let count = 0;
+
+      const outcome = yield* selectPrepared(
+        {
+          artifact: () =>
+            Effect.die("unproven ancestry cannot check artifacts"),
+          eligible: Effect.succeed(new Set([tip])),
+          fence: () => Effect.die("unproven ancestry cannot check fences"),
+          firstParent: (sha) =>
+            Effect.sync(() => {
+              count += 1;
+
+              return cycle
+                ? tip
+                : (commits[commits.indexOf(sha) - 1] ?? checkpoint);
+            }),
+          head: Effect.succeed(tip),
+        },
+        { failed: "", successful: checkpoint },
+        0,
+        (sha, reason) => {
+          holds.set(sha, reason);
+        }
+      );
+
+      expect(Option.isNone(outcome)).toBe(true);
+      expect(holds.size).toBe(1);
+      expect(holds.get("")).toContain("BeyondFirstParentLimit");
+      expect(count).toBe(cycle ? 1 : 256);
+    }
+  })
+);
+
+it.effect("GitHub request debt survives restarting the signer", () =>
+  Effect.gen(function* restartBudget() {
+    const fs = yield* FileSystem.FileSystem;
+    const dir = yield* fs.makeTempDirectoryScoped();
+    const file = `${dir}/budget.json`;
+    const beforeRestart = yield* durableGithubBudget(file);
+
+    for (let request = 0; request < 39; request += 1) {
+      expect(beforeRestart.charge(1000)).toBe(true);
+    }
+
+    yield* beforeRestart.save;
+
+    const restarted = yield* durableGithubBudget(file);
+    expect(restarted.charge(3_600_999)).toBe(false);
+    expect(restarted.charge(3_601_000)).toBe(true);
+  }).pipe(Effect.provide(NodeServices.layer))
 );
 
 it.prop(
   "GitHub evidence charges fewer than 40 requests in any rolling hour",
   [
     Schema.Array(
-      Schema.Struct({
-        elapsed: Schema.Int.check(
-          Schema.isBetween({ maximum: 180_000, minimum: 0 })
-        ),
-        unchanged: Schema.Boolean,
-      })
+      Schema.Int.check(Schema.isBetween({ maximum: 180_000, minimum: 0 }))
     ).check(Schema.isMinLength(100), Schema.isMaxLength(250)),
   ],
   ([ticks]) => {
@@ -502,29 +686,21 @@ it.prop(
     const charged: number[] = [];
     let previous = 0;
 
-    for (const { elapsed, unchanged } of ticks) {
+    for (const elapsed of ticks) {
       const now = previous + elapsed;
       previous = now;
-      const refund = reserve(now);
+      const count = charged.filter((time) => time > now - 3_600_000).length;
+      const admitted = reserve(now);
+      expect(admitted).toBe(count < 39);
 
-      if (refund !== null) {
-        if (unchanged) {
-          refund();
-        } else {
-          charged.push(now);
-        }
+      if (admitted) {
+        charged.push(now);
       }
-
-      expect(
-        charged.filter((time) => time > now - 3_600_000).length
-      ).toBeLessThan(40);
     }
 
     const burst = githubBudget();
     expect(
-      Array.from({ length: 100 }, () => burst(0)).filter(
-        (value) => value !== null
-      )
+      Array.from({ length: 100 }, () => burst(0)).filter(Boolean)
     ).toHaveLength(39);
   }
 );

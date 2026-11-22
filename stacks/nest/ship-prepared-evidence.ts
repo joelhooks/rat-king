@@ -12,6 +12,7 @@ import {
   Sha256,
 } from "./prepared-payload.ts";
 import { Sha } from "./ship-config.ts";
+import type { GithubBudget } from "./ship-github-budget.ts";
 import { githubBudget } from "./ship-github-budget.ts";
 import { boundedOutput, decodeUtf8, readCommand } from "./ship-process.ts";
 import { maxFirstParents } from "./ship-select.ts";
@@ -83,11 +84,17 @@ const Fence = Schema.fromJsonString(
         id: Schema.Int.check(Schema.isGreaterThan(0)),
         path: Schema.String,
         run_attempt: Schema.Int.check(Schema.isGreaterThan(0)),
+        run_started_at: Schema.optionalKey(Schema.String),
         status: Schema.String,
+        updated_at: Schema.optionalKey(Schema.String),
       })
     ),
   })
 );
+
+export const fenceJobName = "fence";
+
+const pendingFenceMillis = 30 * 60 * 1000;
 
 const FenceJobs = Schema.fromJsonString(
   Schema.Struct({
@@ -111,15 +118,14 @@ const github = Effect.fn("Ship.githubEvidence")(
   function* github(
     repository: string,
     route: string,
-    charge: ReturnType<typeof githubBudget>,
+    budget: GithubBudget,
     etag?: string
   ) {
-    const refund = charge(yield* Clock.currentTimeMillis);
-
-    if (refund === null) {
+    if (!budget.charge(yield* Clock.currentTimeMillis)) {
       return yield* rateLimited();
     }
 
+    yield* budget.save;
     const client = yield* HttpClient.HttpClient;
 
     const headers = {
@@ -136,8 +142,6 @@ const github = Effect.fn("Ship.githubEvidence")(
     );
 
     if (response.status === 304 && etag !== undefined) {
-      refund();
-
       return { response, text: undefined };
     }
 
@@ -232,13 +236,56 @@ export const verifyShipWorkspace = Effect.fn("Ship.verifyWorkspace")(
   }
 );
 
+const exactFence = Effect.fn("Ship.exactFence")(function* exactFence(
+  workflow: (typeof Fence.Type)["workflow_runs"][number] | undefined,
+  sha: string
+) {
+  if (workflow === undefined) {
+    return yield* new FleetError({
+      reason: "NotPushTip: no exact pushed-main fence run",
+    });
+  }
+
+  if (
+    workflow.head_sha !== sha ||
+    workflow.head_branch !== "main" ||
+    workflow.event !== "push" ||
+    workflow.path !== ".github/workflows/fence.yml"
+  ) {
+    return yield* unavailable();
+  }
+
+  if (workflow.status !== "completed") {
+    const now = yield* Clock.currentTimeMillis;
+
+    const updated = Date.parse(
+      workflow.run_started_at ?? workflow.updated_at ?? ""
+    );
+
+    return yield* new FleetError({
+      reason:
+        Number.isFinite(updated) && now - updated >= pendingFenceMillis
+          ? "ExactFencePendingOverdue"
+          : "ExactFencePending",
+    });
+  }
+
+  return workflow;
+});
+
 const artifactMissing = () =>
   new FleetError({ reason: "ArtifactMissingOrUnreadable" });
+
+const ephemeralBudget = (): GithubBudget => ({
+  charge: githubBudget(),
+  save: Effect.void,
+});
 
 export const preparedEvidence = (
   repository: string,
   args: PreparedArgs,
-  workspace: string
+  workspace: string,
+  budget: GithubBudget = ephemeralBudget()
 ) => {
   const [, list, , helper] = args;
 
@@ -253,16 +300,19 @@ export const preparedEvidence = (
     );
 
   const parents = new Map<string, string | undefined>();
-  const charge = githubBudget();
   const completed = new Map<string, boolean>();
-  const green = new Set<string>();
+
+  const runs = new Map<
+    string,
+    { readonly etag: string | undefined; readonly text: string }
+  >();
 
   let ref:
     | { readonly sha: string; readonly etag: string | undefined }
     | undefined;
 
   const get = (route: string, etag?: string) =>
-    github(repository, route, charge, etag);
+    github(repository, route, budget, etag);
 
   return {
     artifact: Effect.fn("Ship.snapshot")(function* artifact(sha: string) {
@@ -298,34 +348,32 @@ export const preparedEvidence = (
       return new Set([...pinned].filter((sha) => candidates.has(sha)));
     }),
     fence: Effect.fn("Ship.preparedFence")(function* fence(sha: string) {
-      if (green.has(sha)) {
-        return true;
-      }
+      const cached = runs.get(sha);
 
-      const { text } = yield* get(
-        `actions/workflows/fence.yml/runs?branch=main&event=push&head_sha=${sha}&per_page=1`
+      const { response, text } = yield* get(
+        `actions/workflows/fence.yml/runs?branch=main&event=push&head_sha=${sha}&per_page=1`,
+        cached?.etag
       );
 
+      const body = text ?? cached?.text;
+
+      if (text !== undefined) {
+        if (runs.size >= maxFirstParents * 2) {
+          runs.delete(runs.keys().next().value ?? "");
+        }
+
+        runs.set(sha, { etag: response.headers.etag, text });
+      }
+
       const {
-        workflow_runs: [workflow],
-      } = yield* Schema.decodeUnknownEffect(Fence)(text).pipe(
+        workflow_runs: [candidate],
+      } = yield* Schema.decodeUnknownEffect(Fence)(body).pipe(
         Effect.mapError(unavailable)
       );
 
-      if (workflow === undefined) {
-        return yield* new FleetError({
-          reason: "NotPushTip: no exact pushed-main fence run",
-        });
-      }
+      const workflow = yield* exactFence(candidate, sha);
 
-      if (
-        workflow.head_sha !== sha ||
-        workflow.head_branch !== "main" ||
-        workflow.event !== "push" ||
-        workflow.path !== ".github/workflows/fence.yml" ||
-        workflow.status !== "completed" ||
-        workflow.conclusion !== "success"
-      ) {
+      if (workflow.conclusion !== "success") {
         return false;
       }
 
@@ -341,7 +389,7 @@ export const preparedEvidence = (
         `actions/runs/${workflow.id}/attempts/${workflow.run_attempt}/jobs?per_page=100`
       );
 
-      const fences = jobs.filter((job) => job.name === "fence");
+      const fences = jobs.filter((job) => job.name === fenceJobName);
 
       const ok =
         fences.length === 1 &&
@@ -357,14 +405,6 @@ export const preparedEvidence = (
       }
 
       completed.set(key, ok);
-
-      if (ok) {
-        if (green.size >= maxFirstParents * 2) {
-          green.delete(green.keys().next().value ?? "");
-        }
-
-        green.add(sha);
-      }
 
       return ok;
     }),

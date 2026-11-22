@@ -8,6 +8,9 @@ import {
   Effect,
   FileSystem,
   Layer,
+  Path,
+  Redacted,
+  Result,
   Schema,
 } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -15,15 +18,26 @@ import { expect } from "vitest";
 
 import { RuntimeFiles } from "../../../packages/alchemy-nest/src/agent-runtime-files.ts";
 import { Deployment } from "../../../packages/alchemy-nest/src/deployment.ts";
-import { textDigest } from "../../../packages/alchemy-nest/src/files.ts";
+import {
+  digest,
+  textDigest,
+} from "../../../packages/alchemy-nest/src/files.ts";
 import { SecretSource } from "../../../packages/alchemy-nest/src/secret-source.ts";
 import {
   Rendered,
   renderProviders,
 } from "../../../packages/alchemy-nest/test/instance-render.ts";
+import { preparedApply } from "../../../stacks/nest/prepared-apply.ts";
 import { mailboxManifest } from "../../../stacks/nest/prepared-manifest.ts";
-import { run } from "../../../stacks/nest/runtime.ts";
-import { preparedStageProvider } from "../../../stacks/nest/stage-config.ts";
+import { encodePrepared } from "../../../stacks/nest/prepared-payload.ts";
+import { execute, shipCommand } from "../../../stacks/nest/ship-command.ts";
+import {
+  ShipCheckpoint,
+  ShipReceipt,
+} from "../../../stacks/nest/ship-config.ts";
+import { withShipLock } from "../../../stacks/nest/ship-lock.ts";
+import { readCommand } from "../../../stacks/nest/ship-process.ts";
+import { FleetError } from "../../../stacks/nest/stage-config.ts";
 import type { StageConfigValue } from "../../../stacks/nest/stage-config.ts";
 
 const workerBytes =
@@ -34,23 +48,15 @@ const sha = "2".repeat(40);
 const fakeProviders = (
   applied: { config: string; worker: string; projection: string }[]
 ) => {
-  const renderer = renderProviders.pipe(
-    Layer.provideMerge(
-      SecretSource.fromRecord({
-        fake_access_name: "fixture-access",
-        fake_secret_name: "fixture-secret",
-      })
-    )
-  );
+  const renderer = renderProviders.pipe(Layer.provideMerge(SecretSource.layer));
 
   const deployment = Provider.effect(
     Deployment,
     Effect.gen(function* renderDeployment() {
-      const fs = yield* FileSystem.FileSystem;
       const rendered = yield* Rendered;
       const source = yield* Config.String("RAT_KING_SECRET_SOURCE");
-      const credentials = yield* Config.String("CREDENTIALS_DIRECTORY");
-      const projection = yield* fs.readFileString(`${credentials}/fixture`);
+      const secrets = yield* SecretSource;
+      const projection = yield* secrets.resolve({ secret: "fixture" });
 
       return Deployment.Provider.of({
         delete: () => Effect.void,
@@ -65,7 +71,7 @@ const fakeProviders = (
             ).toBe(workerBytes);
             applied.push({
               config: news.configuration,
-              projection: `${source}:${projection}`,
+              projection: `${source}:${Redacted.value(projection)}`,
               worker: news.bundle,
             });
 
@@ -120,6 +126,16 @@ const stage = (root: string): StageConfigValue => {
       RAT_KING_STATE_DIR: root,
       RAT_KING_VERSION: "1.2.3",
     },
+    shipAttempt: {
+      events: `${root}/events`,
+      restart: {
+        lock: `${root}/lock`,
+        marker: `${root}/marker`,
+        unit: "test.service",
+        units: ["test.service"],
+      },
+      sha,
+    },
   };
 };
 
@@ -127,7 +143,7 @@ it.effect.prop(
   "run deploy gives the fake Alchemy provider candidate manifest bytes and ambient credentials",
   [Schema.Int.check(Schema.isBetween({ maximum: 28, minimum: 1 }))],
   ([day]) =>
-    Effect.gen(function* preparedApply() {
+    Effect.gen(function* checkApply() {
       const date = `2026-11-${String(day).padStart(2, "0")}`;
 
       const applied: { config: string; worker: string; projection: string }[] =
@@ -138,7 +154,14 @@ it.effect.prop(
       yield* fs.writeFileString(`${root}/fixture`, "fixture-credential", {
         mode: 0o600,
       });
+      yield* fs.writeFileString(`${root}/fake_access_name`, "fixture-access", {
+        mode: 0o600,
+      });
+      yield* fs.writeFileString(`${root}/fake_secret_name`, "fixture-secret", {
+        mode: 0o600,
+      });
       yield* fs.writeFileString(`${root}/claude-mtimes.json`, "{}");
+      yield* fs.writeFileString(`${root}/events`, "", { mode: 0o600 });
       yield* fs.writeFileString(
         `${root}/documents.json`,
         JSON.stringify([
@@ -173,50 +196,356 @@ it.effect.prop(
         }),
         { mode: 0o600 }
       );
-      yield* run(
-        "deploy",
-        {
-          backup: workerBytes,
-          cli: workerBytes,
-          commit: sha,
-          manifest: {
-            ...mailboxManifest,
-            declaration: {
-              ...mailboxManifest.declaration,
-              compatibility_date: date,
-            },
+      const stageFile = `${root}/stage.json`;
+      const bundleFile = `${root}/verified.bundle`;
+
+      const candidate = {
+        backup: workerBytes,
+        cli: workerBytes,
+        commit: sha,
+        manifest: {
+          ...mailboxManifest,
+          declaration: {
+            ...mailboxManifest.declaration,
+            compatibility_date: date,
           },
-          restart: workerBytes,
-          version: "1.2.3",
-          worker: workerBytes,
         },
-        {
-          listener: () => Effect.succeed("fixture ready"),
-          providers: fakeProviders(applied),
-        }
-      ).pipe(
-        Effect.provideService(FetchHttpClient.Fetch, () => {
-          throw new Error(
-            "Prepared apply attempted network I/O in the fake-provider fixture"
-          );
+        restart: workerBytes,
+        version: "1.2.3",
+        worker: workerBytes,
+      };
+
+      const bytes = encodePrepared(candidate);
+      const fixture = stage(root);
+      yield* fs.writeFileString(
+        stageFile,
+        JSON.stringify({
+          ...fixture,
+          runtime: { ...fixture.runtime, RAT_KING_SECRET_SOURCE: "systemd" },
         }),
-        Effect.provide(
-          preparedStageProvider(stage(root)).pipe(
-            Layer.provide(
-              ConfigProvider.layer(
-                ConfigProvider.fromUnknown({
-                  CREDENTIALS_DIRECTORY: root,
-                  RAT_KING_SECRET_SOURCE: "systemd",
-                })
-              )
+        {
+          mode: 0o600,
+        }
+      );
+      yield* fs.writeFile(
+        bundleFile,
+        encodePrepared({ ...candidate, version: "1.2.4" }),
+        { mode: 0o600 }
+      );
+
+      const run = (args: readonly string[], secretSource = "systemd") =>
+        preparedApply(args, {
+          beforeDeploy: () => Effect.void,
+          listener: () => Effect.succeed("fixture ready"),
+          providers: (trusted) => {
+            const fake = fakeProviders(applied);
+
+            return {
+              providers: Layer.merge(trusted.providers, fake.providers),
+              state: fake.state,
+            };
+          },
+        }).pipe(
+          Effect.provideService(FetchHttpClient.Fetch, () => {
+            throw new Error(
+              "Prepared apply attempted network I/O in the fake-provider fixture"
+            );
+          }),
+          Effect.provide(
+            ConfigProvider.layer(
+              ConfigProvider.fromUnknown({
+                CREDENTIALS_DIRECTORY: root,
+                RAT_KING_SECRET_SOURCE: secretSource,
+                RAT_KING_STAGE_CONFIG: stageFile,
+              })
             )
           )
-        )
-      );
+        );
+
+      for (const [args, reason] of [
+        [[], "Usage: prepared-apply"],
+        [
+          [bundleFile, "3".repeat(40), digest(bytes)],
+          "Prepared apply attempt SHA refused",
+        ],
+        [
+          [bundleFile, sha, digest(bytes)],
+          "Prepared fleet bundle pin mismatch",
+        ],
+        [
+          [
+            bundleFile,
+            sha,
+            digest(encodePrepared({ ...candidate, version: "1.2.4" })),
+          ],
+          "Prepared apply attempt version refused",
+        ],
+      ] as const) {
+        const failure = yield* run(args).pipe(Effect.result);
+        expect(
+          Result.isFailure(failure) &&
+            Schema.is(FleetError)(failure.failure) &&
+            failure.failure.reason
+        ).toContain(reason);
+      }
+
+      expect(applied).toHaveLength(0);
+      yield* fs.writeFile(bundleFile, bytes);
+
+      const mismatch = yield* run(
+        [bundleFile, sha, digest(bytes)],
+        "agent-secrets"
+      ).pipe(Effect.result);
+
+      expect(
+        Result.isFailure(mismatch) &&
+          Schema.is(FleetError)(mismatch.failure) &&
+          mismatch.failure.reason
+      ).toBe("Process and stage credential sources disagree");
+      expect(applied).toHaveLength(0);
+      yield* run([bundleFile, sha, digest(bytes)]);
       expect(applied).toHaveLength(1);
       expect(applied[0]?.config).toContain(`"compatibility_date":"${date}"`);
       expect(applied[0]?.projection).toBe("systemd:fixture-credential");
       expect(applied[0]?.worker).toBe(workerBytes);
     }).pipe(Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 5 } }
+);
+
+const testShipStage = (root: string): StageConfigValue => ({
+  ...stage(root),
+  ship: {
+    bot: "fixture",
+    checkpoint: `${root}/checkpoint`,
+    intervalSeconds: 1,
+    launchd: {
+      errorLog: root,
+      label: "fixture",
+      node: process.execPath,
+      outputLog: root,
+      path: "/usr/bin",
+      pnpm: "pnpm",
+    },
+    notify: {
+      directory: root,
+      from: "test",
+      secret: "test",
+      to: ["test-desk"],
+    },
+    receipts: `${root}/receipts`,
+    releases: `${root}/releases`,
+    repository: "example/fixture",
+    restart: {
+      lock: `${root}/lock`,
+      marker: `${root}/marker`,
+      unit: "test.service",
+      units: ["test.service"],
+    },
+    source: root,
+  },
+});
+
+it.effect(
+  "prepared command persists holds, pages by reason, and never records the live SHA",
+  () =>
+    Effect.gen(function* checkHolds() {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const config = testShipStage(root);
+      const checkpoint = `${root}/checkpoint`;
+      const live = "0".repeat(40);
+      const old = "f".repeat(40);
+
+      const backlog = Array.from({ length: 256 }, (_, i) =>
+        (i + 1).toString(16).padStart(40, "0")
+      );
+
+      const head = backlog.at(-1) ?? live;
+      const pages: string[] = [];
+      yield* fs.writeFileString(
+        checkpoint,
+        JSON.stringify({ failed: "", successful: live }),
+        { mode: 0o600 }
+      );
+
+      const cycle = (eligible: readonly string[], reason: string) =>
+        Effect.gen(function* runCycle() {
+          let checked = false;
+
+          return yield* shipCommand(
+            config,
+            Effect.die("readiness holds must not recover storage"),
+            [
+              "--candidate-file",
+              `${root}/candidates`,
+              "--artifact-helper",
+              `${root}/helper`,
+            ],
+            {
+              drifted: Effect.sync(() => {
+                const before = checked;
+                checked = true;
+
+                return before;
+              }),
+              evidence: {
+                artifact: () =>
+                  Effect.die("held candidate may not open a bundle"),
+                eligible: Effect.succeed(new Set(eligible)),
+                fence: () => Effect.fail(new FleetError({ reason })),
+                firstParent: (candidate) =>
+                  Effect.succeed(
+                    backlog[backlog.indexOf(candidate) - 1] ?? live
+                  ),
+                head: Effect.succeed(head),
+              },
+              page: (message) =>
+                Effect.sync(() => {
+                  pages.push(message);
+                }),
+              workspace: () => Effect.void,
+            }
+          );
+        });
+
+      yield* cycle([], "unused");
+      expect(pages).toHaveLength(1);
+      expect(yield* fs.exists(`${root}/receipts`)).toBe(false);
+
+      const saved = yield* Schema.decodeEffect(
+        Schema.fromJsonString(ShipCheckpoint)
+      )(yield* fs.readFileString(checkpoint));
+
+      expect(saved.preparedHolds).toEqual({ global: "NoPinnedCandidates" });
+
+      yield* cycle([old, live, ...backlog], "ExactFencePending");
+      expect(pages).toHaveLength(1);
+      yield* cycle([old, live, ...backlog], "ExactFencePendingOverdue");
+      expect(pages).toHaveLength(2);
+      yield* cycle(backlog.toReversed(), "ExactFencePendingOverdue");
+      expect(pages).toHaveLength(2);
+
+      const receipts = (yield* fs.readFileString(`${root}/receipts`))
+        .trimEnd()
+        .split("\n")
+        .map((line) =>
+          Schema.decodeSync(Schema.fromJsonString(ShipReceipt))(line)
+        );
+
+      expect(receipts).toHaveLength(512);
+      expect(
+        receipts.every(
+          (receipt) =>
+            receipt.result === "held" &&
+            receipt.sha !== old &&
+            receipt.sha !== live
+        )
+      ).toBe(true);
+    }).pipe(Effect.provide(NodeServices.layer))
+);
+
+it.effect(
+  "a locked legacy worker fetches main and stops cleanly on checkpoint drift",
+  () =>
+    Effect.gen(function* legacyCycle() {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.realPath(yield* fs.makeTempDirectoryScoped());
+      const source = `${root}/source`;
+      const state = `${root}/state`;
+      const caller = `${root}/caller`;
+      const bot = `${root}/checks`;
+      const checkpoint = `${root}/checkpoint`;
+      const configPath = `${root}/stage.json`;
+      yield* Effect.forEach(
+        [source, state, caller],
+        (dir) => fs.makeDirectory(dir),
+        { discard: true }
+      );
+
+      const git = (args: readonly string[]) =>
+        readCommand("git", args, source, 4096, {
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_NOSYSTEM: "1",
+          HOME: root,
+          PATH: process.env.PATH ?? "/usr/bin:/bin",
+        });
+
+      yield* git(["init", "-b", "main", "-q"]);
+      yield* git([
+        "-c",
+        "user.email=fixture",
+        "-c",
+        "user.name=Fixture",
+        "commit",
+        "--allow-empty",
+        "-qm",
+        "fixture",
+      ]);
+      yield* git(["remote", "add", "origin", "."]);
+      const pushed = (yield* git(["rev-parse", "HEAD"])).trim();
+      yield* fs.writeFileString(
+        checkpoint,
+        JSON.stringify({ failed: "", successful: "0".repeat(40) }),
+        { mode: 0o600 }
+      );
+
+      const stageValue = testShipStage(root);
+      const { ship } = stageValue;
+
+      if (ship === undefined) {
+        return yield* Effect.die("Missing fixture ship config");
+      }
+
+      yield* fs.writeFileString(
+        configPath,
+        JSON.stringify({
+          ...stageValue,
+          runtime: { ...stageValue.runtime, RAT_KING_STATE_DIR: state },
+          ship: { ...ship, bot, source },
+        }),
+        { mode: 0o600 }
+      );
+      yield* fs.writeFileString(
+        bot,
+        `#!/bin/sh
+set -eu
+test "$1" = checks
+test "$3" = ${pushed}
+printf '%s\\n' '${JSON.stringify({ failed: "", successful: pushed })}' > '${checkpoint}'
+printf '%s\\n' '${JSON.stringify({ ok: true, result: { check_runs: [], sha: pushed } })}'
+`,
+        { mode: 0o700 }
+      );
+      const path = yield* Path.Path;
+
+      const entry = yield* path.fromFileUrl(
+        new URL("../../../stacks/nest/ship-worker.ts", import.meta.url)
+      );
+
+      yield* withShipLock(state, entry, configPath, ["ship"], caller).pipe(
+        Effect.timeout("10 seconds")
+      );
+
+      const saved = yield* Schema.decodeEffect(
+        Schema.fromJsonString(ShipCheckpoint)
+      )(yield* fs.readFileString(checkpoint));
+
+      expect(saved.successful).toBe(pushed);
+      expect((yield* git(["rev-parse", "origin/main"])).trim()).toBe(pushed);
+      expect(yield* fs.exists(`${root}/receipts`)).toBe(false);
+
+      const orphaned = yield* execute(
+        process.execPath,
+        [entry, "ship"],
+        caller,
+        {
+          RAT_KING_STAGE_CONFIG: configPath,
+        }
+      ).pipe(Effect.timeout("10 seconds"));
+
+      expect(orphaned.code).not.toBe(0);
+      expect(orphaned.stderrTail).toContain("ShipLockSupervisorLost");
+
+      return yield* Effect.void;
+    }).pipe(Effect.provide(NodeServices.layer))
 );

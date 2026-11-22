@@ -17,7 +17,11 @@ const Allowed = new Set([
   "COREPACK_HOME",
   "GIT_CONFIG_COUNT",
   "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_KEY_0",
   "GIT_CONFIG_NOSYSTEM",
+  "GIT_CONFIG_VALUE_0",
+  "GIT_NO_LAZY_FETCH",
+  "GIT_OPTIONAL_LOCKS",
   "GIT_TERMINAL_PROMPT",
   "HOME",
   "NPM_CONFIG_GLOBALCONFIG",
@@ -89,6 +93,7 @@ export const assertBuildEnvironment = Effect.fn("ShipBuild.environment")(
     return {
       GIT_CONFIG_GLOBAL: "/dev/null",
       GIT_CONFIG_NOSYSTEM: "1",
+      GIT_NO_LAZY_FETCH: "1",
       GIT_OPTIONAL_LOCKS: "0",
       GIT_TERMINAL_PROMPT: "0",
       HOME,
@@ -128,7 +133,13 @@ export const shipBuildCommand = Effect.fn("ShipBuild.command")(
     const git = (gitArgs: readonly string[]) =>
       readCommand(
         "git",
-        ["-c", "core.fsmonitor=false", ...gitArgs],
+        [
+          "-c",
+          "core.fsmonitor=false",
+          "-c",
+          `safe.directory=${root}`,
+          ...gitArgs,
+        ],
         root,
         131_072,
         env
