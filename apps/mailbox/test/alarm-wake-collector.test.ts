@@ -92,9 +92,9 @@ it.effect.prop(
         alarm: {
           ...alarm,
           notify: {
-            ...alarm.notify,
             config: "/fixture.invalid/config.json",
             directory: "/fixture.invalid/directory.json",
+            secret: alarm.notify.secret,
           },
           wakeTargets: [
             { name: "target", owner: "owner" },

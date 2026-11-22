@@ -35,12 +35,14 @@ export const prepareAlarmMail = Effect.fn("Alarm.prepareMail")(
       });
     }
 
-    const ship = yield* Schema.decodeUnknownEffect(ShipSettings)({
+    const { sender = "operator", ...notify } = config.alarm.notify;
+
+    const ship = yield* Schema.decodeEffect(ShipSettings)({
       ...config.ship,
       notify: {
-        ...config.alarm.notify,
-        from: "operator",
-        to: ["operator", ...new Set(names)],
+        ...notify,
+        from: sender,
+        to: [sender, ...new Set(names)],
       },
     }).pipe(
       Effect.mapError(
@@ -56,15 +58,15 @@ export const prepareAlarmMail = Effect.fn("Alarm.prepareMail")(
     );
 
     if (
-      prepared.targets.find((target) => target.name === "operator")?.did !==
+      prepared.targets.find((target) => target.name === sender)?.did !==
       prepared.senderDid
     ) {
       return yield* new FleetError({
-        reason: "Alarm signer is not the configured operator",
+        reason: `Alarm signer is not the configured ${sender}`,
       });
     }
 
-    return prepared;
+    return { ...prepared, sender };
   }
 );
 
@@ -94,7 +96,7 @@ export const prepareAlarmDeliveries = Effect.fn("Alarm.prepareDeliveries")(
         ? prepared.body
         : yield* encodePayload({
             body: `${text} Evidence: ${dropped} retired or unknown recipient(s) dropped.`,
-            from: "operator",
+            from: prepared.sender,
             kind: "message",
           }).pipe(
             Effect.mapError(
@@ -175,7 +177,7 @@ const prepareDeskWake = Effect.fn("Alarm.prepareDeskWake")(
 
     const body = yield* encodePayload({
       body: yield* Schema.encodeEffect(Schema.fromJsonString(Wake.Main))(typed),
-      from: "operator",
+      from: prepared.sender,
       kind: "data",
       summary: `wake ${record.name} for ${record.messageId}`,
       to: recipient,
