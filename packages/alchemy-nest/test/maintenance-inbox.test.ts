@@ -1,6 +1,13 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
-import { DateTime, Effect, FileSystem, Option, Schema } from "effect";
+import {
+  DateTime,
+  Effect,
+  FileSystem,
+  Option,
+  PlatformError,
+  Schema,
+} from "effect";
 import { TestClock } from "effect/testing";
 import { expect } from "vitest";
 
@@ -41,6 +48,7 @@ const seed = Effect.fn("Test.maintenanceInbox")(function* seed() {
   );
 
   const config = {
+    alarmGid: Option.getOrThrow(info.gid),
     desk: "desk-fixture",
     directory,
     inbox: { operatorUid: Option.getOrThrow(info.uid), path },
@@ -106,6 +114,7 @@ it.effect(
       });
 
       yield* request(1);
+      yield* ingestMaintenance(config);
       yield* request(2, { id: requestId(99) });
       yield* request(3, { instance: "unlisted" });
       yield* request(4, { owner: "not an agent" });
@@ -129,7 +138,8 @@ it.effect(
       yield* fs.chmod(dropPath(15), 0o660);
       yield* request(16, { action: "extend" });
       yield* request(17, { instance: "fixture" });
-      yield* request(18, { action: "end", instance: "fixture" });
+      yield* request(18, { action: "extend" });
+      yield* request(19, { action: "extend" });
       yield* fs.writeFileString(`${inbox.path}/.staging.json`, "not final", {
         mode: 0o640,
       });
@@ -166,12 +176,13 @@ it.effect(
       );
 
       yield* TestClock.setTime(at + 1);
+      yield* request(20, { action: "end", instance: "fixture" });
       yield* ingestMaintenance(config);
       yield* deliver;
       expect(notices.at(-1)).toBe(
-        `maintenance end on fixture by owner-fixture now (${requestId(18)})`
+        `maintenance end on fixture by owner-fixture now (${requestId(20)})`
       );
-      expect(notices).toHaveLength(17);
+      expect(notices).toHaveLength(19);
 
       const windows = yield* readMaintenance(directory);
 
@@ -200,10 +211,10 @@ it.effect(
       expect(notices.at(-1)).toBe(
         `maintenance start on mailbox by owner-fixture until ${timestamp(at + hour)} (${requestId(15)})`
       );
-      expect(notices).toHaveLength(18);
+      expect(notices).toHaveLength(20);
       yield* ingestMaintenance(config);
       yield* deliver;
-      expect(notices).toHaveLength(18);
+      expect(notices).toHaveLength(20);
       expect(yield* fs.exists(dropPath(1))).toBe(true);
       expect(
         yield* fs.readFileString(`${directory}/maintenance.json`)
@@ -212,10 +223,11 @@ it.effect(
 );
 
 it.effect(
-  "maintenance suppresses paging until expiry and retries the same prepared desk envelope after a lost reply",
+  "maintenance suppresses paging until expiry and preserves queued and prepared notices after drop removal",
   () =>
     Effect.gen(function* replay() {
-      const { config, envelope, request } = yield* seed();
+      const fs = yield* FileSystem.FileSystem;
+      const { config, dropPath, envelope, request } = yield* seed();
       const { directory } = config;
       const { pages, ports, sent } = recorder();
       const attempts: (typeof EncryptedEnvelope.Type)[] = [];
@@ -242,12 +254,17 @@ it.effect(
       yield* request(1);
       yield* ingestMaintenance(config);
       yield* deliver;
+      yield* request(2, { instance: "fixture" });
+      yield* ingestMaintenance(config);
+      yield* fs.remove(dropPath(1));
+      yield* fs.remove(dropPath(2));
+      yield* TestClock.setTime(at + 24 * hour + 1);
       yield* ingestMaintenance(config);
       yield* deliver;
       yield* deliver;
 
-      expect(prepared).toBe(1);
-      expect(attempts).toEqual([envelope, envelope]);
+      expect(prepared).toBe(2);
+      expect(attempts).toEqual([envelope, envelope, envelope]);
 
       const maintenance = yield* readMaintenance(directory);
       const facts = { ...healthy, health: 503, maintenance };
@@ -348,6 +365,7 @@ it.effect(
             )
           );
 
+      yield* TestClock.setTime(at + 600_001);
       yield* ingest.pipe(
         Effect.provideService(FileSystem.FileSystem, {
           ...fs,
@@ -358,7 +376,7 @@ it.effect(
       expect(yield* readMaintenance(config.directory)).toEqual([]);
       expect(
         yield* fs.readFileString(`${config.directory}/maintenance.json`)
-      ).toContain("refused: invalid request file or JSON");
+      ).toContain("refused: request unreadable or wrong owner, group or mode");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
 );
 
@@ -407,20 +425,22 @@ it.effect(
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
 );
 
-it.effect(
-  "a permanently unpreparable notice gets one generic refusal, not an infinite retry",
-  () =>
+it.effect.prop(
+  "a permanently unpreparable notice gets one generic refusal or drops it if that cannot be prepared",
+  [Schema.Boolean],
+  ([canPrepareRefusal]) =>
     Effect.gen(function* fallback() {
       const { config, envelope, request } = yield* seed();
       const attempts: string[] = [];
       const sent: string[] = [];
+      let unavailable = 0;
 
       const deliver = deliverMaintenance(config.directory, {
         prepare: (text) =>
           Effect.suspend(() => {
             attempts.push(text);
 
-            return text.startsWith("maintenance start")
+            return !canPrepareRefusal || text.startsWith("maintenance start")
               ? Effect.fail(new MaintenancePreparationRefused())
               : Effect.succeed({ envelope, recipient: config.desk });
           }),
@@ -428,7 +448,9 @@ it.effect(
           Effect.sync(() => {
             sent.push(recipient);
           }),
-        unavailable: Effect.die("refusal could be delivered"),
+        unavailable: Effect.sync(() => {
+          unavailable += 1;
+        }),
       });
 
       yield* request(1);
@@ -440,6 +462,129 @@ it.effect(
         `maintenance start on mailbox by owner-fixture until ${timestamp(at + hour)} (${requestId(1)})`,
         `maintenance notice refused: could not prepare original decision (${requestId(1)})`,
       ]);
-      expect(sent).toEqual([config.desk]);
+      expect(sent).toEqual(canPrepareRefusal ? [config.desk] : []);
+      expect(unavailable).toBe(canPrepareRefusal ? 0 : 1);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+);
+
+it.effect(
+  "EACCES, wrong mode and wrong GID each get one refusal after ten minutes",
+  () =>
+    Effect.gen(function* faults() {
+      const fs = yield* FileSystem.FileSystem;
+      const { config, dropPath, envelope, request } = yield* seed();
+      const notes: string[] = [];
+
+      const access = Schema.TaggedStruct("PermissionDenied", {
+        method: Schema.String,
+        module: Schema.String,
+        syscall: Schema.String,
+      }).make({ method: "open", module: "FileSystem", syscall: "EACCES" });
+
+      const overridden = FileSystem.FileSystem.of({
+        ...fs,
+        lstat: (file) =>
+          fs.lstat(file).pipe(
+            Effect.map((info) =>
+              file === dropPath(3)
+                ? {
+                    ...info,
+                    gid: info.gid.pipe(Option.map((gid) => gid + 1)),
+                  }
+                : info
+            )
+          ),
+        open: (file, options) =>
+          file === dropPath(1)
+            ? Effect.fail(PlatformError.systemError(access))
+            : fs.open(file, options),
+      });
+
+      const ingest = ingestMaintenance(config).pipe(
+        Effect.provideService(FileSystem.FileSystem, overridden)
+      );
+
+      const deliver = deliverMaintenance(config.directory, {
+        prepare: (text) =>
+          Effect.sync(() => {
+            notes.push(text);
+
+            return { envelope, recipient: config.desk };
+          }),
+        send: () => Effect.void,
+        unavailable: Effect.die("refusal must be deliverable"),
+      });
+
+      yield* Effect.forEach([1, 2, 3], (index) => request(index));
+      yield* fs.chmod(dropPath(2), 0o644);
+      yield* TestClock.setTime(at + 600_000);
+      yield* ingest;
+      yield* deliver;
+      expect(notes).toEqual([]);
+      yield* TestClock.setTime(at + 600_001);
+      yield* ingest;
+      yield* deliver;
+      yield* ingest;
+      yield* deliver;
+      expect(notes).toEqual(
+        [1, 2, 3].map(
+          (index) =>
+            `refused: request unreadable or wrong owner, group or mode (${requestId(index)})`
+        )
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+);
+
+it.effect(
+  "an expired end fences an earlier still-live start after journal loss",
+  () =>
+    Effect.gen(function* cancelled() {
+      const fs = yield* FileSystem.FileSystem;
+      const { config, request } = yield* seed();
+      const file = `${config.directory}/maintenance.json`;
+      const ingest = ingestMaintenance(config);
+
+      yield* request(1);
+      yield* ingest;
+      expect(yield* readMaintenance(config.directory)).toHaveLength(1);
+      yield* request(2, { action: "end", until: timestamp(at + 60_000) });
+      yield* ingest;
+      expect(yield* readMaintenance(config.directory)).toMatchObject([
+        { ended: at },
+      ]);
+
+      yield* fs.remove(file);
+      yield* TestClock.setTime(at + 120_000);
+      yield* ingest;
+      expect(yield* readMaintenance(config.directory)).toEqual([]);
+      expect(yield* fs.readFileString(file)).toContain(
+        "start superseded by a later end"
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+);
+
+it.effect(
+  "future timestamps are deferred on first sight; only excessive skew is refused on a later tick",
+  () =>
+    Effect.gen(function* clock() {
+      const fs = yield* FileSystem.FileSystem;
+      const { config, request } = yield* seed();
+      const file = `${config.directory}/maintenance.json`;
+      const ingest = ingestMaintenance(config);
+
+      yield* request(1, {}, at + 300_000);
+      yield* request(2, {}, at + 300_001);
+      yield* ingest;
+      expect(yield* fs.readFileString(file)).not.toContain("refused:");
+      yield* ingest;
+      expect(yield* fs.readFileString(file)).toContain(
+        `more than five minutes ahead (${requestId(2, at + 300_001)})`
+      );
+      expect(yield* readMaintenance(config.directory)).toEqual([]);
+      yield* TestClock.setTime(at + 300_000);
+      yield* ingest;
+      expect(yield* readMaintenance(config.directory)).toMatchObject([
+        { requestId: requestId(1, at + 300_000) },
+      ]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
 );

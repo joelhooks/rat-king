@@ -286,41 +286,52 @@ it.effect.prop(
 
 it.effect.prop(
   "alarm-check pins absent observer labels and distinguishes a missing primary",
-  [StageConfig, LaunchdAlarmSettings],
-  ([base, settings]) =>
-    Effect.gen(function* omission() {
-      const { spawner } = yield* supervision(true, true);
-      const { doctor, ...stage } = base;
-      const { page: _page, ...alarm } = settings;
-      const config = { ...stage, alarm, comms: { local: stage.comms.local } };
-      const readings = Effect.succeed({ "celld.down": { status: "unknown" } });
+  [StageConfig, LaunchdAlarmSettings, SystemdAlarmSettings],
+  ([base, launchd, systemd]) =>
+    Effect.forEach([launchd, systemd], (settings) =>
+      Effect.gen(function* omission() {
+        const { spawner } = yield* supervision(true, true);
+        const { doctor, ...stage } = base;
+        const { page: _page, ...alarm } = settings;
+        const config = { ...stage, alarm, comms: { local: stage.comms.local } };
 
-      const checks = yield* Effect.all({
-        missing: stageAlarmCheck(config, readings),
-        primaryOnly: stageAlarmCheck(
-          { ...config, doctor: { primary: doctor?.primary ?? {} } },
-          readings
-        ),
-      }).pipe(
-        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)
-      );
+        const readings = Effect.succeed({
+          "celld.down": { status: "unknown" },
+        });
 
-      const common = {
-        "celld.down": { status: "unknown" },
-        "comms.remote": "not configured",
-        page: "not configured",
-        service: { active: true, kind: "launchd" },
-      };
+        const checks = yield* Effect.all({
+          missing: stageAlarmCheck(config, readings),
+          primaryOnly: stageAlarmCheck(
+            { ...config, doctor: { primary: doctor?.primary ?? {} } },
+            readings
+          ),
+        }).pipe(
+          Effect.provideService(
+            ChildProcessSpawner.ChildProcessSpawner,
+            spawner
+          )
+        );
 
-      expect(checks.primaryOnly).toEqual({
-        ...common,
-        "doctor.secondary": "not configured",
-      });
-      expect(checks.missing).toEqual({
-        ...common,
-        "doctor.primary": "missing",
-      });
-    }).pipe(Effect.provide(NodePath.layer)),
+        const common = {
+          "celld.down": { status: "unknown" },
+          "comms.remote": "not configured",
+          page: "not configured",
+          service:
+            settings.systemd === undefined
+              ? { active: true, kind: "launchd" }
+              : { active: true, enabled: true, kind: "systemd" },
+        };
+
+        expect(checks.primaryOnly).toEqual({
+          ...common,
+          "doctor.secondary": "not configured",
+        });
+        expect(checks.missing).toEqual({
+          ...common,
+          "doctor.primary": "missing",
+        });
+      })
+    ).pipe(Effect.provide(NodePath.layer)),
   { arbitrary: { runs: 3 } }
 );
 

@@ -76,6 +76,7 @@ const Notice = Schema.TaggedUnion({
 
 const State = Schema.Struct({
   ...MaintenanceFile.fields,
+  clockDeferred: Schema.optionalKey(Schema.Array(Schema.String)),
   requests: Schema.optionalKey(Schema.Record(Schema.String, Notice)),
 });
 
@@ -88,6 +89,7 @@ export class MaintenancePreparationRefused extends Data.TaggedError(
 ) {}
 
 interface Inbox {
+  readonly alarmGid: number | undefined;
   readonly desk: string;
   readonly directory: string;
   readonly inbox: { readonly path: string; readonly operatorUid: number };
@@ -112,10 +114,20 @@ const maxBytes = 4096;
 
 const maxAge = 4 * 3_600_000;
 
+const badDropAfter = 10 * 60_000;
+
+const maxClockSkew = 5 * 60_000;
+
 const decodeDrop = Schema.decodeOption(Schema.fromJsonString(MaintenanceDrop));
 
 const owns = (stat: FileSystem.File.Info, uid: number) =>
   Option.contains(stat.uid, uid);
+
+const isTerminal = Schema.is(
+  Schema.Union([Notice.cases.Sent, Notice.cases.Dropped])
+);
+
+const issuedAt = (id: string) => Number(BigInt(id.slice(0, 20)) / 1_000_000n);
 
 const readState = Effect.fn("MaintenanceInbox.readState")(function* readState(
   directory: string
@@ -140,7 +152,7 @@ const save = Effect.fn("MaintenanceInbox.save")(function* save(
 });
 
 const readDirectory = Effect.fn("MaintenanceInbox.readDirectory")(
-  function* readDirectory(inbox: Inbox["inbox"]) {
+  function* readDirectory({ alarmGid, inbox }: Inbox) {
     const fs = yield* FileSystem.FileSystem;
     const info = yield* fs.lstat(inbox.path);
 
@@ -154,24 +166,30 @@ const readDirectory = Effect.fn("MaintenanceInbox.readDirectory")(
       });
     }
 
-    return yield* fs.readDirectory(inbox.path);
+    if (alarmGid === undefined || !Option.contains(info.gid, alarmGid)) {
+      return yield* new FleetError({
+        reason: "Maintenance inbox group does not match the alarm group",
+      });
+    }
+
+    return { files: yield* fs.readDirectory(inbox.path), gid: alarmGid };
   }
 );
 
 const inspectDrop = Effect.fn("MaintenanceInbox.inspectDrop")(
-  function* inspectDrop(file: string, uid: number) {
+  function* inspectDrop(file: string, uid: number, gid: number) {
     const fs = yield* FileSystem.FileSystem;
     const listed = yield* fs.lstat(file);
 
-    if (
-      listed.type !== "File" ||
-      listed.size > BigInt(maxBytes) ||
-      !owns(listed, uid)
-    ) {
+    if (listed.type !== "File" || listed.size > BigInt(maxBytes)) {
       return Result.fail("invalid request file or JSON");
     }
 
-    if (listed.mode % 4096 !== 0o640) {
+    if (
+      listed.mode % 4096 !== 0o640 ||
+      !owns(listed, uid) ||
+      !Option.contains(listed.gid, gid)
+    ) {
       return null;
     }
 
@@ -185,7 +203,8 @@ const inspectDrop = Effect.fn("MaintenanceInbox.inspectDrop")(
       stat.dev !== listed.dev ||
       Option.isNone(stat.ino) ||
       !Option.contains(listed.ino, stat.ino.value) ||
-      !owns(stat, uid)
+      !owns(stat, uid) ||
+      !Option.contains(stat.gid, gid)
     ) {
       return null;
     }
@@ -228,7 +247,7 @@ const requestDeadline = (
   raw: string,
   now: number
 ): Result.Result<number, string> => {
-  const issued = Number(BigInt(id.slice(0, 20)) / 1_000_000n);
+  const issued = issuedAt(id);
 
   if (issued > now || now - issued > maxAge) {
     return Result.fail("request ID timestamp is outside the last four hours");
@@ -308,36 +327,111 @@ const apply = (
   );
 };
 
+const validId = Schema.is(Id);
+
+const cancellationIndex = Effect.fn("MaintenanceInbox.ends")(
+  function* cancellationIndex(
+    config: Inbox,
+    names: readonly string[],
+    gid: number,
+    now: number
+  ) {
+    const ends = new Map<string, Map<string, string>>();
+    const { operatorUid, path } = config.inbox;
+
+    for (const name of names) {
+      const id = name.slice(0, -5);
+
+      if (
+        !name.endsWith(".json") ||
+        !validId(id) ||
+        now - issuedAt(id) > maxAge ||
+        issuedAt(id) > now
+      ) {
+        continue;
+      }
+
+      const drop = yield* inspectDrop(`${path}/${name}`, operatorUid, gid);
+
+      if (
+        drop === null ||
+        Result.isFailure(drop) ||
+        drop.success.action !== "end" ||
+        drop.success.id !== id
+      ) {
+        continue;
+      }
+
+      const until = deadline(drop.success.until).pipe(
+        Option.map(DateTime.toEpochMillis)
+      );
+
+      const issued = issuedAt(id);
+
+      if (
+        Option.isNone(until) ||
+        until.value <= issued ||
+        until.value - issued > maxAge + 1000
+      ) {
+        continue;
+      }
+
+      const { instance, owner } = drop.success;
+      const owners = ends.get(instance) ?? new Map<string, string>();
+      owners.set(owner, id);
+      ends.set(instance, owners);
+    }
+
+    return ends;
+  }
+);
+
 const decide = Effect.fn("MaintenanceInbox.decide")(function* decide(
   config: Inbox,
   windows: readonly MaintenanceWindowValue[],
-  name: string,
-  now: number
+  id: string,
+  drop: Result.Result<Drop, string> | null,
+  now: number,
+  ends: ReturnType<typeof cancellationIndex>
 ) {
-  const id = name.slice(0, -5);
-  const { path, operatorUid } = config.inbox;
+  const refuse = (reason: string) => ({
+    text: `refused: ${reason} (${id})`,
+    windows,
+  });
 
-  const drop = yield* inspectDrop(`${path}/${name}`, operatorUid);
-
-  if (drop === null) {
-    return null;
-  }
-
-  if (!Schema.is(Id)(id)) {
+  if (!validId(id)) {
     return { text: "refused: invalid request filename", windows };
   }
 
-  if (Result.isFailure(drop)) {
-    return { text: `refused: ${drop.failure} (${id})`, windows };
+  if (drop === null) {
+    return now - issuedAt(id) > badDropAfter
+      ? refuse("request unreadable or wrong owner, group or mode")
+      : null;
   }
 
-  const next = apply(config, windows, id, drop.success, now);
-
-  if (Result.isFailure(next)) {
-    return { text: `refused: ${next.failure} (${id})`, windows };
+  if (Result.isFailure(drop)) {
+    return refuse(drop.failure);
   }
 
   const { action, instance, owner, until } = drop.success;
+  const next = apply(config, windows, id, drop.success, now);
+
+  if (Result.isFailure(next)) {
+    return refuse(next.failure);
+  }
+
+  if (action === "start") {
+    const cancellations = (yield* ends).get(instance);
+
+    const cancelled =
+      (cancellations?.get(owner) ?? "") > id ||
+      (cancellations?.get(config.desk) ?? "") > id;
+
+    if (cancelled) {
+      return refuse("start superseded by a later end");
+    }
+  }
+
   const ending = action === "start" ? ` until ${until}` : " now";
 
   return {
@@ -349,21 +443,32 @@ const decide = Effect.fn("MaintenanceInbox.decide")(function* decide(
 export const ingestMaintenance = Effect.fn("MaintenanceInbox.ingest")(
   function* ingestMaintenance(config: Inbox) {
     const { document, state } = yield* readState(config.directory);
-    const files = new Set(yield* readDirectory(config.inbox));
+    const { files: entriesOnDisk, gid } = yield* readDirectory(config);
+    const files = new Set(entriesOnDisk);
     const now = yield* Clock.currentTimeMillis;
+    const names = [...files].toSorted();
+
+    const ends = yield* Effect.cached(
+      cancellationIndex(config, names, gid, now)
+    );
+
+    const previousDeferred = new Set(state.clockDeferred);
+    const deferred = new Set(previousDeferred);
 
     const entries = Object.entries(state.requests ?? {});
 
     const kept = entries.filter(
       ([name, notice]) =>
-        files.has(name) || now - notice.decidedAt <= WINDOW_MEMORY_MS
+        !isTerminal(notice) ||
+        files.has(name) ||
+        now - notice.decidedAt <= WINDOW_MEMORY_MS
     );
 
     const requests = Object.fromEntries(kept);
     let decisions = 0;
     let { windows } = state;
 
-    for (const name of [...files].toSorted()) {
+    for (const name of names) {
       if (decisions >= 16) {
         break;
       }
@@ -376,7 +481,24 @@ export const ingestMaintenance = Effect.fn("MaintenanceInbox.ingest")(
         continue;
       }
 
-      const decision = yield* decide(config, windows, name, now);
+      const id = name.slice(0, -5);
+      const ahead = validId(id) ? issuedAt(id) - now : 0;
+
+      if (ahead > 0 && (ahead <= maxClockSkew || !previousDeferred.has(name))) {
+        deferred.add(name);
+        continue;
+      }
+
+      deferred.delete(name);
+
+      const { path, operatorUid } = config.inbox;
+
+      const drop =
+        ahead > 0
+          ? Result.fail("request ID timestamp is more than five minutes ahead")
+          : yield* inspectDrop(`${path}/${name}`, operatorUid, gid);
+
+      const decision = yield* decide(config, windows, id, drop, now, ends);
 
       if (decision !== null) {
         ({ windows } = decision);
@@ -390,8 +512,20 @@ export const ingestMaintenance = Effect.fn("MaintenanceInbox.ingest")(
       }
     }
 
-    if (kept.length !== entries.length || decisions > 0) {
-      yield* save(config.directory, document, { ...state, requests, windows });
+    const clockDeferred = [...deferred].filter((name) => files.has(name));
+
+    if (
+      kept.length !== entries.length ||
+      decisions > 0 ||
+      clockDeferred.length !== previousDeferred.size ||
+      clockDeferred.some((name) => !previousDeferred.has(name))
+    ) {
+      yield* save(config.directory, document, {
+        ...state,
+        clockDeferred,
+        requests,
+        windows,
+      });
     }
   }
 );
@@ -403,10 +537,6 @@ export const deliverMaintenance = Effect.fn("MaintenanceInbox.deliver")(
   ) {
     const { document, state } = yield* readState(directory);
     const requests = { ...state.requests };
-
-    const isTerminal = Schema.is(
-      Schema.Union([Notice.cases.Sent, Notice.cases.Dropped])
-    );
 
     const isQueued = Schema.is(Notice.cases.Queued);
 

@@ -316,6 +316,7 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           : runAlarmMaintenanceCycle(
               cycle,
               ingestMaintenance({
+                alarmGid: process.getegid?.(),
                 desk: settings.musterDesk,
                 directory,
                 inbox: maintenanceInbox,

@@ -1,8 +1,10 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Schema } from "effect";
+import { DateTime, Effect, FileSystem, Schema } from "effect";
+import { TestClock } from "effect/testing";
 import { expect } from "vitest";
 
+import { StageConfig } from "../../../../stacks/nest/stage-config.ts";
 import { fixtureChild } from "./fixture-child.ts";
 
 it.effect(
@@ -81,4 +83,62 @@ it.effect(
         `${checks.legacySend.stdout}${checks.legacySend.stderr}`
       ).toContain("Legacy send is disabled with systemd credentials");
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+);
+
+it.effect.prop(
+  "done-bar keeps exit 1 and the HostError diagnostic when a local receipt was lost",
+  [StageConfig],
+  ([base]) =>
+    Effect.gen(function* failure() {
+      const fs = yield* FileSystem.FileSystem;
+      const home = yield* fs.makeTempDirectoryScoped();
+      const stage = `${home}/stage.json`;
+      const at = DateTime.formatIso(yield* TestClock.withLive(DateTime.now));
+
+      const line = JSON.stringify({
+        at,
+        fallback: { status: "failed" },
+        path: "intercom-fallback",
+      });
+
+      const frame = JSON.stringify({ kind: "receipt", line });
+
+      yield* fs.writeFileString(
+        `${home}/python3`,
+        `#!/bin/sh\nprintf '%s\\n' '${frame}'\n`,
+        { mode: 0o700 }
+      );
+      yield* fs.writeFileString(
+        stage,
+        yield* Schema.encodeEffect(Schema.fromJsonString(StageConfig))({
+          ...base,
+          comms: { local: base.comms.local },
+          runtime: {
+            ...base.runtime,
+            HOME: home,
+            RAT_KING_OFFLINE_PLAN: false,
+            RAT_KING_SECRET_SOURCE: "agent-secrets",
+            RAT_KING_STATE_DIR: home,
+          },
+        })
+      );
+
+      const result = yield* fixtureChild(
+        ["stacks/nest/cli.ts", "done-bar"],
+        home,
+        { RAT_KING_STAGE_CONFIG: stage }
+      );
+
+      expect(result.code).toBe(1);
+      expect(result.stderr).toBe("");
+      expect(result.stdout).toContain("HostError: Done-bar not met");
+      expect(result.stdout.split("\n")[0]).toBe(
+        JSON.stringify({
+          local: { fallbacks: 1, lost: 1, quarantined: 0, sent: 1 },
+          passed: false,
+          remote: null,
+        })
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  { arbitrary: { runs: 2 } }
 );

@@ -1,5 +1,6 @@
 import { Clock, Console, DateTime, Effect, FileSystem, Schema } from "effect";
 
+import { refuse } from "../../packages/alchemy-nest/src/files.ts";
 import { readAlarmJournal } from "./alarm-journal.ts";
 import type { SourceState } from "./alarm-sources.ts";
 import { collectComms, doneBar } from "./comms.ts";
@@ -104,7 +105,7 @@ export const doneBarCommand = Effect.fn("Nest.doneBar")(
     );
 
     if (!passed) {
-      return yield* new FleetError({ reason: "Done-bar not met" });
+      return yield* refuse("Done-bar not met");
     }
 
     return yield* Effect.void;
