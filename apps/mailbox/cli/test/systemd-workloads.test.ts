@@ -38,7 +38,8 @@ const fixture = Effect.fn("Test.scopedWorkload")(function* fixture(
 ) {
   const fs = yield* FileSystem.FileSystem;
   const home = yield* fs.makeTempDirectoryScoped();
-  const { readerHeartbeats: _remote, ...safeAlarm } = alarm;
+  const { push: _push, readerHeartbeats: _remote, ...safeAlarm } = alarm;
+  const { mintHost: _mintHost, ...safeStage } = base;
 
   const signer = yield* identity("did:web:operator.example.invalid");
   const peer = yield* identity("did:web:peer.example.invalid");
@@ -51,6 +52,7 @@ const fixture = Effect.fn("Test.scopedWorkload")(function* fixture(
   };
 
   const stageFile = `${home}/stage.json`;
+  const missingStage = `${home}/missing-state.json`;
   const credentials = `${home}/credentials`;
   const empty = `${home}/empty-credentials`;
   const fallback = `${home}/fallback`;
@@ -66,7 +68,7 @@ const fixture = Effect.fn("Test.scopedWorkload")(function* fixture(
   };
 
   const stage = {
-    ...base,
+    ...safeStage,
     alarm: {
       ...safeAlarm,
       notify,
@@ -75,13 +77,16 @@ const fixture = Effect.fn("Test.scopedWorkload")(function* fixture(
     runtime: {
       ...base.runtime,
       HOME: home,
+      RAT_KING_AGENT_SECRET_TEMPLATE: "fixture_{agent}_identity",
       RAT_KING_ENDPOINT: settings.endpoint,
+      RAT_KING_MODEL_GATEWAY_SECRET_NAME: "fixture-model",
       RAT_KING_OFFLINE_PLAN: false,
+      RAT_KING_OPERATOR_IDENTITY: "fixture-signer",
       RAT_KING_SECRET_SOURCE: "systemd" as const,
       RAT_KING_SERVICE_DID: settings.serviceDid,
       RAT_KING_STATE_DIR: home,
     },
-    ship,
+    ship: { ...ship, notify: { ...ship.notify, secret: "fixture-signer" } },
   };
 
   yield* fs.writeFileString(
@@ -114,6 +119,13 @@ const fixture = Effect.fn("Test.scopedWorkload")(function* fixture(
     stageFile,
     yield* Schema.encodeEffect(Schema.fromJsonString(StageConfig))(stage)
   );
+  yield* fs.writeFileString(
+    missingStage,
+    yield* Schema.encodeEffect(Schema.fromJsonString(StageConfig))({
+      ...stage,
+      runtime: { ...stage.runtime, RAT_KING_STATE_DIR: `${home}/not-created` },
+    })
+  );
 
   return {
     credentials,
@@ -127,6 +139,7 @@ const fixture = Effect.fn("Test.scopedWorkload")(function* fixture(
     },
     fallback,
     home,
+    missingStage,
     signer: notify.secret,
   };
 });
@@ -138,11 +151,8 @@ it.effect.prop(
     Effect.gen(function* check() {
       const fs = yield* FileSystem.FileSystem;
 
-      const { empty, env, fallback, home, signer } = yield* fixture(
-        base,
-        alarm,
-        ship
-      );
+      const { empty, env, fallback, home, missingStage, signer } =
+        yield* fixture(base, alarm, ship);
 
       const missing = { ...env, CREDENTIALS_DIRECTORY: empty };
 
@@ -222,6 +232,17 @@ it.effect.prop(
         { ...env, RAT_KING_STAGE_CONFIG: env.FIXTURE_STAGE }
       );
 
+      const unavailable = yield* fixtureChild(
+        ["stacks/nest/cli.ts", "ops-digest"],
+        home,
+        { ...env, RAT_KING_STAGE_CONFIG: missingStage }
+      );
+
+      expect(unavailable.code).not.toBe(0);
+      expect(`${unavailable.stdout}${unavailable.stderr}`).toContain(
+        "unavailable: state directory missing"
+      );
+      expect(yield* fs.exists(`${home}/not-created`)).toBe(false);
       expect(namedMailbox.code).not.toBe(0);
       expect(`${namedMailbox.stdout}${namedMailbox.stderr}`).toContain(
         "Unknown ops health name"

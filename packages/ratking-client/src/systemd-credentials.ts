@@ -88,6 +88,15 @@ export const withCredentialSettings = <A, E, R>(
 
 const credentialId = /^[a-z0-9_][a-z0-9_-]*$/u;
 
+export const CredentialSlot = Schema.String.check(
+  Schema.isPattern(credentialId),
+  Schema.makeFilter(
+    (value) =>
+      credentialId.exec(value)?.[0] === value ||
+      "Expected a systemd credential slot identifier"
+  )
+);
+
 const limit = 65_536;
 
 const readable = (stat: FileSystem.File.Info) =>
@@ -102,7 +111,7 @@ export const systemdCredential = Effect.fn("Systemd.credential")(
       Effect.mapError(unavailable)
     );
 
-    if (!path.isAbsolute(directory) || credentialId.exec(id)?.[0] !== id) {
+    if (!path.isAbsolute(directory) || !Schema.is(CredentialSlot)(id)) {
       return yield* unavailable();
     }
 
@@ -140,15 +149,25 @@ export const systemdCredential = Effect.fn("Systemd.credential")(
       return yield* unavailable();
     }
 
-    return yield* Effect.try({
+    const decoded = yield* Effect.try({
       catch: unavailable,
       try: () =>
-        Redacted.make(
-          new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-            bytes.value
-          )
+        new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
+          bytes.value
         ),
     });
+
+    const ending = decoded.endsWith("\r\n")
+      ? 2
+      : Number(decoded.endsWith("\n"));
+
+    const text = decoded.slice(0, decoded.length - ending);
+
+    if (text.length === 0) {
+      return yield* unavailable();
+    }
+
+    return Redacted.make(text);
   },
   Effect.scoped,
   (effect) =>

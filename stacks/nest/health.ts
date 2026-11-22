@@ -44,7 +44,22 @@ const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
 const Instant = Schema.DateTimeUtcFromString;
 
-export const MemoryMax = Schema.Union([Count, Schema.Literal("infinity")]);
+const memoryDecimal = /^(?:0|[1-9][0-9]{0,19})$/u;
+
+const LargeMemoryMax = Schema.String.check(
+  Schema.isPattern(memoryDecimal),
+  Schema.makeFilter(
+    (value) =>
+      memoryDecimal.exec(value)?.[0] === value &&
+      BigInt(value) > BigInt(Number.MAX_SAFE_INTEGER)
+  )
+);
+
+export const MemoryMax = Schema.Union([
+  Count.check(Schema.isLessThanOrEqualTo(Number.MAX_SAFE_INTEGER)),
+  Schema.Literal("infinity"),
+  LargeMemoryMax,
+]);
 
 export const UnitState = Schema.Struct({
   activeEnterTimestamp: Schema.NullOr(Instant),
@@ -420,7 +435,11 @@ export const serviceLimits = (
 
   const pid = count(props.get("MainPID"));
   const memory = props.get("MemoryMax");
-  const limit = memory === "infinity" ? memory : count(memory);
+
+  const limit =
+    memory === "infinity" || Schema.is(LargeMemoryMax)(memory)
+      ? memory
+      : count(memory);
 
   if (pid !== null && Number.isSafeInteger(pid)) {
     result.mainPidPresent = pid > 0;

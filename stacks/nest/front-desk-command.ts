@@ -1,4 +1,13 @@
-import { Config, Console, Effect, Logger, Schema, Stdio, Stream } from "effect";
+import {
+  Clock,
+  Config,
+  Console,
+  Effect,
+  Logger,
+  Schema,
+  Stdio,
+  Stream,
+} from "effect";
 
 import {
   SendOutcomes,
@@ -12,9 +21,14 @@ import { directoryLayer } from "../../packages/ratking-client/src/directory.ts";
 import { AgentName } from "../../packages/ratking-client/src/name.ts";
 import { PayloadJson } from "../../packages/ratking-client/src/payload.ts";
 import { secretStoreLayer } from "../../packages/ratking-client/src/secrets.ts";
-import { secretSource } from "../../packages/ratking-client/src/systemd-credentials.ts";
 import {
+  CredentialSlot,
+  secretSource,
+} from "../../packages/ratking-client/src/systemd-credentials.ts";
+import {
+  frontDeskJournalHealth,
   frontDeskRefused as refused,
+  frontDeskReviewReason,
   withFrontDeskJournal,
 } from "./front-desk-journal.ts";
 import { prepareScript } from "./send.ts";
@@ -64,7 +78,11 @@ export const readFrontDeskInput = Effect.fn("Nest.frontDeskInput")(
 
 const prepareDelivery = Effect.fn("Nest.prepareFrontDeskDelivery")(
   function* prepareDelivery() {
-    const as = yield* Config.String("RAT_KING_FRONT_DESK_SIGNER");
+    const as = yield* Config.schema(
+      CredentialSlot,
+      "RAT_KING_FRONT_DESK_SIGNER"
+    );
+
     const to = yield* Config.schema(AgentName, "RAT_KING_FRONT_DESK_TO");
     const cc = yield* Config.schema(AgentName, "RAT_KING_FRONT_DESK_CC");
 
@@ -140,7 +158,7 @@ export const sendFrontDesk = Effect.fn("Nest.frontDeskSend")(
           const prior = yield* read;
 
           if (prior !== null && prior.hash !== hash) {
-            return yield* refused();
+            return yield* new FleetError({ reason: frontDeskReviewReason });
           }
 
           if (prior?.step === "done") {
@@ -180,13 +198,36 @@ export const sendFrontDesk = Effect.fn("Nest.frontDeskSend")(
           yield* requireReceipt(row.copy, copied);
 
           const { messageId } = row.primary.aad;
-          yield* write({ hash, messageId, step: "done" });
+          yield* write({
+            completedAt: yield* Clock.currentTimeMillis,
+            hash,
+            messageId,
+            step: "done",
+          });
 
           return { messageId, ok: true };
         }).pipe(Effect.scoped)
     );
   }
 );
+
+const publicError = (error: { readonly _tag: string }) =>
+  Schema.is(FleetError)(error) ? error : refused();
+
+export const frontDeskServiceHealth = Effect.gen(
+  function* readFrontDeskHealth() {
+    if ((yield* secretSource) !== "systemd") {
+      return yield* refused();
+    }
+
+    const { state } = yield* loadSettings();
+    const result = yield* frontDeskJournalHealth(state);
+
+    return yield* Console.log(
+      JSON.stringify({ ...result, service: "front-desk" })
+    );
+  }
+).pipe(Effect.timeout("5 seconds"), Effect.mapError(publicError));
 
 export const frontDeskCommand = (argv: readonly string[]) =>
   Effect.gen(function* relay() {
@@ -215,5 +256,5 @@ export const frontDeskCommand = (argv: readonly string[]) =>
   }).pipe(
     Effect.provide(Logger.layer([])),
     Effect.timeout("12 seconds"),
-    Effect.mapError(refused)
+    Effect.mapError(publicError)
   );

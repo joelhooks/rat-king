@@ -5491,7 +5491,7 @@ var Method19 = {
 };
 
 // packages/mailbox-client/src/health.ts
-import { Effect as Effect34, Schema as Schema56 } from "effect";
+import { DateTime as DateTime3, Effect as Effect34, Schema as Schema56 } from "effect";
 var Wake2 = Schema56.Struct({
   at: Schema56.Finite,
   id: Schema56.String,
@@ -5517,6 +5517,13 @@ var MailboxHealth = Schema56.Struct({
   retired: Schema56.optionalKey(Schema56.Boolean),
   undelivered: Output18.schema.fields.undelivered
 });
+var LeaseExpiryMillis = Schema56.Int.check(
+  Schema56.isGreaterThanOrEqualTo(Date.UTC(2e3, 0, 1))
+);
+var decodeLeaseExpiry = (value) => Schema56.decodeEffect(Schema56.DateTimeUtcFromString)(value).pipe(
+  Effect34.map(DateTime3.toEpochMillis),
+  Effect34.flatMap(Schema56.decodeEffect(LeaseExpiryMillis))
+);
 var readMailboxHealth = Effect34.fn("Mailbox.readHealth")(
   function* readMailboxHealth2(transport, did, name) {
     const params = yield* Schema56.decodeUnknownEffect(
@@ -5542,7 +5549,7 @@ var readMailboxHealth = Effect34.fn("Mailbox.readHealth")(
       lastAck: value.lastAck === void 0 ? null : Date.parse(value.lastAck),
       ...value.lastTurnStartedAt === void 0 ? void 0 : { lastTurnStartedAt: Date.parse(value.lastTurnStartedAt) },
       lease: value.lease === void 0 ? null : {
-        expiresAt: Date.parse(value.lease.expiresAt),
+        expiresAt: yield* decodeLeaseExpiry(value.lease.expiresAt),
         generation: value.lease.generation,
         holder: value.lease.holder,
         pane: value.lease.pane ?? null

@@ -23,6 +23,10 @@ import {
   identity,
 } from "../../../../packages/mailbox-client/test/identity.ts";
 import { frontDeskCommand } from "../../../../stacks/nest/front-desk-command.ts";
+import {
+  frontDeskJournalHealth,
+  frontDeskReviewReason,
+} from "../../../../stacks/nest/front-desk-journal.ts";
 import { staticResolver } from "../../src/auth.ts";
 import { Caller } from "../../src/caller.ts";
 import { leaseLayer } from "../../src/lease.ts";
@@ -239,12 +243,13 @@ it.effect.prop(
 );
 
 it.live(
-  "concurrent invocations share one delivery; changed content and corrupt journal refuse",
+  "key loss holds old IDs and alarms once while new IDs proceed; a drifting key mode names the file",
   () =>
     Effect.gen(function* verify() {
       const { dir, peers, provider } = yield* seed;
       const posted: Send.InputValue[] = [];
       const receipts: string[] = [];
+      const alarms: string[] = [];
 
       const { admitted, client } = yield* fixtureMailbox(
         posted,
@@ -252,7 +257,7 @@ it.live(
         peers
       );
 
-      const send = (body: string) =>
+      const send = (body: string, id?: string) =>
         frontDeskCommand(["--stdin"]).pipe(
           Effect.provide([
             ConfigProvider.layer(provider),
@@ -261,7 +266,7 @@ it.live(
                 new TextEncoder().encode(
                   JSON.stringify({
                     body,
-                    id: "same-id",
+                    id: id ?? "same-id",
                     quiet: false,
                     summary: "fixture",
                   })
@@ -272,6 +277,9 @@ it.live(
           Effect.provideService(HttpClient.HttpClient, client),
           Effect.provideService(Console.Console, {
             ...console,
+            error: (line: string) => {
+              alarms.push(line);
+            },
             log: (line: string) => {
               receipts.push(line);
             },
@@ -298,12 +306,33 @@ it.live(
         return yield* Effect.die("No journal entry");
       }
 
-      yield* fs.writeFile(`${journal}/.journal-key`, new Uint8Array(32));
-      expect(yield* send("same body").pipe(Effect.isFailure)).toBe(true);
+      const keyFile = `${journal}/.journal-key`;
+      yield* fs.chmod(keyFile, 0o644);
+      expect((yield* send("new body", "new-id").pipe(Effect.flip)).reason).toBe(
+        "Front desk journal requires mode 0600: .journal-key"
+      );
+      expect(posted).toHaveLength(2);
+      yield* fs.remove(keyFile);
+
+      expect((yield* send("same body").pipe(Effect.flip)).reason).toBe(
+        frontDeskReviewReason
+      );
+      yield* send("new body", "new-id");
+      expect((yield* send("same body").pipe(Effect.flip)).reason).toBe(
+        frontDeskReviewReason
+      );
+      expect(alarms).toEqual([
+        "Front desk journal key missing; existing IDs require operator review",
+      ]);
+      expect(yield* frontDeskJournalHealth(dir)).toMatchObject({
+        keyLossReview: true,
+        rows: 2,
+        status: "warn",
+      });
 
       yield* fs.writeFileString(`${journal}/${file}`, "corrupt");
       expect(yield* send("same body").pipe(Effect.isFailure)).toBe(true);
-      expect(posted).toHaveLength(2);
+      expect(posted).toHaveLength(4);
 
       return yield* Effect.void;
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))

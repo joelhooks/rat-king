@@ -27,24 +27,27 @@ import { readCliIdentity } from "../identity.ts";
 import { SecretStore, secretStoreLayer } from "../secrets.ts";
 
 it.effect.prop(
-  "mounted slots are read verbatim; wrong shapes, missing slots, paths, links and oversized files fail closed",
-  [Schema.Int],
-  ([id]) =>
+  "opaque mounted slots remove exactly one LF or CRLF, JSON identities decode unchanged, and malformed slots fail closed",
+  [Schema.Int, Schema.Literals(["", "\n", "\r\n", "\n\n", "\r\n\n"])],
+  ([id, ending]) =>
     Effect.gen(function* check() {
       const fs = yield* FileSystem.FileSystem;
       const directory = yield* fs.makeTempDirectoryScoped();
       const name = "fixture-signer";
-      const value = `fixture-${id}\n`;
+      const raw = `fixture-${id}${ending}`;
+
+      const cut = ending.endsWith("\r\n") ? 2 : Number(ending.endsWith("\n"));
+      const value = raw.slice(0, raw.length - cut);
       const signer = yield* identity("did:web:signer.example.invalid");
 
       yield* fs.writeFileString(
         `${directory}/identity`,
-        JSON.stringify(signer)
+        `${JSON.stringify(signer)}${ending}`
       );
       yield* fs.writeFileString(`${directory}/empty`, "");
       yield* fs.writeFile(`${directory}/wrong-utf8`, new Uint8Array([0xff]));
       expect((yield* runCommand(["mkfifo", `${directory}/fifo`])).code).toBe(0);
-      yield* fs.writeFileString(`${directory}/${name}`, value);
+      yield* fs.writeFileString(`${directory}/${name}`, raw);
       yield* fs.writeFileString(`${directory}/large`, "x".repeat(65_537));
       yield* fs.symlink(`${directory}/${name}`, `${directory}/linked`);
       yield* fs.makeDirectory(`${directory}/nested`);
@@ -109,10 +112,15 @@ it.effect.prop(
   [StageConfig],
   ([stage]) =>
     Effect.gen(function* verify() {
+      const { alarm: _alarm, mintHost: _mint, ship: _ship, ...base } = stage;
+
       const config = {
-        ...stage,
+        ...base,
         runtime: {
           ...stage.runtime,
+          RAT_KING_AGENT_SECRET_TEMPLATE: "fixture_{agent}_slot",
+          RAT_KING_MODEL_GATEWAY_SECRET_NAME: "gateway-slot",
+          RAT_KING_OPERATOR_IDENTITY: "operator-slot",
           RAT_KING_SECRET_SOURCE: "systemd" as const,
         },
       };
@@ -131,6 +139,20 @@ it.effect.prop(
           RAT_KING_SECRET_SOURCE: "invalid",
         }).pipe(Effect.flip)).reason
       ).toBe("Invalid process credential source");
+      expect(
+        (yield* stageProvider(
+          {
+            ...config,
+            runtime: {
+              ...config.runtime,
+              RAT_KING_OPERATOR_IDENTITY: "legacy:invalid",
+            },
+          },
+          {}
+        ).pipe(Effect.flip)).reason
+      ).toBe(
+        "Invalid systemd credential reference in runtime.RAT_KING_OPERATOR_IDENTITY"
+      );
     }),
   { arbitrary: { runs: 5 } }
 );

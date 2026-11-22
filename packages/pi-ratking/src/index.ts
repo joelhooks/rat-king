@@ -2,8 +2,9 @@ export {
   Settings,
   NotConfigured,
   PiConfig,
-  settingsLayer,
 } from "@rat-king/ratking-client/config";
+
+export { settingsLayer } from "./pi-settings.ts";
 
 export {
   Directory,

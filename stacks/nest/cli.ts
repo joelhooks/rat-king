@@ -9,6 +9,7 @@ import {
   Effect,
   FileSystem,
   Match,
+  Predicate,
   Path,
   Schema,
 } from "effect";
@@ -32,7 +33,11 @@ import { stageDoctor } from "./config-doctor.ts";
 import { collectDigestWaitingMail } from "./digest-mail-collector.ts";
 import { commsCounts, digest } from "./digest.ts";
 import { drainCommand } from "./drain.ts";
-import { frontDeskCommand } from "./front-desk-command.ts";
+import {
+  frontDeskCommand,
+  frontDeskServiceHealth,
+} from "./front-desk-command.ts";
+import { frontDeskReviewReason } from "./front-desk-journal.ts";
 import { DigestJson, summarize } from "./health.ts";
 import { maintenanceCommand } from "./maintenance-command.ts";
 import { mintHost } from "./mint-host.ts";
@@ -148,11 +153,21 @@ const program = Effect.gen(function* launcher() {
     return yield* refuse("State must remain outside the public repository");
   }
 
-  if (action !== "ops-digest" && action !== "ops-health") {
+  const readOnly = action === "ops-digest" || action === "ops-health";
+
+  if (!readOnly) {
     yield* fs.makeDirectory(directory, { mode: 0o700, recursive: true });
   }
 
-  const canonical = yield* fs.realPath(directory);
+  const canonical = yield* fs
+    .realPath(directory)
+    .pipe(
+      Effect.mapError((error) =>
+        readOnly && Predicate.isTagged(error.reason, "NotFound")
+          ? new FleetError({ reason: "unavailable: state directory missing" })
+          : error
+      )
+    );
 
   if (canonical === root || canonical.startsWith(`${root}/`)) {
     return yield* refuse("State resolves inside the public repository");
@@ -362,8 +377,25 @@ const scriptCommand = () => {
 
   if (process.argv[2] === "ops-front-desk-send") {
     return frontDeskCommand(process.argv.slice(3)).pipe(
-      Effect.provide(FetchHttpClient.layer)
+      Effect.provide(FetchHttpClient.layer),
+      Effect.catchIf(
+        (error) => error.reason === frontDeskReviewReason,
+        () =>
+          Effect.gen(function* needsReview() {
+            yield* Console.error(frontDeskReviewReason);
+            process.exitCode = 65;
+          })
+      )
     );
+  }
+
+  if (
+    process.argv[2] === "ops-health" &&
+    process.argv[3] === "--service" &&
+    process.argv[4] === "front-desk" &&
+    process.argv.length === 5
+  ) {
+    return frontDeskServiceHealth;
   }
 
   if (process.argv[2] === "seal") {

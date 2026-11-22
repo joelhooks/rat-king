@@ -5,7 +5,11 @@ import { expect } from "vitest";
 
 import { MailboxHealth } from "../../../../packages/mailbox-client/src/health.ts";
 import { Counts } from "../../../../stacks/nest/comms.ts";
-import { Digest, serviceLimits } from "../../../../stacks/nest/health.ts";
+import {
+  Digest,
+  parseShow,
+  serviceLimits,
+} from "../../../../stacks/nest/health.ts";
 import type { HealthDigest } from "../../../../stacks/nest/health.ts";
 import {
   opsDigest,
@@ -156,11 +160,26 @@ it.effect.prop(
   { arbitrary: { runs: 4 } }
 );
 
+it("parses the property layout captured from systemctl --timestamp=unix show", () => {
+  const props = parseShow(
+    "ActiveState=active\nActiveEnterTimestamp=@1795227178\nMainPID=2096\nNRestarts=0\nMemoryMax=infinity\n"
+  );
+
+  expect(props.get("ActiveEnterTimestamp")).toBe("@1795227178");
+  expect(serviceLimits(props)).toEqual({
+    mainPidPresent: true,
+    memoryMax: "infinity",
+  });
+});
+
 it.prop(
   "mailbox service health exposes only enum, PID presence, restart count and memory limit",
-  [Digest, Schema.Int.check(Schema.isGreaterThan(0)), Schema.Boolean],
-  ([health, pid, limited]) => {
-    const memory = limited ? "1073741824" : "infinity";
+  [
+    Digest,
+    Schema.Int.check(Schema.isGreaterThan(0)),
+    Schema.Literals(["1073741824", "infinity", "9007199254740993"]),
+  ],
+  ([health, pid, memory]) => {
     const probe = `private-path-${pid}`;
 
     const fixture = {
@@ -184,7 +203,7 @@ it.prop(
       celld: {
         activeState: "unknown",
         mainPidPresent: true,
-        memoryMax: limited ? 1_073_741_824 : "infinity",
+        memoryMax: memory === "1073741824" ? 1_073_741_824 : memory,
         nRestarts: 0,
       },
       seaweedfs: null,

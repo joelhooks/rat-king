@@ -15,10 +15,8 @@ import { attend, formatReason, Reasons } from "@rat-king/ratking-client/attend";
 import type { Verdict } from "@rat-king/ratking-client/attend";
 import { countFilterHit, filterHits } from "@rat-king/ratking-client/attention";
 import {
-  loadSettings,
   NotConfigured,
   resolveTurnOwner,
-  settingsLayer,
   Settings,
   toolName,
 } from "@rat-king/ratking-client/config";
@@ -136,6 +134,7 @@ import {
   WAKE_REASON,
 } from "./pending.ts";
 import type { DigestVariant, HistoryEntry, PendingMail } from "./pending.ts";
+import { loadPiSettings, settingsLayer } from "./pi-settings.ts";
 import {
   againOutcome,
   noNameOutcome,
@@ -394,7 +393,7 @@ export const collectFacts = (
     const successor = fork && Option.contains(succeeds, parentSession);
 
     const configured = fork
-      ? yield* loadSettings().pipe(Effect.option)
+      ? yield* loadPiSettings().pipe(Effect.option)
       : Option.none();
 
     const reserved: ReservedValue = configured.pipe(

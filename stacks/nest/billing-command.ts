@@ -27,6 +27,7 @@ import { directoryLayer } from "../../packages/ratking-client/src/directory.ts";
 import { AgentName } from "../../packages/ratking-client/src/name.ts";
 import { secretStoreLayer } from "../../packages/ratking-client/src/secrets.ts";
 import {
+  CredentialSlot,
   secretSource,
   systemdCredential,
 } from "../../packages/ratking-client/src/systemd-credentials.ts";
@@ -61,18 +62,21 @@ export const billingCredentials = Effect.fn("Nest.billingCredentials")(
       };
     }
 
-    const token = yield* Config.String("RAT_KING_BILLING_PULL_SLOT").pipe(
+    const token = yield* Config.schema(
+      CredentialSlot,
+      "RAT_KING_BILLING_PULL_SLOT"
+    ).pipe(
       Effect.flatMap(systemdCredential),
       Effect.mapError(failure("pull-credential"))
     );
 
-    const bearer = Redacted.value(token).trim();
+    const bearer = Redacted.value(token);
 
-    if (!/^[A-Za-z0-9._~+/-]+=*$/u.test(bearer)) {
+    if (/^[A-Za-z0-9._~+/-]+=*$/u.exec(bearer)?.[0] !== bearer) {
       return yield* new RelayFailure({ operation: "invalid-pull-credential" });
     }
 
-    return { identity: signer, token: Redacted.make(bearer) };
+    return { identity: signer, token };
   }
 );
 

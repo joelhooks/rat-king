@@ -9,6 +9,7 @@ import {
 } from "effect";
 
 import {
+  CredentialSlot,
   credentialEnvironment,
   SecretSourceMode,
 } from "../../packages/ratking-client/src/systemd-credentials.ts";
@@ -211,6 +212,26 @@ export const loadStageConfig = Effect.gen(function* loadStageConfig() {
   }).pipe(Effect.mapError(invalid));
 });
 
+const invalidSlotField = (config: StageConfigValue) => {
+  const { alarm, mintHost, runtime, ship } = config;
+
+  const slots = {
+    "alarm.notify.secret": alarm?.notify.secret,
+    "alarm.push.secret": alarm?.push?.secret,
+    "mintHost.secretName": mintHost?.secretName,
+    "runtime.RAT_KING_AGENT_SECRET_TEMPLATE":
+      runtime.RAT_KING_AGENT_SECRET_TEMPLATE.replaceAll("{agent}", "example"),
+    "runtime.RAT_KING_MODEL_GATEWAY_SECRET_NAME":
+      runtime.RAT_KING_MODEL_GATEWAY_SECRET_NAME,
+    "runtime.RAT_KING_OPERATOR_IDENTITY": runtime.RAT_KING_OPERATOR_IDENTITY,
+    "ship.notify.secret": ship?.notify.secret,
+  };
+
+  return Object.entries(slots).find(
+    ([, slot]) => slot !== undefined && !Schema.is(CredentialSlot)(slot)
+  )?.[0];
+};
+
 export const stageProvider = Effect.fn("Nest.stageProvider")(
   function* stageProvider(
     config: StageConfigValue,
@@ -233,6 +254,16 @@ export const stageProvider = Effect.fn("Nest.stageProvider")(
       return yield* new FleetError({
         reason: "Process and stage credential sources disagree",
       });
+    }
+
+    if ((configured ?? supplied) === "systemd") {
+      const invalidField = invalidSlotField(config);
+
+      if (invalidField !== undefined) {
+        return yield* new FleetError({
+          reason: `Invalid systemd credential reference in ${invalidField}`,
+        });
+      }
     }
 
     return ConfigProvider.fromUnknown({
