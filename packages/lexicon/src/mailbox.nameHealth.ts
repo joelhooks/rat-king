@@ -68,6 +68,14 @@ export const Output = Schema.StructWithRest(
         Schema.brand("Lexicon:datetime")
       )
     ),
+    lastTurnStartedAt: Schema.optionalKey(
+      Runtime.lexString({
+        description:
+          "Latest observed working record for the current lease holder.",
+        format: "datetime",
+        type: "string",
+      }).pipe(Schema.brand("Lexicon:datetime"))
+    ),
     lease: Schema.optionalKey(Lease),
     oldestUndeliveredAt: Schema.optionalKey(
       Runtime.lexString({ format: "datetime", type: "string" }).pipe(

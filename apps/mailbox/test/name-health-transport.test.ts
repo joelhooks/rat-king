@@ -1,13 +1,8 @@
-import { NodeHttpServer } from "@effect/platform-node";
+import { NodeHttpClient, NodeHttpServer } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import * as Health from "@rat-king/lexicon/mailbox.nameHealth";
 import { Clock, Effect, FileSystem, Schema } from "effect";
-import {
-  FetchHttpClient,
-  HttpServer,
-  HttpServerRequest,
-  HttpServerResponse,
-} from "effect/http";
+import { HttpServer, HttpServerRequest, HttpServerResponse } from "effect/http";
 import { expect } from "vitest";
 
 import {
@@ -106,7 +101,14 @@ it.effect.prop(
           const { retired: flag, ...older } = encoded;
           expect(flag).toBe(requests.length === 1 ? retired : !retired);
 
-          return yield* HttpServerResponse.json(legacy ? older : encoded);
+          return yield* HttpServerResponse.json(
+            legacy
+              ? older
+              : {
+                  ...encoded,
+                  lastTurnStartedAt: "2026-01-01T00:00:00.000Z",
+                }
+          );
         }).pipe(Effect.orDie)
       );
 
@@ -152,7 +154,7 @@ it.effect.prop(
 
       const observe = collectWakeHealth(config).pipe(
         Effect.provide([
-          FetchHttpClient.layer,
+          NodeHttpClient.layerUndiciOptions(),
           FileSystem.layerNoop({
             readFileString: (file) =>
               Effect.succeed(
@@ -177,6 +179,9 @@ it.effect.prop(
       const first = yield* observe;
       expect(first).toHaveLength(1);
       expect(first?.[0]?.retired).toBe(legacy ? null : retired);
+      expect(first?.[0]?.lastTurnAt).toBe(
+        legacy ? undefined : Date.parse("2026-01-01T00:00:00.000Z")
+      );
       yield* setRetired(!retired);
       const second = yield* observe;
       expect(second?.[0]?.retired).toBe(legacy ? null : !retired);

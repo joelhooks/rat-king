@@ -25,6 +25,7 @@ export type InputValue = typeof Input.Type;
 export declare const Output: Schema.StructWithRest<Schema.Struct<{
     readonly complete: Schema.Boolean;
     readonly lastAck: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:datetime">>;
+    readonly lastTurnStartedAt: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:datetime">>;
     readonly lease: Schema.optionalKey<Schema.StructWithRest<Schema.Struct<{
         readonly expiresAt: Schema.brand<Schema.String, "Lexicon:datetime">;
         readonly generation: Schema.Int;
@@ -90,6 +91,7 @@ export declare const Method: {
     readonly output: Schema.StructWithRest<Schema.Struct<{
         readonly complete: Schema.Boolean;
         readonly lastAck: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:datetime">>;
+        readonly lastTurnStartedAt: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:datetime">>;
         readonly lease: Schema.optionalKey<Schema.StructWithRest<Schema.Struct<{
             readonly expiresAt: Schema.brand<Schema.String, "Lexicon:datetime">;
             readonly generation: Schema.Int;

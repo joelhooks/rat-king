@@ -299,6 +299,7 @@ it.effect.prop(
       expect(Object.keys(Health.Output.schema.fields).toSorted()).toEqual([
         "complete",
         "lastAck",
+        "lastTurnStartedAt",
         "lease",
         "oldestUndeliveredAt",
         "oldestWake",

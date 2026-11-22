@@ -25,6 +25,7 @@ export const decodeRecord = (body: string) =>
   Schema.decodeEffect(RecordJson)(body).pipe(Effect.option);
 
 export interface InboundRecord {
+  readonly alarmCrashDid?: string | undefined;
   readonly encrypted?: boolean;
   readonly levers?: unknown;
   readonly id: string;

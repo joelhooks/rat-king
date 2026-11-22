@@ -4,6 +4,7 @@ import {
   Effect,
   FileSystem,
   Option,
+  Predicate,
   Ref,
   Schema,
   Stream,
@@ -20,6 +21,7 @@ import { readShippedSha, shippedDrift } from "./runner-drift.ts";
 import { RestartEvent, Sha, ShipCheckpoint } from "./ship-config.ts";
 import type { ShipAttempt } from "./ship-config.ts";
 import { sanitizeCandidateStderr } from "./ship-diagnostics.ts";
+import { installDependencies, quarantineInstall } from "./ship-install.ts";
 import { sendShipNotification } from "./ship-notify.ts";
 import { deployOutcome } from "./ship-observation.ts";
 import { prepareReleases, recordReceipt } from "./ship-prune.ts";
@@ -55,81 +57,90 @@ const Workflow = Schema.Struct({
   status: Schema.String,
 });
 
-export const execute = Effect.fn("Ship.execute")(
-  function* execute(
-    command: string,
-    args: readonly string[],
-    cwd: string,
-    env?: Readonly<{ RAT_KING_STAGE_CONFIG: string }>
-  ) {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+const executeRaw = Effect.fn("Ship.execute")(function* execute(
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  env?: Readonly<{ RAT_KING_STAGE_CONFIG: string }>
+) {
+  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
-    const handle = yield* spawner.spawn(
-      ChildProcess.make(command, args, {
-        cwd,
-        env,
-        extendEnv: true,
-        stdin: "ignore",
-      })
-    );
+  const handle = yield* spawner.spawn(
+    ChildProcess.make(command, args, {
+      cwd,
+      env,
+      extendEnv: true,
+      forceKillAfter: "5 seconds",
+      stdin: "ignore",
+    })
+  );
 
-    let output = "";
-    let outputTail = "";
-    let stderr = "";
+  let output = "";
+  let outputTail = "";
+  let stderr = "";
 
-    const [code] = yield* Effect.all(
-      [
-        handle.exitCode,
-        Stream.runForEach(handle.stdout.pipe(Stream.decodeText()), (text) =>
-          Effect.sync(() => {
-            if (output.length < 1_048_576) {
-              output += text.slice(0, 1_048_576 - output.length);
-            }
+  const [code] = yield* Effect.all(
+    [
+      handle.exitCode,
+      Stream.runForEach(handle.stdout.pipe(Stream.decodeText()), (text) =>
+        Effect.sync(() => {
+          if (output.length < 1_048_576) {
+            output += text.slice(0, 1_048_576 - output.length);
+          }
 
-            outputTail = (outputTail + text).slice(-65_536);
-          })
-        ),
-        Stream.runForEach(handle.stderr.pipe(Stream.decodeText()), (text) =>
-          Effect.sync(() => {
-            stderr = (stderr + text).slice(-65_536);
-          })
-        ),
-      ],
-      { concurrency: "unbounded" }
-    );
+          outputTail = (outputTail + text).slice(-65_536);
+        })
+      ),
+      Stream.runForEach(handle.stderr.pipe(Stream.decodeText()), (text) =>
+        Effect.sync(() => {
+          stderr = (stderr + text).slice(-65_536);
+        })
+      ),
+    ],
+    { concurrency: "unbounded" }
+  );
 
-    return {
-      code: Number(code),
-      output,
-      stderrTail:
-        code === 0
-          ? undefined
-          : sanitizeCandidateStderr(`${outputTail}\n${stderr}`),
-    };
-  },
-  Effect.scoped,
-  (effect) =>
-    effect.pipe(
-      Effect.mapError(
-        () => new FleetError({ reason: "Ship command failed; values redacted" })
-      )
+  return {
+    code: Number(code),
+    output,
+    stderrTail:
+      code === 0
+        ? undefined
+        : sanitizeCandidateStderr(`${outputTail}\n${stderr}`),
+  };
+}, Effect.scoped);
+
+export const execute = (
+  command: string,
+  args: readonly string[],
+  cwd: string,
+  env?: Readonly<{ RAT_KING_STAGE_CONFIG: string }>,
+  step = "ship command"
+) =>
+  executeRaw(command, args, cwd, env).pipe(
+    Effect.mapError(
+      (cause) =>
+        new FleetError({
+          reason: `${step} process failed (${cause.reason._tag})`,
+        })
     )
-);
+  );
 
 export const runnerDrift = (checkpoint: string | undefined) =>
   shippedDrift(readShippedSha(checkpoint));
 
 const requireSuccess = Effect.fn("Ship.requireSuccess")(
   function* requireSuccess(
+    step: string,
     command: string,
     args: readonly string[],
     cwd: string
   ) {
-    const result = yield* execute(command, args, cwd);
+    const result = yield* execute(command, args, cwd, undefined, step);
 
     if (result.code !== 0) {
       return yield* new FleetError({
-        reason: `Candidate command failed (exit ${result.code}): ${result.stderrTail ?? "stderr unavailable"}`,
+        reason: `${step} failed (exit ${result.code}): ${result.stderrTail ?? "stderr unavailable"}`,
       });
     }
 
@@ -137,32 +148,60 @@ const requireSuccess = Effect.fn("Ship.requireSuccess")(
   }
 );
 
-const installDependencies = Effect.fn("Ship.installDependencies")(
-  function* installDependencies(pnpm: string, cwd: string, log: string) {
-    const toLog = (args: readonly string[]) =>
-      requireSuccess(
-        "/bin/sh",
-        [
-          "-c",
-          'log="$1"; shift; exec "$@" >>"$log" 2>&1',
-          "sh",
-          log,
-          pnpm,
-          ...args,
-        ],
-        cwd
-      ).pipe(Effect.timeout("8 minutes"));
+const checkoutCandidate = Effect.fn("Ship.checkoutCandidate")(
+  function* checkoutCandidate(source: string, release: string, sha: string) {
+    const fs = yield* FileSystem.FileSystem;
 
-    yield* toLog(["install", "--frozen-lockfile", "--offline"]).pipe(
-      Effect.catch(() => toLog(["install", "--frozen-lockfile"])),
-      Effect.mapError(
-        () =>
-          new FleetError({
-            reason:
-              "Candidate pnpm install failed or hung (offline, then online, 8 minutes each; see <release>.install.log)",
-          })
-      )
-    );
+    if (!(yield* fs.exists(release))) {
+      yield* requireSuccess(
+        "candidate clone",
+        "git",
+        [
+          "clone",
+          "--local",
+          "--no-hardlinks",
+          "--no-checkout",
+          "--",
+          source,
+          release,
+        ],
+        source
+      );
+      yield* requireSuccess(
+        "candidate checkout",
+        "git",
+        ["checkout", "--detach", sha],
+        release
+      );
+    }
+
+    if ((yield* fs.lstat(release)).type !== "Directory") {
+      return yield* new FleetError({
+        reason: "Candidate release is not an owned directory",
+      });
+    }
+
+    const current = (yield* requireSuccess(
+      "candidate revision",
+      "git",
+      ["rev-parse", "HEAD"],
+      release
+    )).trim();
+
+    const status = (yield* requireSuccess(
+      "candidate status",
+      "git",
+      ["status", "--porcelain"],
+      release
+    )).trim();
+
+    if (current !== sha || status !== "") {
+      return yield* new FleetError({
+        reason: "Candidate checkout does not match the fenced SHA",
+      });
+    }
+
+    return yield* Effect.void;
   }
 );
 
@@ -257,6 +296,7 @@ export const shipCommand = Effect.fn("Ship.command")(
             Schema.fromJsonString(Checks)
           )(
             yield* requireSuccess(
+              "fence checks",
               ship.bot,
               ["checks", ship.repository, sha],
               ship.source
@@ -327,51 +367,22 @@ export const shipCommand = Effect.fn("Ship.command")(
           const release = `${ship.releases}/${sha}`;
           yield* Ref.set(shipping, { attempt: "", sha });
 
-          if (!(yield* fs.exists(release))) {
-            yield* requireSuccess(
-              "git",
-              [
-                "clone",
-                "--local",
-                "--no-hardlinks",
-                "--no-checkout",
-                "--",
-                ship.source,
-                release,
-              ],
-              ship.source
-            );
-            yield* requireSuccess(
-              "git",
-              ["checkout", "--detach", sha],
-              release
-            );
-          }
-
-          const current = (yield* requireSuccess(
-            "git",
-            ["rev-parse", "HEAD"],
-            release
-          )).trim();
-
-          if (
-            current !== sha ||
-            (yield* requireSuccess(
-              "git",
-              ["status", "--porcelain"],
-              release
-            )).trim() !== ""
-          ) {
-            return yield* new FleetError({
-              reason: "Candidate checkout does not match the fenced SHA",
-            });
-          }
-
-          yield* installDependencies(
-            ship.launchd.pnpm,
+          const checkout = checkoutCandidate(ship.source, release, sha);
+          yield* checkout;
+          yield* installDependencies({
+            pnpm: ship.launchd.pnpm,
             release,
-            `${release}.install.log`
-          );
+            reset: quarantineInstall(ship.releases, sha).pipe(
+              Effect.andThen(checkout),
+              Effect.mapError((error) =>
+                Schema.is(FleetError)(error)
+                  ? error
+                  : new FleetError({
+                      reason: `Release reset failed (${error.reason._tag})`,
+                    })
+              )
+            ),
+          });
 
           const attemptDirectory = yield* fs.makeTempDirectory({
             directory: ship.releases,
@@ -413,7 +424,8 @@ export const shipCommand = Effect.fn("Ship.command")(
             ship.launchd.node,
             ["stacks/nest/cli.ts", "deploy"],
             release,
-            { RAT_KING_STAGE_CONFIG: configPath }
+            { RAT_KING_STAGE_CONFIG: configPath },
+            "candidate deploy"
           );
 
           const observations = yield* Effect.forEach(
@@ -429,26 +441,40 @@ export const shipCommand = Effect.fn("Ship.command")(
           const diagnostic =
             result.stderrTail === undefined
               ? verdict
-              : { ...verdict, stderrTail: result.stderrTail };
+              : {
+                  ...verdict,
+                  stderrTail:
+                    `candidate deploy exited ${result.code}: ${result.stderrTail}`.slice(
+                      0,
+                      2048
+                    ),
+                };
 
           return diagnostic;
         },
         (effect) =>
           effect.pipe(
             Effect.timeout("20 minutes"),
-            Effect.mapError(
-              (cause) =>
-                new FleetError({
-                  reason: `Candidate deploy failed; receipt must mark restart outcome unknown: ${causeDetail(cause)}`,
-                })
+            Effect.mapError((cause) =>
+              Schema.is(FleetError)(cause)
+                ? cause
+                : new FleetError({
+                    reason: `Candidate deploy failed; restart outcome unknown: ${Predicate.isTagged(cause, "TimeoutError") ? "timed out after 20 min" : causeDetail(cause)}`,
+                  })
             )
           )
       ),
       fetch: Effect.gen(function* fetch() {
-        yield* requireSuccess("git", ["fetch", "origin", "main"], ship.source);
+        yield* requireSuccess(
+          "main fetch",
+          "git",
+          ["fetch", "origin", "main"],
+          ship.source
+        );
 
         return yield* Schema.decodeEffect(Sha)(
           (yield* requireSuccess(
+            "main revision",
             "git",
             ["rev-parse", "origin/main"],
             ship.source

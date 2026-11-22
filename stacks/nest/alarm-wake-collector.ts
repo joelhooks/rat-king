@@ -56,6 +56,8 @@ export const collectWakeHealth = Effect.fn("Alarm.collectWakeHealth")(
           const retirement = health?.retired ?? null;
 
           const turn =
+            health?.lastTurnStartedAt !== undefined ||
+            config.alarm?.notify.sender !== undefined ||
             target === undefined ||
             health?.lease === null ||
             health === null ||
@@ -70,15 +72,17 @@ export const collectWakeHealth = Effect.fn("Alarm.collectWakeHealth")(
                   )
                   .pipe(Effect.orElseSucceed(() => null));
 
+          const lastTurn =
+            health?.lastTurnStartedAt ??
+            (turn === null ? undefined : Date.parse(turn.at));
+
           const defaultUnackedMinutes = config.alarm?.wakeUnackedMinutes;
 
           return {
             ...reader,
             health,
             retired: retirement,
-            ...(turn === null
-              ? undefined
-              : { lastTurnAt: Date.parse(turn.at) }),
+            ...(lastTurn === undefined ? undefined : { lastTurnAt: lastTurn }),
             ...(defaultUnackedMinutes === undefined
               ? undefined
               : { defaultUnackedMinutes }),

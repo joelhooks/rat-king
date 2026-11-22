@@ -6,6 +6,7 @@ import { DateTime, Effect, Option, Schema } from "effect";
 import { failure } from "./failure.ts";
 import type { Sql } from "./sqlite.ts";
 import type { Event, Transaction } from "./store.ts";
+import { recordTurnStart, turnStartTable } from "./turn-starts.ts";
 
 export const trafficDid = "did:web:rat-king-traffic.internal.invalid";
 
@@ -23,6 +24,7 @@ const Row = Schema.Struct({ value: Schema.String });
 const Sequence = Schema.Struct({ seq: Schema.Int });
 
 export const trafficTables = (sql: Sql) => {
+  turnStartTable(sql);
   sql.exec(
     "CREATE TABLE IF NOT EXISTS traffic_outbox (seq INTEGER PRIMARY KEY, value TEXT NOT NULL)"
   );
@@ -132,6 +134,7 @@ export const appendTraffic = (
         JSON.stringify(publicEntry)
       );
       countCritical(sql, entry);
+      recordTurnStart(sql, entry);
     }
   });
 };

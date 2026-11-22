@@ -99,6 +99,7 @@ export declare const prepare: (options: PrepareOptions) => Effect.Effect<{
     health: (did: string, name: string) => Effect.Effect<{
         readonly complete: boolean;
         readonly lastAck: number | null;
+        readonly lastTurnStartedAt?: number;
         readonly lease: {
             readonly expiresAt: number;
             readonly generation: number;

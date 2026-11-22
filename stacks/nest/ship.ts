@@ -3,7 +3,7 @@ import type { SnapshotFrom } from "xstate";
 import { initialTransition, transition } from "xstate";
 
 import type { ShipReceipt } from "./ship-config.ts";
-import { sanitizeCandidateStderr } from "./ship-diagnostics.ts";
+import { redactStderrExcerpt } from "./ship-diagnostics.ts";
 import { shipMachine } from "./ship-machine.ts";
 import type { ShipEvent } from "./ship-machine.ts";
 import type { FleetError } from "./stage-config.ts";
@@ -103,7 +103,7 @@ export const shipCycle = Effect.fn("Ship.cycle")(function* shipCycle<R>(
         celldRestarted: null,
         restartSeconds: null,
         result: "failed" as const,
-        stderrTail: sanitizeCandidateStderr(error.reason),
+        stderrTail: redactStderrExcerpt(error.reason),
       })
     )
   );

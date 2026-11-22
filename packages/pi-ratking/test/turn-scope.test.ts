@@ -125,6 +125,50 @@ it.prop(
   { arbitrary: { runs: 2000 } }
 );
 
+it.prop(
+  "only the configured verified DID can submit another agent's crash without becoming that agent",
+  {
+    configured: Schema.Boolean,
+    matches: Schema.Boolean,
+    state: Input.fields.state,
+    verified: Schema.Boolean,
+  },
+  ({ configured, matches, state, verified }) => {
+    const alarm = "did:web:alarm.example.invalid";
+
+    const inbound = {
+      ...arrival({
+        agent: "fleet/worker",
+        receiver: "fleet/desk",
+        seen: false,
+        settled: false,
+        state,
+        verified,
+      }),
+      alarmCrashDid: configured ? alarm : undefined,
+      did: matches ? alarm : "did:web:stranger.example.invalid",
+      from: "ops/alarm",
+    };
+
+    const delivered: string[] = [];
+
+    const box = turnInbox(
+      {
+        consume: nothing,
+        take: (mail) => {
+          delivered.push(mail.id);
+        },
+      },
+      () => "fleet/desk"
+    );
+
+    box.receive(inbound, false);
+    expect(delivered).toHaveLength(
+      configured && matches && verified && state === "crashed" ? 1 : 0
+    );
+  }
+);
+
 it.effect.prop(
   "extension emits every turn record and silently settles out-of-project records without display",
   [Arbitrary.schema(Input)],
