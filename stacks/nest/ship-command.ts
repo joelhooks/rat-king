@@ -1,10 +1,8 @@
 import type { Path } from "effect";
 import {
-  Config,
+  ConfigProvider,
   Effect,
   FileSystem,
-  Option,
-  Predicate,
   Ref,
   Schema,
   Stream,
@@ -17,18 +15,21 @@ import {
   secretStoreLayer,
 } from "../../apps/mailbox/cli/secrets.ts";
 import { writePrivateJson } from "../../packages/ratking-client/src/directory.ts";
+import type { PreparedFleetPayload } from "./prepared-payload.ts";
 import { readShippedSha, shippedDrift } from "./runner-drift.ts";
-import { RestartEvent, Sha, ShipCheckpoint } from "./ship-config.ts";
-import type { ShipAttempt } from "./ship-config.ts";
+import { boundDeploy, observeAttempt, startAttempt } from "./ship-attempt.ts";
+import { Sha, ShipCheckpoint } from "./ship-config.ts";
 import { sanitizeCandidateStderr } from "./ship-diagnostics.ts";
 import { installDependencies, quarantineInstall } from "./ship-install.ts";
 import { sendShipNotification } from "./ship-notify.ts";
-import { deployOutcome } from "./ship-observation.ts";
+import { preparedEvidence } from "./ship-prepared-evidence.ts";
+import type { PreparedArgs } from "./ship-prepared-evidence.ts";
 import { prepareReleases, recordReceipt } from "./ship-prune.ts";
 import type { ReleaseCurrent } from "./ship-prune.ts";
+import { selectPrepared } from "./ship-select.ts";
 import { shipLoop } from "./ship.ts";
-import type { ShipPorts } from "./ship.ts";
-import { FleetError, causeDetail } from "./stage-config.ts";
+import type { PreparedShipPorts, ShipPorts } from "./ship.ts";
+import { FleetError, causeDetail, shipConfigFields } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
 
 const Checks = Schema.Struct({
@@ -238,12 +239,25 @@ const recoveryNote = (recovered: boolean | undefined) => {
 export const shipCommand = Effect.fn("Ship.command")(
   function* shipCommand(
     config: StageConfigValue,
-    recover: ShipPorts["recover"]
+    recover: ShipPorts["recover"],
+    prepared?: {
+      readonly args: PreparedArgs;
+      readonly loadApply: Effect.Effect<
+        (payload: PreparedFleetPayload) => Effect.Effect<boolean>,
+        FleetError
+      >;
+    }
   ) {
     const { ship } = config;
 
     if (ship === undefined) {
       return yield* new FleetError({ reason: "Ship configuration required" });
+    }
+
+    if (prepared !== undefined && config.runtime.RAT_KING_STAGE !== "fleet") {
+      return yield* new FleetError({
+        reason: "Prepared ship requires the fleet stage",
+      });
     }
 
     const fs = yield* FileSystem.FileSystem;
@@ -266,12 +280,13 @@ export const shipCommand = Effect.fn("Ship.command")(
         )
       : { failed: "", successful: "" };
 
-    const ports: ShipPorts<
+    type Services =
       | FileSystem.FileSystem
       | Path.Path
       | ChildProcessSpawner.ChildProcessSpawner
-      | HttpClient.HttpClient
-    > = {
+      | HttpClient.HttpClient;
+
+    const shared: Omit<ShipPorts<Services>, "fetch" | "ci" | "deploy"> = {
       checkpoint: (state) =>
         writePrivateJson(
           ship.checkpoint,
@@ -279,6 +294,10 @@ export const shipCommand = Effect.fn("Ship.command")(
             deferred: state.deferred ?? "",
             failed: state.failed,
             failedGate: state.failedGate ?? "",
+            preparedRetries:
+              Object.keys(state.preparedRetries ?? {}).length === 0
+                ? undefined
+                : state.preparedRetries,
             retryAt: state.retryAt ?? 0,
             successful: state.successful,
           })
@@ -290,6 +309,70 @@ export const shipCommand = Effect.fn("Ship.command")(
               })
           )
         ),
+      notify: (receipt) =>
+        sendShipNotification(
+          config,
+          `ship ${receipt.sha.slice(0, 12)} ${receipt.result}; celld restart=${receipt.celldRestarted ?? "unknown"}; restart ${receipt.restartSeconds === null ? "unknown" : receipt.restartSeconds.toFixed(3)}s${recoveryNote(receipt.recovered)} SR 🐀`,
+          receipt.result === "deferred" ||
+            (receipt.result === "success" && receipt.celldRestarted !== true)
+        ).pipe(Effect.provideService(SecretStore, store)),
+      record: recordReceipt(ship, shipping, logged),
+      recover,
+    };
+
+    if (prepared !== undefined) {
+      const apply = yield* prepared.loadApply;
+
+      const evidence = preparedEvidence(
+        ship.repository,
+        prepared.args,
+        ship.releases
+      );
+
+      const ports: PreparedShipPorts<Services> = {
+        ...shared,
+        deployPrepared: Effect.fn("Ship.applyPrepared")(function* applyPrepared(
+          payload
+        ) {
+          const attempt = yield* startAttempt(
+            ship,
+            config,
+            payload.commit,
+            payload.version,
+            shipping
+          );
+
+          const applied = yield* apply(payload).pipe(
+            Effect.provide(
+              ConfigProvider.layerAdd(
+                ConfigProvider.fromUnknown({
+                  ...shipConfigFields(attempt.config),
+                  RAT_KING_COMMIT: payload.commit,
+                  RAT_KING_VERSION: payload.version,
+                }),
+                { asPrimary: true }
+              )
+            )
+          );
+
+          return yield* observeAttempt(attempt.events, {
+            code: applied ? 0 : 1,
+            stderrTail: applied ? undefined : "Trusted fleet apply failed",
+          });
+        }, boundDeploy),
+        select: (state, now) => selectPrepared<Services>(evidence, state, now),
+      };
+
+      return yield* shipLoop(
+        ports,
+        saved,
+        Math.max(120, ship.intervalSeconds),
+        Effect.succeed(false)
+      );
+    }
+
+    const ports: ShipPorts<Services> = {
+      ...shared,
       ci: Effect.fn("Ship.fence")(
         function* fence(sha) {
           const checks = yield* Schema.decodeEffect(
@@ -362,108 +445,48 @@ export const shipCommand = Effect.fn("Ship.command")(
             )
           )
       ),
-      deploy: Effect.fn("Ship.deploy")(
-        function* deploy(sha) {
-          const release = `${ship.releases}/${sha}`;
-          yield* Ref.set(shipping, { attempt: "", sha });
+      deploy: Effect.fn("Ship.deploy")(function* deploy(sha) {
+        const release = `${ship.releases}/${sha}`;
+        yield* Ref.set(shipping, { attempt: "", sha });
 
-          const checkout = checkoutCandidate(ship.source, release, sha);
-          yield* checkout;
-          yield* installDependencies({
-            pnpm: ship.launchd.pnpm,
-            release,
-            reset: quarantineInstall(ship.releases, sha).pipe(
-              Effect.andThen(checkout),
-              Effect.mapError((error) =>
-                Schema.is(FleetError)(error)
-                  ? error
-                  : new FleetError({
-                      reason: `Release reset failed (${error.reason._tag})`,
-                    })
-              )
-            ),
-          });
-
-          const attemptDirectory = yield* fs.makeTempDirectory({
-            directory: ship.releases,
-            prefix: "attempt-",
-          });
-
-          yield* Ref.set(shipping, {
-            attempt: attemptDirectory.slice(
-              attemptDirectory.lastIndexOf("/") + 1
-            ),
-            sha,
-          });
-
-          const override = yield* Config.option(
-            Config.schema(
-              Schema.NonEmptyString,
-              "RAT_KING_SHIP_RESTART_OVERRIDE"
-            )
-          );
-
-          const events = `${attemptDirectory}/restart-events.jsonl`;
-
-          const shipAttempt: typeof ShipAttempt.Type = Option.isSome(override)
-            ? { events, override: override.value, restart: ship.restart, sha }
-            : { events, restart: ship.restart, sha };
-
-          const configPath = `${attemptDirectory}/stage.json`;
-          yield* fs.writeFileString(events, "", { flag: "wx", mode: 0o600 });
-          yield* writePrivateJson(
-            configPath,
-            JSON.stringify({
-              ...config,
-              runtime: { ...config.runtime, RAT_KING_COMMIT: sha },
-              shipAttempt,
-            })
-          );
-
-          const result = yield* execute(
-            ship.launchd.node,
-            ["stacks/nest/cli.ts", "deploy"],
-            release,
-            { RAT_KING_STAGE_CONFIG: configPath },
-            "candidate deploy"
-          );
-
-          const observations = yield* Effect.forEach(
-            (yield* fs.readFileString(events))
-              .split("\n")
-              .filter((line) => line !== ""),
-            (line) =>
-              Schema.decodeEffect(Schema.fromJsonString(RestartEvent))(line)
-          );
-
-          const verdict = deployOutcome(result.code, observations);
-
-          const diagnostic =
-            result.stderrTail === undefined
-              ? verdict
-              : {
-                  ...verdict,
-                  stderrTail:
-                    `candidate deploy exited ${result.code}: ${result.stderrTail}`.slice(
-                      0,
-                      2048
-                    ),
-                };
-
-          return diagnostic;
-        },
-        (effect) =>
-          effect.pipe(
-            Effect.timeout("20 minutes"),
-            Effect.mapError((cause) =>
-              Schema.is(FleetError)(cause)
-                ? cause
+        const checkout = checkoutCandidate(ship.source, release, sha);
+        yield* checkout;
+        yield* installDependencies({
+          pnpm: ship.launchd.pnpm,
+          release,
+          reset: quarantineInstall(ship.releases, sha).pipe(
+            Effect.andThen(checkout),
+            Effect.mapError((error) =>
+              Schema.is(FleetError)(error)
+                ? error
                 : new FleetError({
-                    reason: `Candidate deploy failed; restart outcome unknown: ${Predicate.isTagged(cause, "TimeoutError") ? "timed out after 20 min" : causeDetail(cause)}`,
+                    reason: `Release reset failed (${error.reason._tag})`,
                   })
             )
-          )
-      ),
+          ),
+        });
+
+        const attempt = yield* startAttempt(
+          ship,
+          config,
+          sha,
+          config.runtime.RAT_KING_VERSION,
+          shipping
+        );
+
+        const configPath = `${attempt.directory}/stage.json`;
+        yield* writePrivateJson(configPath, JSON.stringify(attempt.config));
+
+        const result = yield* execute(
+          ship.launchd.node,
+          ["stacks/nest/cli.ts", "deploy"],
+          release,
+          { RAT_KING_STAGE_CONFIG: configPath },
+          "candidate deploy"
+        );
+
+        return yield* observeAttempt(attempt.events, result);
+      }, boundDeploy),
       fetch: Effect.gen(function* fetch() {
         yield* requireSuccess(
           "main fetch",
@@ -489,15 +512,6 @@ export const shipCommand = Effect.fn("Ship.command")(
             })
         )
       ),
-      notify: (receipt) =>
-        sendShipNotification(
-          config,
-          `ship ${receipt.sha.slice(0, 12)} ${receipt.result}; celld restart=${receipt.celldRestarted ?? "unknown"}; restart ${receipt.restartSeconds === null ? "unknown" : receipt.restartSeconds.toFixed(3)}s${recoveryNote(receipt.recovered)} SR 🐀`,
-          receipt.result === "deferred" ||
-            (receipt.result === "success" && receipt.celldRestarted !== true)
-        ).pipe(Effect.provideService(SecretStore, store)),
-      record: recordReceipt(ship, shipping, logged),
-      recover,
     };
 
     return yield* shipLoop(

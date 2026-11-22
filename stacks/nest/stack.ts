@@ -1,22 +1,10 @@
 import { Stack, localState } from "alchemy";
 import * as Output from "alchemy/Output";
-import {
-  Config,
-  Effect,
-  FileSystem,
-  Layer,
-  Option,
-  Path,
-  Schema,
-} from "effect";
+import { Config, Effect, FileSystem, Layer, Option, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
 
 import { Documents } from "../../apps/mailbox/src/auth.ts";
-import {
-  bindings,
-  hostedBindings,
-  hostedVars,
-} from "../../apps/mailbox/src/bindings.ts";
+import { hostedVars } from "../../apps/mailbox/src/bindings.ts";
 import { StateRecovery } from "../../packages/alchemy-nest/src/adoption.ts";
 import {
   RuntimeFiles,
@@ -25,7 +13,6 @@ import {
 } from "../../packages/alchemy-nest/src/agent-runtime-files.ts";
 import type { RuntimeFilesProps } from "../../packages/alchemy-nest/src/agent-runtime-files.ts";
 import { Celld } from "../../packages/alchemy-nest/src/celld.ts";
-import { prepareDeployment } from "../../packages/alchemy-nest/src/deployment-build.ts";
 import { stageDeploymentFiles } from "../../packages/alchemy-nest/src/deployment-stage.ts";
 import {
   Deployment,
@@ -40,14 +27,9 @@ import {
 } from "../../packages/alchemy-nest/src/host.ts";
 import { ObjectStore } from "../../packages/alchemy-nest/src/object-store.ts";
 import {
-  operatorBundle,
-  optionalOperatorBundle,
-} from "../../packages/alchemy-nest/src/operator-build.ts";
-import {
   RemoteFile,
   SystemdUnit,
 } from "../../packages/alchemy-nest/src/providers.ts";
-import { sourceLayer } from "../../packages/alchemy-nest/src/release.ts";
 import { SecretSource } from "../../packages/alchemy-nest/src/secret-source.ts";
 import { layer as sshLayer } from "../../packages/alchemy-nest/src/ssh.ts";
 import { startupLayer } from "../../packages/alchemy-nest/src/startup-contract.ts";
@@ -61,6 +43,11 @@ import {
   workerIPv4 as stageWorkerIPv4,
 } from "./config.ts";
 import { fleetStoreCredentials } from "./credentials.ts";
+import {
+  deploymentPayloads,
+  deploymentReleaseSource,
+} from "./deploy-payloads.ts";
+import type { PreparedFleetPayload } from "./prepared-payload.ts";
 import { restoreOwnedData } from "./restore.ts";
 import type { RestoreRequest } from "./restore.ts";
 import { guardedShell } from "./ship-restart.ts";
@@ -163,7 +150,10 @@ const stateRecovery = Effect.fn("Nest.stateRecovery")(function* stateRecovery(
   return enabled;
 });
 
-export const nestStack = (restore?: RestoreRequest) =>
+export const nestStack = (
+  restore?: RestoreRequest,
+  payload?: PreparedFleetPayload
+) =>
   Stack(
     "nest",
     {
@@ -185,14 +175,13 @@ export const nestStack = (restore?: RestoreRequest) =>
         Layer.provide(SecretSource.layer),
         Layer.provide(startup(restore)),
         Layer.provide(connection),
-        Layer.provide(sourceLayer.pipe(Layer.orDie)),
+        Layer.provide(deploymentReleaseSource(payload).pipe(Layer.orDie)),
         Layer.provide(FetchHttpClient.layer)
       ),
       state: localState(),
     },
     Effect.gen(function* nest() {
       const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
       const hosts = yield* Host;
 
       const node = yield* hosts
@@ -223,8 +212,6 @@ export const nestStack = (restore?: RestoreRequest) =>
         yield* Config.String("RAT_KING_DOCUMENTS")
       );
 
-      const version = yield* Config.String("RAT_KING_VERSION");
-      const commit = yield* Config.String("RAT_KING_COMMIT");
       const serviceDid = yield* Config.String("RAT_KING_SERVICE_DID");
 
       const vars = mailboxOnly
@@ -290,32 +277,19 @@ export const nestStack = (restore?: RestoreRequest) =>
         });
       }
 
-      const prepared = yield* prepareDeployment(
-        path.resolve(
-          import.meta.dirname,
-          mailboxOnly
-            ? "../../apps/mailbox/src/worker.ts"
-            : "../../apps/mailbox/src/hosted-worker.ts"
-        ),
-        mailboxOnly ? bindings : hostedBindings,
-        {
-          commit,
-          vars,
-          version,
-        }
+      const bundles = yield* deploymentPayloads(
+        fleet,
+        mailboxOnly,
+        vars,
+        payload
       );
+
+      const { deployment: prepared } = bundles;
 
       const staged = yield* stageDeploymentFiles(
         node.home,
         prepared,
         mailboxOnly
-      );
-
-      const restartGateBundle = Option.getOrUndefined(
-        yield* optionalOperatorBundle(
-          fleet,
-          path.resolve(import.meta.dirname, "restart-gate.ts")
-        )
       );
 
       const slice = yield* ObjectStore.Slice(node.home, memoryMax, cpuQuota);
@@ -329,7 +303,7 @@ export const nestStack = (restore?: RestoreRequest) =>
         ),
         prepared: staged,
         purgeOnDelete: !recoverState,
-        restartGateBundle,
+        restartGateBundle: bundles.restart,
         slice: slice.sha256,
         volumeMax: 2048,
       });
@@ -377,9 +351,7 @@ export const nestStack = (restore?: RestoreRequest) =>
         : (runtime?.sha256 ?? cells.unit.sha256);
 
       const cli = yield* RemoteFile("mailbox-cli", {
-        content: yield* fs.readFileString(
-          yield* Config.String("RAT_KING_CLI_OUTPUT")
-        ),
+        content: bundles.cli,
         mode: 0o600,
         path: Output.interpolate`${bucket.bin}/mailbox.mjs`,
       });
@@ -431,13 +403,11 @@ export const nestStack = (restore?: RestoreRequest) =>
         )
       );
 
-      if (fleet) {
+      if (bundles.backup !== undefined) {
         const backupRoot = yield* Config.String("RAT_KING_BACKUP_ROOT");
 
         const backup = yield* RemoteFile("mailbox-backup-runner", {
-          content: yield* operatorBundle(
-            path.resolve(import.meta.dirname, "backup-runner.ts")
-          ),
+          content: bundles.backup,
           mode: 0o600,
           path: Output.interpolate`${bucket.bin}/mailbox-backup.mjs`,
         });
@@ -454,12 +424,12 @@ export const nestStack = (restore?: RestoreRequest) =>
             Output.map(([ready]) =>
               backupUnit({
                 backupRoot,
-                commit,
+                commit: prepared.commit,
                 dataRoot: node.dataRoot,
                 healthUrl: `${workerUrl}/.well-known/celld/health`,
                 home: node.home,
                 ready,
-                version,
+                version: prepared.version,
               })
             )
           )

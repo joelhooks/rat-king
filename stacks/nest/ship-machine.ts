@@ -2,6 +2,8 @@ import { Schema } from "effect";
 import type { EventFromLogic } from "xstate";
 import { setup } from "xstate";
 
+import { PreparedRetries } from "./ship-config.ts";
+
 const backoffBase = 60;
 
 const backoffCap = 3600;
@@ -12,12 +14,29 @@ const Context = Schema.Struct({
   failedGate: Schema.String,
   fetchFailures: Schema.Int,
   fetchRetryAt: Schema.Number,
+  preparedAhead: Schema.Array(Schema.String),
+  preparedRetries: PreparedRetries,
   retryAt: Schema.Number,
   sha: Schema.String,
   successful: Schema.String,
 });
 
 const Empty = Schema.toStandardSchemaV1(Schema.Struct({}));
+
+const keepRetries = (
+  context: typeof Context.Type,
+  allowed: readonly string[]
+) => {
+  const retries = { ...context.preparedRetries };
+
+  if (context.deferred !== "") {
+    retries[context.deferred] = context.retryAt;
+  }
+
+  return Object.fromEntries(
+    Object.entries(retries).filter(([sha]) => allowed.includes(sha))
+  );
+};
 
 export const shipMachine = setup({
   schemas: {
@@ -32,10 +51,17 @@ export const shipMachine = setup({
       fetchFailed: Schema.toStandardSchemaV1(
         Schema.Struct({ now: Schema.Number })
       ),
+      notReady: Empty,
       observed: Schema.toStandardSchemaV1(
         Schema.Struct({ now: Schema.Number, sha: Schema.String })
       ),
       pending: Empty,
+      prepared: Schema.toStandardSchemaV1(
+        Schema.Struct({
+          ahead: Schema.Array(Schema.String),
+          sha: Schema.String,
+        })
+      ),
       ready: Empty,
       success: Empty,
       tick: Schema.toStandardSchemaV1(Schema.Struct({ now: Schema.Number })),
@@ -45,6 +71,7 @@ export const shipMachine = setup({
         deferred: Schema.optionalKey(Schema.String),
         failed: Schema.String,
         failedGate: Schema.optionalKey(Schema.String),
+        preparedRetries: Schema.optionalKey(PreparedRetries),
         retryAt: Schema.optionalKey(Schema.Number),
         successful: Schema.String,
       })
@@ -57,6 +84,8 @@ export const shipMachine = setup({
     failedGate: input.failedGate ?? "",
     fetchFailures: 0,
     fetchRetryAt: 0,
+    preparedAhead: [],
+    preparedRetries: input.preparedRetries ?? {},
     retryAt: input.retryAt ?? 0,
     sha: "",
   }),
@@ -70,6 +99,10 @@ export const shipMachine = setup({
           context: {
             ...context,
             deferred: context.sha,
+            preparedRetries:
+              context.preparedAhead.length > 0
+                ? { ...context.preparedRetries, [context.sha]: event.retryAt }
+                : context.preparedRetries,
             retryAt: event.retryAt,
           },
           target: "deferred",
@@ -90,6 +123,16 @@ export const shipMachine = setup({
             deferred: "",
             failed: "",
             failedGate: "",
+            preparedRetries:
+              context.preparedAhead.length > 0
+                ? keepRetries(
+                    context,
+                    context.preparedAhead.slice(
+                      0,
+                      context.preparedAhead.indexOf(context.sha)
+                    )
+                  )
+                : context.preparedRetries,
             retryAt: 0,
             successful: context.sha,
           },
@@ -122,6 +165,10 @@ export const shipMachine = setup({
             target: "fetch-error",
           };
         },
+        notReady: ({ context }) => ({
+          context: { ...context, sha: "" },
+          target: "waiting-ci",
+        }),
         observed: ({ context: prior, event }) => {
           const context = { ...prior, fetchFailures: 0, fetchRetryAt: 0 };
 
@@ -148,6 +195,22 @@ export const shipMachine = setup({
             target: "waiting-ci",
           };
         },
+        prepared: ({ context, event }) => ({
+          context: {
+            ...context,
+            deferred: "",
+            fetchFailures: 0,
+            fetchRetryAt: 0,
+            preparedAhead: event.ahead,
+            preparedRetries: keepRetries(
+              context,
+              event.ahead.filter((sha) => sha !== event.sha)
+            ),
+            retryAt: 0,
+            sha: event.sha,
+          },
+          target: "waiting-ci",
+        }),
       },
     },
     idle: { on: { tick: { target: "fetching" } } },

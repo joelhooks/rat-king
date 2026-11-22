@@ -1,14 +1,19 @@
 /* oxlint-disable typescript/promise-function-async -- fast-check commands and asyncModelRun are Promise boundaries. */
 import { it } from "@effect/vitest";
 import { Clock, Duration, Effect, Schema } from "effect";
+import type { Context } from "effect";
 import { TestClock } from "effect/testing";
 import { asyncModelRun } from "fast-check";
 import type { AsyncCommand } from "fast-check";
 import { expect } from "vitest";
 import { initialTransition } from "xstate";
 
-import type { ShipReceipt } from "../../../stacks/nest/ship-config.ts";
+import type {
+  ShipCheckpoint,
+  ShipReceipt,
+} from "../../../stacks/nest/ship-config.ts";
 import { shipMachine } from "../../../stacks/nest/ship-machine.ts";
+import { selectPrepared } from "../../../stacks/nest/ship-select.ts";
 import { shipCycle, shipLoop } from "../../../stacks/nest/ship.ts";
 import type { ShipPorts, ShipSnapshot } from "../../../stacks/nest/ship.ts";
 import { FleetError } from "../../../stacks/nest/stage-config.ts";
@@ -61,6 +66,10 @@ const expectRecovery = (
 class ModelFailure extends Schema.TaggedError<ModelFailure>()("ModelFailure", {
   reason: Schema.String,
 }) {}
+
+const capturedRunner = <R>(context: Context.Context<R>) =>
+  // oxlint-disable-next-line effect-tests/no-manual-effect-runtime-in-tests -- asyncModelRun needs a Promise per command; reuse the test context.
+  Effect.runPromiseWith(context);
 
 it.effect.prop(
   "ship serializes deploys, retries busy maintenance, holds a failed SHA until a new SHA and tries recovery after every failed deploy",
@@ -176,8 +185,7 @@ it.effect.prop(
             expect(real.notes).toBe(real.deployed);
           });
 
-          // oxlint-disable-next-line effect-tests/no-manual-effect-runtime-in-tests -- asyncModelRun needs a Promise per command; reuse the test context.
-          return Effect.runPromiseWith(context)(operation);
+          return capturedRunner(context)(operation);
         },
         toString: () => JSON.stringify(cycle),
       });
@@ -211,6 +219,181 @@ it.effect.prop(
             cycles.map(command)
           ),
       });
+    })
+);
+
+const PreparedStep = Schema.Struct({
+  defer: Schema.Boolean,
+  elapsed: Schema.Int.check(Schema.isBetween({ maximum: 120, minimum: 0 })),
+  headReady: Schema.Boolean,
+  middleReady: Schema.Boolean,
+  restart: Schema.Boolean,
+});
+
+const base = "d".repeat(40);
+
+const middle = "e".repeat(40);
+
+const head = "f".repeat(40);
+
+const lineup = [head, middle, base];
+
+interface PreparedModel {
+  retries: Map<string, number>;
+  successful: string;
+}
+
+interface PreparedReal {
+  saved: typeof ShipCheckpoint.Type;
+  snapshot: ShipSnapshot;
+}
+
+it.effect.prop(
+  "prepared cycles retain newer retry deadlines across fallback, success and restart without selecting at or behind the checkpoint",
+  [Schema.Array(PreparedStep).check(Schema.isMaxLength(15))],
+  ([suffix]) =>
+    Effect.gen(function* preparedModel() {
+      const context = yield* Effect.context();
+      const execute = capturedRunner(context);
+
+      const command = (
+        step: typeof PreparedStep.Type
+      ): AsyncCommand<PreparedModel, PreparedReal> => ({
+        check: () => true,
+        run: (model, real) =>
+          execute(
+            Effect.gen(function* runStep() {
+              yield* TestClock.adjust(Duration.seconds(step.elapsed));
+              const now = (yield* Clock.currentTimeMillis) / 1000;
+              const ready = new Set([base]);
+
+              if (step.middleReady) {
+                ready.add(middle);
+              }
+
+              if (step.headReady) {
+                ready.add(head);
+              }
+
+              const candidates = lineup.slice(
+                0,
+                lineup.indexOf(model.successful)
+              );
+
+              const expected = candidates.find(
+                (sha) => ready.has(sha) && (model.retries.get(sha) ?? 0) <= now
+              );
+
+              let receipt: string | undefined;
+
+              if (step.restart) {
+                [real.snapshot] = initialTransition(shipMachine, real.saved);
+              }
+
+              real.snapshot = yield* shipCycle(real.snapshot, {
+                checkpoint: (saved) =>
+                  Effect.sync(() => {
+                    real.saved = saved;
+                  }),
+                deployPrepared: (payload) =>
+                  Effect.sync(() => {
+                    expect(real.saved.failed).toBe(payload.commit);
+
+                    return {
+                      celldRestarted: false,
+                      restartSeconds: 0,
+                      result: step.defer ? "deferred" : "success",
+                      retryAt: now + 90,
+                    };
+                  }),
+                notify: () => Effect.void,
+                record: (entry) =>
+                  Effect.sync(() => {
+                    receipt = entry.sha;
+                  }),
+                recover: Effect.die("No prepared case in this model fails"),
+                select: (saved, at) =>
+                  selectPrepared(
+                    {
+                      artifact: (sha) =>
+                        Effect.succeed({
+                          backup: "backup",
+                          cli: "cli",
+                          commit: sha,
+                          restart: "restart",
+                          version: "1.2.3",
+                          worker: "worker",
+                        }),
+                      eligible: Effect.succeed(ready),
+                      fence: () => Effect.succeed(true),
+                      firstParent: (sha) =>
+                        Effect.succeed(lineup[lineup.indexOf(sha) + 1]),
+                      head: Effect.succeed(head),
+                    },
+                    saved,
+                    at
+                  ),
+              });
+
+              if (expected !== undefined && step.defer) {
+                model.retries.set(expected, now + 90);
+              }
+
+              if (expected !== undefined && !step.defer) {
+                model.successful = expected;
+
+                for (const sha of lineup.slice(lineup.indexOf(expected))) {
+                  model.retries.delete(sha);
+                }
+              }
+
+              expect(receipt).toBe(expected);
+              expect(real.saved.successful).toBe(model.successful);
+              expect(real.snapshot.context.successful).toBe(model.successful);
+              expect(real.saved.preparedRetries ?? {}).toEqual(
+                Object.fromEntries(model.retries)
+              );
+            })
+          ),
+        toString: () => JSON.stringify(step),
+      });
+
+      const prefix = [
+        {
+          defer: true,
+          elapsed: 0,
+          headReady: true,
+          middleReady: true,
+          restart: false,
+        },
+        {
+          defer: false,
+          elapsed: 1,
+          headReady: true,
+          middleReady: true,
+          restart: true,
+        },
+        {
+          defer: false,
+          elapsed: 1,
+          headReady: true,
+          middleReady: true,
+          restart: true,
+        },
+      ];
+
+      const saved = { failed: "", successful: base };
+      const [snapshot] = initialTransition(shipMachine, saved);
+      yield* Effect.promise(
+        asyncModelRun.bind(
+          undefined,
+          () => ({
+            model: { retries: new Map<string, number>(), successful: base },
+            real: { saved, snapshot },
+          }),
+          [...prefix, ...suffix].map(command)
+        )
+      );
     })
 );
 

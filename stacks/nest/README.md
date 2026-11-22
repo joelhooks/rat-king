@@ -97,6 +97,15 @@ The cheapest unauthenticated celld health path is `/.well-known/celld/health` on
 
 Untested until live qualification: SMB failure during publication, disk exhaustion, interrupted shutdown/extraction, host reboot, migration to a different Linux host, registered-identity preservation and recipient decrypt after restore.
 
+## Prepared fleet ship
+
+`ship` still uses the legacy checkout and build path. `ship-prepared` is a separate fleet-only entrypoint for an approved, installed signer runtime. It does not load deploy code from the candidate checkout.
+
+- On the keyless side, use a clean checkout at the exact candidate SHA. Run `pnpm install --frozen-lockfile --ignore-scripts` before `node stacks/nest/cli.ts ship-build --sha <sha> --output <absolute-file>`. Run as a non-root user with a clean environment, an empty HOME and an empty XDG runtime directory. The exclusive output file is a versioned container, capped at 32 MiB. It holds just the fleet mailbox worker, mailbox CLI, backup runner and restart gate, not stage configuration or the hosted proof.
+- On the trusted side, `node stacks/nest/cli.ts ship-prepared --candidate-file <absolute-file> --artifact-helper <absolute-executable>` reads a bounded LF-delimited SHA list. The installed helper returns the published and pinned subset with `--eligible`, one approved SHA-256 with `--pin <sha>`, and one private snapshot path with `<sha>`. The snapshot must be `<ship.releases>/<sha>.bundle`. Neither the list nor the helper needs build credentials.
+- The signer proves pushed `main` first-parent ancestry through the read-only GitHub API. It requires the exact push run of `.github/workflows/fence.yml` and a successful `fence` job in that run attempt. It never selects at or below the successful checkpoint. Missing proof, a bad artifact and an unproven checkpoint hold; they do not arm a deploy or send a failure receipt. The public API path polls at most once every two minutes and bounds the ancestry walk to 256 parents.
+- The signer rehashes the open snapshot against the independent pin, then decodes the container. Alchemy makes bindings, units and the plan from approved configuration and treats the verified modules as destination bytes. Prepared apply requires the pinned host binaries; it cannot download a replacement release. Restart notice, backup exclusion, storage recovery and receipts use the same guards as legacy ship.
+
 ## Recover lost local state
 
 For mailbox-only stages, set `RAT_KING_RECOVER_STATE=true` and select a fresh external `RAT_KING_STATE_DIR`. Keep the original stage, inventory, public documents, bundles and deployed version/commit. Notify the host owner, then run `plan` only. Never move or overwrite the real `.alchemy` directory to test recovery.

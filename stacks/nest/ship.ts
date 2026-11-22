@@ -2,10 +2,12 @@ import { Clock, Console, Effect, Option, Ref, Schedule } from "effect";
 import type { SnapshotFrom } from "xstate";
 import { initialTransition, transition } from "xstate";
 
-import type { ShipReceipt } from "./ship-config.ts";
+import type { PreparedFleetPayload } from "./prepared-payload.ts";
+import type { ShipCheckpoint, ShipReceipt } from "./ship-config.ts";
 import { redactStderrExcerpt } from "./ship-diagnostics.ts";
 import { shipMachine } from "./ship-machine.ts";
 import type { ShipEvent } from "./ship-machine.ts";
+import type { PreparedSelection } from "./ship-select.ts";
 import type { FleetError } from "./stage-config.ts";
 
 export type ShipSnapshot = SnapshotFrom<typeof shipMachine>;
@@ -31,7 +33,10 @@ export interface ShipPorts<R = never> {
   readonly checkpoint: (
     snapshot: Pick<ShipSnapshot["context"], "failed" | "successful"> &
       Partial<
-        Pick<ShipSnapshot["context"], "deferred" | "failedGate" | "retryAt">
+        Pick<
+          ShipSnapshot["context"],
+          "deferred" | "failedGate" | "preparedRetries" | "retryAt"
+        >
       >
   ) => Effect.Effect<void, FleetError, R>;
   readonly recover: Effect.Effect<
@@ -47,18 +52,50 @@ export interface ShipPorts<R = never> {
   ) => Effect.Effect<void, FleetError, R>;
 }
 
+export interface PreparedShipPorts<R = never> extends Omit<
+  ShipPorts<R>,
+  "ci" | "deploy" | "fetch"
+> {
+  readonly select: (
+    saved: typeof ShipCheckpoint.Type,
+    now: number
+  ) => Effect.Effect<Option.Option<PreparedSelection>, never, R>;
+  readonly deployPrepared: (
+    payload: PreparedFleetPayload
+  ) => ReturnType<ShipPorts<R>["deploy"]>;
+}
+
+type CyclePorts<R> = ShipPorts<R> | PreparedShipPorts<R>;
+
 const advance = (snapshot: ShipSnapshot, event: ShipEvent) =>
   transition(shipMachine, snapshot, event)[0];
 
-export const shipCycle = Effect.fn("Ship.cycle")(function* shipCycle<R>(
+const acquire = Effect.fn("Ship.acquire")(function* acquire<R>(
   snapshot: ShipSnapshot,
-  ports: ShipPorts<R>
+  ports: CyclePorts<R>,
+  tickedAt: number
 ) {
-  const tickedAt = (yield* Clock.currentTimeMillis) / 1000;
   let current = advance(snapshot, { now: tickedAt, type: "tick" });
 
   if (current.matches("fetch-error")) {
-    return current;
+    return { current };
+  }
+
+  if ("select" in ports) {
+    const selected = yield* ports.select(current.context, tickedAt);
+
+    if (Option.isNone(selected)) {
+      return { current: advance(current, { type: "notReady" }) };
+    }
+
+    const { ahead, payload } = selected.value;
+    current = advance(current, {
+      ahead,
+      sha: payload.commit,
+      type: "prepared",
+    });
+
+    return { current, deploy: ports.deployPrepared(payload) };
   }
 
   const fetched = yield* ports.fetch.pipe(Effect.option);
@@ -68,7 +105,9 @@ export const shipCycle = Effect.fn("Ship.cycle")(function* shipCycle<R>(
       yield* Console.error("SHIP_FETCH_FAILED");
     }
 
-    return advance(current, { now: tickedAt, type: "fetchFailed" });
+    return {
+      current: advance(current, { now: tickedAt, type: "fetchFailed" }),
+    };
   }
 
   current = advance(current, {
@@ -78,7 +117,7 @@ export const shipCycle = Effect.fn("Ship.cycle")(function* shipCycle<R>(
   });
 
   if (!current.matches("waiting-ci")) {
-    return current;
+    return { current };
   }
 
   if (
@@ -86,18 +125,37 @@ export const shipCycle = Effect.fn("Ship.cycle")(function* shipCycle<R>(
       .ci(current.context.sha)
       .pipe(Effect.orElseSucceed(() => false)))
   ) {
-    return advance(current, { type: "pending" });
+    return { current: advance(current, { type: "pending" }) };
   }
 
-  current = advance(current, { type: "ready" });
+  return { current, deploy: ports.deploy(current.context.sha) };
+});
+
+export const shipCycle = Effect.fn("Ship.cycle")(function* shipCycle<R>(
+  snapshot: ShipSnapshot,
+  ports: CyclePorts<R>
+) {
+  const acquired = yield* acquire(
+    snapshot,
+    ports,
+    (yield* Clock.currentTimeMillis) / 1000
+  );
+
+  if (acquired.deploy === undefined) {
+    return acquired.current;
+  }
+
+  let current = advance(acquired.current, { type: "ready" });
   const start = (yield* Clock.currentTimeMillis) / 1000;
   const { sha } = current.context;
-  yield* ports.checkpoint({
-    failed: sha,
-    successful: current.context.successful,
-  });
+  const armed = { failed: sha, successful: current.context.successful };
+  yield* ports.checkpoint(
+    "select" in ports
+      ? { ...armed, preparedRetries: current.context.preparedRetries }
+      : armed
+  );
 
-  const deployed = yield* ports.deploy(sha).pipe(
+  const deployed = yield* acquired.deploy.pipe(
     Effect.catch((error) =>
       Effect.succeed({
         celldRestarted: null,
@@ -156,11 +214,8 @@ export const shipCycle = Effect.fn("Ship.cycle")(function* shipCycle<R>(
 });
 
 export const shipLoop = <R>(
-  ports: ShipPorts<R>,
-  saved: Pick<ShipSnapshot["context"], "failed" | "successful"> &
-    Partial<
-      Pick<ShipSnapshot["context"], "deferred" | "failedGate" | "retryAt">
-    >,
+  ports: CyclePorts<R>,
+  saved: typeof ShipCheckpoint.Type,
   intervalSeconds: number,
   drifted: Effect.Effect<boolean, never, R>
 ) =>

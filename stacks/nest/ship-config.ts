@@ -97,10 +97,13 @@ export const ShipReceipt = Schema.Struct({
   stderrTail: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(2048))),
 });
 
+export const PreparedRetries = Schema.Record(Sha, Schema.Finite);
+
 export const ShipCheckpoint = Schema.Struct({
   deferred: Schema.optionalKey(Schema.Union([Schema.Literal(""), Sha])),
   failed: Schema.Union([Schema.Literal(""), Sha]),
   failedGate: Schema.optionalKey(Schema.String),
+  preparedRetries: Schema.optionalKey(PreparedRetries),
   retryAt: Schema.optionalKey(Schema.Number),
   successful: Schema.Union([Schema.Literal(""), Sha]),
 });

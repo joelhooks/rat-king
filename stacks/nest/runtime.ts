@@ -37,6 +37,7 @@ import { readWindowReceipts } from "./alarm-windows.ts";
 import { stageName, workerIPv4, workerUrl } from "./config.ts";
 import { assess, collectHealth, DigestJson } from "./health.ts";
 import { qualifyPlanActions } from "./plan-guard.ts";
+import type { PreparedFleetPayload } from "./prepared-payload.ts";
 import { isDeferredAdoption, qualifyRecoveryPlan } from "./recovery-plan.ts";
 import { preflightRestore, restoreSnapshot } from "./restore.ts";
 import { announceRestart } from "./ship-notice.ts";
@@ -198,9 +199,91 @@ const beforeShipDeploy = Effect.fn("Ship.beforeDeploy")(
   }
 );
 
-export const run = (action: Action) =>
+const deploymentStack = Effect.fn("Nest.deploymentStack")(
+  function* deploymentStack(
+    action: Action,
+    stage: "proof" | "pilot" | "fleet",
+    payload: PreparedFleetPayload | undefined
+  ) {
+    if (payload !== undefined) {
+      yield* requireFleet(stage);
+
+      return nestStack(undefined, payload);
+    }
+
+    if (action !== "restore") {
+      return nest;
+    }
+
+    yield* requireFleet(stage);
+
+    const target = yield* (yield* Host).node(
+      yield* Config.String("RAT_KING_LIVE_NODE")
+    );
+
+    const request = yield* preflightRestore(
+      yield* HostShell,
+      target.dataRoot,
+      yield* Config.String("RAT_KING_BACKUP_ROOT")
+    );
+
+    return nestStack(request);
+  }
+);
+
+const deployNest = Effect.fn("Nest.deploy")(function* deployNest(
+  action: Action,
+  stage: "proof" | "pilot" | "fleet",
+  payload: PreparedFleetPayload | undefined
+) {
+  if (!(yield* Config.Boolean("RAT_KING_START_APPROVED"))) {
+    return yield* refuse("Host listener approval required");
+  }
+
+  const fs = yield* FileSystem.FileSystem;
+
+  if (
+    !(yield* fs.exists(
+      `${yield* Config.String("RAT_KING_STATE_DIR")}/claude-mtimes.json`
+    ))
+  ) {
+    return yield* refuse("Prepare must record Claude mtimes before deploy");
+  }
+
+  const stack = yield* deploymentStack(action, stage, payload);
+
+  yield* beforeShipDeploy(action, stack, stage);
+
+  yield* deploy({ stack, stage }).pipe(adopt(true));
+  const shell = yield* HostShell;
+
+  const host = yield* (yield* Host).node(
+    yield* Config.String("RAT_KING_LIVE_NODE")
+  );
+
+  const sidecar = yield* Config.Boolean("RAT_KING_CLAUDE_SIDECAR").pipe(
+    Config.withDefault(false)
+  );
+
+  yield* listenerProbe(shell, workerIPv4(stage, host), true, sidecar).pipe(
+    Effect.onError(() =>
+      stopUnlessServing(shell, celldServing(stage, host), mailboxUnits)
+    )
+  );
+  yield* Effect.log("MAILBOX_DEPLOYED");
+
+  return yield* Effect.void;
+});
+
+export const run = (action: Action, payload?: PreparedFleetPayload) =>
   Effect.gen(function* runNestAction() {
     const stage = yield* stageName;
+
+    if (payload !== undefined && action !== "deploy") {
+      return yield* refuse(
+        "A prepared payload may only enter fleet deployment"
+      );
+    }
 
     if (action === "backup") {
       yield* requireFleet(stage);
@@ -467,60 +550,7 @@ export const run = (action: Action) =>
       return yield* Effect.void;
     }
 
-    if (!(yield* Config.Boolean("RAT_KING_START_APPROVED"))) {
-      return yield* refuse("Host listener approval required");
-    }
-
-    const fs = yield* FileSystem.FileSystem;
-
-    if (
-      !(yield* fs.exists(
-        `${yield* Config.String("RAT_KING_STATE_DIR")}/claude-mtimes.json`
-      ))
-    ) {
-      return yield* refuse("Prepare must record Claude mtimes before deploy");
-    }
-
-    const stack =
-      action === "restore"
-        ? yield* Effect.gen(function* restoreStack() {
-            yield* requireFleet(stage);
-
-            const target = yield* (yield* Host).node(
-              yield* Config.String("RAT_KING_LIVE_NODE")
-            );
-
-            const request = yield* preflightRestore(
-              yield* HostShell,
-              target.dataRoot,
-              yield* Config.String("RAT_KING_BACKUP_ROOT")
-            );
-
-            return nestStack(request);
-          })
-        : nest;
-
-    yield* beforeShipDeploy(action, stack, stage);
-
-    yield* deploy({ stack, stage }).pipe(adopt(true));
-    const shell = yield* HostShell;
-
-    const host = yield* (yield* Host).node(
-      yield* Config.String("RAT_KING_LIVE_NODE")
-    );
-
-    const sidecar = yield* Config.Boolean("RAT_KING_CLAUDE_SIDECAR").pipe(
-      Config.withDefault(false)
-    );
-
-    yield* listenerProbe(shell, workerIPv4(stage, host), true, sidecar).pipe(
-      Effect.onError(() =>
-        stopUnlessServing(shell, celldServing(stage, host), mailboxUnits)
-      )
-    );
-    yield* Effect.log("MAILBOX_DEPLOYED");
-
-    return yield* Effect.void;
+    return yield* deployNest(action, stage, payload);
   }).pipe(
     observeShipDeploy(action === "deploy"),
     provideFreshArtifactStore,

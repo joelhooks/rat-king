@@ -7,6 +7,7 @@ import {
   ConfigProvider,
   Console,
   Effect,
+  Exit,
   FileSystem,
   Match,
   Path,
@@ -30,11 +31,13 @@ import { drainCommand } from "./drain.ts";
 import { DigestJson, summarize } from "./health.ts";
 import { maintenanceCommand } from "./maintenance-command.ts";
 import { mintHost } from "./mint-host.ts";
+import type { PreparedFleetPayload } from "./prepared-payload.ts";
 import { restoreDrill } from "./restore.ts";
 import { sealCommand, sealedSendCommand } from "./seal.ts";
 import { sendCommand } from "./send.ts";
 import { launchdPlist, shipCommand } from "./ship-command.ts";
 import { shipJudgeCommand } from "./ship-judge.ts";
+import { PreparedArguments } from "./ship-prepared-evidence.ts";
 import { FleetError, loadStageConfig, stageProvider } from "./stage-config.ts";
 import { throwawayCommand } from "./throwaway.ts";
 import { usageCommand } from "./usage.ts";
@@ -52,6 +55,7 @@ const program = Effect.gen(function* launcher() {
       "backup",
       "health",
       "ship",
+      "ship-prepared",
       "ship-plist",
       "alarm",
       "alarm-plist",
@@ -80,6 +84,7 @@ const program = Effect.gen(function* launcher() {
 
   if (
     flags.length > 0 &&
+    action !== "ship-prepared" &&
     action !== "provision" &&
     action !== "mailbox" &&
     action !== "maintenance" &&
@@ -136,14 +141,41 @@ const program = Effect.gen(function* launcher() {
         return yield* Effect.void;
       })
     ),
-    Match.when("ship", () =>
-      shipCommand(
-        config,
-        Effect.tryPromise({
+    Match.when(Match.is("ship", "ship-prepared"), (mode) =>
+      Effect.gen(function* runShip() {
+        const prepared =
+          mode === "ship-prepared"
+            ? yield* Schema.decodeUnknownEffect(PreparedArguments)(flags).pipe(
+                Effect.mapError(() =>
+                  refuse(
+                    "Usage: ship-prepared --candidate-file <absolute-file> --artifact-helper <absolute-executable>"
+                  )
+                )
+              )
+            : undefined;
+
+        const loadRuntime = Effect.tryPromise({
           catch: () => new FleetError({ reason: "Nest runtime import failed" }),
           try: async () => await import("./runtime.ts"),
-        }).pipe(Effect.flatMap((runtime) => runtime.recoverStorage))
-      )
+        });
+
+        const loadApply = loadRuntime.pipe(
+          Effect.map(
+            ({ run }) =>
+              (payload: PreparedFleetPayload) =>
+                run("deploy", payload).pipe(
+                  Effect.exit,
+                  Effect.map(Exit.isSuccess)
+                )
+          )
+        );
+
+        return yield* shipCommand(
+          config,
+          loadRuntime.pipe(Effect.flatMap((runtime) => runtime.recoverStorage)),
+          prepared === undefined ? undefined : { args: prepared, loadApply }
+        );
+      })
     ),
     Match.when("alarm", () => alarmCommand(config, resolvedConfigPath)),
     Match.when("maintenance", () => maintenanceCommand(config, flags)),
@@ -273,6 +305,18 @@ const program = Effect.gen(function* launcher() {
 });
 
 const scriptCommand = () => {
+  if (process.argv[2] === "ship-build") {
+    return Effect.tryPromise({
+      catch: () =>
+        new FleetError({ reason: "Fleet build command unavailable" }),
+      try: async () => await import("./ship-build.ts"),
+    }).pipe(
+      Effect.flatMap(({ shipBuildCommand }) =>
+        shipBuildCommand(process.argv.slice(3))
+      )
+    );
+  }
+
   if (process.argv[2] === "usage") {
     return usageCommand(process.argv.slice(3));
   }
