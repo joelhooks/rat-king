@@ -9,6 +9,7 @@ import {
   decodePrepared,
   Sha256,
 } from "../../../stacks/nest/prepared-payload.ts";
+import { hasOnlyBuildEnvironment } from "../../../stacks/nest/ship-build.ts";
 import {
   boundedOutput,
   readCommand,
@@ -203,7 +204,7 @@ it.live(
         env
       );
 
-      expect(built.code, built.stderr).toBe(0);
+      expect(built.code, `${built.stdout}\n${built.stderr}`).toBe(0);
 
       const bytes = yield* fs.readFile(output);
 
@@ -242,6 +243,24 @@ it.live(
     }).pipe(Effect.provide(NodeServices.layer)),
   { timeout: 30_000 }
 );
+
+it("only Darwin accepts the exact Core Foundation environment key", () => {
+  const env = {
+    HOME: "/fixture/home",
+    PATH: "/usr/bin:/bin",
+    XDG_RUNTIME_DIR: "/fixture/runtime",
+    __CF_USER_TEXT_ENCODING: "0x1F5:0x0:0x0",
+  };
+
+  expect(hasOnlyBuildEnvironment(env, "darwin")).toBe(true);
+  expect(hasOnlyBuildEnvironment(env, "linux")).toBe(false);
+  expect(
+    hasOnlyBuildEnvironment(
+      { ...env, __CF_USER_TEXT_ENCODING_EXTRA: "1" },
+      "darwin"
+    )
+  ).toBe(false);
+});
 
 const Forbidden = Schema.Literals([
   "CREDENTIALS_DIRECTORY",

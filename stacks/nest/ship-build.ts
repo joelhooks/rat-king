@@ -36,6 +36,16 @@ const Allowed = new Set([
   "XDG_STATE_HOME",
 ]);
 
+export const hasOnlyBuildEnvironment = (
+  env: Readonly<Record<string, string | undefined>>,
+  platform: NodeJS.Platform
+): boolean =>
+  Object.keys(env).every(
+    (name) =>
+      Allowed.has(name) ||
+      (platform === "darwin" && name === "__CF_USER_TEXT_ENCODING")
+  );
+
 const inputError = () =>
   new FleetError({
     reason:
@@ -49,7 +59,7 @@ export const assertBuildEnvironment = Effect.fn("ShipBuild.environment")(
     if (
       uid === undefined ||
       uid === 0 ||
-      Object.keys(process.env).some((name) => !Allowed.has(name))
+      !hasOnlyBuildEnvironment(process.env, process.platform)
     ) {
       return yield* inputError();
     }
