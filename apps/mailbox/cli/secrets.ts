@@ -1,8 +1,12 @@
 // @effect-diagnostics nodeBuiltinImport:off -- The operator CLI is the process boundary to agent-secrets.
 import { spawn } from "node:child_process";
 
-import { Context, Effect, Layer, Predicate, Schema } from "effect";
+import { Context, Effect, Layer, Predicate, Redacted, Schema } from "effect";
 
+import {
+  secretSource,
+  systemdCredential,
+} from "../../../packages/ratking-client/src/systemd-credentials.ts";
 import { CliError } from "./identity.ts";
 
 export class SecretStore extends Context.Service<
@@ -78,45 +82,91 @@ export interface SecretOptions {
   readonly socket?: string;
 }
 
-export const secretStoreLayer = (options: SecretOptions = {}) => {
+const legacySecretStore = (options: SecretOptions) => {
   const flags = [
     ...(options.config === undefined ? [] : ["--config", options.config]),
     ...(options.socket === undefined ? [] : ["--socket", options.socket]),
   ];
 
-  return Layer.succeed(
-    SecretStore,
-    SecretStore.of({
-      add: Effect.fn("SecretStore.add")((name, value) =>
-        secretCommand([...flags, "add", name], value).pipe(Effect.asVoid)
-      ),
-      exists: Effect.fn("SecretStore.exists")((name) =>
-        secretCommand([...flags, "list"]).pipe(
-          Effect.flatMap(
-            Schema.decodeUnknownEffect(Schema.fromJsonString(Listing))
-          ),
-          Effect.map((listing) =>
-            listing.result.secrets.some((secret) => secret.name === name)
-          ),
-          Effect.mapError(
-            (failure) =>
-              new CliError({
-                reason: `Cannot list agent-secrets: ${Predicate.isTagged(failure, "CliError") ? failure.reason : "listing did not decode"}`,
-              })
-          )
+  return SecretStore.of({
+    add: Effect.fn("SecretStore.add")((name, value) =>
+      secretCommand([...flags, "add", name], value).pipe(Effect.asVoid)
+    ),
+    exists: Effect.fn("SecretStore.exists")((name) =>
+      secretCommand([...flags, "list"]).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(Schema.fromJsonString(Listing))
+        ),
+        Effect.map((listing) =>
+          listing.result.secrets.some((secret) => secret.name === name)
+        ),
+        Effect.mapError(
+          (failure) =>
+            new CliError({
+              reason: `Cannot list agent-secrets: ${Predicate.isTagged(failure, "CliError") ? failure.reason : "listing did not decode"}`,
+            })
         )
+      )
+    ),
+    lease: Effect.fn("SecretStore.lease")((name) =>
+      secretCommand([
+        ...flags,
+        "lease",
+        name,
+        "--ttl",
+        "1m",
+        "--client-id",
+        "rat-king-provision",
+      ])
+    ),
+  });
+};
+
+const systemdLease = (name: string) =>
+  systemdCredential(name).pipe(
+    Effect.map(Redacted.value),
+    Effect.mapError(({ reason }) => new CliError({ reason }))
+  );
+
+const systemdStore = SecretStore.of({
+  add: () =>
+    Effect.fail(new CliError({ reason: "Systemd credentials are read only" })),
+  exists: (name) =>
+    systemdCredential(name).pipe(
+      Effect.as(true),
+      Effect.catchIf(
+        ({ kind }) => kind === "absent",
+        () => Effect.succeed(false)
       ),
-      lease: Effect.fn("SecretStore.lease")((name) =>
-        secretCommand([
-          ...flags,
-          "lease",
-          name,
-          "--ttl",
-          "1m",
-          "--client-id",
-          "rat-king-provision",
-        ])
-      ),
+      Effect.mapError(({ reason }) => new CliError({ reason }))
+    ),
+  lease: systemdLease,
+});
+
+const refusedStore = (reason: string) => {
+  const refuse = () => Effect.fail(new CliError({ reason }));
+
+  return SecretStore.of({ add: refuse, exists: refuse, lease: refuse });
+};
+
+export const secretStoreLayer = (options: SecretOptions = {}) =>
+  Layer.effect(
+    SecretStore,
+    Effect.gen(function* selectSecretStore() {
+      const source = yield* secretSource.pipe(Effect.orElseSucceed(() => null));
+
+      if (source === "agent-secrets") {
+        return legacySecretStore(options);
+      }
+
+      if (source === null) {
+        return refusedStore("Invalid secret source");
+      }
+
+      return options.config === undefined && options.socket === undefined
+        ? systemdStore
+        : refusedStore(
+            "Systemd credentials do not accept legacy store options"
+          );
     })
   );
-};

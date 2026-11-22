@@ -1,11 +1,15 @@
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { AuthProvidersLive } from "alchemy/Auth/Registry";
-import { ConfigProvider, Effect, Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import { awaitModule } from "../../packages/alchemy-nest/src/late-module.ts";
 import { shipCommand } from "./ship-command.ts";
 import { PreparedArguments } from "./ship-prepared-evidence.ts";
-import { FleetError, loadStageConfig, stageProvider } from "./stage-config.ts";
+import {
+  FleetError,
+  loadStageConfig,
+  preparedStageProvider,
+} from "./stage-config.ts";
 
 const worker = Effect.gen(function* worker() {
   const [mode, ...flags] = process.argv.slice(2);
@@ -30,9 +34,7 @@ const worker = Effect.gen(function* worker() {
   );
 
   return yield* shipCommand(config, recover, prepared).pipe(
-    Effect.provide(
-      ConfigProvider.layerAdd(stageProvider(config), { asPrimary: true })
-    )
+    Effect.provide(preparedStageProvider(config))
   );
 });
 

@@ -3,6 +3,8 @@ import * as Defs from "@rat-king/lexicon/defs";
 import { MailboxHandlers } from "@rat-king/lexicon/mailbox-handlers";
 import * as Health from "@rat-king/lexicon/mailbox.nameHealth";
 import * as Acquire from "@rat-king/lexicon/runtime.acquireLease";
+import { Transport } from "@rat-king/lexicon/transport";
+import { readMailboxHealth } from "@rat-king/mailbox-client/health";
 import { Clock, DateTime, Effect, Layer, Schema } from "effect";
 import { TestClock } from "effect/testing";
 import { expect } from "vitest";
@@ -29,6 +31,11 @@ const Inputs = Schema.Struct({
   primary: Schema.Boolean,
   quiet: Schema.Boolean,
 });
+
+const transport = (body: typeof Health.Output.Encoded) =>
+  Transport.of({
+    request: () => Effect.succeed({ body, kind: "json", status: 200 }),
+  });
 
 const operator = "did:web:operator.example.invalid";
 
@@ -256,6 +263,36 @@ it.effect.prop(
       expect(before.quietUnacked).toBe(
         input.declared && !intent.woke && input.kind !== "data" ? 1 : 0
       );
+
+      const wire = yield* Schema.encodeEffect(Health.Output)(before);
+
+      const readback = yield* readMailboxHealth(
+        transport(wire),
+        recipientDid,
+        "recipient"
+      );
+
+      const expiry = (yield* Clock.currentTimeMillis) + 300_000;
+
+      expect(readback.lease?.expiresAt).toBe(expiry);
+
+      if (wire.lease !== undefined) {
+        const seconds = DateTime.formatIso(
+          DateTime.makeUnsafe(Math.floor(expiry / 1000))
+        );
+
+        expect(
+          yield* readMailboxHealth(
+            transport({
+              ...wire,
+              lease: { ...wire.lease, expiresAt: seconds },
+            }),
+            recipientDid,
+            "recipient"
+          ).pipe(Effect.isFailure)
+        ).toBe(true);
+      }
+
       expect(before.lease?.holder).toBe("test-session");
       expect(before.oldestWake?.id).toBe(
         input.declared && intent.woke

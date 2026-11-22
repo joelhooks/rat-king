@@ -208,6 +208,45 @@ export declare const prepare: (options: PrepareOptions) => Effect.Effect<{
         };
         readonly version: number;
     }, MailboxClientError | import("../lexicon/xrpc-failure.js").XrpcFailure, never>;
+    sealCopy: (envelope: {
+        readonly [x: string]: import("../lexicon/runtime.js").LexValue;
+        readonly aad: {
+            readonly [x: string]: import("../lexicon/runtime.js").LexValue;
+            readonly expiresAt?: string & import("effect/Brand").Brand<"Lexicon:datetime">;
+            readonly messageId: string & import("effect/Brand").Brand<"Lexicon:tid">;
+            readonly recipientDid: string & import("effect/Brand").Brand<"Lexicon:did">;
+            readonly recipientKeyId: string & import("effect/Brand").Brand<"Lexicon:uri">;
+            readonly senderDid: string & import("effect/Brand").Brand<"Lexicon:did">;
+        };
+        readonly ciphertext: Uint8Array<ArrayBufferLike>;
+        readonly enc: Uint8Array<ArrayBufferLike>;
+        readonly suite: {
+            readonly [x: string]: import("../lexicon/runtime.js").LexValue;
+            readonly aeadId: number;
+            readonly kdfId: number;
+            readonly kemId: number;
+        };
+        readonly version: number;
+    }, did: string) => Effect.Effect<{
+        readonly [x: string]: import("../lexicon/runtime.js").LexValue;
+        readonly aad: {
+            readonly [x: string]: import("../lexicon/runtime.js").LexValue;
+            readonly expiresAt?: string & import("effect/Brand").Brand<"Lexicon:datetime">;
+            readonly messageId: string & import("effect/Brand").Brand<"Lexicon:tid">;
+            readonly recipientDid: string & import("effect/Brand").Brand<"Lexicon:did">;
+            readonly recipientKeyId: string & import("effect/Brand").Brand<"Lexicon:uri">;
+            readonly senderDid: string & import("effect/Brand").Brand<"Lexicon:did">;
+        };
+        readonly ciphertext: Uint8Array<ArrayBufferLike>;
+        readonly enc: Uint8Array<ArrayBufferLike>;
+        readonly suite: {
+            readonly [x: string]: import("../lexicon/runtime.js").LexValue;
+            readonly aeadId: number;
+            readonly kdfId: number;
+            readonly kemId: number;
+        };
+        readonly version: number;
+    }, MailboxClientError | import("../lexicon/xrpc-failure.js").XrpcFailure, never>;
     sealPayload: (to: string, body: string, opts?: SealOptions | undefined) => Effect.Effect<{
         envelope: {
             readonly [x: string]: import("../lexicon/runtime.js").LexValue;

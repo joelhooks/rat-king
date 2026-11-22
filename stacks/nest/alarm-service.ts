@@ -1,7 +1,8 @@
-import { Effect, FileSystem, Path } from "effect";
+import { Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { runCommand } from "../../packages/ratking-client/src/process.ts";
+import { SystemdAlarmSettings } from "./alarm-config.ts";
 import type { AlarmSettingsValue } from "./alarm-config.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
@@ -42,19 +43,27 @@ const unitWord = (value: string) => {
   return `"${escaped}"`;
 };
 
-export const alarmUnit = (config: StageConfigValue, configPath: string) => {
+export const alarmUnit = (
+  config: Pick<StageConfigValue, "alarm">,
+  configPath: string
+) => {
   const launch = config.alarm?.systemd;
 
-  if (launch === undefined) {
+  if (launch === undefined || !Schema.is(SystemdAlarmSettings)(config.alarm)) {
     return "";
   }
+
+  const account =
+    launch.scope === "system"
+      ? `User=${launch.user}\nGroup=${launch.group}\n`
+      : "";
 
   return `[Unit]
 Description=Rat King fleet alarm
 
 [Service]
 Type=exec
-ExecStart=${unitWord(`:${launch.node}`)} ${unitWord(alarmScript(launch.source))} alarm
+${account}ExecStart=${unitWord(`:${launch.node}`)} ${unitWord(alarmScript(launch.source))} alarm
 Environment=${unitWord(`RAT_KING_STAGE_CONFIG=${configPath}`)}
 Environment=${unitWord(`PATH=${launch.path}`)}
 WorkingDirectory=${escapeSpecifiers(launch.source)}
@@ -64,7 +73,7 @@ Restart=always
 RestartSec=60
 
 [Install]
-WantedBy=default.target
+WantedBy=${launch.scope === "system" ? "multi-user.target" : "default.target"}
 `;
 };
 
@@ -138,10 +147,16 @@ const systemdState = (
 export const checkAlarmService = Effect.fn("Alarm.checkService")(
   function* checkAlarmService(settings: AlarmSettingsValue) {
     if (settings.systemd !== undefined) {
-      const { unit } = settings.systemd;
+      const { scope, unit } = settings.systemd;
 
       const systemctl = (action: string) =>
-        probe(["/usr/bin/systemctl", "--user", action, "--", unit]);
+        probe([
+          "/usr/bin/systemctl",
+          scope === "system" ? "--system" : "--user",
+          action,
+          "--",
+          unit,
+        ]);
 
       const { active, enabled } = yield* Effect.all(
         { active: systemctl("is-active"), enabled: systemctl("is-enabled") },

@@ -14,6 +14,7 @@ import {
 import type { OpenedMessage, SendOptions } from "@rat-king/mailbox-client";
 import {
   Config,
+  ConfigProvider,
   Console,
   Effect,
   FileSystem,
@@ -24,8 +25,9 @@ import {
 import { Argument, Command, Flag } from "effect/cli";
 import { FetchHttpClient } from "effect/http";
 
+import { credentialProvider } from "../../../packages/ratking-client/src/systemd-credentials.ts";
 import { enrollHost } from "./enroll-host.ts";
-import { CliError, readIdentity } from "./identity.ts";
+import { CliError, identitySource, readCliIdentity } from "./identity.ts";
 import { markInboxRead } from "./mark-read.ts";
 import { provision } from "./provision.ts";
 import { recordRetired, recordRetiredFile } from "./record-retired.ts";
@@ -74,7 +76,6 @@ const environment = Effect.gen(function* environment() {
   return {
     documents,
     endpoint: yield* Config.String("RAT_KING_ENDPOINT"),
-    home: yield* Config.String("HOME"),
     serviceDid: yield* Config.String("RAT_KING_SERVICE_DID"),
   };
 });
@@ -85,7 +86,7 @@ const withClient = <A, E, R>(
 ) =>
   Effect.gen(function* invokeClient() {
     const env = yield* environment;
-    const identity = yield* readIdentity(env.home, agent);
+    const identity = yield* readCliIdentity(agent);
 
     return yield* call.pipe(
       Effect.provide(
@@ -139,7 +140,7 @@ const fence = (
   args: { readonly leaseId: string; readonly generation: number }
 ) =>
   Effect.gen(function* loadFence() {
-    const identity = yield* readIdentity(yield* Config.String("HOME"), agent);
+    const identity = yield* readCliIdentity(agent);
 
     return {
       did: identity.did,
@@ -262,7 +263,13 @@ export const identityCommand = Command.make(
   "identity",
   { as: Flag.String("as"), did: Flag.String("did") },
   Effect.fn("MailboxCli.identity")(function* identity(args) {
-    yield* print(
+    if ((yield* identitySource) === "systemd") {
+      return yield* new CliError({
+        reason: "Local provisioning is disabled with systemd credentials",
+      });
+    }
+
+    return yield* print(
       yield* provision(yield* Config.String("HOME"), args.as, args.did)
     );
   })
@@ -533,7 +540,7 @@ const acquireCommand = Command.make(
     sessionId: Flag.String("session-id"),
   },
   Effect.fn("MailboxCli.acquire")(function* acquire(args) {
-    const identity = yield* readIdentity(yield* Config.String("HOME"), args.as);
+    const identity = yield* readCliIdentity(args.as);
     yield* print(
       yield* withClient(
         args.as,
@@ -672,7 +679,7 @@ export const trafficCommand = Command.make(
   },
   Effect.fn("MailboxCli.trafficCommand")(function* trafficCommand(args) {
     const env = yield* environment;
-    const identity = yield* readIdentity(env.home, args.as);
+    const identity = yield* readCliIdentity(args.as);
     yield* traffic(args).pipe(
       Effect.provide(
         transportLayer(
@@ -717,5 +724,16 @@ export const runMailbox = (args: readonly string[]) =>
   );
 
 if (import.meta.main) {
-  NodeRuntime.runMain(runMailbox(process.argv.slice(2)));
+  NodeRuntime.runMain(
+    runMailbox(process.argv.slice(2)).pipe(
+      Effect.provide(
+        ConfigProvider.layer(
+          credentialProvider({
+            CREDENTIALS_DIRECTORY: process.env.CREDENTIALS_DIRECTORY,
+            RAT_KING_SECRET_SOURCE: process.env.RAT_KING_SECRET_SOURCE,
+          })
+        )
+      )
+    )
+  );
 }

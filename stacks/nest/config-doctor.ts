@@ -3,6 +3,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { awaitModule } from "../../packages/alchemy-nest/src/late-module.ts";
 import { shellQuote } from "../../packages/alchemy-nest/src/ssh.ts";
+import { readCredentialEnvironment } from "../../packages/ratking-client/src/systemd-credentials.ts";
 import { alarmServiceDoctor } from "./alarm-service.ts";
 import {
   decodeInspection,
@@ -36,6 +37,7 @@ export const configDoctor = Effect.fn("Nest.configDoctor")(
     );
 
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const credentialEnv = yield* readCredentialEnvironment;
 
     const results = yield* Effect.forEach(
       [
@@ -72,7 +74,18 @@ export const configDoctor = Effect.fn("Nest.configDoctor")(
                   "ConnectTimeout=5",
                   "--",
                   ssh,
-                  args.map(shellQuote).join(" "),
+                  (credentialEnv.RAT_KING_SECRET_SOURCE === undefined
+                    ? args
+                    : [
+                        "env",
+                        "-u",
+                        "CREDENTIALS_DIRECTORY",
+                        `RAT_KING_SECRET_SOURCE=${credentialEnv.RAT_KING_SECRET_SOURCE}`,
+                        ...args,
+                      ]
+                  )
+                    .map(shellQuote)
+                    .join(" "),
                 ];
 
           const attempt = Effect.fn("Nest.inspectAttempt")(function* attempt(
@@ -84,7 +97,11 @@ export const configDoctor = Effect.fn("Nest.configDoctor")(
               ChildProcess.make(
                 command,
                 solo ? ["-o", "ControlPath=none", ...argv] : argv,
-                { stdin: Stream.succeed(new TextEncoder().encode(source)) }
+                {
+                  env: remote ? {} : credentialEnv,
+                  extendEnv: true,
+                  stdin: Stream.succeed(new TextEncoder().encode(source)),
+                }
               )
             );
 
