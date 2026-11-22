@@ -48,15 +48,17 @@ it.live.prop(
 );
 
 it.effect(
-  "a failing command still reports only that its values are redacted",
+  "a missing command reports its fixed step and normalized error without command values",
   () =>
     Effect.gen(function* redacted() {
       const error = yield* execute(
         "/nonexistent/ship-command-secret-path",
         ["--token=hunter2"],
-        process.cwd()
+        process.cwd(),
+        undefined,
+        "candidate checkout"
       ).pipe(Effect.flip);
 
-      expect(error.reason).toBe("Ship command failed; values redacted");
+      expect(error.reason).toBe("candidate checkout process failed (NotFound)");
     }).pipe(Effect.provide(NodeServices.layer))
 );
