@@ -1,6 +1,10 @@
 import { Context, Effect, Layer, Redacted, Schema, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import {
+  secretSource,
+  systemdCredential,
+} from "../../ratking-client/src/systemd-credentials.ts";
 import { HostError } from "./host-error.ts";
 
 export const SecretName = Schema.String.check(
@@ -27,6 +31,23 @@ export class SecretSource extends Context.Service<SecretSource, Secrets>()(
   static readonly layer = Layer.effect(
     SecretSource,
     Effect.gen(function* makeSecretSource() {
+      const source = yield* secretSource.pipe(Effect.orElseSucceed(() => null));
+
+      if (source === "systemd") {
+        return SecretSource.of({
+          resolve: (ref) =>
+            systemdCredential(ref.secret).pipe(
+              Effect.mapError(() => unavailable("systemd credential"))
+            ),
+        });
+      }
+
+      if (source === null) {
+        return SecretSource.of({
+          resolve: () => Effect.fail(unavailable("invalid source")),
+        });
+      }
+
       const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
       return SecretSource.of({

@@ -20,6 +20,7 @@ import {
   UnknownName,
 } from "../../packages/ratking-client/src/directory.ts";
 import { encodePayload } from "../../packages/ratking-client/src/payload.ts";
+import { secretSource } from "../../packages/ratking-client/src/systemd-credentials.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
 
@@ -79,6 +80,10 @@ export const prepareShipNotification = Effect.fn("Ship.prepareNotification")(
       });
     }
 
+    const source = yield* secretSource.pipe(
+      Effect.mapError(() => new FleetError({ reason: "Invalid secret source" }))
+    );
+
     const settings = yield* step(
       "settings",
       loadSettings().pipe(
@@ -87,6 +92,7 @@ export const prepareShipNotification = Effect.fn("Ship.prepareNotification")(
             ConfigProvider.fromUnknown({
               HOME: config.runtime.HOME,
               RATKING_CONFIG: ship.notify.config,
+              RAT_KING_SECRET_SOURCE: source,
             })
           )
         )

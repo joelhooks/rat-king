@@ -210,6 +210,7 @@ export const stageProvider = (config: StageConfigValue) =>
   ConfigProvider.fromUnknown({
     ...config.runtime,
     ALCHEMY_TELEMETRY_DISABLED: "1",
+    CREDENTIALS_DIRECTORY: process.env.CREDENTIALS_DIRECTORY,
     RAT_KING_HEALTH_READER_DIDS: JSON.stringify(
       config.runtime.RAT_KING_HEALTH_READER_DIDS ?? []
     ),
@@ -225,6 +226,7 @@ export const stageProvider = (config: StageConfigValue) =>
     RAT_KING_OPERATOR_DIDS: JSON.stringify(
       config.runtime.RAT_KING_OPERATOR_DIDS
     ),
+    RAT_KING_SECRET_SOURCE: process.env.RAT_KING_SECRET_SOURCE,
     RAT_KING_SHIP_ATTEMPT:
       config.shipAttempt === undefined
         ? undefined
