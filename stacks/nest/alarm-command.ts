@@ -78,6 +78,7 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
     }
 
     const settings = config.alarm;
+    const { page } = settings;
     const launch = settings.systemd ?? settings.launchd;
     const fs = yield* FileSystem.FileSystem;
     const directory = yield* fs.realPath(config.runtime.RAT_KING_STATE_DIR);
@@ -173,6 +174,41 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           )
         );
 
+        const pagePort =
+          page === undefined
+            ? undefined
+            : (text: string) =>
+                execute(
+                  page.node,
+                  [page.script, "--kind", "needs_joel", text],
+                  directory
+                ).pipe(
+                  Effect.timeout("10 seconds"),
+                  Effect.flatMap((result) =>
+                    result.code === 0
+                      ? Schema.decodeEffect(
+                          Schema.fromJsonString(
+                            Schema.Struct({ ok: Schema.Literal(true) })
+                          )
+                        )(result.output).pipe(
+                          Effect.asVoid,
+                          Effect.mapError(
+                            () =>
+                              new FleetError({
+                                reason: "Alarm page not accepted",
+                              })
+                          )
+                        )
+                      : Effect.fail(
+                          new FleetError({ reason: "Alarm page failed" })
+                        )
+                  ),
+                  Effect.mapError(
+                    () => new FleetError({ reason: "Alarm page unavailable" })
+                  ),
+                  (effect) => notification("notifications.page", effect)
+                );
+
         const ports: AlarmPorts<
           | FileSystem.FileSystem
           | HttpClient.HttpClient
@@ -181,33 +217,6 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           | ChildProcessSpawner.ChildProcessSpawner
         > = {
           deskWake: deskWakeMail(config),
-          page: (text) =>
-            execute(
-              settings.page.node,
-              [settings.page.script, "--kind", "needs_joel", text],
-              directory
-            ).pipe(
-              Effect.timeout("10 seconds"),
-              Effect.flatMap((result) =>
-                result.code === 0
-                  ? Schema.decodeEffect(
-                      Schema.fromJsonString(
-                        Schema.Struct({ ok: Schema.Literal(true) })
-                      )
-                    )(result.output).pipe(
-                      Effect.asVoid,
-                      Effect.mapError(
-                        () =>
-                          new FleetError({ reason: "Alarm page not accepted" })
-                      )
-                    )
-                  : Effect.fail(new FleetError({ reason: "Alarm page failed" }))
-              ),
-              Effect.mapError(
-                () => new FleetError({ reason: "Alarm page unavailable" })
-              ),
-              (effect) => notification("notifications.page", effect)
-            ),
           prepare: (key, to, text) =>
             prepareAlarmDeliveries(config, key, to, text).pipe(
               Effect.timeout("8 seconds"),
@@ -245,7 +254,7 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           facts,
           collectDeskWakeHealth(config),
           settings,
-          ports
+          pagePort === undefined ? ports : { ...ports, page: pagePort }
         );
 
         if (push === null || settings.push === undefined) {

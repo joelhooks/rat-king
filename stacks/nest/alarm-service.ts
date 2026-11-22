@@ -202,7 +202,11 @@ export const alarmCheck = Effect.fn("Alarm.check")(function* alarmCheck<
     { concurrency: "unbounded" }
   );
 
-  return { ...observed.readings, service: observed.service };
+  const result = { ...observed.readings, service: observed.service };
+
+  return settings.page === undefined
+    ? { ...result, page: "not configured" as const }
+    : result;
 });
 
 export const alarmServiceDoctor = Effect.fn("Alarm.serviceDoctor")(

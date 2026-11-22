@@ -96,7 +96,7 @@ export interface AlarmPorts<R> {
   readonly send: (
     delivery: typeof Delivery.Type
   ) => Effect.Effect<void, FleetError | AlarmRefused, R>;
-  readonly page: (text: string) => Effect.Effect<void, FleetError, R>;
+  readonly page?: (text: string) => Effect.Effect<void, FleetError, R>;
   readonly unavailable: Effect.Effect<void, never, R>;
 }
 
@@ -531,6 +531,39 @@ const observeDeskWake = Effect.fn("Alarm.observeDeskWake")(
   }
 );
 
+const alarmPage = (
+  pages: AlarmJournalValue["pages"],
+  key: AlarmKeyValue,
+  before: Parameters<typeof advanceAlarm>[0],
+  next: ReturnType<typeof advanceAlarm>,
+  reading: AlarmReadingValue,
+  now: number
+) => {
+  const incident = next.state.context.since;
+
+  if (pageDue(pages, key, before, next.state, reading, now)) {
+    return {
+      event: { at: now, incident, key },
+      text: alarmText(
+        key,
+        next.state,
+        now,
+        reading.status === "firing" ? reading.evidence : "",
+        false
+      ),
+    };
+  }
+
+  if (next.notice === "clear" && paged(pages, key, incident)) {
+    return {
+      event: { at: now, incident, key, kind: "clear" as const },
+      text: clearPageText(key, incident, now),
+    };
+  }
+
+  return null;
+};
+
 export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
   start: AlarmJournalValue,
   facts: typeof AlarmFacts.Type,
@@ -540,6 +573,7 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
 ) {
   const prior = retireStrandedMail(retireWakeAlarm(start), facts, now);
   const observation = observeAlarms(prior.sources, facts, now);
+  const sendPage = settings.page === undefined ? undefined : ports.page;
 
   let current: AlarmJournalValue = {
     ...prior,
@@ -588,39 +622,14 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
       (settings.renotifyMinutes ?? 120) * 60_000
     );
 
-    const incident = next.state.context.since;
+    if (sendPage !== undefined) {
+      const page = alarmPage(current.pages, key, before, next, reading, now);
 
-    if (pageDue(current.pages, key, before, next.state, reading, now)) {
-      current = {
-        ...current,
-        pages: [...current.pages, { at: now, incident, key }],
-      };
-      yield* ports.save(current);
-      yield* ports
-        .page(
-          alarmText(
-            key,
-            next.state,
-            now,
-            reading.status === "firing" ? reading.evidence : "",
-            false
-          )
-        )
-        .pipe(Effect.catch(() => ports.unavailable));
-    }
-
-    if (next.notice === "clear" && paged(current.pages, key, incident)) {
-      current = {
-        ...current,
-        pages: [
-          ...current.pages,
-          { at: now, incident, key, kind: "clear" as const },
-        ],
-      };
-      yield* ports.save(current);
-      yield* ports
-        .page(clearPageText(key, incident, now))
-        .pipe(Effect.catch(() => ports.unavailable));
+      if (page !== null) {
+        current = { ...current, pages: [...current.pages, page.event] };
+        yield* ports.save(current);
+        yield* sendPage(page.text).pipe(Effect.catch(() => ports.unavailable));
+      }
     }
 
     if (next.notice === "none") {

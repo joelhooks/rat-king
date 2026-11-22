@@ -18,6 +18,7 @@ import {
   emptyJournal,
 } from "../../../stacks/nest/alarm.ts";
 import type { AlarmPorts } from "../../../stacks/nest/alarm.ts";
+import * as Defs from "../../lexicon/src/defs.ts";
 
 const settings = Schema.decodeUnknownSync(AlarmSettings)({
   broadcast: "observer-invalid",
@@ -82,6 +83,118 @@ const healthy: typeof AlarmFacts.Type = {
   receiptsKnown: true,
   slots: { free: 100, max: 100 },
 };
+
+it.effect.prop(
+  "omitting the page script preserves Rat King fire and clear notices without making or recording a page",
+  [
+    Schema.Int.check(
+      Schema.isBetween({
+        maximum: 1_900_000_000_000,
+        minimum: 1_800_000_000_000,
+      })
+    ),
+  ],
+  ([now]) =>
+    Effect.gen(function* optionalPage() {
+      const { page: _page, ...withoutPage } = settings;
+      const noPage = yield* Schema.decodeEffect(AlarmSettings)(withoutPage);
+
+      const envelope = yield* Schema.decodeUnknownEffect(
+        Defs.EncryptedEnvelope
+      )({
+        aad: {
+          messageId: "2222222222222",
+          recipientDid: "did:web:observer.invalid",
+          recipientKeyId: "did:web:observer.invalid#encryption",
+          senderDid: "did:web:operator.invalid",
+        },
+        ciphertext: { $bytes: "AQ==" },
+        enc: { $bytes: "AQ==" },
+        suite: { aeadId: 0, kdfId: 0, kemId: 0 },
+        version: 1,
+      });
+
+      const down = { ...healthy, health: 503 };
+
+      const run = (config: typeof AlarmSettings.Type) =>
+        Effect.gen(function* cycles() {
+          const pages: string[] = [];
+          const notices: (string | undefined)[] = [];
+          const checkpoints: (typeof AlarmJournal.Type)[] = [];
+
+          const ports: AlarmPorts<never> = {
+            page: (text) =>
+              Effect.sync(() => {
+                pages.push(text);
+              }),
+            prepare: (key, recipients, text) =>
+              Effect.succeed(
+                recipients.map((recipient) => ({
+                  envelope,
+                  key,
+                  recipient,
+                  text,
+                }))
+              ),
+            save: (journal) =>
+              Effect.sync(() => {
+                checkpoints.push(journal);
+              }),
+            send: ({ text }) =>
+              Effect.sync(() => {
+                notices.push(text);
+              }),
+            unavailable: Effect.die("fixture ports are available"),
+          };
+
+          const confirmed = yield* confirmedInstanceCycle(
+            emptyJournal,
+            down,
+            now,
+            config,
+            ports
+          );
+
+          const firing = yield* alarmCycle(
+            confirmed,
+            down,
+            now + PAGE_ACK_WAIT_MS + 1,
+            config,
+            ports
+          );
+
+          yield* alarmCycle(
+            firing,
+            healthy,
+            now + PAGE_ACK_WAIT_MS + 2,
+            config,
+            ports
+          );
+
+          return { checkpoints, notices, pages };
+        });
+
+      const configured = yield* run(settings);
+      const omitted = yield* run(noPage);
+
+      expect(configured.pages).toHaveLength(2);
+      expect(configured.checkpoints.at(-1)?.pages).toMatchObject([
+        { key: "celld.down" },
+        { key: "celld.down", kind: "clear" },
+      ]);
+      expect(
+        configured.notices.some(
+          (text) => text?.includes("celld.down cleared") === true
+        )
+      ).toBe(true);
+      expect(omitted.notices).toEqual(configured.notices);
+      expect(omitted.pages).toEqual([]);
+      expect(omitted.checkpoints.every(({ pages }) => pages.length === 0)).toBe(
+        true
+      );
+    }),
+  { arbitrary: { runs: 5 } }
+);
 
 it.effect.prop(
   "configured HTTP version probes warn only, route only down owners and preserve mailbox critical paging",
