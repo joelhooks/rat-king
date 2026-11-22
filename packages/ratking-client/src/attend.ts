@@ -291,7 +291,15 @@ export const attend = (
   turnFold: TurnFold | undefined,
   suggestion: Option.Option<Verdict>
 ): Verdict => {
+  if (arrival.relay !== undefined && arrival.routedCopy === true) {
+    return Verdicts.Next({ reason: Reasons.intent({ facts: ["cc"] }) });
+  }
+
   const verdict = preferredVerdict(arrival, levers, now, turnFold, suggestion);
+
+  if (arrival.relay !== undefined && arrival.routedWake === true) {
+    return verdict;
+  }
 
   return Verdicts.$is("Now")(verdict) && passive(arrival)
     ? intent(arrival)

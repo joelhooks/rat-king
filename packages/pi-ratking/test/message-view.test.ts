@@ -103,6 +103,7 @@ it.prop(
       messageView({
         details: {
           body: `${"x".repeat(COPY_BODY_MAX)}omitted-tail`,
+          canRead: true,
           cc: true,
           did: "sender",
           encrypted,

@@ -545,7 +545,7 @@ it.effect(
       const clock = yield* Clock.Clock;
 
       const setup = yield* Effect.promise(
-        async () => await fresh(clock, 90_000)
+        async () => await fresh(clock, 180_000)
       );
 
       const { box, current, session } = setup.real;
@@ -611,14 +611,21 @@ it.effect(
       });
       yield* Effect.promise(current.begin);
       yield* Effect.promise(current.finish);
-      yield* TestClock.adjust(210_000);
+      yield* TestClock.adjust(60_000);
+      yield* Effect.promise(async () => {
+        await current.post("digest", "copy-later");
+      });
+      yield* TestClock.adjust(150_000);
       yield* Effect.promise(settle);
       expect(occurrences(session, "copy-window")).toBe(0);
+      expect(occurrences(session, "copy-later")).toBe(0);
       expect(box.acks.get("copy-window")).toBeUndefined();
       yield* TestClock.adjust(30_000);
       yield* Effect.promise(settle);
       expect(occurrences(session, "copy-window")).toBe(1);
       expect(box.acks.get("copy-window")).toBe(1);
+      expect(box.acks.get("copy-later")).toBe(1);
+      expect(session.entries).toHaveLength(1);
       expect(current.turns()).toBe(0);
       verify(setup.real);
     }).pipe(Effect.scoped)

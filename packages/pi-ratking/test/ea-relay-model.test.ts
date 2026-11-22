@@ -1,8 +1,13 @@
 /* oxlint-disable typescript/promise-function-async -- fast-check model command Promise boundary. */
 import { it } from "@effect/vitest";
+import { attend, formatReason } from "@rat-king/ratking-client/attend";
 import { renderInbound } from "@rat-king/ratking-client/payload";
 import type { Inbound } from "@rat-king/ratking-client/payload";
-import { deliverRelay, RelayRecord } from "@rat-king/ratking-client/relay";
+import {
+  deliverRelay,
+  projectRelay,
+  RelayRecord,
+} from "@rat-king/ratking-client/relay";
 import { Effect, Option, Schema } from "effect";
 import { asyncModelRun } from "fast-check";
 import type { AsyncCommand } from "fast-check";
@@ -57,6 +62,54 @@ it.prop(
 
     expect(Schema.decodeUnknownSync(LegacyRelay)(current)).toEqual(legacy);
     expect(Schema.decodeUnknownSync(RelayRecord)(legacy)).toEqual(legacy);
+  }
+);
+
+it.prop(
+  "front relay wakes staff for work, but not for copied context",
+  [Schema.String, Schema.Boolean],
+  ([body, quiet]) => {
+    for (const cc of [false, true]) {
+      const projected = projectRelay(
+        { fallbackMinutes: 10, mode: "front", name: "desk", to: "desk/ea" },
+        "desk/ea",
+        {
+          did: "desk",
+          from: "desk",
+          id: "relay-envelope",
+          record: {
+            $type: "sh.mschf.ratking.relay#message",
+            body,
+            cc,
+            did: "sender",
+            encrypted: true,
+            from: "peer",
+            id: "source",
+            kind: "message",
+            label: null,
+            ...(quiet ? { quiet: true as const } : undefined),
+            replyTo: null,
+            summary: null,
+            verified: true,
+          },
+          replyTo: Option.none(),
+          verified: true,
+        }
+      );
+
+      const incoming = Option.getOrThrow(projected);
+
+      const verdict = attend(
+        incoming,
+        { enabled: true, owner: "peer" },
+        0,
+        undefined,
+        Option.none()
+      );
+
+      expect(verdict._tag).toBe(cc ? "Next" : "Now");
+      expect(formatReason(verdict.reason)).toBe(cc ? "quiet: cc" : "woken: to");
+    }
   }
 );
 

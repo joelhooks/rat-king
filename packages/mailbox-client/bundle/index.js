@@ -5182,7 +5182,7 @@ var consume = (mailbox, did, handler, options) => Effect30.scoped(
               yield* skip(delivered.value);
               return;
             }
-            const ackOutcome = event.receipt.delegatedTo === void 0 ? mailbox.ack(input).pipe(
+            const attemptAck = event.receipt.delegatedTo === void 0 ? mailbox.ack(input).pipe(
               Effect30.map(
                 ({ receipt }) => Match3.value(receipt.state).pipe(
                   Match3.when("acked", () => "acked"),
@@ -5191,15 +5191,17 @@ var consume = (mailbox, did, handler, options) => Effect30.scoped(
                 )
               ),
               Effect30.catchIf(
-                expiredRefusal,
-                () => Effect30.succeed("expired")
-              ),
-              Effect30.catchIf(
-                settledRefusal,
+                (error) => settledRefusal(error) && !expiredRefusal(error),
                 () => Effect30.succeed("settled")
               )
             ) : Effect30.succeed("delegated");
-            const ack = Effect30.asVoid(ackOutcome);
+            const ack = Effect30.asVoid(attemptAck);
+            const ackOutcome = attemptAck.pipe(
+              Effect30.catchIf(
+                expiredRefusal,
+                () => Effect30.succeed("expired")
+              )
+            );
             handed.add(key);
             yield* handler(message, {
               ack,

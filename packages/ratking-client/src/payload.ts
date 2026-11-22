@@ -172,12 +172,13 @@ export const renderInboundBody = (
     readonly quiet?: boolean | undefined;
     readonly sentBy?: string | undefined;
   },
-  max = bodyLimit(inbound)
+  max = bodyLimit(inbound),
+  canRead = false
 ) => {
   const body =
     inbound.kind === "data" ? renderRecordBody(inbound.body) : inbound.body;
 
-  if (body.length <= max || inbound.encrypted !== false) {
+  if (body.length <= max || inbound.encrypted !== false || !canRead) {
     return body;
   }
 
@@ -189,7 +190,11 @@ export const renderInboundBody = (
   return `${body.slice(0, end)}…\n(clipped; ${hint})`;
 };
 
-export const renderInbound = (tool: string, inbound: Inbound) => {
+export const renderInbound = (
+  tool: string,
+  inbound: Inbound,
+  canRead = false
+) => {
   if (inbound.noReply === true) {
     return inbound.body;
   }
@@ -235,7 +240,7 @@ export const renderInbound = (tool: string, inbound: Inbound) => {
       onNone: () => [],
       onSome: (summary) => [`Summary: ${summary}`, ""],
     }),
-    renderInboundBody(tool, inbound),
+    renderInboundBody(tool, inbound, bodyLimit(inbound), canRead),
     ...(inbound.cc ? ["", COPY_NOTE] : []),
     "",
     replyHint(tool, inbound),

@@ -60,7 +60,10 @@ const ownerCopy = (id: string): Inbound => ({
   levers: { enabled: true, owner: "sender" },
 });
 
-const proveWake = (source: "mail" | "watch" | "typed", quietBody: string) =>
+const proveWake = (
+  source: "mail" | "watch" | "typed" | "single",
+  quietBody: string
+) =>
   Effect.gen(function* actualPiWake() {
     const fs = yield* FileSystem.FileSystem;
     const cwd = yield* fs.makeTempDirectoryScoped();
@@ -154,6 +157,55 @@ const proveWake = (source: "mail" | "watch" | "typed", quietBody: string) =>
     );
 
     const deliver = yield* Deferred.await(ready);
+
+    if (source === "single") {
+      vi.spyOn(session.modelRuntime, "hasConfiguredAuth").mockReturnValue(true);
+      const body = `${quietBody}${"x".repeat(5000)}plaintext-tail`;
+      yield* deliver(
+        { ...mail("quiet"), body, encrypted: false, quiet: true },
+        false,
+        undefined,
+        () => true
+      );
+      expect(prompt).not.toHaveBeenCalled();
+      yield* Effect.promise(
+        session.prompt.bind(session, "read my context", {})
+      );
+      const sent = prompt.mock.calls[0]?.[0];
+
+      const messages = yield* Schema.decodeUnknownEffect(
+        Schema.Array(
+          Schema.Struct({
+            content: Schema.Unknown,
+            customType: Schema.optional(Schema.String),
+            details: Schema.optional(Schema.Unknown),
+            role: Schema.String,
+          })
+        )
+      )(sent);
+
+      expect(
+        messages.some(
+          (item) =>
+            item.role === "custom" &&
+            Schema.is(Schema.String)(item.content) &&
+            item.content.includes(body)
+        )
+      ).toBe(true);
+      expect(
+        messages.flatMap((item) =>
+          shownIds({
+            role: item.role,
+            ...(item.customType === undefined
+              ? undefined
+              : { customType: item.customType }),
+            details: item.details,
+          })
+        )
+      ).toEqual(["quiet"]);
+
+      return;
+    }
 
     const body =
       source === "typed"
@@ -328,6 +380,7 @@ it.live.prop(
     proveWake("mail", body).pipe(
       Effect.andThen(proveWake("watch", body)),
       Effect.andThen(proveWake("typed", body)),
+      Effect.andThen(proveWake("single", body)),
       Effect.provide(NodeServices.layer),
       Effect.timeout("8 seconds")
     ),

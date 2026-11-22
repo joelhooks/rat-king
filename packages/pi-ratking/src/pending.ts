@@ -58,6 +58,10 @@ export type DigestVariant = "cc" | "wake";
 
 export interface PendingMail {
   readonly cc?: boolean;
+  readonly canRead?: (() => boolean) | undefined;
+  readonly presentation?:
+    | (() => { readonly content: string; readonly details: unknown })
+    | undefined;
   readonly coalesce?: boolean;
   readonly customType?: "ratking_record_notice";
   readonly notice?: string | undefined;
@@ -216,15 +220,24 @@ const intervalMs = (mails: readonly PendingMail[]) =>
     )
   ) * 60_000;
 
+const cadence = (mail: PendingMail) =>
+  mail.cc === true &&
+  mail.notBefore !== undefined &&
+  mail.digestMinutes !== undefined
+    ? mail.digestMinutes * 60_000
+    : undefined;
+
 export const inbox = (host: MailHost) => {
   const pending = new Map<string, PendingMail>();
   const digested = new Set<string>();
+  const lastByCadence = new Map<number, number>();
   let last = Option.none<number>();
 
   return {
     clear: () => {
       pending.clear();
       digested.clear();
+      lastByCadence.clear();
       last = Option.none();
     },
     empty: () => pending.size === 0,
@@ -300,11 +313,12 @@ export const inbox = (host: MailHost) => {
       }
     },
     tick: (now: number) => {
-      const due = [...pending.values()].filter(
-        (mail) =>
-          held(mail) &&
-          !digested.has(mail.id) &&
-          (mail.notBefore === undefined || now >= mail.notBefore)
+      const heldItems = [...pending.values()].filter(
+        (mail) => held(mail) && !digested.has(mail.id)
+      );
+
+      const due = heldItems.filter(
+        (mail) => mail.notBefore === undefined || now >= mail.notBefore
       );
 
       if (Option.isNone(last)) {
@@ -315,16 +329,42 @@ export const inbox = (host: MailHost) => {
 
       const lastAt = last.value;
 
-      const ready = due.filter(
-        (mail) =>
-          mail.notBefore !== undefined || now - lastAt >= intervalMs(due)
-      );
+      const readyCadences = new Set<number>();
+
+      for (const mail of due) {
+        const window = cadence(mail);
+
+        if (
+          window !== undefined &&
+          now - (lastByCadence.get(window) ?? -Infinity) >= window
+        ) {
+          readyCadences.add(window);
+        }
+      }
+
+      const interval = intervalMs(due);
+
+      const ready = heldItems.filter((mail) => {
+        const window = cadence(mail);
+
+        if (window !== undefined) {
+          return readyCadences.has(window);
+        }
+
+        return mail.notBefore === undefined
+          ? now - lastAt >= interval
+          : now >= mail.notBefore;
+      });
 
       if (ready.length === 0) {
         return;
       }
 
       last = Option.some(now);
+
+      for (const window of readyCadences) {
+        lastByCadence.set(window, now);
+      }
 
       for (const mail of ready) {
         digested.add(mail.id);

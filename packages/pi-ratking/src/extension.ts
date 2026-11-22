@@ -51,7 +51,6 @@ import {
   COPY_BODY_MAX,
   COPY_NOTE,
   Kind,
-  QUIET_BODY_MAX,
   renderInboundBody,
   LexiconRecord,
   renderInbound,
@@ -146,7 +145,12 @@ import {
   WAKE_MESSAGE,
   WAKE_REASON,
 } from "./pending.ts";
-import type { DigestVariant, HistoryEntry, PendingMail } from "./pending.ts";
+import type {
+  DigestVariant,
+  FlushDelivery,
+  HistoryEntry,
+  PendingMail,
+} from "./pending.ts";
 import { loadPiSettings, settingsLayer } from "./pi-settings.ts";
 import {
   againOutcome,
@@ -266,7 +270,7 @@ const holdTiming = (
 
   if (window === undefined) {
     return {
-      expiring: expiresDuringHold(expiresAt, now) || now + margin >= due,
+      expiring: expiresDuringHold(expiresAt, now),
       holdUntil: Math.max(now, Math.min(due, deadline) - margin),
     };
   }
@@ -295,7 +299,7 @@ const digestBody = (tool: string, mail: PendingMail, max: number) =>
     ? ["", mail.content, ""]
     : Option.match(digestEntry(mail), {
         onNone: () => [],
-        onSome: ({ body, cc, encrypted, kind, quiet }) => [
+        onSome: ({ body, cc, encrypted, kind }) => [
           "",
           ...(mail.notice === undefined ? [] : [mail.notice, ""]),
           renderInboundBody(
@@ -306,10 +310,11 @@ const digestBody = (tool: string, mail: PendingMail, max: number) =>
               encrypted,
               id: mail.id,
               kind: kind ?? "message",
-              quiet,
             },
-            Math.min(max, cc === true ? COPY_BODY_MAX : QUIET_BODY_MAX)
+            cc === true ? Math.min(max, COPY_BODY_MAX) : Infinity,
+            mail.canRead?.() === true
           ),
+          ...(cc === true ? ["", COPY_NOTE] : []),
           "",
         ],
       });
@@ -331,12 +336,9 @@ const filterRule = (mail: PendingMail) =>
 const heldNote = (mails: readonly PendingMail[]) => {
   const rules = [...new Set(mails.flatMap(filterRule))];
 
-  return [
-    ...(mails.some(isCc) ? [COPY_NOTE] : []),
-    ...(rules.length === 0
-      ? []
-      : [`Held by your filter ${rules.join(", ")}, so this did not wake you.`]),
-  ];
+  return rules.length === 0
+    ? []
+    : [`Held by your filter ${rules.join(", ")}, so this did not wake you.`];
 };
 
 export const renderDigest = (
@@ -344,7 +346,9 @@ export const renderDigest = (
   mails: readonly PendingMail[],
   variant: DigestVariant = "cc"
 ) => {
-  const perItem = Math.floor(DIGEST_BODY_MAX / Math.max(1, mails.length));
+  const perItem = Math.floor(
+    DIGEST_BODY_MAX / Math.max(1, mails.filter(isCc).length)
+  );
 
   return variant === "wake"
     ? [
@@ -609,9 +613,14 @@ const delegationDetails = (inbound: Inbound) => {
   return details;
 };
 
-export const inboundDetails = (inbound: Inbound, settled: boolean) => ({
+export const inboundDetails = (
+  inbound: Inbound,
+  settled: boolean,
+  canRead?: boolean
+) => ({
   ...delegationDetails(inbound),
   body: inbound.body,
+  canRead,
   cc: inbound.cc,
   ccNames: inbound.ccNames,
   did: inbound.did,
@@ -1313,12 +1322,30 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       drain?.check();
     };
 
+    const showPending = (
+      send: MailDispatch["send"],
+      pending: PendingMail,
+      delivery: FlushDelivery
+    ) => {
+      const rendered = pending.presentation?.() ?? pending;
+
+      send(
+        {
+          content: rendered.content,
+          customType: pending.customType ?? MAIL_MESSAGE,
+          details: rendered.details,
+          display: true,
+        },
+        delivery
+      );
+    };
+
     const dispatch: MailDispatch = {
       mail: inbox({
         digest: (mails, variant, delivery = DISPLAY_ONLY) => {
           const budget = Math.min(
-            QUIET_BODY_MAX,
-            Math.floor(DIGEST_BODY_MAX / mails.length)
+            COPY_BODY_MAX,
+            Math.floor(DIGEST_BODY_MAX / Math.max(1, mails.filter(isCc).length))
           );
 
           const inline = mails.filter((pending) => {
@@ -1326,7 +1353,8 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               Option.exists(
                 digestEntry(pending),
                 (entry) =>
-                  entry.encrypted !== false &&
+                  (entry.encrypted !== false ||
+                    (entry.cc === true && pending.canRead?.() !== true)) &&
                   renderInboundBody(tool, {
                     ...entry,
                     cc: entry.cc === true,
@@ -1335,15 +1363,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
                   }).length > budget
               )
             ) {
-              dispatch.send(
-                {
-                  content: pending.content,
-                  customType: pending.customType ?? MAIL_MESSAGE,
-                  details: pending.details,
-                  display: true,
-                },
-                delivery
-              );
+              showPending(dispatch.send, pending, delivery);
 
               return false;
             }
@@ -1361,7 +1381,9 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               customType: DIGEST_MESSAGE,
               details: {
                 ...digestDetails(inline, variant),
-                messages: inline.map((held) => held.details),
+                messages: inline.map(
+                  (held) => held.presentation?.().details ?? held.details
+                ),
               },
               display: true,
             },
@@ -1369,15 +1391,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
           );
         },
         show: (pending, deliverAs, triggerTurn = deliverAs !== "nextTurn") => {
-          dispatch.send(
-            {
-              content: pending.content,
-              customType: pending.customType ?? MAIL_MESSAGE,
-              details: pending.details,
-              display: true,
-            },
-            { deliverAs, triggerTurn }
-          );
+          showPending(dispatch.send, pending, { deliverAs, triggerTurn });
         },
       }),
       send: (message, delivery) => {
@@ -1668,7 +1682,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       };
     };
 
-    const deliver: Deliver = (inbound, settled, ack) =>
+    const deliver: Deliver = (inbound, settled, ack, canRead) =>
       Effect.gen(function* deliverMail() {
         const now = yield* Clock.currentTimeMillis;
         rememberControl(inbound);
@@ -1785,16 +1799,26 @@ export const ratkingExtension = (options: ExtensionOptions) =>
           yield* applyDelivery(verdictToHold(verdict), {
             inject: (hold) =>
               Effect.sync(() => {
+                const presentation = () => {
+                  const available = canRead?.() === true;
+                  const message = renderInbound(tool, inbound, available);
+
+                  return {
+                    content:
+                      notice === undefined
+                        ? message
+                        : `${notice}\n\n${message}`,
+                    details: inboundDetails(inbound, settled, available),
+                  };
+                };
+
                 const pending = {
                   ...timing,
+                  ...presentation(),
+                  canRead,
                   cc: inbound.cc,
                   coalesce:
                     pi.onBeforeAgentStart !== undefined && hold === "nextTurn",
-                  content:
-                    notice === undefined
-                      ? renderInbound(tool, inbound)
-                      : `${notice}\n\n${renderInbound(tool, inbound)}`,
-                  details: inboundDetails(inbound, settled),
                   digestMinutes:
                     Predicate.isTagged(verdict, "Later") &&
                     (Predicate.isTagged(verdict.reason, "lever") ||
@@ -1804,6 +1828,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
                   id: inbound.id,
                   line: digestLine(inbound),
                   notice,
+                  presentation,
                   reason: verdict.reason,
                 };
 
@@ -2592,7 +2617,9 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       digestTick =
         start.digestTickMillis === undefined
           ? DIGEST_TICK
-          : Duration.millis(start.digestTickMillis);
+          : Duration.millis(
+              Math.min(start.digestTickMillis, MAIL_HOLD_MS * 0.75)
+            );
 
       const stopped = drainRelease ?? stop();
 

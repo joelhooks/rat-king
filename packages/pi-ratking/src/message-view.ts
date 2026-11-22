@@ -35,6 +35,7 @@ import { Party } from "./ui/party.ts";
 
 const Details = Schema.Struct({
   body: Schema.String,
+  canRead: Schema.optional(Schema.Boolean),
   cc: Schema.Boolean,
   ccNames: Schema.optional(Schema.Array(Schema.String)),
   delegatedFor: Schema.optional(Schema.String),
@@ -216,7 +217,13 @@ const previewBody = (
     return Option.getOrElse(compactRecord(value.body), () => value.body);
   }
 
-  const body = renderInboundBody(tool, value);
+  const body = renderInboundBody(
+    tool,
+    value,
+    undefined,
+    value.canRead === true
+  );
+
   const summary = clean(value.summary ?? "").trim();
   const text = clean(body).trimStart();
 

@@ -150,7 +150,10 @@ export const readCommand = Command.make(
         const saved = Result.isSuccess(local) ? local.success : Option.none();
 
         const entry = Option.isSome(saved)
-          ? { ...saved.value, state: "acked" }
+          ? {
+              ...saved.value,
+              state: saved.value.acked === false ? "delivered" : "acked",
+            }
           : (yield* locate(args.id).pipe(
               Effect.mapError((error) =>
                 !Schema.is(AskFailed)(error) || error.code !== "NoSuchMessage"

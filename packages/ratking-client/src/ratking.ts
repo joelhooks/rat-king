@@ -138,7 +138,7 @@ import {
 } from "./reader-liveness.ts";
 import type { IntakeBudget } from "./reader-liveness.ts";
 import { readerStore } from "./reader-store.ts";
-import { receivedMail } from "./received-mail.ts";
+import { RECEIVED_MAIL_TTL_MS, receivedMail } from "./received-mail.ts";
 import type { ReceivedMail } from "./received-mail.ts";
 import { recentMap } from "./recent.ts";
 import { RENDERS } from "./record-visibility.ts";
@@ -527,7 +527,8 @@ interface RelayRoute {
 export type Deliver = (
   inbound: Inbound | InboundRecord,
   settled: boolean,
-  ack?: Effect.Effect<void>
+  ack?: Effect.Effect<void>,
+  canRead?: () => boolean
 ) => Effect.Effect<void>;
 
 export interface Status {
@@ -642,7 +643,7 @@ const legacyCc = (
   reserved: Parameters<typeof addressedElsewhere>[0]
 ) =>
   to === undefined
-    ? (cc?.length ?? 0) > 0
+    ? cc?.some((name) => !addressedElsewhere(reserved, name, ownName)) === true
     : addressedElsewhere(reserved, to, ownName);
 
 const isCarbonCopy = (
@@ -906,18 +907,77 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
   const saveFailures = recentMap<string, string>(64);
 
+  const intakeMeta = recentMap<
+    string,
+    Pick<MessageMeta, "seq" | "redelivered">
+  >(4096);
+
+  let retainedMail = new Map<string, number>();
+  const journalWriter = yield* Semaphore.make(1);
+  let savingMail = false;
+
+  const warnSave = (id: string, tag: string) => {
+    const reason = `Could not save the received message to the local journal (${tag})`;
+    saveFailures.set(id, reason);
+
+    return Effect.logWarning(reason).pipe(Effect.annotateLogs({ id }));
+  };
+
+  const stageDelivery = (
+    name: string,
+    inbound: Inbound | InboundRecord,
+    sourceId: string
+  ) =>
+    Effect.gen(function* stagePlaintext() {
+      if (inbound.encrypted !== false) {
+        return Option.none<() => boolean>();
+      }
+
+      const clock = yield* Clock.Clock;
+      const journal = yield* localMail(name);
+      savingMail = true;
+
+      const saved = yield* journal
+        .stage({
+          ...intakeMeta.get(sourceId),
+          encrypted: false,
+          received: inbound,
+        })
+        .pipe(Effect.result);
+
+      if (Result.isFailure(saved)) {
+        yield* warnSave(inbound.id, saved.failure._tag);
+
+        return Option.none<() => boolean>();
+      }
+
+      retainedMail = new Map(
+        saved.success.map(({ entry, savedAt }) => [entry.received.id, savedAt])
+      );
+
+      return Option.some(() => {
+        const at = retainedMail.get(inbound.id);
+
+        return (
+          !savingMail &&
+          at !== undefined &&
+          clock.currentTimeMillisUnsafe() - at < RECEIVED_MAIL_TTL_MS
+        );
+      });
+    }).pipe(
+      Effect.ensuring(
+        Effect.sync(() => {
+          savingMail = false;
+        })
+      ),
+      journalWriter.withPermits(1)
+    );
+
   const cacheDelivery = (name: string, entry: ReceivedMail) =>
     localMail(name).pipe(
       Effect.flatMap((mail) => mail.save(entry)),
       Effect.matchEffect({
-        onFailure: (error) => {
-          const reason = `Could not save the received message to the local journal (${error._tag})`;
-          saveFailures.set(entry.received.id, reason);
-
-          return Effect.logWarning(reason).pipe(
-            Effect.annotateLogs({ id: entry.received.id })
-          );
-        },
+        onFailure: (error) => warnSave(entry.received.id, error._tag),
         onSuccess: () => Effect.void,
       })
     );
@@ -944,10 +1004,15 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
   ) =>
     displayAck(
       id,
-      cacheDelivery(name, {
-        encrypted: inbound.encrypted ?? true,
-        received: inbound,
-      })
+      inbound.encrypted === false
+        ? localMail(name).pipe(
+            Effect.flatMap((mail) => mail.markAcked(inbound.id)),
+            Effect.matchEffect({
+              onFailure: (error) => warnSave(inbound.id, error._tag),
+              onSuccess: () => Effect.void,
+            })
+          )
+        : Effect.void
     );
 
   const relayed = new Map<string, string>();
@@ -1365,6 +1430,10 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             message.tid,
             Deferred.await(checkpoint).pipe(Effect.andThen(meta.ackOutcome))
           );
+          intakeMeta.set(message.tid, {
+            redelivered: meta.redelivered,
+            seq: meta.seq,
+          });
           const { inbound, payload } = yield* inboundOf(own, message);
           const displayKey = JSON.stringify([message.senderDid, message.tid]);
 
@@ -1397,7 +1466,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           );
 
           if (displayed.skips(displayKey, turn)) {
-            yield* meta.ack;
+            yield* meta.ackOutcome;
             yield* writeCursor(own.name, meta.seq);
             yield* Deferred.succeed(checkpoint, true);
             acknowledgments.delete(message.tid);
@@ -3280,10 +3349,14 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             Object.assign(levers, { owner: owner.value });
           }
 
+          const sourceId = relayed.get(inbound.id) ?? inbound.id;
+          const canRead = yield* stageDelivery(own.name, inbound, sourceId);
+
           yield* deliver(
             { ...inbound, levers },
             settled,
-            ack ?? acknowledgeShown(own.name, inbound)
+            ack ?? acknowledgeShown(own.name, inbound),
+            Option.getOrUndefined(canRead)
           );
 
           if (!("record" in inbound) && injects(inbound, settled)) {
@@ -4392,9 +4465,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       yield* closeLoops(sent);
 
       const hint =
-        sent.kind === "message" &&
-        options?.quiet !== true &&
-        options?.copyTo === undefined
+        sent.kind === "message" && options?.quiet !== true
           ? fyiHint({
               body: sent.body,
               summary: sent.summary ?? undefined,

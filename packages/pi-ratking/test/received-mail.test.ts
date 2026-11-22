@@ -144,11 +144,16 @@ it.effect.prop(
       expect(yield* journal.find("fourth")).toEqual(
         Option.some(item("fourth"))
       );
+      const stale = `${state}/received-mail/tester.json.corrupt-0`;
+      yield* fs.writeFileString(stale, "broken plaintext");
+      expect(yield* journal.find("fourth")).toBeDefined();
+      expect(yield* fs.exists(stale)).toBe(true);
       yield* TestClock.adjust(RECEIVED_MAIL_TTL_MS);
       expect(yield* journal.find("fourth")).toEqual(Option.none());
       expect(
         yield* fs.readFileString(`${state}/received-mail/tester.json`)
       ).toBe("[]");
+      expect(yield* fs.exists(stale)).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 4 } }
 );

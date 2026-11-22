@@ -33,7 +33,7 @@ const base: Inbound = {
 };
 
 it.prop(
-  "quiet direct mail is full alone and can be clipped when journalable in a digest",
+  "quiet direct mail is full alone and inside a mixed digest",
   [Schema.Int.check(Schema.isBetween({ maximum: 40, minimum: -20 }))],
   ([tail]) => {
     const body = "x".repeat(QUIET_BODY_MAX + tail);
@@ -50,14 +50,27 @@ it.prop(
     expect(mail.content).not.toContain('action: "read"');
     expect(mail.content).not.toContain(COPY_NOTE);
 
+    const copy = {
+      canRead: () => true,
+      content: "copy content",
+      details: inboundDetails(
+        { ...base, body: "copy body", id: "another-copy" },
+        false
+      ),
+      id: "another-copy",
+      line: "- copy item",
+    };
+
     for (const text of [
-      renderDigest("intercom", [mail]),
-      renderDigest("intercom", [mail], "wake"),
+      renderDigest("intercom", [mail, copy]),
+      renderDigest("intercom", [mail, copy], "wake"),
     ]) {
-      expect(text).toContain(body.slice(0, QUIET_BODY_MAX));
-      expect(text.includes('action: "read"')).toBe(tail > 0);
-      expect(text).not.toContain("x".repeat(QUIET_BODY_MAX + 1));
-      expect(text).not.toContain(COPY_NOTE);
+      expect(text).toContain(body);
+      expect(text).not.toContain('action: "read"');
+      expect(text.split(COPY_NOTE)).toHaveLength(2);
+      expect(text.indexOf(COPY_NOTE)).toBeGreaterThan(
+        text.lastIndexOf("copy body")
+      );
     }
   }
 );
@@ -67,7 +80,10 @@ it.prop(
   [Schema.Int.check(Schema.isBetween({ maximum: 20, minimum: -20 }))],
   ([extra]) => {
     const body = "x".repeat(4000 + extra);
-    const text = renderInbound("intercom", { ...base, body, copy: true });
+    const text = renderInbound("intercom", { ...base, body, copy: true }, true);
+    const unsaved = renderInbound("intercom", { ...base, body, copy: true });
+    expect(unsaved).toContain(body);
+    expect(unsaved).not.toContain('action: "read"');
     const hint = `intercom({ action: "read", id: "${base.id}" })`;
 
     expect(text).toContain(
@@ -88,7 +104,13 @@ it.prop(
     const details = inboundDetails(inbound, false);
 
     const text = renderDigest("intercom", [
-      { content: "", details, id: inbound.id, line: "- Summary: cc" },
+      {
+        canRead: () => true,
+        content: "",
+        details,
+        id: inbound.id,
+        line: "- Summary: cc",
+      },
     ]);
 
     expect(text).toContain(
@@ -112,6 +134,7 @@ it.prop(
       };
 
       return {
+        canRead: () => true,
         content: "",
         details: inboundDetails(inbound, false),
         id: inbound.id,

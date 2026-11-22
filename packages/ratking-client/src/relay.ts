@@ -202,9 +202,8 @@ export const projectRelay = (
         encrypted: record.encrypted,
         name: config.name,
       },
-      routedCopy:
-        record.kind !== "ask" &&
-        (record.copy === true || record.quiet === true),
+      routedCopy: record.cc || record.copy === true,
+      routedWake: config.mode === "front" && !record.cc && record.copy !== true,
     }))
   );
 };

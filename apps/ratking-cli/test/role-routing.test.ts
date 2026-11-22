@@ -196,7 +196,7 @@ it.live.prop(
 
         const cc =
           delivery === "copy" ||
-          delivery === "legacyCc" ||
+          (delivery === "legacyCc" && successor) ||
           delivery === "envelope";
 
         expect(received.cc).toBe(cc);
@@ -242,6 +242,10 @@ it.live.prop(
           expect(digest).toContain(COPY_NOTE);
           expect(digest).toContain(received.body);
 
+          return;
+        }
+
+        if (delivery === "legacyCc") {
           return;
         }
 

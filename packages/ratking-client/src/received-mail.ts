@@ -17,6 +17,7 @@ const mailFields = {
 };
 
 const ReceivedEntry = Schema.Struct({
+  acked: Schema.optionalKey(Schema.Boolean),
   encrypted: Schema.optionalKey(Schema.Boolean),
   received: Schema.Union([
     Schema.Struct({ ...mailFields, record: LexiconRecord }),
@@ -111,7 +112,10 @@ const keepNewest = (encoded: readonly string[]) => {
 
   return kept.length === 0 && encoded.length > 0
     ? Effect.fail(new JournalTooLarge())
-    : Effect.succeed(`[${kept.toReversed().join(",")}]`);
+    : Effect.succeed({
+        count: kept.length,
+        json: `[${kept.toReversed().join(",")}]`,
+      });
 };
 
 export const receivedMail = (state: string, name: string) =>
@@ -119,7 +123,29 @@ export const receivedMail = (state: string, name: string) =>
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const key = provisionLabel(name);
-    const file = path.join(state, "received-mail", `${key}.json`);
+    const dir = path.join(state, "received-mail");
+    const file = path.join(dir, `${key}.json`);
+    const corruptPrefix = `${key}.json.corrupt-`;
+
+    const pruneCorrupt = (now: number) =>
+      fs.readDirectory(dir).pipe(
+        Effect.flatMap((names) =>
+          Effect.forEach(
+            names.filter((filename) => {
+              const stamp = filename.slice(corruptPrefix.length);
+
+              return (
+                filename.startsWith(corruptPrefix) &&
+                /^\d+$/u.test(stamp) &&
+                now - Number(stamp) >= RECEIVED_MAIL_TTL_MS
+              );
+            }),
+            (filename) => fs.remove(path.join(dir, filename)),
+            { discard: true }
+          )
+        ),
+        Effect.catchReason("PlatformError", "NotFound", () => Effect.void)
+      );
 
     const load = Effect.gen(function* readBoundedJournal() {
       const { size } = yield* fs.stat(file);
@@ -136,12 +162,13 @@ export const receivedMail = (state: string, name: string) =>
       )
     );
 
-    const transact = (entry?: ReceivedMail) =>
+    const transact = (entry?: ReceivedMail, ackId?: string) =>
       withLock(
         path.join(state, "locks"),
         `${key}-received`,
         Effect.gen(function* updateReceivedMail() {
           const now = yield* Clock.currentTimeMillis;
+          yield* pruneCorrupt(now);
 
           const recover = (error: JournalTooLarge | Schema.SchemaError) =>
             fs
@@ -169,7 +196,20 @@ export const receivedMail = (state: string, name: string) =>
               now - other.savedAt < RECEIVED_MAIL_TTL_MS
           );
 
-          if (entry?.encrypted === false || safe.length !== entries.length) {
+          const stamped =
+            ackId === undefined
+              ? safe
+              : safe.map((item) =>
+                  item.entry.received.id === ackId
+                    ? { ...item, entry: { ...item.entry, acked: true } }
+                    : item
+                );
+
+          if (
+            entry?.encrypted === false ||
+            ackId !== undefined ||
+            safe.length !== entries.length
+          ) {
             const next =
               entry?.encrypted === false
                 ? [
@@ -180,14 +220,16 @@ export const receivedMail = (state: string, name: string) =>
                       .slice(1 - RECEIVED_MAIL_LIMIT),
                     { entry: journalEntry(entry), savedAt: now },
                   ]
-                : safe;
+                : stamped;
 
             const encoded = yield* Effect.forEach((item: typeof Stored.Type) =>
               encode(item)
             )(next);
 
-            const json = yield* keepNewest(encoded);
+            const { count, json } = yield* keepNewest(encoded);
             yield* writePrivateJson(file, json);
+
+            return next.slice(next.length - count);
           }
 
           return safe;
@@ -206,6 +248,8 @@ export const receivedMail = (state: string, name: string) =>
             )
           )
         ),
+      markAcked: (id: string) => transact(undefined, id).pipe(Effect.asVoid),
       save: (entry: ReceivedMail) => transact(entry).pipe(Effect.asVoid),
+      stage: (entry: ReceivedMail) => transact({ ...entry, acked: false }),
     };
   });

@@ -627,7 +627,7 @@ export const consume = <E, R>(
                   return;
                 }
 
-                const ackOutcome =
+                const attemptAck: MessageMeta["ackOutcome"] =
                   event.receipt.delegatedTo === undefined
                     ? mailbox.ack(input).pipe(
                         Effect.map(({ receipt }) =>
@@ -637,16 +637,21 @@ export const consume = <E, R>(
                             Match.orElse(() => "settled" as const)
                           )
                         ),
-                        Effect.catchIf(expiredRefusal, () =>
-                          Effect.succeed("expired" as const)
-                        ),
-                        Effect.catchIf(settledRefusal, () =>
-                          Effect.succeed("settled" as const)
+                        Effect.catchIf(
+                          (error) =>
+                            settledRefusal(error) && !expiredRefusal(error),
+                          () => Effect.succeed("settled" as const)
                         )
                       )
                     : Effect.succeed("delegated" as const);
 
-                const ack = Effect.asVoid(ackOutcome);
+                const ack = Effect.asVoid(attemptAck);
+
+                const ackOutcome = attemptAck.pipe(
+                  Effect.catchIf(expiredRefusal, () =>
+                    Effect.succeed("expired" as const)
+                  )
+                );
 
                 handed.add(key);
                 yield* handler(message, {

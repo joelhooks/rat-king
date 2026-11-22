@@ -1,8 +1,16 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import { Directory } from "@rat-king/ratking-client/directory";
-import { Inbox } from "@rat-king/ratking-client/ratking";
-import { Console, Effect, FileSystem, Layer, Schema } from "effect";
+import { Inbox, RatKing } from "@rat-king/ratking-client/ratking";
+import {
+  Console,
+  Deferred,
+  Effect,
+  FileSystem,
+  Layer,
+  Option,
+  Schema,
+} from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
 import { expect } from "vitest";
 
@@ -178,6 +186,104 @@ it.live(
         }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
       { discard: true }
     ),
+  { timeout: 30_000 }
+);
+
+it.live(
+  "the CLI projects the Pi's staged plaintext with receipt metadata before and after ack",
+  () =>
+    Effect.gen(function* piReadback() {
+      const fs = yield* FileSystem.FileSystem;
+      const state = yield* fs.makeTempDirectoryScoped();
+      const who = yield* people;
+      const body = heldBody(1);
+      const entry = yield* mail(who, 1, "accepted", { body });
+      const id = entry.event.receipt.message.messageId;
+      const fake = fakeMailbox([entry]);
+
+      const wiring = harness(state, fake.http, [], {
+        secrets: seeded(who),
+      }).pipe(Layer.provideMerge(socketLayer));
+
+      yield* fs.makeDirectory(`${state}/cursors`, { recursive: true });
+      yield* fs.writeFileString(
+        `${state}/cursors/tester.json`,
+        JSON.stringify({ afterSeq: 0 })
+      );
+
+      const read = (receipt: "delivered" | "acked") =>
+        Effect.gen(function* readTheJournal() {
+          const cli = captured();
+          yield* runRatking(["read", id, "--as", "tester", "--json"]).pipe(
+            Effect.provideService(Console.Console, cli.console),
+            Effect.provideService(Wiring, wiring)
+          );
+
+          const doc = yield* Schema.decodeEffect(ReadDocument)(
+            cli.stdout.join("\n")
+          );
+
+          expect(doc.message).toEqual({
+            body,
+            carbonCopy: false,
+            cc: [],
+            did: who.peer.did,
+            encrypted: false,
+            from: "peer",
+            id,
+            kind: "message",
+            label: null,
+            redelivered: false,
+            replyTo: null,
+            seq: 1,
+            state: receipt,
+            summary: null,
+            thread: id,
+            to: "tester",
+            verified: true,
+          });
+        });
+
+      yield* Effect.gen(function* piReader() {
+        const king = yield* RatKing;
+        const shown = yield* Deferred.make<Effect.Effect<void>>();
+        yield* Directory.use((directory) =>
+          directory.record("peer", who.peerDocument)
+        );
+        yield* king.run(
+          {
+            alive: () => true,
+            env: Option.some("tester"),
+            pane: Option.none(),
+            pid: 1,
+            session: "tester-pi",
+          },
+          (inbound, _settled, ack, canRead) =>
+            Effect.sync(() => {
+              expect(inbound.id).toBe(id);
+              expect(canRead?.()).toBe(true);
+            }).pipe(
+              Effect.andThen(
+                Deferred.succeed(
+                  shown,
+                  ack ?? Effect.die("Missing display acknowledgment")
+                )
+              ),
+              Effect.asVoid
+            )
+        );
+
+        const ack = yield* Deferred.await(shown).pipe(
+          Effect.timeout("5 seconds")
+        );
+
+        yield* read("delivered");
+        const pi = yield* runAction("ratking", 1, { action: "read", id });
+        expect(pi.text).toContain(body);
+        yield* ack;
+        yield* read("acked");
+      }).pipe(Effect.provide(wiring));
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { timeout: 30_000 }
 );
 
