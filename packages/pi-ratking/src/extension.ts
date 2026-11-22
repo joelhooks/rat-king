@@ -228,6 +228,7 @@ export const digestLine = (inbound: Inbound) => {
 const WakeEntry = Schema.Struct({
   body: Schema.String,
   cc: Schema.optionalKey(Schema.Boolean),
+  encrypted: Schema.optional(Schema.Boolean),
   from: Schema.String,
   kind: Schema.optionalKey(Kind),
   replyTo: Schema.optional(Schema.String),
@@ -258,11 +259,12 @@ const isCc = (mail: PendingMail) =>
 const digestBody = (tool: string, mail: PendingMail) =>
   Option.match(digestEntry(mail), {
     onNone: () => [],
-    onSome: ({ body, cc, kind }) => [
+    onSome: ({ body, cc, encrypted, kind }) => [
       "",
       renderInboundBody(tool, {
         body,
         cc: cc === true,
+        encrypted,
         id: mail.id,
         kind: kind ?? "message",
       }),
@@ -566,6 +568,7 @@ export const inboundDetails = (inbound: Inbound, settled: boolean) => ({
   cc: inbound.cc,
   ccNames: inbound.ccNames,
   did: inbound.did,
+  encrypted: inbound.encrypted,
   from: inbound.from,
   id: inbound.id,
   kind: inbound.kind,

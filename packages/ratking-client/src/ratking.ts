@@ -1242,6 +1242,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         cc,
         copy: cc,
         did: message.senderDid,
+        encrypted: message.encrypted ?? true,
         from: claimed,
         id: message.tid,
         kind: Option.getOrElse(
@@ -3209,9 +3210,10 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             settled,
             acknowledge === undefined
               ? undefined
-              : cacheDelivery(own.name, { received: inbound }).pipe(
-                  Effect.andThen(acknowledge)
-                )
+              : cacheDelivery(own.name, {
+                  encrypted: inbound.encrypted ?? true,
+                  received: inbound,
+                }).pipe(Effect.andThen(acknowledge))
           );
 
           if (!("record" in inbound) && injects(inbound, settled)) {

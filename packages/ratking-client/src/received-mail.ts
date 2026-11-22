@@ -55,36 +55,48 @@ export const receivedMail = (state: string, name: string) =>
       )
     );
 
+    const transact = (entry?: ReceivedMail) =>
+      withLock(
+        path.join(state, "locks"),
+        `${key}-received`,
+        Effect.gen(function* updateReceivedMail() {
+          const entries = yield* load;
+          const safe = entries.filter((other) => other.encrypted === false);
+
+          const next =
+            entry?.encrypted === false
+              ? [
+                  ...safe
+                    .filter((other) => other.received.id !== entry.received.id)
+                    .slice(1 - RECEIVED_MAIL_LIMIT),
+                  entry,
+                ]
+              : safe;
+
+          if (entry?.encrypted === false || safe.length !== entries.length) {
+            const json = yield* Schema.encodeEffect(Journal)(next, {
+              onExcessProperty: "ignore",
+            });
+
+            yield* writePrivateJson(file, json);
+          }
+
+          return next;
+        })
+      ).pipe(
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideService(Path.Path, path)
+      );
+
     return {
       find: (id: string) =>
-        load.pipe(
+        transact().pipe(
           Effect.map((entries) =>
             Option.fromNullishOr(
               entries.find((entry) => entry.received.id === id)
             )
           )
         ),
-      save: (entry: ReceivedMail) =>
-        withLock(
-          path.join(state, "locks"),
-          `${key}-received`,
-          Effect.gen(function* saveReceivedMail() {
-            const entries = yield* load;
-
-            const recent = entries
-              .filter((other) => other.received.id !== entry.received.id)
-              .slice(1 - RECEIVED_MAIL_LIMIT);
-
-            const json = yield* Schema.encodeEffect(Journal)(
-              [...recent, entry],
-              { onExcessProperty: "ignore" }
-            );
-
-            yield* writePrivateJson(file, json);
-          })
-        ).pipe(
-          Effect.provideService(FileSystem.FileSystem, fs),
-          Effect.provideService(Path.Path, path)
-        ),
+      save: (entry: ReceivedMail) => transact(entry).pipe(Effect.asVoid),
     };
   });

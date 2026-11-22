@@ -104,6 +104,7 @@ export interface Inbound {
   readonly label: Option.Option<string>;
   readonly verified: boolean;
   readonly body: string;
+  readonly encrypted?: boolean;
   readonly kind: KindValue;
   readonly quiet?: boolean;
   readonly reply?: ReplyRefValue;
@@ -157,18 +158,33 @@ export const COPY_NOTE =
 export const renderInboundBody = (
   tool: string,
   inbound: Pick<Inbound, "body" | "cc" | "id" | "kind"> & {
+    readonly encrypted?: boolean | undefined;
     readonly sentBy?: string | undefined;
   }
 ) => {
-  if (inbound.cc && inbound.sentBy === undefined) {
-    return inbound.body.length > COPY_BODY_MAX
-      ? `${inbound.body.slice(0, COPY_BODY_MAX)}…\n(clipped; read the full body with ${tool}({ action: "read", id: ${JSON.stringify(inbound.id)} }))`
-      : inbound.body;
+  const body =
+    inbound.kind === "data" ? renderRecordBody(inbound.body) : inbound.body;
+
+  if (
+    !inbound.cc ||
+    inbound.sentBy !== undefined ||
+    body.length <= COPY_BODY_MAX
+  ) {
+    return body;
   }
 
-  return inbound.kind === "data"
-    ? renderRecordBody(inbound.body)
-    : inbound.body;
+  const end =
+    /[\uD800-\uDBFF]/u.test(body.charAt(COPY_BODY_MAX - 1)) &&
+    /[\uDC00-\uDFFF]/u.test(body.charAt(COPY_BODY_MAX))
+      ? COPY_BODY_MAX - 1
+      : COPY_BODY_MAX;
+
+  const hint =
+    inbound.encrypted === false
+      ? `read the full body with ${tool}({ action: "read", id: ${JSON.stringify(inbound.id)} })`
+      : "the full body is not saved to the local mail journal";
+
+  return `${body.slice(0, end)}…\n(clipped; ${hint})`;
 };
 
 export const renderInbound = (tool: string, inbound: Inbound) => {

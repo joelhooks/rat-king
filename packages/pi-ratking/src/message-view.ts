@@ -40,6 +40,7 @@ const Details = Schema.Struct({
   delegatedFor: Schema.optional(Schema.String),
   delegatedTo: Schema.optional(Schema.String),
   did: Schema.String,
+  encrypted: Schema.optional(Schema.Boolean),
   from: Schema.String,
   id: Schema.String,
   kind: Kind,
