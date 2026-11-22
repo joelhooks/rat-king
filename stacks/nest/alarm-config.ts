@@ -53,7 +53,40 @@ export const ConfiguredWakeTarget = Schema.Struct({
   ),
 });
 
-export const AlarmSettings = Schema.Struct({
+const LaunchdAlarm = Schema.Struct({
+  errorLog: Schema.NonEmptyString,
+  label: Schema.NonEmptyString,
+  node: Schema.NonEmptyString,
+  outputLog: Schema.NonEmptyString,
+  path: Schema.NonEmptyString,
+  source: Schema.NonEmptyString,
+});
+
+const SystemdPath = Schema.NonEmptyString.check(
+  Schema.isPattern(/^\/.*[^\s\\]$|^\/$/u),
+  Schema.makeFilter(
+    (value) =>
+      !/\p{Cc}/u.test(value) ||
+      "expected an absolute path without control characters"
+  )
+);
+
+const SystemdAlarm = Schema.Struct({
+  errorLog: SystemdPath,
+  node: SystemdPath,
+  outputLog: SystemdPath,
+  path: Schema.NonEmptyString,
+  source: SystemdPath,
+  unit: Schema.NonEmptyString.check(
+    Schema.isPattern(/^[A-Za-z0-9_.-]+\.service$/u)
+  ),
+});
+
+export const ConfiguredWakeTargets = Schema.optionalKey(
+  Schema.Array(ConfiguredWakeTarget)
+);
+
+const AlarmCommon = Schema.Struct({
   broadcast: AgentName,
   cacheHealth: Schema.optionalKey(Schema.NonEmptyString),
   enabled: Schema.Boolean,
@@ -67,14 +100,6 @@ export const AlarmSettings = Schema.Struct({
       })
     )
   ),
-  launchd: Schema.Struct({
-    errorLog: Schema.NonEmptyString,
-    label: Schema.NonEmptyString,
-    node: Schema.NonEmptyString,
-    outputLog: Schema.NonEmptyString,
-    path: Schema.NonEmptyString,
-    source: Schema.NonEmptyString,
-  }),
   musterDesk: AgentName,
   notify: Schema.Struct({
     config: Schema.optionalKey(Schema.NonEmptyString),
@@ -123,11 +148,28 @@ export const AlarmSettings = Schema.Struct({
       Schema.Struct({ name: AgentName, waker: Schema.optionalKey(AgentName) })
     )
   ),
-  wakeTargets: Schema.optionalKey(Schema.Array(ConfiguredWakeTarget)),
+  wakeTargets: ConfiguredWakeTargets,
   wakeUnackedMinutes: Schema.optionalKey(
     Schema.Int.check(Schema.isGreaterThan(0))
   ),
 });
+
+export const LaunchdAlarmSettings = Schema.Struct({
+  ...AlarmCommon.fields,
+  launchd: LaunchdAlarm,
+  systemd: Schema.optionalKey(Schema.Never),
+});
+
+export const SystemdAlarmSettings = Schema.Struct({
+  ...AlarmCommon.fields,
+  launchd: Schema.optionalKey(Schema.Never),
+  systemd: SystemdAlarm,
+});
+
+export const AlarmSettings = Schema.Union([
+  LaunchdAlarmSettings,
+  SystemdAlarmSettings,
+]);
 
 export type AlarmSettingsValue = typeof AlarmSettings.Type;
 

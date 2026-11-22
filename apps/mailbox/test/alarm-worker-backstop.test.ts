@@ -3,7 +3,7 @@ import { Effect, Schema } from "effect";
 import { expect } from "vitest";
 
 import { alarmPlist } from "../../../stacks/nest/alarm-command.ts";
-import { AlarmSettings } from "../../../stacks/nest/alarm-config.ts";
+import { LaunchdAlarmSettings } from "../../../stacks/nest/alarm-config.ts";
 import {
   checkAlarmWorkerHealth,
   nextAlarmHeartbeat,
@@ -17,7 +17,7 @@ it.effect.prop(
   "five consecutive failed cycles terminate the worker, success resets the count, and launchd keeps the launcher alive",
   [
     StageConfig,
-    AlarmSettings,
+    LaunchdAlarmSettings,
     Schema.Array(Schema.Boolean).check(Schema.isMaxLength(20)),
   ],
   ([base, alarm, outcomes]) =>

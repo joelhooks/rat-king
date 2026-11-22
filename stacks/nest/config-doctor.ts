@@ -3,6 +3,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { operatorBundle } from "../../packages/alchemy-nest/src/operator-build.ts";
 import { shellQuote } from "../../packages/alchemy-nest/src/ssh.ts";
+import { alarmServiceDoctor } from "./alarm-service.ts";
 import {
   decodeInspection,
   inspectionDeadline,
@@ -134,3 +135,26 @@ export const configDoctor = Effect.fn("Nest.configDoctor")(
       }))
     )
 );
+
+export const stageDoctor = Effect.fn("Nest.stageDoctor")(function* stageDoctor(
+  config: StageConfigValue,
+  inspect: typeof configDoctor = configDoctor
+) {
+  const settings = config.alarm;
+
+  if (settings === undefined) {
+    return yield* inspect(config);
+  }
+
+  const { pi, alarm } = yield* Effect.all(
+    { alarm: alarmServiceDoctor(settings), pi: inspect(config) },
+    { concurrency: "unbounded" }
+  );
+
+  return {
+    reasons: [...pi.reasons, ...alarm.reasons],
+    service: alarm.service,
+    status:
+      pi.status === "ok" || alarm.status === "fail" ? alarm.status : pi.status,
+  };
+});

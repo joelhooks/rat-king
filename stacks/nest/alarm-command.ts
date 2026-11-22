@@ -2,7 +2,7 @@ import type { Path } from "effect";
 import { Clock, Console, Effect, FileSystem, Ref, Schema } from "effect";
 import type { HttpClient } from "effect/http";
 import { FetchHttpClient } from "effect/http";
-import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import type { ChildProcessSpawner } from "effect/process";
 
 import type { SecretStore } from "../../apps/mailbox/cli/secrets.ts";
 import { secretStoreLayer } from "../../apps/mailbox/cli/secrets.ts";
@@ -45,24 +45,7 @@ import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
 import { watchReaderCrashes } from "./turn-crashes.ts";
 
-const xml = (text: string) =>
-  text
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-
-const string = (value: string) => `<string>${xml(value)}</string>`;
-
-export const alarmPlist = (config: StageConfigValue, configPath: string) => {
-  if (config.alarm === undefined) {
-    return "";
-  }
-
-  const launch = config.alarm.launchd;
-
-  return `<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>Label</key>${string(launch.label)}<key>ProgramArguments</key><array>${[launch.node, `${launch.source}/stacks/nest/cli.ts`, "alarm"].map(string).join("")}</array><key>EnvironmentVariables</key><dict><key>RAT_KING_STAGE_CONFIG</key>${string(configPath)}<key>PATH</key>${string(launch.path)}</dict><key>WorkingDirectory</key>${string(launch.source)}<key>RunAtLoad</key><true/><key>KeepAlive</key><true/><key>ThrottleInterval</key><integer>60</integer><key>StandardOutPath</key>${string(launch.outputLog)}<key>StandardErrorPath</key>${string(launch.errorLog)}</dict></plist>\n`;
-};
+export { alarmPlist } from "./alarm-service.ts";
 
 export { readAlarmJournal } from "./alarm-journal.ts";
 
@@ -95,6 +78,7 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
     }
 
     const settings = config.alarm;
+    const launch = settings.systemd ?? settings.launchd;
     const fs = yield* FileSystem.FileSystem;
     const directory = yield* fs.realPath(config.runtime.RAT_KING_STATE_DIR);
 
@@ -133,14 +117,14 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
 
     for (;;) {
       yield* rotateLogs(
-        [settings.launchd.outputLog, settings.launchd.errorLog],
+        [launch.outputLog, launch.errorLog],
         yield* Clock.currentTimeMillis
       );
 
       if (yield* drifted) {
         return yield* Console.log(
           JSON.stringify({
-            runner: "code changed; exiting for launchd restart",
+            runner: "code changed; exiting for supervisor restart",
           })
         );
       }
@@ -311,55 +295,8 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
     effect.pipe(Effect.provide([FetchHttpClient.layer, secretStoreLayer({})]))
 );
 
-export const alarmCommand = Effect.fn("Alarm.command")(function* alarmCommand(
-  config: StageConfigValue,
-  configPath: string
-) {
-  if (config.alarm?.enabled !== true) {
-    return yield* new FleetError({ reason: "Alarms are disabled" });
-  }
-
-  const launch = config.alarm.launchd;
-  const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-
-  const child = yield* spawner.spawn(
-    ChildProcess.make(
-      "/usr/bin/lockf",
-      [
-        "-k",
-        "-t",
-        "0",
-        `${config.runtime.RAT_KING_STATE_DIR}/alarm.lock`,
-        launch.node,
-        `${launch.source}/stacks/nest/cli.ts`,
-        "alarm-worker",
-      ],
-      {
-        env: {
-          RAT_KING_ALARM_WORKER: "locked",
-          RAT_KING_STAGE_CONFIG: configPath,
-        },
-        extendEnv: true,
-        stderr: "inherit",
-        stdin: "ignore",
-        stdout: "inherit",
-      }
-    )
-  );
-
-  const code = yield* child.exitCode;
-
-  if (code !== 0) {
-    return yield* new FleetError({
-      reason: "Alarm owner lock unavailable or worker failed",
-    });
-  }
-
-  return yield* Effect.void;
-}, Effect.scoped);
-
-export const alarmCheck = Effect.fn("Alarm.check")(
-  function* alarmCheck<E, R, E2, R2, E4 = never, R4 = never>(
+export const alarmReadings = Effect.fn("Alarm.readings")(
+  function* alarmReadings<E, R, E2, R2, E4 = never, R4 = never>(
     config: StageConfigValue,
     health: Effect.Effect<HealthDigest, E, R>,
     deploy: Effect.Effect<typeof DeployMarker.Type | null, E2, R2>,
@@ -388,9 +325,11 @@ export const alarmCheck = Effect.fn("Alarm.check")(
       yield* Clock.currentTimeMillis
     );
 
-    return config.alarm === undefined
+    const settings = config.alarm;
+
+    return settings === undefined
       ? readings
-      : { ...readings, ...deskWakeReadings(prior, config.alarm) };
+      : { ...readings, ...deskWakeReadings(prior, settings) };
   },
   (effect) =>
     effect.pipe(Effect.provide([FetchHttpClient.layer, secretStoreLayer({})]))

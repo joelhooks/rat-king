@@ -6,7 +6,7 @@ import { TestClock } from "effect/testing";
 import { expect } from "vitest";
 
 import { collectAlarmFacts } from "../../../stacks/nest/alarm-collector.ts";
-import { AlarmSettings } from "../../../stacks/nest/alarm-config.ts";
+import { LaunchdAlarmSettings } from "../../../stacks/nest/alarm-config.ts";
 import {
   emptySources,
   observeAlarms,
@@ -17,7 +17,7 @@ import { FleetError, StageConfig } from "../../../stacks/nest/stage-config.ts";
 
 it.effect.prop(
   "collector preserves churn limits and routes doctor timeouts only to the sustained availability alarm",
-  [StageConfig, ShipSettings, AlarmSettings, Schema.Int, Counts],
+  [StageConfig, ShipSettings, LaunchdAlarmSettings, Schema.Int, Counts],
   ([base, ship, alarm, limit, counts]) =>
     Effect.gen(function* proof() {
       const restart = { ...ship.restart };
@@ -86,7 +86,7 @@ it.effect.prop(
 
 it.effect.prop(
   "a failed health digest does not hide the mailbox status the liveness probe read, and the digest falls back when liveness fails",
-  [StageConfig, ShipSettings, AlarmSettings, Counts, Schema.Int],
+  [StageConfig, ShipSettings, LaunchdAlarmSettings, Counts, Schema.Int],
   ([base, ship, alarm, counts, status]) =>
     Effect.gen(function* proof() {
       const config = {
