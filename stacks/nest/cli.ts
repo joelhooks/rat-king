@@ -14,6 +14,7 @@ import {
 } from "effect";
 
 import { refuse } from "../../packages/alchemy-nest/src/files.ts";
+import { secretSource } from "../../packages/ratking-client/src/systemd-credentials.ts";
 import { alarmReadings, alarmWorker } from "./alarm-command.ts";
 import {
   alarmCheck,
@@ -27,6 +28,7 @@ import { stageDoctor } from "./config-doctor.ts";
 import { collectDigestWaitingMail } from "./digest-mail-collector.ts";
 import { commsCounts, digest } from "./digest.ts";
 import { drainCommand } from "./drain.ts";
+import { frontDeskCommand } from "./front-desk-command.ts";
 import { DigestJson, summarize } from "./health.ts";
 import { maintenanceCommand } from "./maintenance-command.ts";
 import { mintHost } from "./mint-host.ts";
@@ -333,6 +335,10 @@ const scriptCommand = () => {
     return billingCommand(process.argv.slice(3));
   }
 
+  if (process.argv[2] === "ops-front-desk-send") {
+    return frontDeskCommand(process.argv.slice(3));
+  }
+
   if (process.argv[2] === "seal") {
     return sealCommand(process.argv.slice(3));
   }
@@ -342,7 +348,15 @@ const scriptCommand = () => {
 
     return flags.includes("--sealed")
       ? sealedSendCommand(flags)
-      : sendCommand(flags);
+      : Effect.gen(function* legacySend() {
+          if ((yield* secretSource) === "systemd") {
+            return yield* refuse(
+              "Legacy send is disabled with systemd credentials"
+            );
+          }
+
+          return yield* sendCommand(flags);
+        });
   }
 
   if (process.argv[2] === "drain" || process.argv[2] === "ack") {

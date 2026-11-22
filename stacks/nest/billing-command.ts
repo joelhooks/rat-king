@@ -27,6 +27,10 @@ import { directoryLayer } from "../../packages/ratking-client/src/directory.ts";
 import { AgentName } from "../../packages/ratking-client/src/name.ts";
 import { secretStoreLayer } from "../../packages/ratking-client/src/secrets.ts";
 import {
+  secretSource,
+  systemdCredential,
+} from "../../packages/ratking-client/src/systemd-credentials.ts";
+import {
   billingBody,
   BillingRelay,
   billingSummary,
@@ -72,16 +76,30 @@ export const billingCommand = Effect.fn("Nest.billing-relay")(
         );
       }
 
-      const token = yield* Config.Redacted("BILLING_PULL_CREDENTIAL");
+      const source = yield* secretSource.pipe(
+        Effect.mapError(failure("secret-source"))
+      );
+
+      const token = yield* source === "systemd"
+        ? Config.String("RAT_KING_BILLING_PULL_SLOT").pipe(
+            Effect.flatMap(systemdCredential),
+            Effect.mapError(failure("pull-credential"))
+          )
+        : Config.Redacted("BILLING_PULL_CREDENTIAL");
 
       const recipient = yield* Config.schema(
         AgentName,
         "RAT_KING_BILLING_RECIPIENT"
       ).pipe(Config.withDefault("switchboard"));
 
-      const identity = yield* Config.String("RAT_KING_BILLING_IDENTITY").pipe(
-        Config.withDefault("rat_king_script_billing-alerts_identity")
-      );
+      const signer = "rat_king_script_billing-alerts_identity";
+
+      const identity =
+        source === "systemd"
+          ? signer
+          : yield* Config.String("RAT_KING_BILLING_IDENTITY").pipe(
+              Config.withDefault(signer)
+            );
 
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -113,7 +131,15 @@ export const billingCommand = Effect.fn("Nest.billing-relay")(
         );
 
         const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-        const authorize = HttpClientRequest.bearerToken(Redacted.value(token));
+        const bearer = Redacted.value(token).trim();
+
+        if (!/^[A-Za-z0-9._~+/-]+=*$/u.test(bearer)) {
+          return yield* new RelayFailure({
+            operation: "invalid-pull-credential",
+          });
+        }
+
+        const authorize = HttpClientRequest.bearerToken(bearer);
 
         const pending = yield* client
           .execute(
