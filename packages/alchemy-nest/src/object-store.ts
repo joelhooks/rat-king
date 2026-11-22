@@ -9,8 +9,8 @@ import { instanceStoreUnit } from "./instance-units.ts";
 import { InstanceNameSchema, validateInstance } from "./instance.ts";
 import type { InstanceProps } from "./instance.ts";
 import type { Node } from "./inventory-schema.ts";
+import { awaitModule } from "./late-module.ts";
 import { renderMaintenanceScript } from "./maintenance-render.ts";
-import { operatorBundle } from "./operator-build.ts";
 import { weedBinary } from "./pins.ts";
 import {
   HostDirectory,
@@ -126,8 +126,18 @@ export const Bucket = (id: string, props: StoreProps) =>
         : (props.restartGateBundle ??
           (layout.instance === "rat-king"
             ? undefined
-            : yield* operatorBundle(
-                new URL("instance-restart-gate.ts", import.meta.url).pathname
+            : yield* Effect.suspend(() =>
+                awaitModule(
+                  import("./operator-build.ts"),
+                  "Operator bundle module unavailable"
+                )
+              ).pipe(
+                Effect.flatMap(({ operatorBundle }) =>
+                  operatorBundle(
+                    new URL("instance-restart-gate.ts", import.meta.url)
+                      .pathname
+                  )
+                )
               )));
 
     const gate =

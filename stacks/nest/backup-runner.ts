@@ -4,7 +4,7 @@ import { Effect, Schema } from "effect";
 import { backupExec } from "./backup-exec.ts";
 import { BackupInput, runBackup } from "./backup.ts";
 
-const program = Effect.gen(function* backupMain() {
+export const program = Effect.gen(function* backupMain() {
   const [dataRoot, backupRoot, version, commit, home, healthUrl] =
     process.argv.slice(2);
 
@@ -20,4 +20,6 @@ const program = Effect.gen(function* backupMain() {
   yield* runBackup(yield* backupExec, input);
 });
 
-NodeRuntime.runMain(program.pipe(Effect.provide(NodeServices.layer)));
+if (import.meta.main) {
+  NodeRuntime.runMain(program.pipe(Effect.provide(NodeServices.layer)));
+}

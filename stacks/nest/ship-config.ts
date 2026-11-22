@@ -87,20 +87,36 @@ export const ShipReceipt = Schema.Struct({
   celldRestarted: Schema.NullOr(Schema.Boolean),
   end: Schema.Number,
   gate: Schema.optionalKey(Text),
+  hold: Schema.optionalKey(Text),
   override: Schema.optionalKey(Text),
   recovered: Schema.optionalKey(Schema.Boolean),
   restartSeconds: Schema.NullOr(Schema.Number),
-  result: Schema.Literals(["success", "failed", "deferred"]),
+  result: Schema.Literals([
+    "success",
+    "failed",
+    "deferred",
+    "held",
+    "interrupted",
+  ]),
   retryAt: Schema.optionalKey(Schema.Number),
   sha: Sha,
   start: Schema.Number,
   stderrTail: Schema.optionalKey(Schema.String.check(Schema.isMaxLength(2048))),
 });
 
+export const PreparedRetries = Schema.Record(Sha, Schema.Finite);
+
+export const PreparedHolds = Schema.Record(
+  Schema.String.check(Schema.isPattern(/^(?:global|[a-f0-9]{40})$/u)),
+  Text
+);
+
 export const ShipCheckpoint = Schema.Struct({
   deferred: Schema.optionalKey(Schema.Union([Schema.Literal(""), Sha])),
   failed: Schema.Union([Schema.Literal(""), Sha]),
   failedGate: Schema.optionalKey(Schema.String),
+  preparedHolds: Schema.optionalKey(PreparedHolds),
+  preparedRetries: Schema.optionalKey(PreparedRetries),
   retryAt: Schema.optionalKey(Schema.Number),
   successful: Schema.Union([Schema.Literal(""), Sha]),
 });

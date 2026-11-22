@@ -1,7 +1,7 @@
 import { Effect, Path, Stream } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
-import { operatorBundle } from "../../packages/alchemy-nest/src/operator-build.ts";
+import { awaitModule } from "../../packages/alchemy-nest/src/late-module.ts";
 import { shellQuote } from "../../packages/alchemy-nest/src/ssh.ts";
 import { readCredentialEnvironment } from "../../packages/ratking-client/src/systemd-credentials.ts";
 import { alarmServiceDoctor } from "./alarm-service.ts";
@@ -24,6 +24,13 @@ export const configDoctor = Effect.fn("Nest.configDoctor")(
     }
 
     const path = yield* Path.Path;
+
+    const { operatorBundle } = yield* Effect.suspend(() =>
+      awaitModule(
+        import("../../packages/alchemy-nest/src/operator-build.ts"),
+        "Operator bundle module unavailable"
+      )
+    );
 
     const source = yield* operatorBundle(
       path.resolve(new URL("config-doctor-runner.ts", import.meta.url).pathname)

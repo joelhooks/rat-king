@@ -45,10 +45,10 @@ import { opsDigest, opsHealth, opsMailboxHealth } from "./ops-read.ts";
 import { restoreDrill } from "./restore.ts";
 import { sealCommand, sealedSendCommand } from "./seal.ts";
 import { sendCommand } from "./send.ts";
-import { launchdPlist, shipCommand } from "./ship-command.ts";
+import { launchdPlist } from "./ship-command.ts";
 import { shipJudgeCommand } from "./ship-judge.ts";
+import { withShipLock } from "./ship-lock.ts";
 import { FleetError, loadStageConfig, stageProvider } from "./stage-config.ts";
-import { throwawayCommand } from "./throwaway.ts";
 import { usageCommand } from "./usage.ts";
 
 const checkFlags = Effect.fn("Nest.checkFlags")(function* checkFlags(
@@ -78,6 +78,7 @@ const checkFlags = Effect.fn("Nest.checkFlags")(function* checkFlags(
 
   if (
     flags.length === 0 ||
+    action === "ship-prepared" ||
     action === "provision" ||
     action === "mailbox" ||
     action === "maintenance" ||
@@ -102,6 +103,7 @@ const program = Effect.gen(function* launcher() {
       "backup",
       "health",
       "ship",
+      "ship-prepared",
       "ship-plist",
       "alarm",
       "alarm-plist",
@@ -173,6 +175,7 @@ const program = Effect.gen(function* launcher() {
     return yield* refuse("State resolves inside the public repository");
   }
 
+  const callerDirectory = process.cwd();
   process.chdir(canonical);
   process.env.ALCHEMY_TELEMETRY_DISABLED = "1";
 
@@ -199,13 +202,13 @@ const program = Effect.gen(function* launcher() {
         return yield* Effect.void;
       })
     ),
-    Match.when("ship", () =>
-      shipCommand(
-        config,
-        Effect.tryPromise({
-          catch: () => new FleetError({ reason: "Nest runtime import failed" }),
-          try: async () => await import("./runtime.ts"),
-        }).pipe(Effect.flatMap((runtime) => runtime.recoverStorage))
+    Match.when(Match.is("ship", "ship-prepared"), (mode) =>
+      withShipLock(
+        canonical,
+        `${import.meta.dirname}/ship-worker.ts`,
+        resolvedConfigPath,
+        [mode, ...flags],
+        callerDirectory
       )
     ),
     Match.when("alarm", () => alarmCommand(config, resolvedConfigPath)),
@@ -353,6 +356,18 @@ const program = Effect.gen(function* launcher() {
 });
 
 const scriptCommand = () => {
+  if (process.argv[2] === "ship-build") {
+    return Effect.tryPromise({
+      catch: () =>
+        new FleetError({ reason: "Fleet build command unavailable" }),
+      try: async () => await import("./ship-build.ts"),
+    }).pipe(
+      Effect.flatMap(({ shipBuildCommand }) =>
+        shipBuildCommand(process.argv.slice(3))
+      )
+    );
+  }
+
   if (process.argv[2] === "usage") {
     return usageCommand(process.argv.slice(3));
   }
@@ -368,7 +383,14 @@ const scriptCommand = () => {
   }
 
   if (process.argv[2] === "throwaway") {
-    return throwawayCommand(process.argv.slice(3));
+    return Effect.tryPromise({
+      catch: () => new FleetError({ reason: "Throwaway command unavailable" }),
+      try: async () => await import("./throwaway.ts"),
+    }).pipe(
+      Effect.flatMap(({ throwawayCommand }) =>
+        throwawayCommand(process.argv.slice(3))
+      )
+    );
   }
 
   if (process.argv[2] === "billing-relay") {
