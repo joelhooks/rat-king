@@ -140,7 +140,12 @@ export const readCommand = Command.make(
   (args) =>
     named("read", args, () =>
       Effect.gen(function* read() {
-        const { entry } = yield* locate(args.id);
+        const inbox = yield* Inbox;
+        const local = yield* inbox.readReceived(args.id);
+
+        const entry = Option.isSome(local)
+          ? { ...local.value, state: "acked" }
+          : (yield* locate(args.id)).entry;
 
         return {
           document: { message: entryDocument(entry) },

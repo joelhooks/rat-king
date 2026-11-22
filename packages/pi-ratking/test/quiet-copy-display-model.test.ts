@@ -46,7 +46,6 @@ const reader = async () => {
   let streaming = false;
   const entries: HistoryEntry[] = [];
   const next: Message[] = [];
-  const steering: Message[] = [];
   const sent: Message[] = [];
   const acks = new Map<string, number>();
   const early: string[] = [];
@@ -76,15 +75,8 @@ const reader = async () => {
     sendMessage: (message, delivery) => {
       sent.push(message);
 
-      if (delivery?.deliverAs === "nextTurn") {
-        next.push(message);
-      } else {
-        expect(streaming).toBe(true);
-        expect(delivery?.deliverAs).toBe(
-          delivery?.triggerTurn === true ? "steer" : "followUp"
-        );
-        steering.push(message);
-      }
+      expect(delivery).toEqual({ deliverAs: "nextTurn", triggerTurn: false });
+      next.push(message);
     },
     shownInSession: () => shownInHistory(entries),
   };
@@ -171,18 +163,16 @@ const reader = async () => {
     run: async (kind: typeof Run.Type) => {
       streaming = true;
 
-      if (kind === "prompt") {
-        before();
-        steering.push(...next.splice(0));
-      }
-
       if (kind === "continuation") {
         turnEnd();
       } else {
+        before();
         await agentStart();
       }
 
-      const messages = steering.splice(0);
+      const messages = kind === "continuation" ? [] : next.splice(0);
+
+      streaming = false;
 
       for (const message of messages) {
         for (const id of shownIds({ ...message, role: "custom" })) {
@@ -246,6 +236,13 @@ const runCommand = (kind: typeof Run.Type): AsyncCommand<Model, Real> => ({
       shownIds({ ...message, role: "custom" })
     );
 
+    if (kind === "continuation") {
+      expect(ids).toEqual([]);
+      verify(model, real);
+
+      return;
+    }
+
     expect(new Set(ids)).toEqual(model.pending);
     expect(ids).toHaveLength(model.pending.size);
     verify(model, real);
@@ -262,7 +259,7 @@ const runCommand = (kind: typeof Run.Type): AsyncCommand<Model, Real> => ({
 });
 
 it.effect.prop(
-  "quiet copies enter the next prompt, custom run or continuation, and events without a display entry never ack them",
+  "quiet copies only enter an independent prompt or custom run, and events without a display entry never ack them",
   [
     Arbitrary.schema(Kind),
     Arbitrary.schema(Run),

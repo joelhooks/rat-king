@@ -1,9 +1,6 @@
 import type { Inbound, InboundRecord } from "@rat-king/ratking-client/payload";
-import type {
-  Delivered,
-  LeaseHolder,
-  Peeked,
-} from "@rat-king/ratking-client/ratking";
+import type { Delivered, LeaseHolder } from "@rat-king/ratking-client/ratking";
+import type { ReceivedMail } from "@rat-king/ratking-client/received-mail";
 import type { Received } from "@rat-king/ratking-client/threads";
 import { Option } from "effect";
 
@@ -29,9 +26,9 @@ export const sentLine = (verb: string, delivered: Delivered) => {
   ].join(" · ");
 };
 
-export const isRecord = (
-  received: Inbound | InboundRecord
-): received is InboundRecord => "record" in received;
+export const isRecord = <Entry extends Inbound | InboundRecord>(
+  received: Entry
+): received is Extract<Entry, InboundRecord> => "record" in received;
 
 export const partyOf = (received: Inbound | InboundRecord) =>
   isRecord(received)
@@ -54,7 +51,7 @@ const verbOf = (received: Inbound | InboundRecord) => {
   return received.cc ? "cc from" : "from";
 };
 
-const factsOf = (entry: Peeked) => {
+const factsOf = (entry: ReceivedMail) => {
   const { received } = entry;
 
   return [
@@ -68,15 +65,15 @@ const factsOf = (entry: Peeked) => {
           ),
         ]),
     ...(received.verified ? [] : ["unverified"]),
-    ...(entry.encrypted ? [] : ["plaintext"]),
-    ...(entry.redelivered ? ["redelivered"] : []),
+    ...(entry.encrypted === false ? ["plaintext"] : []),
+    ...(entry.redelivered === true ? ["redelivered"] : []),
   ];
 };
 
-export const inboxLine = (entry: Peeked) =>
+export const inboxLine = (entry: ReceivedMail) =>
   `🐀 ${verbOf(entry.received)} ${partyOf(entry.received)} · ${factsOf(entry).join(" · ")}`;
 
-export const readLines = (entry: Peeked) => {
+export const readLines = (entry: ReceivedMail) => {
   const { received } = entry;
 
   return [

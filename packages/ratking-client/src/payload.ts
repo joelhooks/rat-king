@@ -9,7 +9,7 @@ import type {
 import { renderRecordBody } from "./agentgraph.ts";
 import { formatReason } from "./attend.ts";
 import type { Levers } from "./attend.ts";
-import { deliveryReason, quietCopy } from "./delivery.ts";
+import { deliveryReason } from "./delivery.ts";
 import { AgentName } from "./name.ts";
 
 export const LexiconRecord = Schema.StructWithRest(
@@ -27,6 +27,7 @@ export const decodeRecord = (body: string) =>
 export interface InboundRecord {
   readonly alarmCrashDid?: string | undefined;
   readonly encrypted?: boolean;
+  readonly expiresAt?: string;
   readonly levers?: unknown;
   readonly id: string;
   readonly did: string;
@@ -105,6 +106,8 @@ export interface Inbound {
   readonly label: Option.Option<string>;
   readonly verified: boolean;
   readonly body: string;
+  readonly encrypted?: boolean;
+  readonly expiresAt?: string;
   readonly kind: KindValue;
   readonly quiet?: boolean;
   readonly reply?: ReplyRefValue;
@@ -150,19 +153,41 @@ const renderSent = (inbound: Inbound, by: string) =>
     `Context only: ${by} already sent this. Do not reply to it.`,
   ].join("\n");
 
-export const COPY_BODY_MAX = 500;
+export const COPY_BODY_MAX = 4000;
 
 export const COPY_NOTE =
-  "You are cc'd, so this did not wake you. No action is expected unless it names you; the sender uses to: for whoever must act.";
+  "You are cc'd. No action is expected unless it names you; the sender uses to: for whoever must act.";
 
-const copyBody = (inbound: Inbound) => {
-  if (Option.isSome(inbound.summary)) {
-    return "(Full text kept in the session view.)";
+export const renderInboundBody = (
+  tool: string,
+  inbound: Pick<Inbound, "body" | "cc" | "id" | "kind"> & {
+    readonly encrypted?: boolean | undefined;
+    readonly sentBy?: string | undefined;
+  }
+) => {
+  const body =
+    inbound.kind === "data" ? renderRecordBody(inbound.body) : inbound.body;
+
+  if (
+    !inbound.cc ||
+    inbound.sentBy !== undefined ||
+    body.length <= COPY_BODY_MAX
+  ) {
+    return body;
   }
 
-  return inbound.body.length > COPY_BODY_MAX
-    ? `${inbound.body.slice(0, COPY_BODY_MAX)}… (clipped; full text kept in the session view)`
-    : inbound.body;
+  const end =
+    /[\uD800-\uDBFF]/u.test(body.charAt(COPY_BODY_MAX - 1)) &&
+    /[\uDC00-\uDFFF]/u.test(body.charAt(COPY_BODY_MAX))
+      ? COPY_BODY_MAX - 1
+      : COPY_BODY_MAX;
+
+  const hint =
+    inbound.encrypted === false
+      ? `read the full body with ${tool}({ action: "read", id: ${JSON.stringify(inbound.id)} })`
+      : "the full body is not saved to the local mail journal";
+
+  return `${body.slice(0, end)}…\n(clipped; ${hint})`;
 };
 
 export const renderInbound = (tool: string, inbound: Inbound) => {
@@ -211,13 +236,8 @@ export const renderInbound = (tool: string, inbound: Inbound) => {
       onNone: () => [],
       onSome: (summary) => [`Summary: ${summary}`, ""],
     }),
-    ...(quietCopy(inbound)
-      ? [copyBody(inbound), "", COPY_NOTE]
-      : [
-          inbound.kind === "data"
-            ? renderRecordBody(inbound.body)
-            : inbound.body,
-        ]),
+    renderInboundBody(tool, inbound),
+    ...(inbound.cc ? ["", COPY_NOTE] : []),
     "",
     replyHint(tool, inbound),
   ].join("\n");

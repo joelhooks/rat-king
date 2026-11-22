@@ -2,7 +2,7 @@ import { Match, Option, Schema } from "effect";
 
 import type { KindValue } from "../../mailbox-client/src/payload.ts";
 import { decodeAgentGraphBody } from "./agentgraph.ts";
-import { attend, Reasons, Verdicts } from "./attend.ts";
+import { attend, Reasons } from "./attend.ts";
 import type { Arrival, Reason } from "./attend.ts";
 
 export interface AttentionTarget {
@@ -51,19 +51,16 @@ export const DIGEST_REASON: Reason = Reasons.intent({
   facts: ["cc", "digest"],
 });
 
-export const deliveryReason = (arrival: Arrival): Reason =>
-  attend(arrival, {}, 0, undefined, Option.none()).reason;
-
-export const quietCopy = (arrival: Arrival) => {
-  const verdict = attend(arrival, {}, 0, undefined, Option.none());
-
-  return Verdicts.$match(verdict, {
-    Later: () => true,
-    Never: () => false,
-    Next: () => true,
-    Now: () => false,
-  });
-};
+export const deliveryReason = (
+  arrival: Arrival & { readonly cc?: boolean }
+): Reason =>
+  attend(
+    arrival.cc === true ? { ...arrival, copy: true } : arrival,
+    {},
+    0,
+    undefined,
+    Option.none()
+  ).reason;
 
 export const storedReason = (
   reason: Reason | string | undefined

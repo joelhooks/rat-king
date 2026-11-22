@@ -4476,6 +4476,9 @@ var layer = (config, resolverLayer = staticResolver(config.documents)) => Layer5
           tid: payload.aad.messageId,
           verified: true
         };
+        if (payload.aad.expiresAt !== void 0) {
+          result.expiresAt = payload.aad.expiresAt;
+        }
         if (via !== void 0) {
           result.via = { desk: via.desk, deskDid: via.deskDid, run: via.run };
         }

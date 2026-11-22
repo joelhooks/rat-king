@@ -18,12 +18,7 @@ import { expect } from "vitest";
 
 import { ratkingExtension } from "../src/extension.ts";
 import type { PiHost, SessionStart } from "../src/extension.ts";
-import {
-  DIGEST_MESSAGE,
-  inbox,
-  MAIL_MESSAGE,
-  shownIds,
-} from "../src/pending.ts";
+import { DIGEST_MESSAGE, inbox, shownIds } from "../src/pending.ts";
 import { harness } from "./harness.ts";
 import { startSession } from "./start-session.ts";
 
@@ -58,7 +53,7 @@ const Sample = Schema.Struct({
 });
 
 it.effect.prop(
-  "mail-triggered runs bypass the user-prompt hook: held quiet to and cc copies append before an idle direct trigger or queue as follow-up while busy, with display-only custody",
+  "only direct mail can trigger a run; the next start hook brings quiet copies along without a trigger and acks them on display",
   [Arbitrary.schema(Sample)],
   ([sample]) =>
     Effect.gen(function* mailTriggeredRun() {
@@ -71,9 +66,6 @@ it.effect.prop(
 
       const acknowledgments = Array.from({ length: sample.count }, () => 0);
       const queued: CustomMessage[] = [];
-      const visible: CustomMessage[] = [];
-      const scheduled: CustomMessage[] = [];
-      const turns: CustomMessage[][] = [];
 
       const submissions: {
         readonly message: CustomMessage;
@@ -111,20 +103,6 @@ it.effect.prop(
 
           if (options?.deliverAs === "nextTurn") {
             queued.push(message);
-
-            return;
-          }
-
-          if (sample.busy && options?.triggerTurn !== false) {
-            scheduled.push(message);
-
-            return;
-          }
-
-          visible.push(message);
-
-          if (options?.triggerTurn === true) {
-            turns.push([...visible]);
           }
         },
       };
@@ -184,22 +162,24 @@ it.effect.prop(
       expect(acknowledgments).toEqual(
         Array.from({ length: sample.count }, () => 0)
       );
-      const [held, direct] = submissions;
-      expect(submissions).toHaveLength(2);
-      expect(held?.message.customType).toBe(
-        sample.count === 1 ? MAIL_MESSAGE : DIGEST_MESSAGE
-      );
-      expect(held?.trigger).toBe(sample.busy);
+      const [direct] = submissions;
+      expect(submissions).toHaveLength(1);
       expect(direct?.trigger).toBe(true);
+      before();
+      expect(beforeCalls).toBe(1);
+      const [, held] = submissions;
+
+      expect(submissions).toHaveLength(2);
+      expect(held?.message.customType).toBe(DIGEST_MESSAGE);
+      expect(held?.trigger).toBe(false);
 
       const ids = Array.from(
         { length: sample.count },
         (_value, index) => arrival(index, true).id
       );
 
-      const projected = sample.busy ? scheduled : turns[0];
-      expect(projected).toHaveLength(2);
-      const [digest] = projected ?? [];
+      expect(queued).toHaveLength(1);
+      const [digest] = queued;
       expect(shownIds({ ...digest, role: "custom" })).toEqual(ids);
       expect(digest?.content).toContain("🐀 while you were away");
 
@@ -234,7 +214,7 @@ it.effect.prop(
       yield* deliver(arrival(sample.count + 1, false), false);
       expect(submissions).toHaveLength(3);
       before();
-      expect(beforeCalls).toBe(1);
+      expect(beforeCalls).toBe(2);
       expect(submissions).toHaveLength(3);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
 );

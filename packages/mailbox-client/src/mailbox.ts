@@ -132,6 +132,7 @@ export interface Batch {
 }
 
 export interface OpenedMessage {
+  readonly expiresAt?: string;
   readonly via?: Pick<Defs.ViaValue, "desk" | "deskDid" | "run">;
   readonly delegatedFor?: string;
   readonly delegatedTo?: string;
@@ -574,6 +575,10 @@ export const layer = (
             tid: payload.aad.messageId,
             verified: true,
           };
+
+          if (payload.aad.expiresAt !== undefined) {
+            result.expiresAt = payload.aad.expiresAt;
+          }
 
           if (via !== undefined) {
             result.via = { desk: via.desk, deskDid: via.deskDid, run: via.run };

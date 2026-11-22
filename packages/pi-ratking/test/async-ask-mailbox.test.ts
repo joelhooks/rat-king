@@ -340,6 +340,7 @@ it.live.prop(
                 body: "answer",
                 from: "peer",
                 kind: "reply" as const,
+                quiet: true as const,
                 replyTo: modern ? "ignored-legacy-parent" : askId,
                 thread: askId,
                 to: "tester",
