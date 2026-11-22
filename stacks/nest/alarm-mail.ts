@@ -9,6 +9,7 @@ import type { AlarmKeyValue } from "./alarm-config.ts";
 import type { PendingWake } from "./alarm-desk-wake.ts";
 import { terminalRefusal } from "./alarm-refusal.ts";
 import type { Delivery } from "./alarm.ts";
+import { MaintenancePreparationRefused } from "./maintenance-inbox.ts";
 import { ShipSettings } from "./ship-config.ts";
 import { prepareShipNotification } from "./ship-notify.ts";
 import { FleetError } from "./stage-config.ts";
@@ -138,17 +139,19 @@ export const prepareMaintenanceNotice = Effect.fn(
   recipient: string,
   text: string
 ) {
-  const prepared = yield* prepareAlarmMail(config, [recipient], text);
+  const prepared = yield* prepareAlarmMail(config, [recipient], text, true);
   const target = prepared.targets.find(({ name }) => name === recipient);
 
   if (target === undefined) {
-    return yield* new FleetError({ reason: "Maintenance desk unavailable" });
+    return yield* new MaintenancePreparationRefused();
   }
 
   return {
-    envelope: yield* prepared.client.seal(target.did, prepared.body, {
-      encrypt: false,
-    }),
+    envelope: yield* prepared.client
+      .seal(target.did, prepared.body, {
+        encrypt: false,
+      })
+      .pipe(Effect.mapError(() => new MaintenancePreparationRefused())),
     recipient,
   };
 }, Effect.scoped);

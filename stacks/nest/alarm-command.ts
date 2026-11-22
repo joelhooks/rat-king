@@ -61,6 +61,38 @@ const reportMissing = (facts: typeof AlarmFacts.Type) =>
         })
       );
 
+export const runAlarmMaintenanceCycle = <A, E, R, IE, IR, NE, NR>(
+  cycle: Effect.Effect<A, E, R>,
+  ingest: Effect.Effect<void, IE, IR>,
+  notices: Effect.Effect<void, NE, NR>,
+  onFailure: (failure: FleetError) => void
+) => {
+  const step = <Failure, Requirements>(
+    name: "maintenance.inbox" | "maintenance.notices",
+    operation: Effect.Effect<void, Failure, Requirements>
+  ) =>
+    alarmStep(name, Effect.timeout(operation, "10 seconds")).pipe(
+      Effect.tapError((failure) =>
+        Effect.sync(() => {
+          onFailure(failure);
+        })
+      ),
+      Effect.tapError(({ reason }) =>
+        Console.error(`${reason}; input values withheld`)
+      ),
+      Effect.ignore
+    );
+
+  return step("maintenance.inbox", ingest).pipe(
+    Effect.andThen(
+      Effect.all([cycle, step("maintenance.notices", notices)], {
+        concurrency: "unbounded",
+      })
+    ),
+    Effect.map(([value]) => value)
+  );
+};
+
 export const alarmWorker = Effect.fn("Alarm.worker")(
   function* alarmWorker<E, R, E2, R2, E4 = never, R4 = never>(
     config: StageConfigValue,
@@ -147,32 +179,7 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           )
         );
 
-      const maintenanceStep = <A, Failure, Requirements>(
-        step: "maintenance.inbox" | "maintenance.notices",
-        operation: Effect.Effect<A, Failure, Requirements>
-      ) =>
-        operation.pipe(
-          Effect.timeout("10 seconds"),
-          (effect) => notification(step, effect),
-          Effect.tapError(({ reason }) =>
-            Console.error(`${reason}; input values withheld`)
-          ),
-          Effect.ignore
-        );
-
-      yield* Effect.gen(function* cycle() {
-        if (maintenanceInbox !== undefined) {
-          yield* maintenanceStep(
-            "maintenance.inbox",
-            ingestMaintenance({
-              desk: settings.musterDesk,
-              directory,
-              inbox: maintenanceInbox,
-              instances: (settings.instances ?? []).map(({ name }) => name),
-            })
-          );
-        }
-
+      const cycle = Effect.gen(function* cycle() {
         const prior = yield* alarmStep(
           "journal.read",
           readAlarmJournal(directory)
@@ -276,32 +283,13 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           ),
         };
 
-        const requestNotices =
-          maintenanceInbox === undefined
-            ? Effect.void
-            : maintenanceStep(
-                "maintenance.notices",
-                deliverMaintenance(directory, {
-                  prepare: (text) =>
-                    prepareMaintenanceNotice(config, settings.musterDesk, text),
-                  send: (receipt) => sendAlarmDelivery(config, receipt),
-                  unavailable: Console.error(
-                    "Alarm maintenance notice unavailable; input values withheld"
-                  ),
-                })
-              );
-
-        const cycleAlarms = runAlarmCycle(
+        const main = runAlarmCycle(
           prior,
           facts,
           collectDeskWakeHealth(config),
           settings,
           pagePort === undefined ? ports : { ...ports, page: pagePort }
         );
-
-        const main = Effect.all([cycleAlarms, requestNotices], {
-          concurrency: "unbounded",
-        }).pipe(Effect.map(([journal]) => journal));
 
         if (push === null || settings.push === undefined) {
           yield* main;
@@ -320,7 +308,33 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           push,
           (pushAttempts) => save({ ...journal, pushAttempts })
         );
-      }).pipe(
+      });
+
+      const run =
+        maintenanceInbox === undefined
+          ? cycle
+          : runAlarmMaintenanceCycle(
+              cycle,
+              ingestMaintenance({
+                desk: settings.musterDesk,
+                directory,
+                inbox: maintenanceInbox,
+                instances: (settings.instances ?? []).map(({ name }) => name),
+              }),
+              deliverMaintenance(directory, {
+                prepare: (text) =>
+                  prepareMaintenanceNotice(config, settings.musterDesk, text),
+                send: (receipt) => sendAlarmDelivery(config, receipt),
+                unavailable: Console.error(
+                  "Alarm maintenance notice unavailable; input values withheld"
+                ),
+              }),
+              (failure) => {
+                outcome = alarmFailure(failure);
+              }
+            );
+
+      yield* run.pipe(
         withAlarmMailTransport,
         Effect.timeout("55 seconds"),
         (effect) => alarmStep("cycle", effect),

@@ -19,6 +19,7 @@ import {
   endWindow,
   maintenancePath,
   readMaintenance,
+  readMaintenanceDocument,
   rememberedWindows,
   startWindow,
   windowOpen,
@@ -170,14 +171,24 @@ export { endWindow, startWindow } from "./alarm-maintenance.ts";
 const describe = (window: MaintenanceWindowValue, now: number) =>
   `${window.instance}: ${windowOpen(window, now) ? "open" : "closed"}, owner ${window.owner}, ${window.reason}, ${clock(window.start)} to ${clock(window.until)}${window.ended === undefined ? "" : `, ended ${clock(window.ended)}`}, grace ${window.graceMinutes} min`;
 
-const writeWindows = (
-  directory: string,
-  windows: readonly MaintenanceWindowValue[]
-) =>
-  Schema.encodeEffect(Schema.fromJsonString(MaintenanceFile))({
-    version: 1,
-    windows,
-  }).pipe(Effect.flatMap((text) => writeMaintenanceText(directory, text)));
+const writeWindows = Effect.fn("Maintenance.writeWindows")(
+  function* writeWindows(
+    directory: string,
+    windows: readonly MaintenanceWindowValue[]
+  ) {
+    const document = yield* readMaintenanceDocument(directory);
+
+    const update = yield* Schema.encodeEffect(MaintenanceFile)({
+      version: 1,
+      windows,
+    });
+
+    yield* writeMaintenanceText(
+      directory,
+      JSON.stringify({ ...document, ...update })
+    );
+  }
+);
 
 export const runMaintenance = Effect.fn("Maintenance.run")(
   function* runMaintenance(
@@ -272,7 +283,8 @@ export const maintenanceCommand = (
   config: StageConfigValue,
   argv: readonly string[]
 ) =>
-  config.alarm?.maintenanceInbox !== undefined && argv[0] !== "list"
+  config.alarm?.maintenanceInbox !== undefined &&
+  (argv[0] === "start" || argv[0] === "end")
     ? Effect.fail(
         refuse("Maintenance writes require the configured request inbox")
       )

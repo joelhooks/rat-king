@@ -129,7 +129,14 @@ const AlarmCommon = Schema.Struct({
       })
     )
   ),
-  maintenanceInbox: Schema.optionalKey(SystemdPath),
+  maintenanceInbox: Schema.optionalKey(
+    Schema.Struct({
+      operatorUid: Schema.Int.check(
+        Schema.isBetween({ maximum: 4_294_967_294, minimum: 1 })
+      ),
+      path: SystemdPath,
+    })
+  ),
   musterDesk: AgentName,
   notify: Schema.Struct({
     config: Schema.optionalKey(Schema.NonEmptyString),

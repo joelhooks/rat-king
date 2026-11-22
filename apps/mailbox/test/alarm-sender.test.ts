@@ -19,8 +19,10 @@ import {
   deskWakeMail,
   prepareAlarmDeliveries,
   prepareAlarmMail,
+  prepareMaintenanceNotice,
   sendAlarmDelivery,
 } from "../../../stacks/nest/alarm-mail.ts";
+import { MaintenanceNoticeReceipt } from "../../../stacks/nest/maintenance-inbox.ts";
 import { readOpsName } from "../../../stacks/nest/ops-read.ts";
 import { ShipSettings } from "../../../stacks/nest/ship-config.ts";
 import { prepareShipNotification } from "../../../stacks/nest/ship-notify.ts";
@@ -328,15 +330,38 @@ it.effect.prop(
 
         yield* desk.send(wakeDelivery);
         yield* sendAlarmDelivery(config, crashDelivery);
+
+        const receipt = yield* prepareMaintenanceNotice(
+          config,
+          "target",
+          "maintenance applied"
+        );
+
+        const json = Schema.fromJsonString(MaintenanceNoticeReceipt);
+
+        const restored = yield* Schema.encodeEffect(json)(receipt).pipe(
+          Effect.flatMap(Schema.decodeEffect(json))
+        );
+
+        expect(restored).toEqual(receipt);
+        yield* sendAlarmDelivery(config, restored);
       }).pipe(
         Effect.provide(files),
         Effect.provideService(HttpClient.HttpClient, http),
         Effect.provideService(SecretStore, secrets(false))
       );
 
-      expect(bodies).toHaveLength(4);
+      expect(bodies).toHaveLength(5);
 
-      const [regular, pruned, typedWake, typedCrash] = bodies;
+      const [regular, pruned, typedWake, typedCrash, maintenance] = bodies;
+
+      expect(maintenance).toBe(
+        JSON.stringify({
+          body: "maintenance applied",
+          from: sender,
+          kind: "message",
+        })
+      );
 
       const payload = yield* Schema.decodeUnknownEffect(PayloadJson)(typedWake);
 

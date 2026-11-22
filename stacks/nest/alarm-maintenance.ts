@@ -1,4 +1,4 @@
-import { Clock, DateTime, Effect, FileSystem, Schema } from "effect";
+import { Clock, DateTime, Effect, FileSystem, Predicate, Schema } from "effect";
 
 import { AgentName } from "../../packages/ratking-client/src/name.ts";
 import { backupStopBudgetMs } from "./backup-limits.ts";
@@ -229,18 +229,31 @@ export const writeMaintenanceText = Effect.fn("Maintenance.write")(
   Effect.scoped
 );
 
+export const readMaintenanceDocument = Effect.fn("Maintenance.readDocument")(
+  function* readMaintenanceDocument(directory: string) {
+    const fs = yield* FileSystem.FileSystem;
+
+    return yield* fs.readFileString(maintenancePath(directory)).pipe(
+      Effect.catchTag("PlatformError", (error) =>
+        Predicate.isTagged(error.reason, "NotFound")
+          ? Effect.succeed('{"version":1,"windows":[]}')
+          : Effect.fail(error)
+      ),
+      Effect.flatMap(
+        Schema.decodeEffect(
+          Schema.fromJsonString(Schema.Record(Schema.String, Schema.Json))
+        )
+      )
+    );
+  }
+);
+
 export const readMaintenance = Effect.fn("Alarm.readMaintenance")(
   function* readMaintenance(stateDirectory: string) {
-    const fs = yield* FileSystem.FileSystem;
-    const file = maintenancePath(stateDirectory);
+    const document = yield* readMaintenanceDocument(stateDirectory);
 
-    if (!(yield* fs.exists(file))) {
-      return [];
-    }
-
-    const decoded = yield* Schema.decodeEffect(
-      Schema.fromJsonString(MaintenanceFile)
-    )(yield* fs.readFileString(file));
+    const decoded =
+      yield* Schema.decodeUnknownEffect(MaintenanceFile)(document);
 
     const now = yield* Clock.currentTimeMillis;
 

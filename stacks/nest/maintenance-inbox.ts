@@ -1,5 +1,6 @@
 import {
   Clock,
+  Data,
   DateTime,
   Effect,
   FileSystem,
@@ -14,21 +15,28 @@ import {
   DEFAULT_GRACE_MINUTES,
   MAILBOX_INSTANCE,
   MaintenanceFile,
+  WINDOW_MEMORY_MS,
   endWindow,
-  maintenancePath,
+  readMaintenanceDocument,
   startWindow,
   windowOpen,
   writeMaintenanceText,
 } from "./alarm-maintenance.ts";
 import type { MaintenanceWindowValue } from "./alarm-maintenance.ts";
+import { FleetError } from "./stage-config.ts";
+import type { JsonDocument } from "./stage-config.ts";
 
-const Id = Schema.String.check(Schema.isPattern(/^[a-z0-9][a-z0-9_-]{0,63}$/u));
+const Id = Schema.String.check(
+  Schema.isPattern(/^\d{20}-[0-9a-f]{32}$/u),
+  Schema.isMinLength(53),
+  Schema.isMaxLength(53)
+);
 
 const Iso = Schema.String.check(
   Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/u)
 );
 
-export const MaintenanceDrop = Schema.Struct({
+const MaintenanceDrop = Schema.Struct({
   action: Schema.Literals(["start", "end"]),
   id: Id,
   instance: Schema.String.check(
@@ -45,15 +53,25 @@ export const MaintenanceDrop = Schema.Struct({
   until: Iso,
 });
 
-const Receipt = Schema.Struct({
+export const MaintenanceNoticeReceipt = Schema.Struct({
   envelope: EncryptedEnvelope,
   recipient: AgentName,
 });
 
 const Notice = Schema.TaggedUnion({
-  Prepared: { at: Schema.Int, receipt: Receipt },
-  Queued: { at: Schema.Int, text: Schema.NonEmptyString },
-  Sent: {},
+  Dropped: { decidedAt: Schema.Int },
+  Prepared: {
+    at: Schema.Int,
+    decidedAt: Schema.Int,
+    receipt: MaintenanceNoticeReceipt,
+  },
+  Queued: {
+    at: Schema.Int,
+    decidedAt: Schema.Int,
+    fallback: Schema.Boolean,
+    text: Schema.NonEmptyString,
+  },
+  Sent: { decidedAt: Schema.Int },
 });
 
 const State = Schema.Struct({
@@ -61,64 +79,100 @@ const State = Schema.Struct({
   requests: Schema.optionalKey(Schema.Record(Schema.String, Notice)),
 });
 
-const Json = Schema.fromJsonString(State);
-
-type InboxState = typeof State.Type;
-
 type NoticeValue = typeof Notice.Type;
 
 type Drop = typeof MaintenanceDrop.Type;
 
+export class MaintenancePreparationRefused extends Data.TaggedError(
+  "MaintenancePreparationRefused"
+) {}
+
 interface Inbox {
   readonly desk: string;
   readonly directory: string;
-  readonly inbox: string;
+  readonly inbox: { readonly path: string; readonly operatorUid: number };
   readonly instances: readonly string[];
 }
 
 export interface MaintenanceNoticePorts<PrepareError, SendError, R> {
   readonly prepare: (
     text: string
-  ) => Effect.Effect<typeof Receipt.Type, PrepareError, R>;
+  ) => Effect.Effect<
+    typeof MaintenanceNoticeReceipt.Type,
+    PrepareError | MaintenancePreparationRefused,
+    R
+  >;
   readonly send: (
-    receipt: typeof Receipt.Type
+    receipt: typeof MaintenanceNoticeReceipt.Type
   ) => Effect.Effect<void, SendError, R>;
   readonly unavailable: Effect.Effect<void, never, R>;
 }
 
 const maxBytes = 4096;
 
+const maxAge = 4 * 3_600_000;
+
+const decodeDrop = Schema.decodeOption(Schema.fromJsonString(MaintenanceDrop));
+
+const owns = (stat: FileSystem.File.Info, uid: number) =>
+  Option.contains(stat.uid, uid);
+
 const readState = Effect.fn("MaintenanceInbox.readState")(function* readState(
   directory: string
 ) {
-  const fs = yield* FileSystem.FileSystem;
-  const file = maintenancePath(directory);
+  const document = yield* readMaintenanceDocument(directory);
+  const state = yield* Schema.decodeUnknownEffect(State)(document);
 
-  if (!(yield* fs.exists(file))) {
-    return State.make({ version: 1, windows: [] });
-  }
-
-  return yield* Schema.decodeEffect(Json)(yield* fs.readFileString(file), {
-    onExcessProperty: "error",
-  });
+  return { document, state };
 });
 
-const save = (directory: string, state: InboxState) =>
-  Schema.encodeEffect(Json)(state).pipe(
-    Effect.flatMap((text) => writeMaintenanceText(directory, text))
-  );
+const save = Effect.fn("MaintenanceInbox.save")(function* save(
+  directory: string,
+  document: JsonDocument,
+  state: typeof State.Type
+) {
+  const encoded = yield* Schema.encodeEffect(State)(state);
 
-const readDrop = Effect.fn("MaintenanceInbox.readDrop")(
-  function* readDrop(file: string) {
+  yield* writeMaintenanceText(
+    directory,
+    JSON.stringify({ ...document, ...encoded })
+  );
+});
+
+const readDirectory = Effect.fn("MaintenanceInbox.readDirectory")(
+  function* readDirectory(inbox: Inbox["inbox"]) {
+    const fs = yield* FileSystem.FileSystem;
+    const info = yield* fs.lstat(inbox.path);
+
+    if (
+      info.type !== "Directory" ||
+      !owns(info, inbox.operatorUid) ||
+      /[2367].|.[2367]/u.test(info.mode.toString(8).slice(-2))
+    ) {
+      return yield* new FleetError({
+        reason: "Maintenance inbox directory is not trusted",
+      });
+    }
+
+    return yield* fs.readDirectory(inbox.path);
+  }
+);
+
+const inspectDrop = Effect.fn("MaintenanceInbox.inspectDrop")(
+  function* inspectDrop(file: string, uid: number) {
     const fs = yield* FileSystem.FileSystem;
     const listed = yield* fs.lstat(file);
 
     if (
       listed.type !== "File" ||
       listed.size > BigInt(maxBytes) ||
-      ![0o440, 0o444, 0o640, 0o644].includes(listed.mode % 512)
+      !owns(listed, uid)
     ) {
-      return Option.none<Drop>();
+      return Result.fail("invalid request file or JSON");
+    }
+
+    if (listed.mode % 4096 !== 0o640) {
+      return null;
     }
 
     const handle = yield* fs.open(file, { flag: "r", noFollow: true });
@@ -127,40 +181,71 @@ const readDrop = Effect.fn("MaintenanceInbox.readDrop")(
     if (
       stat.type !== "File" ||
       stat.size !== listed.size ||
-      stat.mode !== listed.mode
+      stat.mode !== listed.mode ||
+      stat.dev !== listed.dev ||
+      Option.isNone(stat.ino) ||
+      !Option.contains(listed.ino, stat.ino.value) ||
+      !owns(stat, uid)
     ) {
-      return Option.none<Drop>();
+      return null;
     }
 
     const bytes = yield* handle.readAlloc(maxBytes + 1);
+    const content = Option.getOrElse(bytes, () => new Uint8Array());
 
-    if (Option.isNone(bytes) || bytes.value.byteLength !== Number(stat.size)) {
-      return Option.none<Drop>();
+    if (content.byteLength !== Number(stat.size)) {
+      return null;
     }
 
     const text = yield* Effect.try(() =>
-      new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
-        bytes.value
-      )
-    );
+      new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(content)
+    ).pipe(Effect.option);
 
-    return Schema.decodeOption(Schema.fromJsonString(MaintenanceDrop))(text, {
-      onExcessProperty: "error",
-    });
+    if (Option.isNone(text)) {
+      return Result.fail("invalid request file or JSON");
+    }
+
+    const drop = decodeDrop(text.value, { onExcessProperty: "error" });
+
+    return Option.isSome(drop)
+      ? Result.succeed(drop.value)
+      : Result.fail("invalid request file or JSON");
   },
   Effect.scoped,
-  Effect.orElseSucceed(() => Option.none<Drop>())
+  Effect.orElseSucceed(() => null)
 );
 
 const deadline = (raw: string) =>
   Option.filter(DateTime.make(raw), (value) => {
-    const normalized = raw.replace(
-      /(?:\.(?<digits>\d{1,3}))?Z$/u,
-      (_, digits: string | undefined) => `.${(digits ?? "").padEnd(3, "0")}Z`
-    );
+    const [seconds = "", fraction = ""] = raw.slice(0, -1).split(".");
+    const normalized = `${seconds}.${fraction.padEnd(3, "0")}Z`;
 
     return DateTime.formatIso(value) === normalized;
   });
+
+const requestDeadline = (
+  id: string,
+  raw: string,
+  now: number
+): Result.Result<number, string> => {
+  const issued = Number(BigInt(id.slice(0, 20)) / 1_000_000n);
+
+  if (issued > now || now - issued > maxAge) {
+    return Result.fail("request ID timestamp is outside the last four hours");
+  }
+
+  const time = deadline(raw);
+
+  if (Option.isNone(time)) {
+    return Result.fail("invalid until");
+  }
+
+  const until = DateTime.toEpochMillis(time.value);
+
+  return until <= now || until - now > maxAge
+    ? Result.fail("request deadline must be in the next four hours")
+    : Result.succeed(until);
+};
 
 const apply = (
   config: Inbox,
@@ -168,7 +253,7 @@ const apply = (
   id: string,
   drop: Drop,
   now: number
-) => {
+): Result.Result<readonly MaintenanceWindowValue[], string> => {
   if (drop.id !== id) {
     return Result.fail("request id does not match filename");
   }
@@ -180,53 +265,47 @@ const apply = (
     return Result.fail("unknown instance");
   }
 
-  const time = deadline(drop.until);
+  const expires = requestDeadline(id, drop.until, now);
 
-  if (Option.isNone(time)) {
-    return Result.fail("invalid until");
-  }
-
-  const until = DateTime.toEpochMillis(time.value);
-
-  if (until <= now || until - now > 4 * 3_600_000) {
-    return Result.fail("until must be in the next four hours");
-  }
-
-  if (drop.action === "start") {
-    return Result.succeed(
-      startWindow(
-        windows,
-        {
-          graceMinutes: DEFAULT_GRACE_MINUTES,
-          instance: drop.instance,
-          owner: drop.owner,
-          reason: drop.reason,
-          requestId: id,
-          start: now,
-          until,
-        },
-        now
-      )
-    );
+  if (Result.isFailure(expires)) {
+    return Result.fail(expires.failure);
   }
 
   const open = windows.findLast(
     (window) => window.instance === drop.instance && windowOpen(window, now)
   );
 
-  if (open === undefined) {
-    return Result.fail("no open window");
+  if (
+    open !== undefined &&
+    drop.owner !== open.owner &&
+    drop.owner !== config.desk
+  ) {
+    return Result.fail(`${drop.action} requires the window owner or desk`);
   }
 
-  if (drop.owner !== open.owner && drop.owner !== config.desk) {
-    return Result.fail("end requires the window owner or desk");
+  if (drop.action === "end") {
+    const ended = endWindow(windows, drop.instance, now);
+
+    return ended === undefined
+      ? Result.fail("no open window")
+      : Result.succeed(ended);
   }
 
-  const ended = endWindow(windows, drop.instance, now);
-
-  return ended === undefined
-    ? Result.fail("no open window")
-    : Result.succeed(ended);
+  return Result.succeed(
+    startWindow(
+      windows,
+      {
+        graceMinutes: DEFAULT_GRACE_MINUTES,
+        instance: drop.instance,
+        owner: drop.owner,
+        reason: drop.reason,
+        requestId: id,
+        start: now,
+        until: expires.success,
+      },
+      now
+    )
+  );
 };
 
 const decide = Effect.fn("MaintenanceInbox.decide")(function* decide(
@@ -236,58 +315,83 @@ const decide = Effect.fn("MaintenanceInbox.decide")(function* decide(
   now: number
 ) {
   const id = name.slice(0, -5);
+  const { path, operatorUid } = config.inbox;
 
-  if (!Schema.is(Id)(id) || id.endsWith("\n")) {
+  const drop = yield* inspectDrop(`${path}/${name}`, operatorUid);
+
+  if (drop === null) {
+    return null;
+  }
+
+  if (!Schema.is(Id)(id)) {
     return { text: "refused: invalid request filename", windows };
   }
 
-  const drop = yield* readDrop(`${config.inbox}/${name}`);
-
-  if (Option.isNone(drop)) {
-    return { text: `refused: invalid request file or JSON (${id})`, windows };
+  if (Result.isFailure(drop)) {
+    return { text: `refused: ${drop.failure} (${id})`, windows };
   }
 
-  const next = apply(config, windows, id, drop.value, now);
+  const next = apply(config, windows, id, drop.success, now);
 
   if (Result.isFailure(next)) {
     return { text: `refused: ${next.failure} (${id})`, windows };
   }
 
-  const { action, instance, owner, until } = drop.value;
+  const { action, instance, owner, until } = drop.success;
+  const ending = action === "start" ? ` until ${until}` : " now";
 
   return {
-    text: `maintenance ${action} on ${instance} by ${owner} until ${until} (${id})`,
+    text: `maintenance ${action} on ${instance} by ${owner}${ending} (${id})`,
     windows: next.success,
   };
 });
 
 export const ingestMaintenance = Effect.fn("MaintenanceInbox.ingest")(
   function* ingestMaintenance(config: Inbox) {
-    const fs = yield* FileSystem.FileSystem;
-    const prior = yield* readState(config.directory);
-    const requests = { ...prior.requests };
-
-    const files = (yield* fs.readDirectory(config.inbox))
-      .filter(
-        (name) =>
-          !name.startsWith(".") &&
-          name.endsWith(".json") &&
-          !Object.hasOwn(requests, name)
-      )
-      .toSorted()
-      .slice(0, 16);
-
+    const { document, state } = yield* readState(config.directory);
+    const files = new Set(yield* readDirectory(config.inbox));
     const now = yield* Clock.currentTimeMillis;
-    let { windows } = prior;
 
-    for (const name of files) {
+    const entries = Object.entries(state.requests ?? {});
+
+    const kept = entries.filter(
+      ([name, notice]) =>
+        files.has(name) || now - notice.decidedAt <= WINDOW_MEMORY_MS
+    );
+
+    const requests = Object.fromEntries(kept);
+    let decisions = 0;
+    let { windows } = state;
+
+    for (const name of [...files].toSorted()) {
+      if (decisions >= 16) {
+        break;
+      }
+
+      if (
+        name.startsWith(".") ||
+        !name.endsWith(".json") ||
+        Object.hasOwn(requests, name)
+      ) {
+        continue;
+      }
+
       const decision = yield* decide(config, windows, name, now);
-      ({ windows } = decision);
-      requests[name] = Notice.cases.Queued.make({ at: 0, text: decision.text });
+
+      if (decision !== null) {
+        ({ windows } = decision);
+        requests[name] = Notice.cases.Queued.make({
+          at: 0,
+          decidedAt: now,
+          fallback: false,
+          text: decision.text,
+        });
+        decisions += 1;
+      }
     }
 
-    if (files.length > 0) {
-      yield* save(config.directory, { ...prior, requests, windows });
+    if (kept.length !== entries.length || decisions > 0) {
+      yield* save(config.directory, document, { ...state, requests, windows });
     }
   }
 );
@@ -297,38 +401,94 @@ export const deliverMaintenance = Effect.fn("MaintenanceInbox.deliver")(
     directory: string,
     ports: MaintenanceNoticePorts<PrepareError, SendError, R>
   ) {
-    const state = yield* readState(directory);
+    const { document, state } = yield* readState(directory);
     const requests = { ...state.requests };
-    const isSent = Schema.is(Notice.cases.Sent);
+
+    const isTerminal = Schema.is(
+      Schema.Union([Notice.cases.Sent, Notice.cases.Dropped])
+    );
+
     const isQueued = Schema.is(Notice.cases.Queued);
 
+    const isRefused = Schema.is(
+      Schema.TaggedStruct("MaintenancePreparationRefused", {})
+    );
+
     const pending = Object.entries(requests)
-      .flatMap(([name, item]) => (isSent(item) ? [] : [{ item, name }]))
+      .flatMap(([name, item]) => (isTerminal(item) ? [] : [{ item, name }]))
       .toSorted((left, right) => left.item.at - right.item.at)
       .slice(0, 4);
 
-    const remember = (name: string, notice: NoticeValue) => {
-      requests[name] = notice;
-
-      return save(directory, { ...state, requests });
-    };
+    const remember = (name: string, notice: NoticeValue) =>
+      save(directory, document, {
+        ...state,
+        requests: { ...requests, [name]: notice },
+      }).pipe(
+        Effect.tap(() =>
+          Effect.sync(() => {
+            requests[name] = notice;
+          })
+        )
+      );
 
     for (const { item, name } of pending) {
       const at = yield* Clock.currentTimeMillis;
+      const { decidedAt } = item;
       const stepped = { ...item, at };
+
       yield* remember(name, stepped);
 
       yield* Effect.gen(function* delivery() {
-        const receipt = isQueued(stepped)
-          ? yield* ports.prepare(stepped.text)
-          : stepped.receipt;
-
         if (isQueued(stepped)) {
-          yield* remember(name, Notice.cases.Prepared.make({ at, receipt }));
+          const prepared = yield* ports.prepare(stepped.text).pipe(
+            Effect.flatMap((receipt) =>
+              Schema.encodeEffect(MaintenanceNoticeReceipt)(receipt).pipe(
+                Effect.as(receipt),
+                Effect.mapError(() => new MaintenancePreparationRefused())
+              )
+            ),
+            Effect.result
+          );
+
+          if (Result.isFailure(prepared)) {
+            if (!isRefused(prepared.failure)) {
+              return yield* ports.unavailable;
+            }
+
+            if (stepped.fallback) {
+              yield* remember(name, Notice.cases.Dropped.make({ decidedAt }));
+
+              return yield* ports.unavailable;
+            }
+
+            const id = name.slice(0, -5);
+            const label = Schema.is(Id)(id) ? ` (${id})` : "";
+
+            return yield* remember(
+              name,
+              Notice.cases.Queued.make({
+                at,
+                decidedAt,
+                fallback: true,
+                text: `maintenance notice refused: could not prepare original decision${label}`,
+              })
+            );
+          }
+
+          yield* remember(
+            name,
+            Notice.cases.Prepared.make({
+              at,
+              decidedAt,
+              receipt: prepared.success,
+            })
+          );
+          yield* ports.send(prepared.success);
+        } else {
+          yield* ports.send(stepped.receipt);
         }
 
-        yield* ports.send(receipt);
-        yield* remember(name, Notice.cases.Sent.make({}));
+        return yield* remember(name, Notice.cases.Sent.make({ decidedAt }));
       }).pipe(Effect.catch(() => ports.unavailable));
     }
   }
