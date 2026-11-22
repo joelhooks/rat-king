@@ -84,7 +84,7 @@ it.effect.prop(
 const Loss = Schema.Int.check(Schema.isBetween({ maximum: 10, minimum: 0 }));
 
 it.prop(
-  "done-bar passes only with zero receipt losses on both hosts",
+  "done-bar passes only with zero receipt losses on configured hosts",
   [Loss, Schema.NullOr(Loss)],
   ([local, remote]) => {
     const other = { fallbacks: 3, quarantined: 2, sent: 50 };
@@ -94,6 +94,6 @@ it.prop(
         { ...other, lost: local },
         remote === null ? null : { ...other, lost: remote }
       )
-    ).toBe(local === 0 && remote === 0);
+    ).toBe(local === 0 && (remote === null || remote === 0));
   }
 );

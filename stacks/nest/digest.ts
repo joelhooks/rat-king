@@ -1,8 +1,8 @@
-import { Clock, DateTime, Effect, FileSystem, Schema } from "effect";
+import { Clock, Console, DateTime, Effect, FileSystem, Schema } from "effect";
 
 import { readAlarmJournal } from "./alarm-journal.ts";
 import type { SourceState } from "./alarm-sources.ts";
-import { collectComms } from "./comms.ts";
+import { collectComms, doneBar } from "./comms.ts";
 import type { CountsValue } from "./comms.ts";
 import { configDoctor } from "./config-doctor.ts";
 import type { FailedHealth } from "./digest-config.ts";
@@ -89,6 +89,27 @@ export const commsCounts = (config: StageConfigValue, now: number) =>
     },
     { concurrency: "unbounded" }
   );
+
+export const doneBarCommand = Effect.fn("Nest.doneBar")(
+  function* doneBarCommand(config: StageConfigValue) {
+    const { primary, secondary } = yield* commsCounts(
+      config,
+      yield* Clock.currentTimeMillis
+    );
+
+    const passed = doneBar(primary, secondary);
+
+    yield* Console.log(
+      JSON.stringify({ local: primary, passed, remote: secondary })
+    );
+
+    if (!passed) {
+      return yield* new FleetError({ reason: "Done-bar not met" });
+    }
+
+    return yield* Effect.void;
+  }
+);
 
 export const digest = Effect.fn("Nest.digest")(function* digest<E, R = never>(
   config: StageConfigValue,

@@ -209,6 +209,35 @@ export const alarmCheck = Effect.fn("Alarm.check")(function* alarmCheck<
     : result;
 });
 
+export const stageAlarmCheck = Effect.fn("Alarm.checkStage")(
+  function* stageAlarmCheck<A extends object, E, R>(
+    config: StageConfigValue,
+    readings: Effect.Effect<A, E, R>
+  ) {
+    if (config.alarm === undefined) {
+      return yield* new FleetError({ reason: "Alarm configuration required" });
+    }
+
+    const checked = yield* alarmCheck(config.alarm, readings);
+
+    const remote =
+      config.comms.remote === undefined
+        ? { "comms.remote": "not configured" }
+        : {};
+
+    if (config.doctor === undefined) {
+      return { ...checked, ...remote, "doctor.primary": "missing" };
+    }
+
+    const doctor =
+      config.doctor.secondary === undefined
+        ? { "doctor.secondary": "not configured" }
+        : {};
+
+    return { ...checked, ...remote, ...doctor };
+  }
+);
+
 export const alarmServiceDoctor = Effect.fn("Alarm.serviceDoctor")(
   function* alarmServiceDoctor(settings: AlarmSettingsValue) {
     const service = yield* checkAlarmService(settings);

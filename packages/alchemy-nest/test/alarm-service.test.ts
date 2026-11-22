@@ -17,7 +17,11 @@ import {
   LaunchdAlarmSettings,
   SystemdAlarmSettings,
 } from "../../../stacks/nest/alarm-config.ts";
-import { alarmCheck, alarmUnit } from "../../../stacks/nest/alarm-service.ts";
+import {
+  alarmCheck,
+  alarmUnit,
+  stageAlarmCheck,
+} from "../../../stacks/nest/alarm-service.ts";
 import {
   configDoctor,
   stageDoctor,
@@ -278,6 +282,46 @@ it.effect.prop(
       });
     }).pipe(Effect.provide(NodePath.layer)),
   { arbitrary: { runs: 12 } }
+);
+
+it.effect.prop(
+  "alarm-check pins absent observer labels and distinguishes a missing primary",
+  [StageConfig, LaunchdAlarmSettings],
+  ([base, settings]) =>
+    Effect.gen(function* omission() {
+      const { spawner } = yield* supervision(true, true);
+      const { doctor, ...stage } = base;
+      const { page: _page, ...alarm } = settings;
+      const config = { ...stage, alarm, comms: { local: stage.comms.local } };
+      const readings = Effect.succeed({ "celld.down": { status: "unknown" } });
+
+      const checks = yield* Effect.all({
+        missing: stageAlarmCheck(config, readings),
+        primaryOnly: stageAlarmCheck(
+          { ...config, doctor: { primary: doctor?.primary ?? {} } },
+          readings
+        ),
+      }).pipe(
+        Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)
+      );
+
+      const common = {
+        "celld.down": { status: "unknown" },
+        "comms.remote": "not configured",
+        page: "not configured",
+        service: { active: true, kind: "launchd" },
+      };
+
+      expect(checks.primaryOnly).toEqual({
+        ...common,
+        "doctor.secondary": "not configured",
+      });
+      expect(checks.missing).toEqual({
+        ...common,
+        "doctor.primary": "missing",
+      });
+    }).pipe(Effect.provide(NodePath.layer)),
+  { arbitrary: { runs: 3 } }
 );
 
 it.effect.prop(

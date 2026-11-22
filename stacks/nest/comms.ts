@@ -26,7 +26,7 @@ export const Counts = Schema.Struct({
 export type CountsValue = typeof Counts.Type;
 
 export const doneBar = (local: CountsValue, remote: CountsValue | null) =>
-  remote !== null && local.lost === 0 && remote.lost === 0;
+  local.lost === 0 && (remote === null || remote.lost === 0);
 
 export const commsSources = ({ local, remote }: StageConfigValue["comms"]) =>
   remote === undefined ? [local] : [local, remote];
