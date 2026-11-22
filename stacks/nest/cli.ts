@@ -299,9 +299,18 @@ const program = Effect.gen(function* launcher() {
             runtime.mailboxStatus
           );
 
-          return yield* Console.log(
-            JSON.stringify(yield* alarmCheck(config.alarm, readings))
-          );
+          const checked = yield* alarmCheck(config.alarm, readings);
+          const absent: Record<string, "not configured"> = {};
+
+          if (config.comms.remote === undefined) {
+            absent["comms.remote"] = "not configured";
+          }
+
+          if (config.doctor?.secondary === undefined) {
+            absent["doctor.secondary"] = "not configured";
+          }
+
+          return yield* Console.log(JSON.stringify({ ...checked, ...absent }));
         }
 
         if (operation === "ops-digest") {

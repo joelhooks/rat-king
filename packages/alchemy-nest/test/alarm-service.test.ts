@@ -281,9 +281,9 @@ it.effect.prop(
 );
 
 it.effect.prop(
-  "doctor forwards the mount only to the local probe and refuses legacy mode on the remote probe",
-  [StageConfig],
-  ([base]) =>
+  "doctor skips an omitted secondary; when configured it forwards the mount only to the local probe",
+  [StageConfig, Schema.Boolean],
+  ([base, withSecondary]) =>
     Effect.gen(function* verify() {
       const commands: ChildProcess.StandardCommand[] = [];
 
@@ -297,16 +297,16 @@ it.effect.prop(
         return Effect.succeed(handle('{"status":"ok","reasons":[]}', 0));
       });
 
-      const result = yield* configDoctor({
-        ...base,
-        doctor: {
-          primary: { config: "/fixture/local-config.json", node: "node" },
-          secondary: {
-            config: "/fixture/remote-config.json",
-            ssh: "second.invalid",
-          },
-        },
-      }).pipe(
+      const primary = { config: "/fixture/local-config.json", node: "node" };
+
+      const secondary = {
+        config: "/fixture/remote-config.json",
+        ssh: "second.invalid",
+      };
+
+      const doctor = withSecondary ? { primary, secondary } : { primary };
+
+      const result = yield* configDoctor({ ...base, doctor }).pipe(
         Effect.provide([
           NodePath.layer,
           ConfigProvider.layer(
@@ -319,7 +319,10 @@ it.effect.prop(
         Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner)
       );
 
-      expect(result.status).toBe("ok");
+      expect(result).toEqual({ reasons: [], status: "ok" });
+      expect(commands.map(({ command }) => command)).toEqual(
+        withSecondary ? ["node", "ssh"] : ["node"]
+      );
       expect(
         commands.find((command) => command.command === "node")?.options.env
       ).toEqual({
@@ -327,12 +330,15 @@ it.effect.prop(
         RAT_KING_SECRET_SOURCE: "systemd",
       });
 
-      const remote = commands.find((command) => command.command === "ssh");
-      expect(remote?.options.env).toEqual({});
-      expect(remote?.args.at(-1)).toContain(
-        "'env' '-u' 'CREDENTIALS_DIRECTORY' 'RAT_KING_SECRET_SOURCE=systemd'"
-      );
-      expect(remote?.args.at(-1)).not.toContain("/fixture/mount");
+      if (withSecondary) {
+        const remote = commands.find((command) => command.command === "ssh");
+
+        expect(remote?.options.env).toEqual({});
+        expect(remote?.args.at(-1)).toContain(
+          "'env' '-u' 'CREDENTIALS_DIRECTORY' 'RAT_KING_SECRET_SOURCE=systemd'"
+        );
+        expect(remote?.args.at(-1)).not.toContain("/fixture/mount");
+      }
     }),
   { arbitrary: { runs: 2 } }
 );

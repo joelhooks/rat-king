@@ -32,105 +32,105 @@ export const configDoctor = Effect.fn("Nest.configDoctor")(
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const credentialEnv = yield* readCredentialEnvironment;
 
-    const results = yield* Effect.forEach(
-      [
-        { host: config.doctor.primary, label: "primary", ssh: undefined },
-        {
-          host: config.doctor.secondary,
-          label: "secondary",
-          ssh: config.doctor.secondary.ssh,
-        },
-      ],
-      ({ label, host, ssh }) => {
-        let diagnostic = "";
+    const { primary, secondary } = config.doctor;
 
-        return Effect.gen(function* inspectHost() {
-          const args = [
-            host.node ?? "node",
-            "--input-type=module",
-            "-",
-            host.config ?? "",
-          ];
+    const local = { host: primary, label: "primary", ssh: undefined };
 
-          const remote = ssh !== undefined;
-          const command = remote ? "ssh" : (host.node ?? "node");
+    const hosts =
+      secondary === undefined
+        ? [local]
+        : [local, { host: secondary, label: "secondary", ssh: secondary.ssh }];
 
-          const argv =
-            ssh === undefined
-              ? args.slice(1)
-              : [
-                  "-o",
-                  "BatchMode=yes",
-                  "-o",
-                  "StrictHostKeyChecking=yes",
-                  "-o",
-                  "ConnectTimeout=5",
-                  "--",
-                  ssh,
-                  (credentialEnv.RAT_KING_SECRET_SOURCE === undefined
-                    ? args
-                    : [
-                        "env",
-                        "-u",
-                        "CREDENTIALS_DIRECTORY",
-                        `RAT_KING_SECRET_SOURCE=${credentialEnv.RAT_KING_SECRET_SOURCE}`,
-                        ...args,
-                      ]
-                  )
-                    .map(shellQuote)
-                    .join(" "),
-                ];
+    const inspect = ({ label, host, ssh }: (typeof hosts)[number]) => {
+      let diagnostic = "";
 
-          const attempt = Effect.fn("Nest.inspectAttempt")(function* attempt(
-            solo: boolean
-          ) {
-            diagnostic = "";
+      return Effect.gen(function* inspectHost() {
+        const args = [
+          host.node ?? "node",
+          "--input-type=module",
+          "-",
+          host.config ?? "",
+        ];
 
-            const handle = yield* spawner.spawn(
-              ChildProcess.make(
-                command,
-                solo ? ["-o", "ControlPath=none", ...argv] : argv,
-                {
-                  env: remote ? {} : credentialEnv,
-                  extendEnv: true,
-                  stdin: Stream.succeed(new TextEncoder().encode(source)),
-                }
-              )
-            );
+        const remote = ssh !== undefined;
+        const command = remote ? "ssh" : (host.node ?? "node");
 
-            const [output, code, stderr] = yield* Effect.all(
-              [
-                Stream.runCollect(handle.stdout.pipe(Stream.decodeText())),
-                handle.exitCode,
-                Stream.runForEach(
-                  handle.stderr.pipe(Stream.decodeText()),
-                  (chunk) =>
-                    Effect.sync(() => {
-                      diagnostic = (diagnostic + chunk).slice(-65_536);
-                    })
-                ).pipe(Effect.map(() => diagnostic)),
-              ],
-              { concurrency: "unbounded" }
-            );
+        const argv =
+          ssh === undefined
+            ? args.slice(1)
+            : [
+                "-o",
+                "BatchMode=yes",
+                "-o",
+                "StrictHostKeyChecking=yes",
+                "-o",
+                "ConnectTimeout=5",
+                "--",
+                ssh,
+                (credentialEnv.RAT_KING_SECRET_SOURCE === undefined
+                  ? args
+                  : [
+                      "env",
+                      "-u",
+                      "CREDENTIALS_DIRECTORY",
+                      `RAT_KING_SECRET_SOURCE=${credentialEnv.RAT_KING_SECRET_SOURCE}`,
+                      ...args,
+                    ]
+                )
+                  .map(shellQuote)
+                  .join(" "),
+              ];
 
-            return { code: Number(code), output: output.join(""), stderr };
-          });
+        const attempt = Effect.fn("Nest.inspectAttempt")(function* attempt(
+          solo: boolean
+        ) {
+          diagnostic = "";
 
-          const result = yield* retryDoctorInspection(remote, attempt);
-
-          return yield* decodeInspection(
-            label,
-            remote,
-            result.output,
-            result.code,
-            result.stderr
+          const handle = yield* spawner.spawn(
+            ChildProcess.make(
+              command,
+              solo ? ["-o", "ControlPath=none", ...argv] : argv,
+              {
+                env: remote ? {} : credentialEnv,
+                extendEnv: true,
+                stdin: Stream.succeed(new TextEncoder().encode(source)),
+              }
+            )
           );
-        }).pipe(Effect.scoped, (inspection) =>
-          inspectionDeadline(label, inspection, () => diagnostic)
-        );
-      }
-    );
 
+          const [output, code, stderr] = yield* Effect.all(
+            [
+              Stream.runCollect(handle.stdout.pipe(Stream.decodeText())),
+              handle.exitCode,
+              Stream.runForEach(
+                handle.stderr.pipe(Stream.decodeText()),
+                (chunk) =>
+                  Effect.sync(() => {
+                    diagnostic = (diagnostic + chunk).slice(-65_536);
+                  })
+              ).pipe(Effect.map(() => diagnostic)),
+            ],
+            { concurrency: "unbounded" }
+          );
+
+          return { code: Number(code), output: output.join(""), stderr };
+        });
+
+        const result = yield* retryDoctorInspection(remote, attempt);
+
+        return yield* decodeInspection(
+          label,
+          remote,
+          result.output,
+          result.code,
+          result.stderr
+        );
+      }).pipe(Effect.scoped, (inspection) =>
+        inspectionDeadline(label, inspection, () => diagnostic)
+      );
+    };
+
+    const results = yield* Effect.all(hosts.map(inspect));
     let status: "ok" | "warn" | "fail" = "ok";
 
     if (results.some((result) => result.status === "fail")) {

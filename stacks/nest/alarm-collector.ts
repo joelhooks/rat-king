@@ -21,7 +21,7 @@ import { collectRecallCanary } from "./alarm-recall.ts";
 import type { DeployMarker, WindowReceipt } from "./alarm-sources.ts";
 import { AlarmFacts, CacheBreach, sightReaders } from "./alarm-sources.ts";
 import type { WakeSighting, WakeTarget } from "./alarm-wakes.ts";
-import { collectComms } from "./comms.ts";
+import { collectComms, commsSources } from "./comms.ts";
 import { configDoctor } from "./config-doctor.ts";
 import { FleetDigest } from "./digest-config.ts";
 import type { HealthDigest } from "./health.ts";
@@ -365,10 +365,9 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
           readMaintenance(config.runtime.RAT_KING_STATE_DIR)
         ),
         quarantine: Effect.all(
-          [
-            ports.comms(config.comms.local, now - 3_600_000, true),
-            ports.comms(config.comms.remote, now - 3_600_000, true),
-          ],
+          commsSources(config.comms).map((source) =>
+            ports.comms(source, now - 3_600_000, true)
+          ),
           { concurrency: "unbounded" }
         ).pipe(
           Effect.map((counts) =>

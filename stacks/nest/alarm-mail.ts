@@ -131,10 +131,32 @@ export const prepareAlarmDeliveries = Effect.fn("Alarm.prepareDeliveries")(
   Effect.scoped
 );
 
+export const prepareMaintenanceNotice = Effect.fn(
+  "Alarm.prepareMaintenanceNotice"
+)(function* prepareMaintenanceNotice(
+  config: StageConfigValue,
+  recipient: string,
+  text: string
+) {
+  const prepared = yield* prepareAlarmMail(config, [recipient], text);
+  const target = prepared.targets.find(({ name }) => name === recipient);
+
+  if (target === undefined) {
+    return yield* new FleetError({ reason: "Maintenance desk unavailable" });
+  }
+
+  return {
+    envelope: yield* prepared.client.seal(target.did, prepared.body, {
+      encrypt: false,
+    }),
+    recipient,
+  };
+}, Effect.scoped);
+
 export const sendAlarmDelivery = Effect.fn("Alarm.sendDelivery")(
   function* sendAlarmDelivery(
     config: StageConfigValue,
-    delivery: typeof Delivery.Type
+    delivery: Pick<typeof Delivery.Type, "envelope" | "recipient">
   ) {
     const prepared = yield* prepareAlarmMail(config, [delivery.recipient], "");
     const result = yield* prepared.client.send(delivery.envelope);

@@ -129,6 +129,7 @@ const AlarmCommon = Schema.Struct({
       })
     )
   ),
+  maintenanceInbox: Schema.optionalKey(SystemdPath),
   musterDesk: AgentName,
   notify: Schema.Struct({
     config: Schema.optionalKey(Schema.NonEmptyString),

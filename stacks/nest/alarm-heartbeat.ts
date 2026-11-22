@@ -9,6 +9,8 @@ const AlarmStep = Schema.Literals([
   "journal.read",
   "journal.write",
   "facts.collect",
+  "maintenance.inbox",
+  "maintenance.notices",
   "notifications.prepare",
   "notifications.send",
   "notifications.page",

@@ -20,6 +20,7 @@ import { readAlarmJournal, saveAlarmJournal } from "./alarm-journal.ts";
 import {
   deskWakeMail,
   prepareAlarmDeliveries,
+  prepareMaintenanceNotice,
   sendAlarmDelivery,
   withAlarmMailTransport,
 } from "./alarm-mail.ts";
@@ -40,6 +41,7 @@ import { AlarmJournal, deskWakeReadings, runAlarmCycle } from "./alarm.ts";
 import type { AlarmPorts, AlarmJournalValue } from "./alarm.ts";
 import type { HealthDigest } from "./health.ts";
 import { rotateLogs } from "./log-rotation.ts";
+import { deliverMaintenance, ingestMaintenance } from "./maintenance-inbox.ts";
 import { execute, runnerDrift } from "./ship-command.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
@@ -78,7 +80,7 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
     }
 
     const settings = config.alarm;
-    const { page } = settings;
+    const { maintenanceInbox, page } = settings;
     const launch = settings.systemd ?? settings.launchd;
     const fs = yield* FileSystem.FileSystem;
     const directory = yield* fs.realPath(config.runtime.RAT_KING_STATE_DIR);
@@ -145,7 +147,32 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           )
         );
 
+      const maintenanceStep = <A, Failure, Requirements>(
+        step: "maintenance.inbox" | "maintenance.notices",
+        operation: Effect.Effect<A, Failure, Requirements>
+      ) =>
+        operation.pipe(
+          Effect.timeout("10 seconds"),
+          (effect) => notification(step, effect),
+          Effect.tapError(({ reason }) =>
+            Console.error(`${reason}; input values withheld`)
+          ),
+          Effect.ignore
+        );
+
       yield* Effect.gen(function* cycle() {
+        if (maintenanceInbox !== undefined) {
+          yield* maintenanceStep(
+            "maintenance.inbox",
+            ingestMaintenance({
+              desk: settings.musterDesk,
+              directory,
+              inbox: maintenanceInbox,
+              instances: (settings.instances ?? []).map(({ name }) => name),
+            })
+          );
+        }
+
         const prior = yield* alarmStep(
           "journal.read",
           readAlarmJournal(directory)
@@ -249,13 +276,32 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           ),
         };
 
-        const main = runAlarmCycle(
+        const requestNotices =
+          maintenanceInbox === undefined
+            ? Effect.void
+            : maintenanceStep(
+                "maintenance.notices",
+                deliverMaintenance(directory, {
+                  prepare: (text) =>
+                    prepareMaintenanceNotice(config, settings.musterDesk, text),
+                  send: (receipt) => sendAlarmDelivery(config, receipt),
+                  unavailable: Console.error(
+                    "Alarm maintenance notice unavailable; input values withheld"
+                  ),
+                })
+              );
+
+        const cycleAlarms = runAlarmCycle(
           prior,
           facts,
           collectDeskWakeHealth(config),
           settings,
           pagePort === undefined ? ports : { ...ports, page: pagePort }
         );
+
+        const main = Effect.all([cycleAlarms, requestNotices], {
+          concurrency: "unbounded",
+        }).pipe(Effect.map(([journal]) => journal));
 
         if (push === null || settings.push === undefined) {
           yield* main;

@@ -78,12 +78,14 @@ export const StageConfig = Schema.Struct({
   alarm: Schema.optionalKey(AlarmSettings),
   comms: Schema.Struct({
     local: Paths,
-    remote: Schema.Struct({ ...Paths.fields, ssh: Text }),
+    remote: Schema.optionalKey(Schema.Struct({ ...Paths.fields, ssh: Text })),
   }),
   doctor: Schema.optionalKey(
     Schema.Struct({
       primary: DoctorHost,
-      secondary: Schema.Struct({ ...DoctorHost.fields, ssh: Text }),
+      secondary: Schema.optionalKey(
+        Schema.Struct({ ...DoctorHost.fields, ssh: Text })
+      ),
     })
   ),
   mintHost: Schema.optionalKey(

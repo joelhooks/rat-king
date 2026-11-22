@@ -23,6 +23,7 @@ export const MaintenanceWindow = Schema.Struct({
   instance: Schema.NonEmptyString,
   owner: AgentName,
   reason: Schema.NonEmptyString,
+  requestId: Schema.optionalKey(Schema.String),
   start: Schema.Finite,
   until: Schema.Finite,
 });
@@ -71,13 +72,55 @@ export const clock = (at: number) =>
 export const coverEnd = (window: MaintenanceWindowValue) =>
   (window.ended ?? window.until) + window.graceMinutes * 60_000;
 
+export const windowOpen = (window: MaintenanceWindowValue, now: number) =>
+  window.ended === undefined && coverEnd(window) >= now;
+
+export const rememberedWindows = (
+  windows: readonly MaintenanceWindowValue[],
+  now: number
+) => windows.filter((window) => now - coverEnd(window) < WINDOW_MEMORY_MS);
+
+export const startWindow = (
+  windows: readonly MaintenanceWindowValue[],
+  window: MaintenanceWindowValue,
+  now: number
+): MaintenanceWindowValue[] => [
+  ...rememberedWindows(windows, now).map((item) =>
+    item.instance === window.instance && windowOpen(item, now)
+      ? { ...item, ended: now }
+      : item
+  ),
+  window,
+];
+
+export const endWindow = (
+  windows: readonly MaintenanceWindowValue[],
+  instance: string,
+  now: number
+): MaintenanceWindowValue[] | undefined => {
+  const kept = rememberedWindows(windows, now);
+
+  if (
+    !kept.some((item) => item.instance === instance && windowOpen(item, now))
+  ) {
+    return undefined;
+  }
+
+  return kept.map((item) =>
+    item.instance === instance && windowOpen(item, now)
+      ? { ...item, ended: now }
+      : item
+  );
+};
+
 const declared = (window: MaintenanceWindowValue): Cover => ({
   end: coverEnd(window),
   grace: window.graceMinutes,
   id: `${window.instance}@${window.start}`,
   instance: window.instance,
   owner: window.owner,
-  reason: window.reason,
+  reason:
+    window.requestId === undefined ? window.reason : "desk maintenance request",
   recipients: [window.owner],
   start: window.start,
   until: window.until,
@@ -162,6 +205,29 @@ export const maintenanceEvidence = (cover: Cover) =>
 
 export const overrunEvidence = (cover: Cover) =>
   `overran maintenance by ${cover.owner} (${cover.reason}) that ended ${clock(cover.until)}${cover.grace > 0 ? ` plus ${cover.grace} min grace` : ""}`;
+
+export const writeMaintenanceText = Effect.fn("Maintenance.write")(
+  function* writeMaintenanceText(directory: string, text: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const file = maintenancePath(directory);
+
+    const temp = yield* fs.makeTempFileScoped({
+      directory,
+      prefix: ".maintenance-",
+    });
+
+    yield* fs.chmod(temp, 0o600);
+
+    const handle = yield* fs.open(temp, { flag: "w", noFollow: true });
+    yield* handle.writeAll(new TextEncoder().encode(`${text}\n`));
+    yield* handle.sync;
+    yield* fs.rename(temp, file);
+
+    const parent = yield* fs.open(directory, { flag: "r" });
+    yield* parent.sync;
+  },
+  Effect.scoped
+);
 
 export const readMaintenance = Effect.fn("Alarm.readMaintenance")(
   function* readMaintenance(stateDirectory: string) {

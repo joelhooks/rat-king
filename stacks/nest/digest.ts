@@ -82,7 +82,10 @@ export const commsCounts = (config: StageConfigValue, now: number) =>
   Effect.all(
     {
       primary: collectComms(config.comms.local, now - 86_400_000),
-      secondary: collectComms(config.comms.remote, now - 86_400_000),
+      secondary:
+        config.comms.remote === undefined
+          ? Effect.succeed(null)
+          : collectComms(config.comms.remote, now - 86_400_000),
     },
     { concurrency: "unbounded" }
   );
