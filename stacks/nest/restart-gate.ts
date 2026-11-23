@@ -6,7 +6,7 @@ import { localExec } from "../../packages/alchemy-nest/src/local-exec.ts";
 import { assertStarted } from "../../packages/alchemy-nest/src/startup-contract.ts";
 import { waitForStorage } from "../../packages/alchemy-nest/src/storage-readiness.ts";
 
-const program = Effect.gen(function* restartGate() {
+export const program = Effect.gen(function* restartGate() {
   const address = yield* Schema.decodeUnknownEffect(Schema.String)(
     process.argv[2]
   );
@@ -77,4 +77,6 @@ const program = Effect.gen(function* restartGate() {
   );
 });
 
-NodeRuntime.runMain(program.pipe(Effect.provide(NodeServices.layer)));
+if (import.meta.main) {
+  NodeRuntime.runMain(program.pipe(Effect.provide(NodeServices.layer)));
+}

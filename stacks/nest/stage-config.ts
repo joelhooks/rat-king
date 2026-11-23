@@ -11,6 +11,7 @@ import {
 import {
   CredentialSlot,
   credentialEnvironment,
+  readCredentialEnvironment,
   SecretSourceMode,
 } from "../../packages/ratking-client/src/systemd-credentials.ts";
 import { AlarmSettings } from "./alarm-config.ts";
@@ -297,3 +298,22 @@ export const stageProvider = Effect.fn("Nest.stageProvider")(
     });
   }
 );
+
+export const preparedStageProvider = (config: StageConfigValue) =>
+  ConfigProvider.layer(
+    Effect.gen(function* projectedShipConfig() {
+      const env = yield* readCredentialEnvironment;
+      const provider = yield* stageProvider(config, env);
+
+      const entry = yield* Config.option(
+        Config.String("RAT_KING_SHIP_RUNTIME_ENTRY")
+      );
+
+      return ConfigProvider.orElse(
+        provider,
+        ConfigProvider.fromUnknown({
+          RAT_KING_SHIP_RUNTIME_ENTRY: Option.getOrUndefined(entry),
+        })
+      );
+    })
+  );

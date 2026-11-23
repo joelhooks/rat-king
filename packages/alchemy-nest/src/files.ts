@@ -1,5 +1,6 @@
 // @effect-diagnostics nodeBuiltinImport:off -- Provider adapters hash the exact bytes installed on Linux.
 import { createHash } from "node:crypto";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 
 import { Effect, Redacted, Schema } from "effect";
 
@@ -70,6 +71,57 @@ export const textDigest = (text: string): string =>
 
 export const refuse = (reason: string) =>
   new HostError({ operation: "provider", reason });
+
+const readExactFile = (descriptor: number, maximum: number) => {
+  const stat = fstatSync(descriptor);
+
+  if (!stat.isFile() || stat.size > maximum) {
+    throw new Error("Expected a bounded regular file");
+  }
+
+  const bytes = new Uint8Array(stat.size + 1);
+  let offset = 0;
+
+  while (offset < bytes.length) {
+    const count = readSync(
+      descriptor,
+      bytes,
+      offset,
+      bytes.length - offset,
+      null
+    );
+
+    if (count === 0) {
+      break;
+    }
+
+    offset += count;
+  }
+
+  if (offset !== stat.size) {
+    throw new Error("File length changed during read");
+  }
+
+  return bytes.subarray(0, offset);
+};
+
+export const readBoundedRegularFile = (path: string, maximum: number) =>
+  Effect.try({
+    catch: () =>
+      refuse("Could not read a bounded regular file without following links"),
+    try: () => {
+      const descriptor = openSync(
+        path,
+        constants.O_RDONLY + constants.O_NOFOLLOW + constants.O_NONBLOCK
+      );
+
+      try {
+        return readExactFile(descriptor, maximum);
+      } finally {
+        closeSync(descriptor);
+      }
+    },
+  });
 
 export const validateFile = Effect.fn("RemoteFile.validate")(function* validate(
   props: FileProps
