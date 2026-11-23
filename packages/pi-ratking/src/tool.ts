@@ -392,6 +392,9 @@ export const notDeliveredText = (error: NotDelivered | QuietAsk) =>
     )
   );
 
+export const summarySubjectGuidance =
+  "Write the summary as a subject line that tells someone scanning the list what the message is about. Leave out IDs, hashes and the recipient's name.";
+
 export const description = (tool: string) =>
   `Rat King messaging: signed mail between named agents on any machine. Every message goes to a name's durable mailbox; whoever holds that name's lease reads it. A failed send is an error, never a silent fallback.
 
@@ -402,6 +405,7 @@ Address agents by Rat King name (for example switchboard, or project/row). list 
 send and ask accept cc: ["name", ...]. to: is for whoever must act, and wakes them unless quiet: true requests next-turn or digest delivery. quiet is not for asks. cc: is for whoever should know: a quiet copy that does not wake. A send whose message or summary addresses a cc'd name (@name, or an "ask for name" line) is refused; pass ccOnPurpose: true if the cc is deliberate. reply defaults to reply-all; replyAll: false answers only the sender. To answer a message that arrived before this Pi's reader last started, add to: the asker's name. handled with replyTo confirms a relayed original to its desk without replying to the sender.
 
 Give every send, ask and reply a summary: one line, at most 280 characters; longer is trimmed and the full text leads the message. Lead with the point or the ask. Phones and compact views show it first; the message holds the detail.
+${summarySubjectGuidance}
 
 thread-claim, thread-release, thread-escalate and thread-handback take to: router name and thread: conversation root or explicit key. A first reply to a forwarded thread also claims it. Release removes only your subscription; handback also wakes the router to re-dispatch. Escalate wakes the router without releasing ownership. Use message for the reason and encrypt: true for private text.
 

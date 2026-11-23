@@ -9,6 +9,7 @@ interface MessageBase {
   readonly key: number;
   readonly id: string;
   readonly sender: string;
+  readonly senderName: string | undefined;
   readonly time: string;
   readonly recipients: ReadonlySet<string>;
   readonly addressed: ReadonlySet<string>;
@@ -65,6 +66,7 @@ const messages = (events: readonly EntryValue[]) => {
       key: event.seq,
       recipients,
       sender: event.senderDid,
+      senderName: event.via?.desk,
       time: event.time,
     };
 

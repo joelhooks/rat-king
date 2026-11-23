@@ -1,3 +1,4 @@
+import { displayKind, displayTitle, sealedSender } from "./display-title.ts";
 import { WINDOW } from "./feed.ts";
 import type { Snapshot } from "./feed.ts";
 import { parentOf, payloadOf } from "./view.ts";
@@ -29,9 +30,9 @@ const link = (project: string, filter: string, thread?: number) => {
 const chip = (text: string, style = "") =>
   `<span class="chip ${style}">${escape(text)}</span>`;
 
-const title = (message: Message) => {
+const detailTitle = (message: Message) => {
   if (message.mode === "sealed") {
-    return "Sealed message";
+    return displayTitle(message);
   }
 
   const heading =
@@ -42,6 +43,11 @@ const title = (message: Message) => {
     ? "Signed message"
     : heading.slice(0, 160);
 };
+
+const endpointTitle = (message: Message) =>
+  message.mode === "sealed"
+    ? ` title="${escape(`${message.sender} → ${[...message.recipients].join(", ")}`)}"`
+    : "";
 
 const intentLabel = (message: Message) => {
   const payload = payloadOf(message);
@@ -156,7 +162,21 @@ export const content = (snapshot: Snapshot, params: URLSearchParams) => {
       const open = thread.asks.filter(({ answered }) => !answered).length;
       const answered = thread.asks.length - open;
 
-      return `<a class="row" href="${link(name, filter, thread.key)}" ${thread === active ? 'aria-current="page"' : ""}><span class="rowtop"><span class="eyebrow">#${thread.key}</span><span>${open > 0 ? chip(`${open} pending`, "pending") : ""} ${answered > 0 ? chip(`${answered} answered`, "signed") : ""}</span></span><strong>${escape(title(first))}</strong><span class="muted">${escape(payloadOf(first)?.from ?? first.sender)} · ${thread.messages.length} messages</span></a>`;
+      const payload = payloadOf(first);
+      const label = payload?.label?.trim();
+
+      const namedSender =
+        label === undefined || label === "" ? payload?.from : label;
+
+      const sender =
+        first.mode === "sealed"
+          ? sealedSender(first)
+          : (namedSender ?? first.sender);
+
+      const kind = displayKind(first);
+      const time = escape(first.time);
+
+      return `<a class="row" href="${link(name, filter, thread.key)}" ${thread === active ? 'aria-current="page"' : ""}><strong${endpointTitle(first)}>${escape(displayTitle(first))}</strong><span class="rowtop muted"><span>${escape(sender)}</span><time datetime="${time}" title="${time}" data-relative-time>${time}</time>${kind === null ? "" : chip(kind)}${open > 0 ? chip(`${open} pending`, "pending") : ""}${answered > 0 ? chip(`${answered} answered`, "signed") : ""}<span>${thread.messages.length} messages</span></span></a>`;
     })
     .join("");
 
@@ -168,8 +188,8 @@ export const content = (snapshot: Snapshot, params: URLSearchParams) => {
       : `
     <a class="back" href="${link(name, filter)}">← ${escape(name)}</a>
     <div class="detailtop"><span class="eyebrow">${escape(name)} / Thread ${active.key}</span> ${chip("Private mailbox")}
-    <h2>${escape(title(first))}</h2></div>
-    ${active.asks.length === 0 ? "" : `<section class="askbox" aria-label="Asks">${active.asks.map(({ answered, message }) => `<div>${chip(answered ? "Answered" : "No visible reply", answered ? "signed" : "pending")} <a href="#message-${message.key}">${escape(title(message))}</a></div>`).join("")}</section>`}
+    <h2${endpointTitle(first)}>${escape(detailTitle(first))}</h2></div>
+    ${active.asks.length === 0 ? "" : `<section class="askbox" aria-label="Asks">${active.asks.map(({ answered, message }) => `<div>${chip(answered ? "Answered" : "No visible reply", answered ? "signed" : "pending")} <a href="#message-${message.key}">${escape(detailTitle(message))}</a></div>`).join("")}</section>`}
     <section class="stream"><h3 class="eyebrow">Mailbox thread · ${active.messages.length}</h3>${active.messages.map((message) => messageHtml(message, active.messages)).join("")}</section>`;
 
   return `<div id="viewer" data-revision="${snapshot.revision}" class="shell${explicit ? " drill-in" : ""}">
@@ -185,6 +205,19 @@ export const documentHtml = (body: string) =>
   `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><title>Rat King / Traffic</title><link rel="stylesheet" href="/viewer.css"><script src="/viewer.js" defer></script></head><body><header class="top"><span class="brandmark" aria-hidden="true">RK</span><span class="brand">Rat King</span><span class="eyebrow">Read only</span></header>${body}</body></html>`;
 
 export const liveScript = String.raw`(() => {
+  const relative = new Intl.RelativeTimeFormat('en', { numeric: 'auto', style: 'short' });
+  const updateTimes = () => {
+    const now = Date.now();
+    for (const time of document.querySelectorAll('time[data-relative-time]')) {
+      const seconds = Math.trunc((Date.parse(time.dateTime) - now) / 1000);
+      if (!Number.isFinite(seconds)) continue;
+      const age = Math.abs(seconds);
+      if (age >= 86400) time.textContent = relative.format(Math.trunc(seconds / 86400), 'day');
+      else if (age >= 3600) time.textContent = relative.format(Math.trunc(seconds / 3600), 'hour');
+      else if (age >= 60) time.textContent = relative.format(Math.trunc(seconds / 60), 'minute');
+      else time.textContent = relative.format(seconds, 'second');
+    }
+  };
   const tick = async () => {
     const view = document.querySelector('#viewer');
     if (!view) return;
@@ -209,7 +242,9 @@ export const liveScript = String.raw`(() => {
       if (status) status.textContent = 'Viewer disconnected';
       view.dataset.revision = '';
     }
+    updateTimes();
     setTimeout(tick, 2000);
   };
+  updateTimes();
   setTimeout(tick, 2000);
 })();`;
