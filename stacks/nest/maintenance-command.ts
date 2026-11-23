@@ -3,7 +3,6 @@ import {
   Console,
   DateTime,
   Effect,
-  FileSystem,
   Option,
   Result,
   Schema,
@@ -16,11 +15,15 @@ import {
   MAILBOX_INSTANCE,
   MAX_WINDOW_MS,
   MaintenanceFile,
-  WINDOW_MEMORY_MS,
   clock,
-  coverEnd,
+  endWindow,
   maintenancePath,
   readMaintenance,
+  readMaintenanceDocument,
+  rememberedWindows,
+  startWindow,
+  windowOpen,
+  writeMaintenanceText,
 } from "./alarm-maintenance.ts";
 import type { MaintenanceWindowValue } from "./alarm-maintenance.ts";
 import type { StageConfigValue } from "./stage-config.ts";
@@ -163,67 +166,29 @@ export const resolveUntil = (
   return Result.succeed(until);
 };
 
-const open = (window: MaintenanceWindowValue, now: number) =>
-  window.ended === undefined && coverEnd(window) >= now;
-
-const remembered = (windows: readonly MaintenanceWindowValue[], now: number) =>
-  windows.filter((window) => now - coverEnd(window) < WINDOW_MEMORY_MS);
-
-export const startWindow = (
-  windows: readonly MaintenanceWindowValue[],
-  window: MaintenanceWindowValue,
-  now: number
-): MaintenanceWindowValue[] => [
-  ...remembered(windows, now).map((item) =>
-    item.instance === window.instance && open(item, now)
-      ? { ...item, ended: now }
-      : item
-  ),
-  window,
-];
-
-export const endWindow = (
-  windows: readonly MaintenanceWindowValue[],
-  instance: string,
-  now: number
-): MaintenanceWindowValue[] | undefined => {
-  const kept = remembered(windows, now);
-
-  if (!kept.some((item) => item.instance === instance && open(item, now))) {
-    return undefined;
-  }
-
-  return kept.map((item) =>
-    item.instance === instance && open(item, now)
-      ? { ...item, ended: now }
-      : item
-  );
-};
+export { endWindow, startWindow } from "./alarm-maintenance.ts";
 
 const describe = (window: MaintenanceWindowValue, now: number) =>
-  `${window.instance}: ${open(window, now) ? "open" : "closed"}, owner ${window.owner}, ${window.reason}, ${clock(window.start)} to ${clock(window.until)}${window.ended === undefined ? "" : `, ended ${clock(window.ended)}`}, grace ${window.graceMinutes} min`;
+  `${window.instance}: ${windowOpen(window, now) ? "open" : "closed"}, owner ${window.owner}, ${window.reason}, ${clock(window.start)} to ${clock(window.until)}${window.ended === undefined ? "" : `, ended ${clock(window.ended)}`}, grace ${window.graceMinutes} min`;
 
-const writeWindows = Effect.fn("Maintenance.write")(function* writeWindows(
-  directory: string,
-  windows: readonly MaintenanceWindowValue[]
-) {
-  const fs = yield* FileSystem.FileSystem;
-  const file = maintenancePath(directory);
-  const temp = `${file}.tmp`;
+const writeWindows = Effect.fn("Maintenance.writeWindows")(
+  function* writeWindows(
+    directory: string,
+    windows: readonly MaintenanceWindowValue[]
+  ) {
+    const document = yield* readMaintenanceDocument(directory);
 
-  const text = yield* Schema.encodeEffect(
-    Schema.fromJsonString(MaintenanceFile)
-  )({ version: 1, windows });
+    const update = yield* Schema.encodeEffect(MaintenanceFile)({
+      version: 1,
+      windows,
+    });
 
-  yield* Effect.scoped(
-    Effect.gen(function* persist() {
-      const handle = yield* fs.open(temp, { flag: "w", mode: 0o600 });
-      yield* handle.writeAll(new TextEncoder().encode(`${text}\n`));
-      yield* handle.sync;
-    })
-  );
-  yield* fs.rename(temp, file);
-});
+    yield* writeMaintenanceText(
+      directory,
+      JSON.stringify({ ...document, ...update })
+    );
+  }
+);
 
 export const runMaintenance = Effect.fn("Maintenance.run")(
   function* runMaintenance(
@@ -250,7 +215,7 @@ export const runMaintenance = Effect.fn("Maintenance.run")(
     );
 
     if (request.action === "list") {
-      const lines = remembered(windows, now).map((window) =>
+      const lines = rememberedWindows(windows, now).map((window) =>
         describe(window, now)
       );
 
@@ -318,8 +283,13 @@ export const maintenanceCommand = (
   config: StageConfigValue,
   argv: readonly string[]
 ) =>
-  runMaintenance(
-    config.runtime.RAT_KING_STATE_DIR,
-    (config.alarm?.instances ?? []).map((instance) => instance.name),
-    argv
-  );
+  config.alarm?.maintenanceInbox !== undefined &&
+  (argv[0] === "start" || argv[0] === "end")
+    ? Effect.fail(
+        refuse("Maintenance writes require the configured request inbox")
+      )
+    : runMaintenance(
+        config.runtime.RAT_KING_STATE_DIR,
+        (config.alarm?.instances ?? []).map((instance) => instance.name),
+        argv
+      );

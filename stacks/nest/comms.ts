@@ -25,8 +25,11 @@ export const Counts = Schema.Struct({
 
 export type CountsValue = typeof Counts.Type;
 
-export const doneBar = (local: CountsValue, remote: CountsValue) =>
-  local.lost === 0 && remote.lost === 0;
+export const doneBar = (local: CountsValue, remote: CountsValue | null) =>
+  local.lost === 0 && (remote === null || remote.lost === 0);
+
+export const commsSources = ({ local, remote }: StageConfigValue["comms"]) =>
+  remote === undefined ? [local] : [local, remote];
 
 export const countFrames = <E, R>(
   frames: Stream.Stream<typeof Frame.Type, E, R>,
@@ -76,7 +79,7 @@ export const collectComms = Effect.fn("Nest.collectComms")(
   function* collectComms(
     paths:
       | StageConfigValue["comms"]["local"]
-      | StageConfigValue["comms"]["remote"],
+      | NonNullable<StageConfigValue["comms"]["remote"]>,
     cut: number,
     onlyQuarantine?: boolean
   ) {

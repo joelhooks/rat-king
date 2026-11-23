@@ -84,7 +84,15 @@ it.effect.prop(
                 ...stage,
                 comms: {
                   ...stage.comms,
-                  [host]: { ...stage.comms[host], sessions: "/unused" },
+                  [host]: {
+                    ...(host === "remote"
+                      ? (stage.comms.remote ?? {
+                          ...stage.comms.local,
+                          ssh: "fixture.invalid",
+                        })
+                      : stage.comms.local),
+                    sessions: "/unused",
+                  },
                 },
               },
             ] as const

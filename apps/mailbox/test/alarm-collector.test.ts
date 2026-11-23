@@ -88,7 +88,7 @@ it.effect.prop(
   [StageConfig, ShipSettings, LaunchdAlarmSettings, Counts, Schema.Int],
   ([base, ship, alarm, counts, status]) =>
     Effect.gen(function* proof() {
-      const config = {
+      const fixture = {
         ...base,
         alarm: {
           broadcast: alarm.broadcast,
@@ -98,11 +98,26 @@ it.effect.prop(
           notify: alarm.notify,
           owners: alarm.owners,
         },
+        comms: { local: base.comms.local },
+        doctor: { primary: {} },
         ship,
       };
 
+      const stage = Schema.fromJsonString(StageConfig);
+
+      const config = yield* Schema.encodeEffect(stage)(fixture).pipe(
+        Effect.flatMap(Schema.decodeEffect(stage))
+      );
+
+      const observed: string[] = [];
+
       const ports = {
-        comms: () => Effect.succeed(counts),
+        comms: (source: typeof base.comms.local) =>
+          Effect.sync(() => {
+            observed.push(source.receipts);
+
+            return counts;
+          }),
         doctor: () => Effect.succeed({ reasons: [], status: "ok" as const }),
       };
 
@@ -133,6 +148,12 @@ it.effect.prop(
 
       expect(blind.health).toBeNull();
       expect(blind.failed).toContain("liveness");
+      expect(measured.failed).not.toContain("quarantine");
+      expect(blind.failed).not.toContain("quarantine");
+      expect(observed).toEqual([
+        config.comms.local.receipts,
+        config.comms.local.receipts,
+      ]);
     }).pipe(
       Effect.provide(
         FileSystem.layerNoop({ exists: () => Effect.succeed(false) })

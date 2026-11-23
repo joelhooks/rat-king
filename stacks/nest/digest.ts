@@ -1,8 +1,9 @@
-import { Clock, DateTime, Effect, FileSystem, Schema } from "effect";
+import { Clock, Console, DateTime, Effect, FileSystem, Schema } from "effect";
 
+import { refuse } from "../../packages/alchemy-nest/src/files.ts";
 import { readAlarmJournal } from "./alarm-journal.ts";
 import type { SourceState } from "./alarm-sources.ts";
-import { collectComms } from "./comms.ts";
+import { collectComms, doneBar } from "./comms.ts";
 import type { CountsValue } from "./comms.ts";
 import { configDoctor } from "./config-doctor.ts";
 import type { FailedHealth } from "./digest-config.ts";
@@ -82,10 +83,34 @@ export const commsCounts = (config: StageConfigValue, now: number) =>
   Effect.all(
     {
       primary: collectComms(config.comms.local, now - 86_400_000),
-      secondary: collectComms(config.comms.remote, now - 86_400_000),
+      secondary:
+        config.comms.remote === undefined
+          ? Effect.succeed(null)
+          : collectComms(config.comms.remote, now - 86_400_000),
     },
     { concurrency: "unbounded" }
   );
+
+export const doneBarCommand = Effect.fn("Nest.doneBar")(
+  function* doneBarCommand(config: StageConfigValue) {
+    const { primary, secondary } = yield* commsCounts(
+      config,
+      yield* Clock.currentTimeMillis
+    );
+
+    const passed = doneBar(primary, secondary);
+
+    yield* Console.log(
+      JSON.stringify({ local: primary, passed, remote: secondary })
+    );
+
+    if (!passed) {
+      return yield* refuse("Done-bar not met");
+    }
+
+    return yield* Effect.void;
+  }
+);
 
 export const digest = Effect.fn("Nest.digest")(function* digest<E, R = never>(
   config: StageConfigValue,

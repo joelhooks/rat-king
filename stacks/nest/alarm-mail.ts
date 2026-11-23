@@ -9,6 +9,7 @@ import type { AlarmKeyValue } from "./alarm-config.ts";
 import type { PendingWake } from "./alarm-desk-wake.ts";
 import { terminalRefusal } from "./alarm-refusal.ts";
 import type { Delivery } from "./alarm.ts";
+import { MaintenancePreparationRefused } from "./maintenance-inbox.ts";
 import { ShipSettings } from "./ship-config.ts";
 import { prepareShipNotification } from "./ship-notify.ts";
 import { FleetError } from "./stage-config.ts";
@@ -131,10 +132,34 @@ export const prepareAlarmDeliveries = Effect.fn("Alarm.prepareDeliveries")(
   Effect.scoped
 );
 
+export const prepareMaintenanceNotice = Effect.fn(
+  "Alarm.prepareMaintenanceNotice"
+)(function* prepareMaintenanceNotice(
+  config: StageConfigValue,
+  recipient: string,
+  text: string
+) {
+  const prepared = yield* prepareAlarmMail(config, [recipient], text, true);
+  const target = prepared.targets.find(({ name }) => name === recipient);
+
+  if (target === undefined) {
+    return yield* new MaintenancePreparationRefused();
+  }
+
+  return {
+    envelope: yield* prepared.client
+      .seal(target.did, prepared.body, {
+        encrypt: false,
+      })
+      .pipe(Effect.mapError(() => new MaintenancePreparationRefused())),
+    recipient,
+  };
+}, Effect.scoped);
+
 export const sendAlarmDelivery = Effect.fn("Alarm.sendDelivery")(
   function* sendAlarmDelivery(
     config: StageConfigValue,
-    delivery: typeof Delivery.Type
+    delivery: Pick<typeof Delivery.Type, "envelope" | "recipient">
   ) {
     const prepared = yield* prepareAlarmMail(config, [delivery.recipient], "");
     const result = yield* prepared.client.send(delivery.envelope);

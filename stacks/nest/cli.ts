@@ -2,7 +2,6 @@
 import { NodeRuntime, NodeServices } from "@effect/platform-node";
 import { AuthProvidersLive } from "alchemy/Auth/Registry";
 import {
-  Clock,
   Config,
   ConfigProvider,
   Console,
@@ -22,16 +21,15 @@ import {
 } from "../../packages/ratking-client/src/systemd-credentials.ts";
 import { alarmReadings, alarmWorker } from "./alarm-command.ts";
 import {
-  alarmCheck,
   alarmCommand,
+  stageAlarmCheck,
   alarmPlist,
   alarmUnit,
 } from "./alarm-service.ts";
 import { billingCommand } from "./billing-command.ts";
-import { doneBar } from "./comms.ts";
 import { stageDoctor } from "./config-doctor.ts";
 import { collectDigestWaitingMail } from "./digest-mail-collector.ts";
-import { commsCounts, digest } from "./digest.ts";
+import { digest, doneBarCommand } from "./digest.ts";
 import { drainCommand } from "./drain.ts";
 import {
   frontDeskCommand,
@@ -180,28 +178,7 @@ const program = Effect.gen(function* launcher() {
   process.env.ALCHEMY_TELEMETRY_DISABLED = "1";
 
   const dispatch = Match.value(action).pipe(
-    Match.when("done-bar", () =>
-      Effect.gen(function* doneBarCommand() {
-        const counts = yield* commsCounts(
-          config,
-          yield* Clock.currentTimeMillis
-        );
-
-        yield* Console.log(
-          JSON.stringify({
-            local: counts.primary,
-            passed: doneBar(counts.primary, counts.secondary),
-            remote: counts.secondary,
-          })
-        );
-
-        if (!doneBar(counts.primary, counts.secondary)) {
-          return yield* refuse("Done-bar not met");
-        }
-
-        return yield* Effect.void;
-      })
-    ),
+    Match.when("done-bar", () => doneBarCommand(config)),
     Match.when(Match.is("ship", "ship-prepared"), (mode) =>
       withShipLock(
         canonical,
@@ -302,9 +279,9 @@ const program = Effect.gen(function* launcher() {
             runtime.mailboxStatus
           );
 
-          return yield* Console.log(
-            JSON.stringify(yield* alarmCheck(config.alarm, readings))
-          );
+          const checked = yield* stageAlarmCheck(config, readings);
+
+          return yield* Console.log(JSON.stringify(checked));
         }
 
         if (operation === "ops-digest") {
