@@ -13,6 +13,7 @@ import {
   readListeners,
   stackListeners,
 } from "../../packages/alchemy-nest/src/listeners.ts";
+import { AlarmSourcesOff } from "./alarm-config.ts";
 import { BACKUP_OWNER, backupCover } from "./alarm-maintenance.ts";
 import { nodeService, storeService } from "./backup.ts";
 import { healthScript } from "./health-script.ts";
@@ -145,6 +146,13 @@ export const Digest = Schema.Struct({
 export type HealthDigest = typeof Digest.Type;
 
 export const DigestJson = Schema.fromJsonString(Digest);
+
+export const HealthOutputJson = Schema.fromJsonString(
+  Digest.mapFields((fields) => ({
+    ...fields,
+    alarmSources: Schema.optionalKey(AlarmSourcesOff),
+  }))
+);
 
 interface Findings {
   readonly failures: readonly string[];

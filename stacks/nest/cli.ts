@@ -20,6 +20,7 @@ import {
   secretSource,
 } from "../../packages/ratking-client/src/systemd-credentials.ts";
 import { alarmReadings, alarmWorker } from "./alarm-command.ts";
+import { alarmSourceMetadata } from "./alarm-config.ts";
 import {
   alarmCommand,
   stageAlarmCheck,
@@ -36,7 +37,7 @@ import {
   frontDeskServiceHealth,
 } from "./front-desk-command.ts";
 import { frontDeskReviewReason } from "./front-desk-journal.ts";
-import { DigestJson, summarize } from "./health.ts";
+import { HealthOutputJson, summarize } from "./health.ts";
 import { maintenanceCommand } from "./maintenance-command.ts";
 import { mintHost } from "./mint-host.ts";
 import { opsDigest, opsHealth, opsMailboxHealth } from "./ops-read.ts";
@@ -307,7 +308,7 @@ const program = Effect.gen(function* launcher() {
           const facts = runtime.healthDigest(undefined, config);
 
           return yield* "service" in selector
-            ? opsMailboxHealth(facts)
+            ? opsMailboxHealth(facts, config.alarm)
             : opsHealth(config, selector.name, facts);
         }
 
@@ -319,7 +320,12 @@ const program = Effect.gen(function* launcher() {
             config
           );
 
-          yield* Console.log(yield* Schema.encodeEffect(DigestJson)(facts));
+          yield* Console.log(
+            yield* Schema.encodeEffect(HealthOutputJson)({
+              ...facts,
+              ...alarmSourceMetadata(config.alarm),
+            })
+          );
 
           return yield* Console.error(summarize(facts));
         }

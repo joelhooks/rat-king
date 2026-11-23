@@ -1,5 +1,6 @@
 import { Schema } from "effect";
 
+import { AlarmSourcesOff } from "./alarm-config.ts";
 import { Digest } from "./health.ts";
 
 export const FailedHealth = Schema.Struct({
@@ -8,11 +9,12 @@ export const FailedHealth = Schema.Struct({
 });
 
 export const FleetDigest = Schema.Struct({
+  alarmSources: Schema.optionalKey(AlarmSourcesOff),
   at: Schema.String,
   comms: Schema.Struct({
     fallbacks_24h: Schema.Int,
     lost_24h: Schema.Int,
-    quarantined_24h: Schema.Int,
+    quarantined_24h: Schema.NullOr(Schema.Int),
     sent_24h: Schema.Int,
   }),
   doctorUnavailableCount: Schema.optionalKey(

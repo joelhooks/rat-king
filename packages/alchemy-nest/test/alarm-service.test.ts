@@ -285,14 +285,14 @@ it.effect.prop(
 );
 
 it.effect.prop(
-  "alarm-check pins absent observer labels and distinguishes a missing primary",
+  "alarm-check distinguishes an off doctor from missing and omitted observers",
   [StageConfig, LaunchdAlarmSettings, SystemdAlarmSettings],
   ([base, launchd, systemd]) =>
     Effect.forEach([launchd, systemd], (settings) =>
       Effect.gen(function* omission() {
         const { spawner } = yield* supervision(true, true);
         const { doctor, ...stage } = base;
-        const { page: _page, ...alarm } = settings;
+        const { page: _page, sources: _sources, ...alarm } = settings;
         const config = { ...stage, alarm, comms: { local: stage.comms.local } };
 
         const readings = Effect.succeed({
@@ -301,6 +301,10 @@ it.effect.prop(
 
         const checks = yield* Effect.all({
           missing: stageAlarmCheck(config, readings),
+          off: stageAlarmCheck(
+            { ...config, alarm: { ...alarm, sources: { doctor: false } } },
+            readings
+          ),
           primaryOnly: stageAlarmCheck(
             { ...config, doctor: { primary: doctor?.primary ?? {} } },
             readings
@@ -329,6 +333,11 @@ it.effect.prop(
         expect(checks.missing).toEqual({
           ...common,
           "doctor.primary": "missing",
+        });
+        expect(checks.off).toEqual({
+          ...common,
+          alarmSources: { doctor: "off" },
+          "doctor.primary": "off",
         });
       })
     ).pipe(Effect.provide(NodePath.layer)),

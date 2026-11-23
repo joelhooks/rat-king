@@ -7,11 +7,13 @@ import { expect } from "vitest";
 
 import { collectAlarmFacts } from "../../../stacks/nest/alarm-collector.ts";
 import { LaunchdAlarmSettings } from "../../../stacks/nest/alarm-config.ts";
+import { advanceAlarm } from "../../../stacks/nest/alarm-machine.ts";
 import {
   emptySources,
   observeAlarms,
 } from "../../../stacks/nest/alarm-sources.ts";
 import { Counts } from "../../../stacks/nest/comms.ts";
+import { Digest } from "../../../stacks/nest/health.ts";
 import { ShipSettings } from "../../../stacks/nest/ship-config.ts";
 import { FleetError, StageConfig } from "../../../stacks/nest/stage-config.ts";
 
@@ -81,6 +83,126 @@ it.effect.prop(
       Effect.provide([NodeServices.layer, FetchHttpClient.layer])
     ),
   { arbitrary: { runs: 10 } }
+);
+
+it.effect.prop(
+  "disabled alarm inputs are not read or counted missing and cannot clear a firing incident",
+  [
+    StageConfig,
+    ShipSettings,
+    LaunchdAlarmSettings,
+    Digest,
+    Schema.Boolean,
+    Schema.Boolean,
+    Schema.Boolean,
+  ],
+  ([base, ship, alarm, health, doctor, quarantine, receipts]) =>
+    Effect.gen(function* sources() {
+      const receiptPath = "/fixture-ship-receipts.jsonl";
+      const calls: string[] = [];
+
+      const config = {
+        ...base,
+        alarm: {
+          broadcast: alarm.broadcast,
+          enabled: true,
+          launchd: alarm.launchd,
+          musterDesk: alarm.musterDesk,
+          notify: alarm.notify,
+          owners: alarm.owners,
+          sources: { doctor, quarantine, receipts },
+        },
+        comms: { local: base.comms.local },
+        ship: { ...ship, receipts: receiptPath },
+      };
+
+      const stage = Schema.fromJsonString(StageConfig);
+
+      const decoded = yield* Schema.encodeEffect(stage)(config).pipe(
+        Effect.flatMap(
+          Schema.decodeEffect(stage, { onExcessProperty: "error" })
+        )
+      );
+
+      const facts = yield* collectAlarmFacts(
+        decoded,
+        Effect.succeed({
+          ...health,
+          backup: { ...health.backup, lastRun: null },
+          stopMemory: null,
+        }),
+        Effect.succeed(null),
+        undefined,
+        undefined,
+        {
+          comms: () => {
+            calls.push("quarantine");
+
+            return Effect.fail(
+              new FleetError({ reason: "missing quarantine" })
+            );
+          },
+          doctor: () => {
+            calls.push("doctor");
+
+            return Effect.succeed({
+              reasons: ["issuer missing"],
+              status: "fail" as const,
+            });
+          },
+        }
+      ).pipe(
+        Effect.provide(
+          FileSystem.layerNoop({
+            exists: (path) =>
+              Effect.sync(() => {
+                if (path === receiptPath) {
+                  calls.push("receipts");
+                }
+
+                return false;
+              }),
+          })
+        )
+      );
+
+      const first = observeAlarms(emptySources, facts, 0);
+      const second = observeAlarms(first.sources, facts, 60_000);
+      const third = observeAlarms(second.sources, facts, 121_000);
+      const { readings } = third;
+
+      expect(calls.toSorted()).toEqual([
+        ...(doctor ? ["doctor"] : []),
+        ...(quarantine ? ["quarantine"] : []),
+        ...(receipts ? ["receipts"] : []),
+      ]);
+      expect(facts.failed).toEqual([
+        ...(quarantine ? ["quarantine"] : []),
+        ...(receipts ? ["receipts"] : []),
+      ]);
+      expect(readings["issuer.broken"].status).toBe(doctor ? "firing" : "off");
+      expect(readings["doctor.unavailable"].status).toBe(doctor ? "ok" : "off");
+      expect(readings["quarantine.growth"].status).toBe(
+        quarantine ? "unknown" : "off"
+      );
+      expect(readings["ship.failed"].status).toBe(receipts ? "unknown" : "off");
+      expect(readings["ship.churn"].status).toBe(receipts ? "unknown" : "off");
+      expect(readings["digest.fail"].status).toBe(
+        quarantine || receipts ? "firing" : "unknown"
+      );
+
+      const incident = {
+        context: { lastSent: 0, severity: "critical" as const, since: 0 },
+        value: "firing" as const,
+      };
+
+      if (!doctor) {
+        expect(
+          advanceAlarm(incident, readings["issuer.broken"], 121_000, 60_000)
+        ).toEqual({ notice: "none", state: incident });
+      }
+    }).pipe(Effect.provide([NodeServices.layer, FetchHttpClient.layer])),
+  { arbitrary: { runs: 20 } }
 );
 
 it.effect.prop(

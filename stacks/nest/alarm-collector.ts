@@ -14,6 +14,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { shellQuote } from "../../packages/alchemy-nest/src/ssh.ts";
 import { HeartbeatJson } from "../../packages/ratking-client/src/reader-health.ts";
 import { collectSessionsBackup } from "./alarm-backups.ts";
+import { alarmSourceMetadata } from "./alarm-config.ts";
 import { collectInstanceHealth } from "./alarm-instances.ts";
 import { readMaintenance } from "./alarm-maintenance.ts";
 import type { ReaderWindowFacts } from "./alarm-reader-windows.ts";
@@ -279,6 +280,46 @@ export const withLiveness = (liveness?: Effect.Effect<number, FleetError>) =>
 const stopMemoryOf = (health: HealthDigest | null) =>
   health?.stopMemory ?? null;
 
+const optionalMeasurement = <A, E, R>(
+  status: "off" | undefined,
+  read: () => Effect.Effect<Option.Option<A>, E, R>
+) => (status === "off" ? Effect.succeed(Option.none<A>()) : read());
+
+const readShipReceipts = (fs: FileSystem.FileSystem, path: string) =>
+  fs.exists(path).pipe(
+    Effect.flatMap((exists) =>
+      exists
+        ? fs
+            .readFileString(path)
+            .pipe(
+              Effect.mapError(
+                () =>
+                  new FleetError({ reason: "Ship receipt history unavailable" })
+              )
+            )
+        : Effect.fail(
+            new FleetError({ reason: "Ship receipt history missing" })
+          )
+    ),
+    Effect.flatMap((text) =>
+      Effect.forEach(text.trim().split("\n").filter(Boolean), (line) =>
+        Schema.decodeEffect(Schema.fromJsonString(ShipReceipt))(line)
+      )
+    ),
+    Effect.option
+  );
+
+const doctorEvidence = (
+  status: "off" | undefined,
+  result: Option.Option<{ readonly reasons: readonly string[] }>
+) =>
+  status === "off"
+    ? []
+    : Option.match(result, {
+        onNone: () => ["config doctor did not finish within 30 seconds"],
+        onSome: (reading) => reading.reasons,
+      });
+
 export const collectAlarmFacts = Effect.fn("Alarm.collect")(
   function* collectAlarmFacts<E, R, E2, R2, R3 = never, E4 = never, R4 = never>(
     config: StageConfigValue,
@@ -309,6 +350,8 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
     }
 
     const { ship } = config;
+    const metadata = alarmSourceMetadata(config.alarm);
+    const sources = metadata.alarmSources ?? {};
     const fs = yield* FileSystem.FileSystem;
     const now = yield* Clock.currentTimeMillis;
 
@@ -356,7 +399,9 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
             }),
             Effect.option
           ),
-        doctor: probe("doctor", ports.doctor(config)),
+        doctor: optionalMeasurement(sources.doctor, () =>
+          probe("doctor", ports.doctor(config))
+        ),
         health: probe("health", health),
         instances: collectInstanceHealth(config.alarm.instances),
         liveness: observeLiveness(ports.liveness),
@@ -364,44 +409,27 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
           "maintenance",
           readMaintenance(config.runtime.RAT_KING_STATE_DIR)
         ),
-        quarantine: Effect.all(
-          commsSources(config.comms).map((source) =>
-            ports.comms(source, now - 3_600_000, true)
-          ),
-          { concurrency: "unbounded" }
-        ).pipe(
-          Effect.map((counts) =>
-            counts.reduce((total, count) => total + count.quarantined, 0)
-          ),
-          Effect.timeout("30 seconds"),
-          Effect.option
+        quarantine: optionalMeasurement(sources.quarantine, () =>
+          Effect.all(
+            commsSources(config.comms).map((source) =>
+              ports.comms(source, now - 3_600_000, "quarantine")
+            ),
+            { concurrency: "unbounded" }
+          ).pipe(
+            Effect.map((counts) =>
+              counts.reduce((total, count) => total + count.quarantined, 0)
+            ),
+            Effect.timeout("30 seconds"),
+            Effect.option
+          )
         ),
         readers: observeReaders(config.alarm.readerHeartbeats),
         recallCanary:
           config.alarm.recallCanary === undefined
             ? Effect.succeed("off" as const)
             : collectRecallCanary(config.alarm.recallCanary),
-        receipts: fs.exists(config.ship.receipts).pipe(
-          Effect.flatMap((exists) =>
-            exists
-              ? fs.readFileString(ship.receipts).pipe(
-                  Effect.mapError(
-                    () =>
-                      new FleetError({
-                        reason: "Ship receipt history unavailable",
-                      })
-                  )
-                )
-              : Effect.fail(
-                  new FleetError({ reason: "Ship receipt history missing" })
-                )
-          ),
-          Effect.flatMap((text) =>
-            Effect.forEach(text.trim().split("\n").filter(Boolean), (line) =>
-              Schema.decodeEffect(Schema.fromJsonString(ShipReceipt))(line)
-            )
-          ),
-          Effect.option
+        receipts: optionalMeasurement(sources.receipts, () =>
+          readShipReceipts(fs, ship.receipts)
         ),
         sessionsBackup:
           config.alarm.sessionsBackup === undefined
@@ -425,12 +453,13 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
         quarantine: observations.quarantine,
         receipts: observations.receipts,
         windows: observations.windows,
-      }),
+      }).filter((name) => !Object.hasOwn(sources, name)),
       ...livenessGap(observations.liveness),
       ...observations.readers.failed,
     ];
 
     return yield* Schema.decodeUnknownEffect(AlarmFacts)({
+      ...metadata,
       backup: backupWindowOf(healthy),
       cacheBreaches: Option.getOrNull(observations.cache),
       ...(ship.restart.churnLimit === undefined
@@ -443,10 +472,7 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
       doctorFinished:
         Option.isSome(observations.doctor) &&
         observations.doctor.value.status !== "warn",
-      doctorReasons: Option.match(observations.doctor, {
-        onNone: () => ["config doctor did not finish within 30 seconds"],
-        onSome: (result) => result.reasons,
-      }),
+      doctorReasons: doctorEvidence(sources.doctor, observations.doctor),
       entered:
         healthy?.services.celld?.activeEnterTimestamp === undefined ||
         healthy.services.celld.activeEnterTimestamp === null

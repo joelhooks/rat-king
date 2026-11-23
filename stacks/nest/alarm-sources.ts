@@ -9,6 +9,7 @@ import { SessionsBackupFact, sessionsBackupReading } from "./alarm-backups.ts";
 import {
   AlarmKey,
   AlarmReading,
+  AlarmSourcesOff,
   DOCTOR_UNAVAILABLE_SPAN_MS,
   INSTANCE_DOWN_CHECKS,
   ISSUER_FAILURE_CHECKS,
@@ -136,6 +137,7 @@ export const WindowReceipt = Schema.Struct({
 });
 
 export const AlarmFacts = Schema.Struct({
+  alarmSources: Schema.optionalKey(AlarmSourcesOff),
   backup: Schema.optionalKey(Schema.NullOr(BackupWindow)),
   cacheBreaches: Schema.NullOr(Schema.Array(CacheBreach)),
   churnLimit: Schema.optionalKey(Schema.Int),
@@ -205,6 +207,8 @@ export const emptySources: typeof SourceState.Type = {
 
 export const Readings = Schema.Record(AlarmKey, AlarmReading);
 
+const off: AlarmReadingValue = { status: "off" };
+
 const ok: AlarmReadingValue = { status: "ok" };
 
 const unknown: AlarmReadingValue = { status: "unknown" };
@@ -234,7 +238,11 @@ const trackDoctorAvailability = (
   facts: typeof AlarmFacts.Type,
   now: number
 ) => {
-  if (facts.doctorFinished === false && !facts.doctor) {
+  if (
+    facts.alarmSources?.doctor !== "off" &&
+    facts.doctorFinished === false &&
+    !facts.doctor
+  ) {
     return {
       doctorUnavailableCount: (prior.doctorUnavailableCount ?? 0) + 1,
       doctorUnavailableReason:
@@ -250,6 +258,28 @@ const trackDoctorAvailability = (
         doctorUnavailableReason:
           prior.doctorUnavailableReason ?? "no reason reported",
       };
+};
+
+const trackDoctorFailures = (
+  prior: typeof SourceState.Type,
+  facts: typeof AlarmFacts.Type,
+  now: number
+) => {
+  if (
+    facts.alarmSources?.doctor === "off" ||
+    facts.doctor ||
+    facts.doctorFinished === false
+  ) {
+    return {};
+  }
+
+  return {
+    doctorFailureSince: prior.doctorFailureSince ?? now,
+    doctorMisses: Math.min(
+      (prior.doctorMisses ?? 0) + 1,
+      ISSUER_FAILURE_CHECKS
+    ),
+  };
 };
 
 const trackSources = (
@@ -300,6 +330,7 @@ const trackSources = (
 
   const base = {
     ...trackDoctorAvailability(prior, facts, now),
+    ...trackDoctorFailures(prior, facts, now),
     downChecks:
       !facts.deployKnown || deployWindow(facts, now) || facts.health === 200
         ? 0
@@ -316,22 +347,10 @@ const trackSources = (
       }
     : base;
 
-  const tracked: typeof SourceState.Type =
-    facts.doctor || facts.doctorFinished === false
-      ? measured
-      : {
-          ...measured,
-          doctorFailureSince: prior.doctorFailureSince ?? now,
-          doctorMisses: Math.min(
-            (prior.doctorMisses ?? 0) + 1,
-            ISSUER_FAILURE_CHECKS
-          ),
-        };
-
   return facts.instances === undefined || facts.instances.length === 0
-    ? tracked
+    ? measured
     : {
-        ...tracked,
+        ...measured,
         instanceDownChecks: Object.fromEntries(
           facts.instances.map((instance) => [
             instance.name,
@@ -785,21 +804,27 @@ export const observeAlarms = (
     wakeTargets: rememberMailTargets(prior.wakeTargets ?? [], facts.wakes),
   };
 
+  const disabled = facts.alarmSources;
+
   const readings: typeof Readings.Type = {
     "backup.sessions-index": sessionsBackupReading(facts.sessionsBackup, now),
     "cache.rewrites": cacheReading(facts, now),
     "celld.down": downReading(facts, sources, now),
     "celld.restarted": restartReading(facts, sources, now),
     "digest.fail": digestReading(facts, sources, now),
-    "doctor.unavailable": doctorUnavailableReading(sources, now),
+    "doctor.unavailable":
+      disabled?.doctor === "off" ? off : doctorUnavailableReading(sources, now),
     "filer.slots": slotReading(facts),
     "instance.down": instanceReading(facts, sources, now),
-    "issuer.broken": doctorReading(facts, sources, now),
-    "quarantine.growth": quarantineReading(facts),
+    "issuer.broken":
+      disabled?.doctor === "off" ? off : doctorReading(facts, sources, now),
+    "quarantine.growth":
+      disabled?.quarantine === "off" ? off : quarantineReading(facts),
     "readers.stuck": readerReading(facts, now),
     "recall.flowing-canary": recallCanaryReading(facts.recallCanary),
-    "ship.churn": shipChurnReading(facts, now),
-    "ship.failed": shipReading(facts),
+    "ship.churn":
+      disabled?.receipts === "off" ? off : shipChurnReading(facts, now),
+    "ship.failed": disabled?.receipts === "off" ? off : shipReading(facts),
     "wake.unacked": ok,
     ...mailReadings(facts.wakes, now),
   };
