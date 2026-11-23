@@ -42,6 +42,7 @@ import type { AlarmPorts, AlarmJournalValue } from "./alarm.ts";
 import type { HealthDigest } from "./health.ts";
 import { rotateLogs } from "./log-rotation.ts";
 import { deliverMaintenance, ingestMaintenance } from "./maintenance-inbox.ts";
+import { publishMaintenanceStatus } from "./maintenance-status.ts";
 import { execute, runnerDrift } from "./ship-command.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
@@ -325,7 +326,8 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
               deliverMaintenance(directory, {
                 prepare: (text) =>
                   prepareMaintenanceNotice(config, settings.musterDesk, text),
-                send: (receipt) => sendAlarmDelivery(config, receipt),
+                send: (receipt) =>
+                  sendAlarmDelivery(config, receipt, "maintenance"),
                 unavailable: Console.error(
                   "Alarm maintenance notice unavailable; input values withheld"
                 ),
@@ -352,6 +354,15 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
       );
       yield* writeAlarmHeartbeat(directory, heartbeat).pipe(
         Effect.catch(() => unavailable)
+      );
+
+      yield* publishMaintenanceStatus(settings, directory, heartbeat).pipe(
+        Effect.timeout("2 seconds"),
+        Effect.catch(() =>
+          Console.error(
+            "Maintenance status export unavailable; input values withheld"
+          )
+        )
       );
 
       yield* checkAlarmWorkerHealth(heartbeat);

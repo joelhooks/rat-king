@@ -1,7 +1,8 @@
-import { NodePath } from "@effect/platform-node";
+import { NodePath, NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
 import { EnvelopeFailure } from "@rat-king/envelope/failure";
 import { openPlaintext } from "@rat-king/envelope/signed";
+import * as ListNames from "@rat-king/lexicon/identity.listNames";
 import * as Send from "@rat-king/lexicon/mailbox.send";
 import { Clock, ConfigProvider, Effect, FileSystem, Schema } from "effect";
 import { HttpBody, HttpClient, HttpClientResponse } from "effect/http";
@@ -22,7 +23,11 @@ import {
   prepareMaintenanceNotice,
   sendAlarmDelivery,
 } from "../../../stacks/nest/alarm-mail.ts";
-import { MaintenanceNoticeReceipt } from "../../../stacks/nest/maintenance-inbox.ts";
+import {
+  MaintenanceNoticeReceipt,
+  deliverMaintenance,
+  maintenanceStatusRows,
+} from "../../../stacks/nest/maintenance-inbox.ts";
 import { readOpsName } from "../../../stacks/nest/ops-read.ts";
 import { ShipSettings } from "../../../stacks/nest/ship-config.ts";
 import { prepareShipNotification } from "../../../stacks/nest/ship-notify.ts";
@@ -46,6 +51,8 @@ const settings = {
 const custom = "fixture/alarm";
 
 const notice = "Alarm firing";
+
+const deskName = "fixture/desk";
 
 const at = "2026-01-01T00:00:00.000Z";
 
@@ -135,6 +142,189 @@ const arb = {
   ship: ShipSettings,
   useDefault: Schema.Boolean,
 };
+
+it.effect.prop(
+  "an uncached desk stays deferred through a signed directory outage and recovers by exact name without resealing",
+  { ...arb, outage: Schema.Literals([401, 503, "oversized"]) },
+  ({ alarm, base, outage, ship, useDefault }) =>
+    Effect.gen(function* proof() {
+      const { config, files, resolver, secrets, signer, target } =
+        yield* fixture(base, alarm, ship, useDefault);
+
+      const configured = {
+        ...config,
+        alarm: {
+          ...config.alarm,
+          maintenanceLookup: true,
+          musterDesk: deskName,
+        },
+      };
+
+      const fs = yield* FileSystem.FileSystem;
+      const directory = yield* fs.makeTempDirectoryScoped();
+      const doc = yield* document(target);
+      const now = yield* Clock.currentTimeMillis;
+      const id = "00000000000000000000-00000000000000000000000000000001";
+
+      const queued = Schema.TaggedStruct("Queued", {
+        at: Schema.Int,
+        decidedAt: Schema.Int,
+        fallback: Schema.Boolean,
+        text: Schema.String,
+      }).make({
+        at: 0,
+        decidedAt: now,
+        fallback: false,
+        text: "private maintenance notice",
+      });
+
+      const requests = { [`${id}.json`]: queued };
+      let available = false;
+      const sent: string[] = [];
+      let lookupCount = 0;
+      let rejectFirstSend = true;
+
+      yield* fs.writeFileString(
+        `${directory}/maintenance.json`,
+        JSON.stringify({ requests, version: 1, windows: [] })
+      );
+
+      const http = HttpClient.make((request) =>
+        Effect.gen(function* accept() {
+          const url = new URL(request.url);
+          const lookup = url.pathname === `/xrpc/${ListNames.Method.nsid}`;
+
+          const caller = yield* authenticate({
+            audience: `${settings.serviceDid}#mailbox`,
+            authorization: request.headers.authorization ?? null,
+            now: yield* Clock.currentTimeMillis,
+            nsid: lookup ? ListNames.Method.nsid : Send.Method.nsid,
+          });
+
+          expect(caller).toBe(signer.did);
+
+          if (lookup) {
+            lookupCount += 1;
+            expect(request.method).toBe("GET");
+            expect(url.searchParams.get("match")).toBe(deskName);
+
+            if (!available) {
+              return HttpClientResponse.fromWeb(
+                request,
+                outage === "oversized"
+                  ? Response.json({ filler: " ".repeat(256 * 1024), names: [] })
+                  : Response.json(
+                      { error: "LookupUnavailable" },
+                      { status: outage }
+                    )
+              );
+            }
+
+            const cursor = url.searchParams.get("cursor");
+            const name = cursor === null ? `${deskName}-copy` : deskName;
+            const row = { did: target.did, document: doc, name };
+
+            return HttpClientResponse.fromWeb(
+              request,
+              Response.json(
+                cursor === null
+                  ? { cursor: "fixture", names: [row] }
+                  : { names: [row] }
+              )
+            );
+          }
+
+          if (!(request.body instanceof HttpBody.Uint8Array)) {
+            return yield* Effect.die("Expected a sealed admission request");
+          }
+
+          const body = new TextDecoder().decode(request.body.body);
+
+          const { envelope } = yield* Schema.decodeEffect(
+            Schema.fromJsonString(Send.Input)
+          )(body);
+
+          sent.push(body);
+          expect(envelope.aad.recipientDid).toBe(target.did);
+
+          if (rejectFirstSend) {
+            rejectFirstSend = false;
+
+            return HttpClientResponse.fromWeb(
+              request,
+              Response.json({ error: "InvalidRequest" }, { status: 400 })
+            );
+          }
+
+          return HttpClientResponse.fromWeb(
+            request,
+            Response.json({
+              receipt: {
+                message: {
+                  messageId: envelope.aad.messageId,
+                  senderDid: signer.did,
+                },
+                recipientDid: target.did,
+                seq: 1,
+                state: "accepted",
+              },
+            })
+          );
+        }).pipe(
+          Effect.provide(resolver),
+          Effect.provideService(
+            ReplayAuthority,
+            ReplayAuthority.of({ consume: () => Effect.void })
+          ),
+          Effect.orDie
+        )
+      );
+
+      const attempt = (text: string) =>
+        prepareMaintenanceNotice(configured, deskName, text).pipe(
+          Effect.provide(files),
+          Effect.provideService(SecretStore, secrets(false)),
+          Effect.provideService(HttpClient.HttpClient, http)
+        );
+
+      const send = (receipt: typeof MaintenanceNoticeReceipt.Type) =>
+        sendAlarmDelivery(configured, receipt, "maintenance").pipe(
+          Effect.provide(files),
+          Effect.provideService(SecretStore, secrets(false)),
+          Effect.provideService(HttpClient.HttpClient, http)
+        );
+
+      const delivery = deliverMaintenance(directory, {
+        prepare: attempt,
+        send,
+        unavailable: Effect.void,
+      });
+
+      yield* delivery;
+      yield* delivery;
+      yield* delivery;
+
+      const pending = yield* maintenanceStatusRows(directory, now);
+
+      expect(pending.requests).toEqual([
+        { decidedAt: now, decision: "unknown", delivery: "deferred", id },
+      ]);
+      expect(sent).toEqual([]);
+      expect(lookupCount).toBe(3);
+      available = true;
+      yield* delivery;
+      yield* delivery;
+
+      const delivered = yield* maintenanceStatusRows(directory, now);
+
+      expect(delivered.requests).toEqual([
+        { decidedAt: now, decision: "unknown", delivery: "sent", id },
+      ]);
+      expect(sent).toHaveLength(2);
+      expect(sent[0]).toBe(sent[1]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  { arbitrary: { runs: 10 } }
+);
 
 it.effect.prop(
   "ops health refuses a cached name whose authoritative peer document is missing before reading name health",

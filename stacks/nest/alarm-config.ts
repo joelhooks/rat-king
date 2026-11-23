@@ -71,6 +71,18 @@ const SystemdPath = Schema.NonEmptyString.check(
   )
 );
 
+const MaintenanceStatusPath = SystemdPath.check(
+  Schema.isMaxLength(1024),
+  Schema.makeFilter(
+    (file) =>
+      file
+        .slice(1)
+        .split("/")
+        .every((part) => part !== "" && part !== "." && part !== "..") ||
+      "expected a normalized absolute status filename"
+  )
+);
+
 const ServiceAccount = Schema.String.check(
   Schema.isPattern(/^[a-z_][a-z0-9_-]{0,30}$/u),
   Schema.makeFilter(
@@ -165,6 +177,8 @@ const AlarmCommon = Schema.Struct({
       path: SystemdPath,
     })
   ),
+  maintenanceLookup: Schema.optionalKey(Schema.Boolean),
+  maintenanceStatusPath: Schema.optionalKey(MaintenanceStatusPath),
   musterDesk: AgentName,
   notify: Schema.Struct({
     config: Schema.optionalKey(Schema.NonEmptyString),
