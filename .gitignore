@@ -4,6 +4,7 @@ dist/
 .agent_sources/
 .agent-sources/
 .pi/
+.peons/
 .brain/
 BRAIN.md
 .fence-tmp/
