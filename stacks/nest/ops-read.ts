@@ -4,6 +4,8 @@ import { FetchHttpClient } from "effect/http";
 import { secretStoreLayer } from "../../apps/mailbox/cli/secrets.ts";
 import type { MailboxHealthValue } from "../../packages/mailbox-client/src/health.ts";
 import { AgentName } from "../../packages/ratking-client/src/name.ts";
+import { AlarmSourcesOff, alarmSourceMetadata } from "./alarm-config.ts";
+import type { AlarmSettingsValue } from "./alarm-config.ts";
 import { prepareAlarmMail } from "./alarm-mail.ts";
 import { collectComms, Counts } from "./comms.ts";
 import type { CountsValue } from "./comms.ts";
@@ -24,12 +26,15 @@ const Mailbox = Schema.Struct({
   storage: Schema.Struct({ slots: Digest.fields.storage.fields.slots }),
 });
 
+const alarmSourceFields = { alarmSources: Schema.optionalKey(AlarmSourcesOff) };
+
 const OpsDigest = Schema.Struct({
+  ...alarmSourceFields,
   at: Schema.DateTimeUtcFromString,
   comms: Schema.Struct({
     fallbacks_24h: Count,
     lost_24h: Count,
-    quarantined_24h: Count,
+    quarantined_24h: Schema.NullOr(Count),
     sent_24h: Count,
   }),
   issueCount: Count,
@@ -38,6 +43,7 @@ const OpsDigest = Schema.Struct({
 });
 
 const OpsHealth = Schema.Struct({
+  ...alarmSourceFields,
   mailbox: Mailbox,
   name: OpsName,
   quietUnacked: Count,
@@ -65,6 +71,7 @@ const Service = Schema.Struct({
 });
 
 const MailboxOpsHealth = Schema.Struct({
+  ...alarmSourceFields,
   mailbox: Mailbox,
   name: Schema.Literal("mailbox"),
   services: Schema.Struct({
@@ -120,13 +127,16 @@ const digestStatus = (status: HealthDigest["status"], counts: CountsValue) => {
 export const projectOpsDigest = (
   health: HealthDigest,
   counts: CountsValue,
-  now: number
+  now: number,
+  settings?: AlarmSettingsValue
 ): typeof OpsDigest.Type => ({
+  ...alarmSourceMetadata(settings),
   at: DateTime.makeUnsafe(now),
   comms: {
     fallbacks_24h: counts.fallbacks,
     lost_24h: counts.lost,
-    quarantined_24h: counts.quarantined,
+    quarantined_24h:
+      settings?.sources?.quarantine === false ? null : counts.quarantined,
     sent_24h: counts.sent,
   },
   issueCount: health.reasons.length,
@@ -142,13 +152,20 @@ export const opsDigest = <E, R>(
     const now = yield* Clock.currentTimeMillis;
 
     const results = yield* Effect.all(
-      { counts: collectComms(config.comms.local, now - 86_400_000), health },
+      {
+        counts: collectComms(
+          config.comms.local,
+          now - 86_400_000,
+          config.alarm?.sources?.quarantine === false ? "receipts" : undefined
+        ),
+        health,
+      },
       { concurrency: "unbounded" }
     );
 
     return yield* boundedPrint(
       OpsDigest,
-      projectOpsDigest(results.health, results.counts, now)
+      projectOpsDigest(results.health, results.counts, now, config.alarm)
     );
   }).pipe(
     Effect.provide(Logger.layer([])),
@@ -206,11 +223,15 @@ export const projectMailboxOpsHealth = (
 });
 
 export const opsMailboxHealth = <E, R>(
-  health: Effect.Effect<HealthDigest, E, R>
+  health: Effect.Effect<HealthDigest, E, R>,
+  settings?: AlarmSettingsValue
 ) =>
   health.pipe(
     Effect.flatMap((value) =>
-      boundedPrint(MailboxOpsHealth, projectMailboxOpsHealth(value))
+      boundedPrint(MailboxOpsHealth, {
+        ...projectMailboxOpsHealth(value),
+        ...alarmSourceMetadata(settings),
+      })
     ),
     Effect.provide(Logger.layer([])),
     Effect.timeout("20 seconds"),
@@ -260,10 +281,10 @@ export const opsHealth = <E, R>(
     const facts = yield* readOpsName(config, name);
     const mailbox = yield* health.pipe(Effect.mapError(unavailable));
 
-    return yield* boundedPrint(
-      OpsHealth,
-      projectOpsHealth(name, facts, mailbox, yield* Clock.currentTimeMillis)
-    );
+    return yield* boundedPrint(OpsHealth, {
+      ...projectOpsHealth(name, facts, mailbox, yield* Clock.currentTimeMillis),
+      ...alarmSourceMetadata(config.alarm),
+    });
   }).pipe(
     Effect.provide([
       FetchHttpClient.layer,

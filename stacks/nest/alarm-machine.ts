@@ -81,7 +81,7 @@ export const advanceAlarm = (
   now: number,
   renotifyMs: number
 ) => {
-  if (reading.status === "unknown" || reading.status === "maintenance") {
+  if (reading.status !== "ok" && reading.status !== "firing") {
     return { notice: "none" as const, state: prior };
   }
 

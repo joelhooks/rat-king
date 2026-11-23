@@ -2,7 +2,7 @@ import { Effect, FileSystem, Path, Schema } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 import { runCommand } from "../../packages/ratking-client/src/process.ts";
-import { SystemdAlarmSettings } from "./alarm-config.ts";
+import { SystemdAlarmSettings, alarmSourceMetadata } from "./alarm-config.ts";
 import type { AlarmSettingsValue } from "./alarm-config.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
@@ -218,12 +218,18 @@ export const stageAlarmCheck = Effect.fn("Alarm.checkStage")(
       return yield* new FleetError({ reason: "Alarm configuration required" });
     }
 
-    const checked = yield* alarmCheck(config.alarm, readings);
+    const observed = yield* alarmCheck(config.alarm, readings);
+
+    const checked = { ...observed, ...alarmSourceMetadata(config.alarm) };
 
     const remote =
       config.comms.remote === undefined
         ? { "comms.remote": "not configured" }
         : {};
+
+    if (config.alarm.sources?.doctor === false) {
+      return { ...checked, ...remote, "doctor.primary": "off" };
+    }
 
     if (config.doctor === undefined) {
       return { ...checked, ...remote, "doctor.primary": "missing" };

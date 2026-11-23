@@ -15,6 +15,9 @@ if not config.get("onlyQuarantine", False):
         for line in source:
             emit({"kind": "receipt", "line": line})
 
+if config.get("skipQuarantine", False):
+    sys.exit(0)
+
 if not os.path.isdir(config["quarantine"]):
     raise RuntimeError("Missing quarantine directory")
 

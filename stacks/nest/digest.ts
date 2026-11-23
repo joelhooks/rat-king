@@ -1,6 +1,7 @@
 import { Clock, Console, DateTime, Effect, FileSystem, Schema } from "effect";
 
 import { refuse } from "../../packages/alchemy-nest/src/files.ts";
+import { alarmSourceMetadata } from "./alarm-config.ts";
 import { readAlarmJournal } from "./alarm-journal.ts";
 import type { SourceState } from "./alarm-sources.ts";
 import { collectComms, doneBar } from "./comms.ts";
@@ -36,7 +37,8 @@ export const composeDigest = (
   doctor?: {
     readonly reasons: readonly string[];
     readonly status: "ok" | "warn" | "fail";
-  }
+  },
+  quarantineOff = false
 ) => {
   const { fallbacks, lost, quarantined, sent } = local;
 
@@ -70,7 +72,7 @@ export const composeDigest = (
     comms: {
       fallbacks_24h: fallbacks,
       lost_24h: lost,
-      quarantined_24h: quarantined,
+      quarantined_24h: quarantineOff ? null : quarantined,
       sent_24h: sent,
     },
     rat_king: health,
@@ -79,14 +81,18 @@ export const composeDigest = (
   };
 };
 
-export const commsCounts = (config: StageConfigValue, now: number) =>
+export const commsCounts = (
+  config: StageConfigValue,
+  now: number,
+  mode?: "receipts"
+) =>
   Effect.all(
     {
-      primary: collectComms(config.comms.local, now - 86_400_000),
+      primary: collectComms(config.comms.local, now - 86_400_000, mode),
       secondary:
         config.comms.remote === undefined
           ? Effect.succeed(null)
-          : collectComms(config.comms.remote, now - 86_400_000),
+          : collectComms(config.comms.remote, now - 86_400_000, mode),
     },
     { concurrency: "unbounded" }
   );
@@ -144,7 +150,15 @@ export const digest = Effect.fn("Nest.digest")(function* digest<E, R = never>(
   }
 
   const now = yield* Clock.currentTimeMillis;
-  const { primary } = yield* commsCounts(config, now);
+  const metadata = alarmSourceMetadata(config.alarm);
+  const quarantineOff = metadata.alarmSources?.quarantine === "off";
+  const doctorOff = metadata.alarmSources?.doctor === "off";
+
+  const { primary } = yield* commsCounts(
+    config,
+    now,
+    quarantineOff ? "receipts" : undefined
+  );
 
   const facts = yield* health(prior).pipe(
     Effect.catch(() =>
@@ -159,7 +173,8 @@ export const digest = Effect.fn("Nest.digest")(function* digest<E, R = never>(
     facts,
     primary,
     DateTime.formatIso(DateTime.makeUnsafe(now)).replace(/\.\d{3}Z$/u, "Z"),
-    yield* configDoctor(config)
+    doctorOff ? undefined : yield* configDoctor(config),
+    quarantineOff
   );
 
   const mail = yield* waitingMail;
@@ -174,10 +189,11 @@ export const digest = Effect.fn("Nest.digest")(function* digest<E, R = never>(
 
   const line = {
     ...composed,
+    ...metadata,
     doctorUnavailableCount: doctorCount,
     reasons: [
       ...composed.reasons,
-      ...doctorSummary,
+      ...(doctorOff ? [] : doctorSummary),
       ...digestMaintenanceReasons(journal.sources, now),
       ...mail,
     ],

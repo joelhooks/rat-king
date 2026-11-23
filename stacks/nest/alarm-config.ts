@@ -115,6 +115,34 @@ export const ConfiguredWakeTargets = Schema.optionalKey(
   Schema.Array(ConfiguredWakeTarget)
 );
 
+const AlarmSourceSwitches = Schema.Struct({
+  doctor: Schema.optionalKey(Schema.Boolean),
+  quarantine: Schema.optionalKey(Schema.Boolean),
+  receipts: Schema.optionalKey(Schema.Boolean),
+});
+
+export const AlarmSourcesOff = Schema.Struct({
+  doctor: Schema.optionalKey(Schema.Literal("off")),
+  quarantine: Schema.optionalKey(Schema.Literal("off")),
+  receipts: Schema.optionalKey(Schema.Literal("off")),
+});
+
+export const alarmSourceMetadata = (settings?: AlarmSettingsValue) => {
+  const switches = settings?.sources;
+
+  const alarmSources: Partial<
+    Record<keyof typeof AlarmSourcesOff.Type, "off">
+  > = {};
+
+  for (const source of ["doctor", "quarantine", "receipts"] as const) {
+    if (switches?.[source] === false) {
+      alarmSources[source] = "off";
+    }
+  }
+
+  return Object.keys(alarmSources).length === 0 ? {} : { alarmSources };
+};
+
 const AlarmCommon = Schema.Struct({
   broadcast: AgentName,
   cacheHealth: Schema.optionalKey(Schema.NonEmptyString),
@@ -182,6 +210,7 @@ const AlarmCommon = Schema.Struct({
       receipt: Schema.NonEmptyString,
     })
   ),
+  sources: Schema.optionalKey(AlarmSourceSwitches),
   turnRecords: Schema.optionalKey(Schema.Boolean),
   wakeOnMail: Schema.optionalKey(
     Schema.Array(
@@ -224,6 +253,7 @@ export const Severity = Schema.Literals(["warn", "critical"]);
 
 export const AlarmReading = Schema.Union([
   Schema.Struct({ status: Schema.Literal("ok") }),
+  Schema.Struct({ status: Schema.Literal("off") }),
   Schema.Struct({
     evidence: Schema.optionalKey(Schema.String),
     status: Schema.Literal("unknown"),
