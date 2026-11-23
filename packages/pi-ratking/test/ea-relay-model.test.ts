@@ -7,12 +7,17 @@ import {
   deliverRelay,
   projectRelay,
   RelayRecord,
+  relayRecord,
 } from "@rat-king/ratking-client/relay";
 import { Effect, Option, Schema } from "effect";
 import { asyncModelRun } from "fast-check";
 import type { AsyncCommand } from "fast-check";
 import { expect } from "vitest";
 
+import {
+  defaultPreferences,
+  defaultStatus,
+} from "../../mailbox-client/src/attention.ts";
 import { inboundLines } from "../src/message-view.ts";
 
 const Step = Schema.Struct({
@@ -69,7 +74,42 @@ it.prop(
   "front relay wakes staff for work, but not for copied context",
   [Schema.String, Schema.Boolean],
   ([body, quiet]) => {
-    for (const cc of [false, true]) {
+    for (const mode of [
+      "old work",
+      "old copy",
+      "new work",
+      "new copy",
+    ] as const) {
+      const copy = mode.endsWith("copy");
+
+      const original = {
+        body,
+        cc: copy,
+        ccNames: mode === "new copy" ? [] : [copy ? "desk/ea" : "observer"],
+        did: "sender",
+        from: "peer",
+        id: "source",
+        kind: "message",
+        label: Option.none(),
+        ...(quiet ? { quiet: true } : undefined),
+        replyTo: Option.none(),
+        summary: Option.none(),
+        to: copy || mode === "new work" ? "another-recipient" : "desk",
+        verified: true,
+      } satisfies Inbound;
+
+      const encoded = relayRecord(original, true);
+      const { copy: _flag, ...old } = encoded;
+      const wire = mode.startsWith("old") ? old : encoded;
+
+      if (!mode.startsWith("old")) {
+        expect(wire).toHaveProperty("copy", copy);
+      }
+
+      expect(Schema.decodeUnknownSync(LegacyRelay)(wire).cc).toBe(
+        mode !== "new copy"
+      );
+
       const projected = projectRelay(
         { fallbackMinutes: 10, mode: "front", name: "desk", to: "desk/ea" },
         "desk/ea",
@@ -77,21 +117,7 @@ it.prop(
           did: "desk",
           from: "desk",
           id: "relay-envelope",
-          record: {
-            $type: "sh.mschf.ratking.relay#message",
-            body,
-            cc,
-            did: "sender",
-            encrypted: true,
-            from: "peer",
-            id: "source",
-            kind: "message",
-            label: null,
-            ...(quiet ? { quiet: true as const } : undefined),
-            replyTo: null,
-            summary: null,
-            verified: true,
-          },
+          record: wire,
           replyTo: Option.none(),
           verified: true,
         }
@@ -101,14 +127,44 @@ it.prop(
 
       const verdict = attend(
         incoming,
-        { enabled: true, owner: "peer" },
+        { enabled: true },
         0,
         undefined,
         Option.none()
       );
 
-      expect(verdict._tag).toBe(cc ? "Next" : "Now");
-      expect(formatReason(verdict.reason)).toBe(cc ? "quiet: cc" : "woken: to");
+      expect(incoming.cc).toBe(copy);
+      expect(verdict._tag).toBe(copy ? "Next" : "Now");
+      expect(formatReason(verdict.reason)).toBe(
+        copy ? "quiet: cc" : "woken: to"
+      );
+
+      if (copy) {
+        const prefs = defaultPreferences();
+
+        const dnd = attend(
+          incoming,
+          {
+            enabled: true,
+            prefs,
+            status: { ...defaultStatus(), state: "dnd" },
+          },
+          0,
+          undefined,
+          Option.none()
+        );
+
+        const refused = attend(
+          incoming,
+          { enabled: true, prefs: { ...prefs, refuse: ["peer"] } },
+          0,
+          undefined,
+          Option.none()
+        );
+
+        expect(dnd._tag).toBe("Later");
+        expect(refused._tag).toBe("Never");
+      }
     }
   }
 );

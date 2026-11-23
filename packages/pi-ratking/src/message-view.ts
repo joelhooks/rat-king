@@ -35,6 +35,7 @@ import { Party } from "./ui/party.ts";
 
 const Details = Schema.Struct({
   body: Schema.String,
+  bodyLimit: Schema.optional(Schema.Number),
   canRead: Schema.optional(Schema.Boolean),
   cc: Schema.Boolean,
   ccNames: Schema.optional(Schema.Array(Schema.String)),
@@ -220,7 +221,7 @@ const previewBody = (
   const body = renderInboundBody(
     tool,
     value,
-    undefined,
+    value.bodyLimit,
     value.canRead === true
   );
 

@@ -67,6 +67,9 @@ const factsOf = (entry: ReceivedMail) => {
     ...(received.verified ? [] : ["unverified"]),
     ...(entry.encrypted === false ? ["plaintext"] : []),
     ...(entry.redelivered === true ? ["redelivered"] : []),
+    ...(entry.ackOutcome !== undefined && entry.ackOutcome !== "acked"
+      ? [`display ack: ${entry.ackOutcome}`]
+      : []),
   ];
 };
 

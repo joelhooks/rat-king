@@ -175,11 +175,13 @@ export const renderInboundBody = (
   max = bodyLimit(inbound),
   canRead = false
 ) => {
-  const body =
-    inbound.kind === "data" ? renderRecordBody(inbound.body) : inbound.body;
+  const { body } = inbound;
+
+  const render = (text: string) =>
+    inbound.kind === "data" ? renderRecordBody(text) : text;
 
   if (body.length <= max || inbound.encrypted !== false || !canRead) {
-    return body;
+    return render(body);
   }
 
   const end =
@@ -187,7 +189,12 @@ export const renderInboundBody = (
 
   const hint = `read the full body with ${tool}({ action: "read", id: ${JSON.stringify(inbound.id)} })`;
 
-  return `${body.slice(0, end)}…\n(clipped; ${hint})`;
+  const preview = `${body.slice(0, end)}…`;
+
+  const clipped =
+    inbound.kind === "data" ? `\`\`\`json\n${preview}\n\`\`\`` : preview;
+
+  return `${clipped}\n(clipped; ${hint})`;
 };
 
 export const renderInbound = (

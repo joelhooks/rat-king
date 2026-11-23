@@ -1,5 +1,6 @@
 import { AskFailed, Inbox } from "@rat-king/ratking-client/ratking";
 import type { Peeked } from "@rat-king/ratking-client/ratking";
+import type { ReceivedMail } from "@rat-king/ratking-client/received-mail";
 import { Console, Effect, Option, Result, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
@@ -134,6 +135,43 @@ export const inboxCommand = Command.make(
   )
 );
 
+const readEntry = (
+  id: string,
+  saved: Option.Option<ReceivedMail>,
+  warning: string | undefined
+) =>
+  Effect.gen(function* readLatest() {
+    if (Option.isSome(saved) && saved.value.acked !== false) {
+      return { ...saved.value, state: "acked" };
+    }
+
+    const found = yield* locate(id).pipe(
+      Effect.map(({ entry }) => Option.some(entry)),
+      Effect.catchIf(
+        (error) =>
+          Schema.is(AskFailed)(error) && error.code === "NoSuchMessage",
+        () => Effect.succeed(Option.none<Peeked>())
+      )
+    );
+
+    if (Option.isSome(found)) {
+      return Option.isSome(saved) && saved.value.ackOutcome !== undefined
+        ? { ...found.value, ackOutcome: saved.value.ackOutcome }
+        : found.value;
+    }
+
+    if (Option.isSome(saved)) {
+      return { ...saved.value, state: saved.value.ackOutcome ?? "unknown" };
+    }
+
+    const error = notFound(id);
+
+    return yield* new AskFailed({
+      code: error.code,
+      reason: `${error.reason}; ${warning ?? "if shown earlier, it may have expired from the local journal"}`,
+    });
+  });
+
 export const readCommand = Command.make(
   "read",
   { ...commonFlags, id: Argument.String("id") },
@@ -149,21 +187,7 @@ export const readCommand = Command.make(
 
         const saved = Result.isSuccess(local) ? local.success : Option.none();
 
-        const entry = Option.isSome(saved)
-          ? {
-              ...saved.value,
-              state: saved.value.acked === false ? "delivered" : "acked",
-            }
-          : (yield* locate(args.id).pipe(
-              Effect.mapError((error) =>
-                !Schema.is(AskFailed)(error) || error.code !== "NoSuchMessage"
-                  ? error
-                  : new AskFailed({
-                      code: error.code,
-                      reason: `${error.reason}; ${warning ?? "if shown earlier, it may have expired from the local journal"}`,
-                    })
-              )
-            )).entry;
+        const entry = yield* readEntry(args.id, saved, warning);
 
         return {
           document: withField(

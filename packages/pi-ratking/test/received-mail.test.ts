@@ -146,7 +146,7 @@ it.effect.prop(
       );
       const stale = `${state}/received-mail/tester.json.corrupt-0`;
       yield* fs.writeFileString(stale, "broken plaintext");
-      expect(yield* journal.find("fourth")).toBeDefined();
+      expect(Option.isSome(yield* journal.find("fourth"))).toBe(true);
       expect(yield* fs.exists(stale)).toBe(true);
       yield* TestClock.adjust(RECEIVED_MAIL_TTL_MS);
       expect(yield* journal.find("fourth")).toEqual(Option.none());

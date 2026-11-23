@@ -2,6 +2,7 @@ import { Effect, Option, Schema, Semaphore } from "effect";
 import { createMachine, transition } from "xstate";
 
 import type { RelaySettingValue } from "./config.ts";
+import { addressedElsewhere } from "./name.ts";
 import { Kind, PassSource } from "./payload.ts";
 import type { Inbound, InboundRecord, LexiconRecordValue } from "./payload.ts";
 
@@ -10,7 +11,7 @@ export const RelayRecord = Schema.Struct({
   body: Schema.String,
   cc: Schema.Boolean,
   ccNames: Schema.optionalKey(Schema.Array(Schema.String)),
-  copy: Schema.optionalKey(Schema.Literal(true)),
+  copy: Schema.optionalKey(Schema.Boolean),
   did: Schema.String,
   encrypted: Schema.Boolean,
   expiresAt: Schema.optionalKey(Schema.String),
@@ -77,8 +78,9 @@ export const relayRecord = (
   const record: typeof RelayRecord.Type = {
     $type: "sh.mschf.ratking.relay#message",
     body: inbound.body,
-    cc: inbound.cc,
+    cc: (inbound.ccNames?.length ?? 0) > 0,
     ...passiveFlags(inbound),
+    copy: inbound.cc,
     did: inbound.did,
     encrypted,
     from: inbound.from,
@@ -116,7 +118,7 @@ export const relayRecord = (
 export const relayedInbound = (record: typeof RelayRecord.Type): Inbound => {
   const inbound: Inbound = {
     body: record.body,
-    cc: record.cc,
+    cc: record.copy === true,
     ...passiveFlags(record),
     did: record.did,
     encrypted: record.encrypted,
@@ -173,6 +175,26 @@ const sentCopy = (
   verified: true,
 });
 
+const relayCopy = (
+  record: typeof RelayRecord.Type,
+  ownName: string,
+  desk: string
+) => {
+  if (record.copy !== undefined) {
+    return record.copy;
+  }
+
+  if (!record.cc) {
+    return false;
+  }
+
+  return record.to === undefined
+    ? (record.ccNames?.some((name) => name === ownName || name === desk) ??
+        false)
+    : addressedElsewhere({}, record.to, ownName) &&
+        addressedElsewhere({}, record.to, desk);
+};
+
 export const projectRelay = (
   config: RelaySettingValue,
   ownName: string,
@@ -194,17 +216,23 @@ export const projectRelay = (
 
   return Schema.decodeUnknownOption(RelayRecord)(inbound.record).pipe(
     Option.filter((record) => record.kind !== "data"),
-    Option.map((record) => ({
-      ...relayedInbound(record),
-      encrypted: inbound.encrypted !== false || record.encrypted,
-      relay: {
-        did: inbound.did,
-        encrypted: record.encrypted,
-        name: config.name,
-      },
-      routedCopy: record.cc || record.copy === true,
-      routedWake: config.mode === "front" && !record.cc && record.copy !== true,
-    }))
+    Option.map((record) => {
+      const copy = relayCopy(record, ownName, config.name);
+
+      return {
+        ...relayedInbound(record),
+        cc: copy,
+        copy,
+        encrypted: inbound.encrypted !== false || record.encrypted,
+        relay: {
+          did: inbound.did,
+          encrypted: record.encrypted,
+          name: config.name,
+        },
+        routedCopy: copy,
+        routedWake: config.mode === "front" && !copy,
+      };
+    })
   );
 };
 

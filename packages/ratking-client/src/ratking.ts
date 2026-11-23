@@ -97,6 +97,7 @@ import {
   verifiedSender,
 } from "./name.ts";
 import {
+  COPY_BODY_MAX,
   decodePayload,
   decodeRecord,
   PayloadJson,
@@ -636,6 +637,14 @@ const unsettled = (event: Defs.MessageEventValue) =>
   event.receipt.state !== "expired" &&
   event.receipt.state !== "failed";
 
+const clipsCopy = (inbound: Inbound | InboundRecord) =>
+  !("record" in inbound) &&
+  inbound.cc &&
+  inbound.encrypted === false &&
+  inbound.sentBy === undefined &&
+  inbound.noReply !== true &&
+  inbound.body.length > COPY_BODY_MAX;
+
 const legacyCc = (
   to: string | undefined,
   cc: readonly string[] | undefined,
@@ -929,7 +938,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     sourceId: string
   ) =>
     Effect.gen(function* stagePlaintext() {
-      if (inbound.encrypted !== false) {
+      if (!clipsCopy(inbound)) {
         return Option.none<() => boolean>();
       }
 
@@ -982,9 +991,14 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       })
     );
 
-  const displayAck = (id: string, onAcked = Effect.void) =>
+  const displayAck = (
+    id: string,
+    onOutcome?: (
+      outcome: NonNullable<ReceivedMail["ackOutcome"]>
+    ) => Effect.Effect<void>
+  ) =>
     acknowledgments.get(id)?.pipe(
-      Effect.tap((outcome) => (outcome === "acked" ? onAcked : Effect.void)),
+      Effect.tap((outcome) => onOutcome?.(outcome) ?? Effect.void),
       Effect.asVoid,
       Effect.tap(() =>
         Effect.sync(() => {
@@ -1004,15 +1018,16 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
   ) =>
     displayAck(
       id,
-      inbound.encrypted === false
-        ? localMail(name).pipe(
-            Effect.flatMap((mail) => mail.markAcked(inbound.id)),
-            Effect.matchEffect({
-              onFailure: (error) => warnSave(inbound.id, error._tag),
-              onSuccess: () => Effect.void,
-            })
-          )
-        : Effect.void
+      clipsCopy(inbound)
+        ? (outcome) =>
+            localMail(name).pipe(
+              Effect.flatMap((mail) => mail.markOutcome(inbound.id, outcome)),
+              Effect.matchEffect({
+                onFailure: (error) => warnSave(inbound.id, error._tag),
+                onSuccess: () => Effect.void,
+              })
+            )
+        : undefined
     );
 
   const relayed = new Map<string, string>();

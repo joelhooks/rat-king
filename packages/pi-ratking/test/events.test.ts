@@ -1083,46 +1083,13 @@ it.live.prop(
       });
       yield* Deferred.await(taken).pipe(Effect.timeout("5 seconds"));
 
-      if (mode === "relay") {
-        const journal = yield* receivedMail(state, "tester");
-        const staged = yield* journal.find("3m7x2ka4xv22a");
-        expect(Option.getOrUndefined(staged)).toMatchObject({
-          acked: false,
-          redelivered: false,
-          seq: 1,
-        });
-      }
-
       display();
       yield* Deferred.await(acked).pipe(Effect.timeout("5 seconds"));
 
       if (relay) {
         const journal = yield* receivedMail(state, "tester");
 
-        const stored = yield* journal.find("3m7x2ka4xv22a").pipe(
-          Effect.repeat({
-            schedule: Schedule.spaced("10 millis"),
-            until: (item) =>
-              encrypted || Option.exists(item, (entry) => entry.acked === true),
-          }),
-          Effect.timeout("2 seconds")
-        );
-
-        if (encrypted) {
-          expect(Option.isNone(stored)).toBe(true);
-        } else {
-          expect(Option.getOrUndefined(stored)).toMatchObject({
-            acked: true,
-            encrypted: false,
-            received: {
-              body,
-              encrypted: false,
-              expiresAt: "2099-01-01T00:00:00.000Z",
-            },
-            redelivered: false,
-            seq: 1,
-          });
-        }
+        expect(Option.isNone(yield* journal.find("3m7x2ka4xv22a"))).toBe(true);
 
         const answered = yield* Deferred.make<
           typeof Result.Type,

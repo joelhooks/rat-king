@@ -64,7 +64,7 @@ export const mail = Effect.fn("Fixture.mail")(
     who: People,
     seq: number,
     state: string,
-    payload: Omit<PayloadValue, "from" | "to">
+    payload: Omit<PayloadValue, "from">
   ) {
     const client = yield* prepare({
       endpoint: ENDPOINT,
@@ -74,9 +74,9 @@ export const mail = Effect.fn("Fixture.mail")(
     });
 
     const text = yield* Schema.encodeEffect(PayloadJson)({
+      to: "tester",
       ...payload,
       from: "peer",
-      to: "tester",
     });
 
     const envelope = yield* client.seal(TESTER, text, { encrypt: false });
@@ -252,6 +252,13 @@ export const fakeMailbox = (
 
       if (entry === undefined) {
         return { body: { error: "MessageNotFound" }, status: 404 };
+      }
+
+      if (state === "acked" && entry.state === "expired") {
+        return {
+          body: { error: "InvalidTransition", message: "Expired message" },
+          status: 409,
+        };
       }
 
       entry.state = state;

@@ -253,6 +253,8 @@ const WakeEntry = Schema.Struct({
 const isHeld = (verdict: Verdict) =>
   Verdicts.$is("Next")(verdict) || Verdicts.$is("Later")(verdict);
 
+const MAX_DIGEST_TICK_MS = MAIL_HOLD_MS * 0.75;
+
 const holdTiming = (
   held: boolean,
   expiresAt: string | undefined,
@@ -293,6 +295,12 @@ const isCc = (mail: PendingMail) =>
   Option.exists(digestEntry(mail), (entry) => entry.cc === true);
 
 export const DIGEST_BODY_MAX = 16_000;
+
+const digestItemLimit = (mails: readonly PendingMail[]) =>
+  Math.min(
+    COPY_BODY_MAX,
+    Math.floor(DIGEST_BODY_MAX / Math.max(1, mails.filter(isCc).length))
+  );
 
 const digestBody = (tool: string, mail: PendingMail, max: number) =>
   mail.customType === "ratking_record_notice"
@@ -346,9 +354,7 @@ export const renderDigest = (
   mails: readonly PendingMail[],
   variant: DigestVariant = "cc"
 ) => {
-  const perItem = Math.floor(
-    DIGEST_BODY_MAX / Math.max(1, mails.filter(isCc).length)
-  );
+  const perItem = digestItemLimit(mails);
 
   return variant === "wake"
     ? [
@@ -1343,10 +1349,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
     const dispatch: MailDispatch = {
       mail: inbox({
         digest: (mails, variant, delivery = DISPLAY_ONLY) => {
-          const budget = Math.min(
-            COPY_BODY_MAX,
-            Math.floor(DIGEST_BODY_MAX / Math.max(1, mails.filter(isCc).length))
-          );
+          const budget = digestItemLimit(mails);
 
           const inline = mails.filter((pending) => {
             if (
@@ -1375,6 +1378,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
             return;
           }
 
+          const itemLimit = digestItemLimit(inline);
           dispatch.send(
             {
               content: renderDigest(tool, inline, variant),
@@ -1382,7 +1386,8 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               details: {
                 ...digestDetails(inline, variant),
                 messages: inline.map(
-                  (held) => held.presentation?.().details ?? held.details
+                  (held) =>
+                    held.presentation?.(itemLimit).details ?? held.details
                 ),
               },
               display: true,
@@ -1799,7 +1804,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
           yield* applyDelivery(verdictToHold(verdict), {
             inject: (hold) =>
               Effect.sync(() => {
-                const presentation = () => {
+                const presentation = (bodyLimit?: number) => {
                   const available = canRead?.() === true;
                   const message = renderInbound(tool, inbound, available);
 
@@ -1808,7 +1813,10 @@ export const ratkingExtension = (options: ExtensionOptions) =>
                       notice === undefined
                         ? message
                         : `${notice}\n\n${message}`,
-                    details: inboundDetails(inbound, settled, available),
+                    details: {
+                      ...inboundDetails(inbound, settled, available),
+                      bodyLimit: inbound.cc ? bodyLimit : undefined,
+                    },
                   };
                 };
 
@@ -2355,6 +2363,18 @@ export const ratkingExtension = (options: ExtensionOptions) =>
         Effect.gen(function* bootRatKing() {
           const began = yield* Clock.currentTimeMillis;
 
+          if (
+            start.digestTickMillis !== undefined &&
+            start.digestTickMillis > MAX_DIGEST_TICK_MS
+          ) {
+            yield* Effect.logInfo("Rat King digest tick clamped").pipe(
+              Effect.annotateLogs({
+                effectiveMillis: MAX_DIGEST_TICK_MS,
+                requestedMillis: start.digestTickMillis,
+              })
+            );
+          }
+
           yield* Effect.promise(async () => {
             await stopped;
           }).pipe(
@@ -2618,7 +2638,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
         start.digestTickMillis === undefined
           ? DIGEST_TICK
           : Duration.millis(
-              Math.min(start.digestTickMillis, MAIL_HOLD_MS * 0.75)
+              Math.min(start.digestTickMillis, MAX_DIGEST_TICK_MS)
             );
 
       const stopped = drainRelease ?? stop();

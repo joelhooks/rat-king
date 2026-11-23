@@ -16,7 +16,15 @@ const mailFields = {
   verified: Schema.Boolean,
 };
 
+const AckOutcome = Schema.Literals([
+  "acked",
+  "delegated",
+  "expired",
+  "settled",
+]);
+
 const ReceivedEntry = Schema.Struct({
+  ackOutcome: Schema.optionalKey(AckOutcome),
   acked: Schema.optionalKey(Schema.Boolean),
   encrypted: Schema.optionalKey(Schema.Boolean),
   received: Schema.Union([
@@ -162,7 +170,10 @@ export const receivedMail = (state: string, name: string) =>
       )
     );
 
-    const transact = (entry?: ReceivedMail, ackId?: string) =>
+    const transact = (
+      entry?: ReceivedMail,
+      ack?: { readonly id: string; readonly outcome: typeof AckOutcome.Type }
+    ) =>
       withLock(
         path.join(state, "locks"),
         `${key}-received`,
@@ -197,17 +208,24 @@ export const receivedMail = (state: string, name: string) =>
           );
 
           const stamped =
-            ackId === undefined
+            ack === undefined
               ? safe
               : safe.map((item) =>
-                  item.entry.received.id === ackId
-                    ? { ...item, entry: { ...item.entry, acked: true } }
+                  item.entry.received.id === ack.id
+                    ? {
+                        ...item,
+                        entry: {
+                          ...item.entry,
+                          ackOutcome: ack.outcome,
+                          acked: ack.outcome === "acked",
+                        },
+                      }
                     : item
                 );
 
           if (
             entry?.encrypted === false ||
-            ackId !== undefined ||
+            ack !== undefined ||
             safe.length !== entries.length
           ) {
             const next =
@@ -248,7 +266,8 @@ export const receivedMail = (state: string, name: string) =>
             )
           )
         ),
-      markAcked: (id: string) => transact(undefined, id).pipe(Effect.asVoid),
+      markOutcome: (id: string, outcome: typeof AckOutcome.Type) =>
+        transact(undefined, { id, outcome }).pipe(Effect.asVoid),
       save: (entry: ReceivedMail) => transact(entry).pipe(Effect.asVoid),
       stage: (entry: ReceivedMail) => transact({ ...entry, acked: false }),
     };

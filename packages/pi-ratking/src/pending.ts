@@ -60,7 +60,10 @@ export interface PendingMail {
   readonly cc?: boolean;
   readonly canRead?: (() => boolean) | undefined;
   readonly presentation?:
-    | (() => { readonly content: string; readonly details: unknown })
+    | ((bodyLimit?: number) => {
+        readonly content: string;
+        readonly details: unknown;
+      })
     | undefined;
   readonly coalesce?: boolean;
   readonly customType?: "ratking_record_notice";

@@ -133,6 +133,15 @@ it.prop(
 
     expect(actual._tag).toBe("Now");
     expect(actual.reason._tag).toBe("joel");
+    expect(
+      attend(
+        { ...arrival, copy: true, from: "joel" },
+        { enabled: true, prefs: preferences, status: publicStatus },
+        0,
+        undefined,
+        Option.none()
+      )._tag
+    ).toBe("Next");
   }
 );
 

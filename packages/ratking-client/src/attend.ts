@@ -292,7 +292,23 @@ export const attend = (
   suggestion: Option.Option<Verdict>
 ): Verdict => {
   if (arrival.relay !== undefined && arrival.routedCopy === true) {
-    return Verdicts.Next({ reason: Reasons.intent({ facts: ["cc"] }) });
+    const rule =
+      levers.enabled === true
+        ? ruleVerdict(arrival, levers.prefs?.rules, now)
+        : undefined;
+
+    const lever = leverVerdict(arrival, levers, now);
+
+    if (rule?._tag === "Never") {
+      return rule;
+    }
+
+    return (
+      lever ??
+      (Verdicts.$is("Later")(rule)
+        ? rule
+        : Verdicts.Next({ reason: Reasons.intent({ facts: ["cc"] }) }))
+    );
   }
 
   const verdict = preferredVerdict(arrival, levers, now, turnFold, suggestion);

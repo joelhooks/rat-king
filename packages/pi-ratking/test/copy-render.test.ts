@@ -152,6 +152,30 @@ it.prop(
   }
 );
 
+it.prop(
+  "a clipped data copy closes the JSON fence before the read hint",
+  [Schema.Int.check(Schema.isBetween({ maximum: 80, minimum: 1 }))],
+  ([extra]) => {
+    const body = JSON.stringify({
+      $type: "sh.mschf.agentgraph.outcome",
+      checkIn: "x".repeat(COPY_BODY_MAX + extra),
+      gate: "pass",
+      outcome: "committed",
+      version: "0.1",
+    });
+
+    const text = renderInbound(
+      "intercom",
+      { ...base, body, kind: "data" },
+      true
+    );
+
+    expect(text).toContain("```json\n");
+    expect(text).toContain("…\n```\n(clipped; read the full body");
+    expect(text).not.toContain(body);
+  }
+);
+
 describe("addressedElsewhere", () => {
   const reserved = {
     "alpha/desk": { aliases: ["alpha"], did: "did:web:alpha" },

@@ -189,15 +189,22 @@ it.live(
   { timeout: 30_000 }
 );
 
-it.live(
-  "the CLI projects the Pi's staged plaintext with receipt metadata before and after ack",
-  () =>
+it.live.prop(
+  "the CLI projects the Pi's staged plaintext with receipt metadata and refreshes unacked custody",
+  [Schema.Literals(["acked", "expired"])],
+  ([outcome]) =>
     Effect.gen(function* piReadback() {
       const fs = yield* FileSystem.FileSystem;
       const state = yield* fs.makeTempDirectoryScoped();
       const who = yield* people;
-      const body = heldBody(1);
-      const entry = yield* mail(who, 1, "accepted", { body });
+      const body = "x".repeat(4100);
+
+      const entry = yield* mail(who, 1, "accepted", {
+        body,
+        cc: ["tester"],
+        to: "other",
+      });
+
       const id = entry.event.receipt.message.messageId;
       const fake = fakeMailbox([entry]);
 
@@ -211,7 +218,7 @@ it.live(
         JSON.stringify({ afterSeq: 0 })
       );
 
-      const read = (receipt: "delivered" | "acked") =>
+      const read = (receipt: "delivered" | "acked" | "expired") =>
         Effect.gen(function* readTheJournal() {
           const cli = captured();
           yield* runRatking(["read", id, "--as", "tester", "--json"]).pipe(
@@ -224,22 +231,23 @@ it.live(
           );
 
           expect(doc.message).toEqual({
+            ...(receipt === "expired" ? { ackOutcome: "expired" } : undefined),
             body,
-            carbonCopy: false,
-            cc: [],
+            carbonCopy: true,
+            cc: ["tester"],
             did: who.peer.did,
             encrypted: false,
             from: "peer",
             id,
             kind: "message",
             label: null,
-            redelivered: false,
+            redelivered: receipt === "delivered",
             replyTo: null,
             seq: 1,
             state: receipt,
             summary: null,
             thread: id,
-            to: "tester",
+            to: "other",
             verified: true,
           });
         });
@@ -280,11 +288,16 @@ it.live(
         yield* read("delivered");
         const pi = yield* runAction("ratking", 1, { action: "read", id });
         expect(pi.text).toContain(body);
+
+        if (outcome === "expired") {
+          entry.state = "expired";
+        }
+
         yield* ack;
-        yield* read("acked");
+        yield* read(outcome);
       }).pipe(Effect.provide(wiring));
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
-  { timeout: 30_000 }
+  { arbitrary: { runs: 5 }, timeout: 30_000 }
 );
 
 const exitCode = Effect.sync(() => {

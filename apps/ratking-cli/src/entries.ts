@@ -16,6 +16,7 @@ export const entryDocument = (
 
   if (isRecord(received)) {
     return {
+      ackOutcome: entry.ackOutcome === "acked" ? undefined : entry.ackOutcome,
       did: received.did,
       encrypted: entry.encrypted,
       from: received.from,
@@ -31,6 +32,7 @@ export const entryDocument = (
   }
 
   return {
+    ackOutcome: entry.ackOutcome === "acked" ? undefined : entry.ackOutcome,
     body: received.body,
     carbonCopy: received.cc,
     cc: received.ccNames ?? [],
