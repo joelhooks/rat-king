@@ -11,6 +11,7 @@ import {
 import { TestClock } from "effect/testing";
 import { expect } from "vitest";
 
+import { SystemdAlarmSettings } from "../../../stacks/nest/alarm-config.ts";
 import {
   coveringWindow,
   readMaintenance,
@@ -21,6 +22,7 @@ import {
   deliverMaintenance,
   ingestMaintenance,
 } from "../../../stacks/nest/maintenance-inbox.ts";
+import { publishMaintenanceStatus } from "../../../stacks/nest/maintenance-status.ts";
 import { EncryptedEnvelope } from "../../lexicon/src/defs.ts";
 import { healthy, recorder, runTicks } from "./maintenance-fixtures.ts";
 
@@ -423,6 +425,202 @@ it.effect(
       expect(after).toContain(kept);
       expect(yield* fs.exists(dropPath(3))).toBe(true);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer))
+);
+
+it.effect.prop(
+  "desk status is atomic and redacted, and does not guess legacy decisions",
+  [SystemdAlarmSettings, Schema.Boolean],
+  ([alarm, trusted]) =>
+    Effect.gen(function* status() {
+      const fs = yield* FileSystem.FileSystem;
+      const { config, envelope, request } = yield* seed();
+      const { directory } = config;
+      const statusDirectory = `${directory}/desk`;
+      const path = `${statusDirectory}/status.json`;
+      const stateFile = `${directory}/maintenance.json`;
+
+      const legacy = Schema.TaggedStruct("Sent", {
+        decidedAt: Schema.Int,
+      }).make({ decidedAt: at - 1 });
+
+      yield* fs.writeFileString(
+        stateFile,
+        JSON.stringify({
+          requests: { [`${requestId(7)}.json`]: legacy },
+          version: 1,
+          windows: [],
+        })
+      );
+      yield* request(1);
+      yield* ingestMaintenance(config);
+      yield* request(2, { action: "end" });
+      yield* request(3, { instance: "unlisted" });
+      yield* TestClock.setTime(at + 1);
+      yield* ingestMaintenance(config);
+      yield* deliverMaintenance(directory, {
+        prepare: () => Effect.succeed({ envelope, recipient: config.desk }),
+        send: () => Effect.void,
+        unavailable: Effect.die("unexpected delivery failure"),
+      });
+
+      yield* fs.makeDirectory(statusDirectory);
+      yield* fs.chmod(statusDirectory, trusted ? 0o2750 : 0o2770);
+
+      const settings = {
+        ...alarm,
+        maintenanceStatusPath: path,
+        sources: { doctor: false },
+      };
+
+      const heartbeat = { at, consecutiveFailures: 0, outcome: "ok" as const };
+      const publish = publishMaintenanceStatus(settings, directory, heartbeat);
+
+      if (!trusted) {
+        yield* Effect.flip(publish);
+        expect(yield* fs.exists(path)).toBe(false);
+
+        return;
+      }
+
+      yield* publish;
+      const first = yield* fs.lstat(path);
+      const text = yield* fs.readFileString(path);
+
+      expect(first.mode % 0o1000).toBe(0o640);
+      expect(text).not.toMatch(
+        /private fixture reason|did:web|ciphertext|\.json|envelope|unlisted/u
+      );
+      expect(JSON.parse(text)).toEqual({
+        alarmSources: { doctor: "off" },
+        generatedAt: at + 1,
+        heartbeat: { ageMs: 1, at, outcome: "ok" },
+        requests: [
+          {
+            decidedAt: at + 1,
+            decision: "applied",
+            delivery: "sent",
+            ended: at + 1,
+            id: requestId(2),
+            instance: "mailbox",
+            owner: "owner-fixture",
+            start: at,
+            until: at + hour,
+          },
+          {
+            decidedAt: at + 1,
+            decision: "refused",
+            delivery: "sent",
+            id: requestId(3),
+            owner: "owner-fixture",
+          },
+          {
+            decidedAt: at,
+            decision: "applied",
+            delivery: "sent",
+            id: requestId(1),
+            instance: "mailbox",
+            owner: "owner-fixture",
+            start: at,
+            until: at + hour,
+          },
+          {
+            decidedAt: at - 1,
+            decision: "unknown",
+            delivery: "sent",
+            id: requestId(7),
+          },
+        ],
+        truncated: false,
+        version: 1,
+        windows: [
+          {
+            ended: at + 1,
+            id: requestId(1),
+            instance: "mailbox",
+            owner: "owner-fixture",
+            start: at,
+            until: at + hour,
+          },
+        ],
+      });
+
+      yield* publish;
+      const second = yield* fs.lstat(path);
+
+      expect(second.ino).not.toEqual(first.ino);
+      expect(yield* fs.readDirectory(statusDirectory)).toEqual(["status.json"]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  { arbitrary: { runs: 6 } }
+);
+
+it.effect.prop(
+  "status output stays bounded under journal history growth",
+  [
+    SystemdAlarmSettings,
+    Schema.Int.check(Schema.isBetween({ maximum: 160, minimum: 129 })),
+  ],
+  ([alarm, count]) =>
+    Effect.gen(function* bounded() {
+      const fs = yield* FileSystem.FileSystem;
+      const { config } = yield* seed();
+      const { directory } = config;
+      const statusDirectory = `${directory}/desk`;
+      const path = `${statusDirectory}/status.json`;
+
+      const legacy = Schema.TaggedStruct("Dropped", {
+        decidedAt: Schema.Int,
+      }).make({ decidedAt: at });
+
+      const requests = Object.fromEntries(
+        Array.from({ length: count }, (_, index) => [
+          `${requestId(index)}.json`,
+          legacy,
+        ])
+      );
+
+      const windows = Array.from({ length: count }, (_, index) => ({
+        graceMinutes: 5,
+        instance: `fixture-${index}`,
+        owner: "operator-fixture",
+        reason: "private fixture reason",
+        start: at,
+        until: at + hour,
+      }));
+
+      yield* fs.writeFileString(
+        `${directory}/maintenance.json`,
+        JSON.stringify({ requests, version: 1, windows })
+      );
+      yield* fs.makeDirectory(statusDirectory);
+      yield* fs.chmod(statusDirectory, 0o2750);
+      yield* publishMaintenanceStatus(
+        { ...alarm, maintenanceStatusPath: path },
+        directory,
+        { at, consecutiveFailures: 0, outcome: "ok" }
+      );
+
+      const bytes = yield* fs.readFile(path);
+
+      const projected = yield* Schema.decodeEffect(
+        Schema.fromJsonString(
+          Schema.Struct({
+            requests: Schema.Array(
+              Schema.Struct({
+                decision: Schema.Literal("unknown"),
+                delivery: Schema.Literal("dropped"),
+              })
+            ),
+            truncated: Schema.Literal(true),
+            windows: Schema.Array(Schema.Unknown),
+          })
+        )
+      )(new TextDecoder().decode(bytes));
+
+      expect(bytes.byteLength).toBeLessThanOrEqual(65_536);
+      expect(projected.requests).toHaveLength(128);
+      expect(projected.windows).toHaveLength(64);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  { arbitrary: { runs: 3 } }
 );
 
 it.effect.prop(

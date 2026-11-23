@@ -1,41 +1,18 @@
 import { Cause, Clock, Effect, FileSystem, Schema } from "effect";
 
 import { writePrivateJson } from "../../packages/ratking-client/src/directory.ts";
+import {
+  AlarmHeartbeat,
+  Outcome,
+  StepOutcome,
+  TaggedFailure,
+} from "./alarm-heartbeat-schema.ts";
+import type { AlarmStep } from "./alarm-heartbeat-schema.ts";
 import type { HealthDigest } from "./health.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
 
-const AlarmStep = Schema.Literals([
-  "journal.read",
-  "journal.write",
-  "facts.collect",
-  "maintenance.inbox",
-  "maintenance.notices",
-  "notifications.prepare",
-  "notifications.send",
-  "notifications.page",
-  "cycle",
-]);
-
-const ErrorTag = Schema.Literals([
-  "FleetError",
-  "PlatformError",
-  "SystemError",
-  "BadArgument",
-  "SchemaError",
-  "TimeoutError",
-  "UnknownError",
-]);
-
-const TaggedFailure = Schema.Struct({ _tag: ErrorTag });
-
-const StepOutcome = Schema.TemplateLiteral([
-  "Alarm step ",
-  AlarmStep,
-  " failed (",
-  ErrorTag,
-  ")",
-]);
+export { AlarmHeartbeat } from "./alarm-heartbeat-schema.ts";
 
 export const alarmStep = <A, E, R>(
   step: typeof AlarmStep.Type,
@@ -57,24 +34,6 @@ export const alarmStep = <A, E, R>(
       return new FleetError({ reason: `Alarm step ${step} failed (${tag})` });
     })
   );
-
-const Outcome = Schema.Union([
-  StepOutcome,
-  Schema.Literals([
-    "ok",
-    "Alarm measurements unavailable",
-    "Alarm cycle timed out",
-    "Alarm journal unavailable",
-    "Alarm notifications unavailable",
-    "Alarm operation unavailable",
-  ]),
-]);
-
-export const AlarmHeartbeat = Schema.Struct({
-  at: Schema.Finite,
-  consecutiveFailures: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
-  outcome: Outcome,
-});
 
 interface AlarmCycleFailure {
   readonly _tag: string;

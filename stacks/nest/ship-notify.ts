@@ -1,4 +1,6 @@
 import { Effect, Schema } from "effect";
+import type { FileSystem, Path } from "effect";
+import type { HttpClient } from "effect/http";
 
 import { CliError } from "../../apps/mailbox/cli/identity.ts";
 import { SecretStore } from "../../apps/mailbox/cli/secrets.ts";
@@ -9,6 +11,7 @@ import {
   prepare,
   SendOutcomes,
 } from "../../packages/mailbox-client/src/index.ts";
+import type { IdentityValue } from "../../packages/mailbox-client/src/index.ts";
 import {
   loadSettings,
   NotConfigured,
@@ -17,8 +20,11 @@ import {
 import {
   Directory,
   directoryLayer,
+  readDirectoryEntries,
   UnknownName,
 } from "../../packages/ratking-client/src/directory.ts";
+import type { Resolved } from "../../packages/ratking-client/src/directory.ts";
+import { isReserved } from "../../packages/ratking-client/src/name.ts";
 import { encodePayload } from "../../packages/ratking-client/src/payload.ts";
 import { withCredentialSettings } from "../../packages/ratking-client/src/systemd-credentials.ts";
 import { FleetError } from "./stage-config.ts";
@@ -66,11 +72,24 @@ const step = <A, E extends TaggedFailure, R>(
     )
   );
 
+export type CompleteNotificationTargets = (
+  identity: IdentityValue,
+  targets: readonly Resolved[],
+  missingFromSnapshot: (
+    name: string
+  ) => Effect.Effect<boolean, FleetError, FileSystem.FileSystem | Path.Path>
+) => Effect.Effect<
+  readonly Resolved[],
+  FleetError,
+  HttpClient.HttpClient | FileSystem.FileSystem | Path.Path
+>;
+
 export const prepareShipNotification = Effect.fn("Ship.prepareNotification")(
   function* prepareShipNotification(
     config: StageConfigValue,
     text: string,
-    skipUnknown?: boolean
+    skipUnknown?: boolean,
+    completeTargets?: CompleteNotificationTargets
   ) {
     const { ship } = config;
 
@@ -101,7 +120,7 @@ export const prepareShipNotification = Effect.fn("Ship.prepareNotification")(
       )
     );
 
-    const targets = yield* step(
+    const pinned = yield* step(
       "resolve",
       Effect.gen(function* resolveTargets() {
         const directory = yield* Directory;
@@ -137,6 +156,18 @@ export const prepareShipNotification = Effect.fn("Ship.prepareNotification")(
       "identity-json",
       Schema.decodeEffect(Schema.fromJsonString(Identity))(secret)
     );
+
+    const targets =
+      completeTargets === undefined
+        ? pinned
+        : yield* completeTargets(identity, pinned, (name) =>
+            isReserved(settings.reserved, name)
+              ? Effect.succeed(false)
+              : step(
+                  "snapshot",
+                  readDirectoryEntries(ship.notify.directory)
+                ).pipe(Effect.map((entries) => !Object.hasOwn(entries, name)))
+          );
 
     const own = yield* step("ownIdentity", ownIdentity(identity));
 

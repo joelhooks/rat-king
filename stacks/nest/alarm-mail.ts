@@ -10,8 +10,10 @@ import type { PendingWake } from "./alarm-desk-wake.ts";
 import { terminalRefusal } from "./alarm-refusal.ts";
 import type { Delivery } from "./alarm.ts";
 import { MaintenancePreparationRefused } from "./maintenance-inbox.ts";
+import { maintenanceRecipient } from "./maintenance-lookup.ts";
 import { ShipSettings } from "./ship-config.ts";
 import { prepareShipNotification } from "./ship-notify.ts";
+import type { CompleteNotificationTargets } from "./ship-notify.ts";
 import { FleetError } from "./stage-config.ts";
 import type { StageConfigValue } from "./stage-config.ts";
 
@@ -23,12 +25,44 @@ export const withAlarmMailTransport = <A, E, R>(
     Effect.scoped
   );
 
+const completeMaintenanceTargets =
+  (
+    config: StageConfigValue,
+    sender: string,
+    recipient: string
+  ): CompleteNotificationTargets =>
+  (identity, targets, missingFromSnapshot) =>
+    Effect.gen(function* complete() {
+      if (targets.find(({ name }) => name === sender)?.did !== identity.did) {
+        return yield* new FleetError({
+          reason: "Alarm signer could not be verified",
+        });
+      }
+
+      if (
+        targets.some(({ name }) => name === recipient) ||
+        !(yield* missingFromSnapshot(recipient))
+      ) {
+        return targets;
+      }
+
+      const target = yield* maintenanceRecipient(
+        config.runtime.RAT_KING_ENDPOINT,
+        config.runtime.RAT_KING_SERVICE_DID,
+        identity,
+        recipient
+      );
+
+      return target === null ? targets : [...targets, target];
+    });
+
 export const prepareAlarmMail = Effect.fn("Alarm.prepareMail")(
   function* prepareAlarmMail(
     config: StageConfigValue,
     names: readonly string[],
     text: string,
-    skipUnknown?: boolean
+    skipUnknown?: boolean,
+    purpose?: "maintenance"
   ) {
     if (config.alarm === undefined || config.ship === undefined) {
       return yield* new FleetError({
@@ -52,10 +86,21 @@ export const prepareAlarmMail = Effect.fn("Alarm.prepareMail")(
       )
     );
 
+    const desk = config.alarm.musterDesk;
+
+    const complete =
+      purpose === "maintenance" &&
+      config.alarm.maintenanceLookup === true &&
+      names.length === 1 &&
+      names[0] === desk
+        ? completeMaintenanceTargets(config, sender, desk)
+        : undefined;
+
     const prepared = yield* prepareShipNotification(
       { ...config, ship },
       text,
-      skipUnknown
+      skipUnknown === true || complete !== undefined,
+      complete
     );
 
     if (
@@ -139,7 +184,14 @@ export const prepareMaintenanceNotice = Effect.fn(
   recipient: string,
   text: string
 ) {
-  const prepared = yield* prepareAlarmMail(config, [recipient], text, true);
+  const prepared = yield* prepareAlarmMail(
+    config,
+    [recipient],
+    text,
+    true,
+    "maintenance"
+  );
+
   const target = prepared.targets.find(({ name }) => name === recipient);
 
   if (target === undefined) {
@@ -159,9 +211,17 @@ export const prepareMaintenanceNotice = Effect.fn(
 export const sendAlarmDelivery = Effect.fn("Alarm.sendDelivery")(
   function* sendAlarmDelivery(
     config: StageConfigValue,
-    delivery: Pick<typeof Delivery.Type, "envelope" | "recipient">
+    delivery: Pick<typeof Delivery.Type, "envelope" | "recipient">,
+    purpose?: "maintenance"
   ) {
-    const prepared = yield* prepareAlarmMail(config, [delivery.recipient], "");
+    const prepared = yield* prepareAlarmMail(
+      config,
+      [delivery.recipient],
+      "",
+      undefined,
+      purpose
+    );
+
     const result = yield* prepared.client.send(delivery.envelope);
 
     if (SendOutcomes.$is("Rejected")(result)) {

@@ -4,6 +4,7 @@ import {
   DateTime,
   Effect,
   FileSystem,
+  Match,
   Option,
   Result,
   Schema,
@@ -16,6 +17,7 @@ import {
   MAILBOX_INSTANCE,
   MaintenanceFile,
   WINDOW_MEMORY_MS,
+  coverEnd,
   endWindow,
   readMaintenanceDocument,
   startWindow,
@@ -31,6 +33,8 @@ const Id = Schema.String.check(
   Schema.isMinLength(53),
   Schema.isMaxLength(53)
 );
+
+const validId = Schema.is(Id);
 
 const Iso = Schema.String.check(
   Schema.isPattern(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/u)
@@ -58,20 +62,35 @@ export const MaintenanceNoticeReceipt = Schema.Struct({
   recipient: AgentName,
 });
 
+const Decision = Schema.Struct({
+  ended: Schema.optionalKey(Schema.Finite),
+  instance: Schema.optionalKey(MaintenanceDrop.fields.instance),
+  outcome: Schema.Literals(["applied", "refused"]),
+  owner: Schema.optionalKey(AgentName),
+  start: Schema.optionalKey(Schema.Finite),
+  until: Schema.optionalKey(Schema.Finite),
+});
+
+const noticeFields = {
+  decidedAt: Schema.Int,
+  decision: Schema.optionalKey(Decision),
+};
+
+const pendingFields = {
+  ...noticeFields,
+  at: Schema.Int,
+  deferred: Schema.optionalKey(Schema.Literal(true)),
+};
+
 const Notice = Schema.TaggedUnion({
-  Dropped: { decidedAt: Schema.Int },
-  Prepared: {
-    at: Schema.Int,
-    decidedAt: Schema.Int,
-    receipt: MaintenanceNoticeReceipt,
-  },
+  Dropped: noticeFields,
+  Prepared: { ...pendingFields, receipt: MaintenanceNoticeReceipt },
   Queued: {
-    at: Schema.Int,
-    decidedAt: Schema.Int,
+    ...pendingFields,
     fallback: Schema.Boolean,
     text: Schema.NonEmptyString,
   },
-  Sent: { decidedAt: Schema.Int },
+  Sent: noticeFields,
 });
 
 const State = Schema.Struct({
@@ -150,6 +169,97 @@ const save = Effect.fn("MaintenanceInbox.save")(function* save(
     JSON.stringify({ ...document, ...encoded })
   );
 });
+
+const StatusInstance = Schema.String.check(
+  Schema.isPattern(/^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$/u)
+);
+
+const StatusOwner = AgentName.check(Schema.isMaxLength(128));
+
+interface SubjectStatus {
+  instance?: string | undefined;
+  owner?: string | undefined;
+}
+
+const publicSubject = (item: Readonly<SubjectStatus>) => {
+  const output: SubjectStatus = {};
+
+  if (Schema.is(StatusInstance)(item.instance)) {
+    output.instance = item.instance;
+  }
+
+  if (Schema.is(StatusOwner)(item.owner)) {
+    output.owner = item.owner;
+  }
+
+  return output;
+};
+
+const deliveryStatus = (notice: NoticeValue) =>
+  Match.value(notice).pipe(
+    Match.tagsExhaustive({
+      Dropped: () => "dropped",
+      Prepared: (item) => (item.deferred === true ? "deferred" : "prepared"),
+      Queued: (item) => (item.deferred === true ? "deferred" : "queued"),
+      Sent: () => "sent",
+    })
+  );
+
+const requestStatus = (id: string, item: NoticeValue) => {
+  const { outcome, owner, instance, ...times } = item.decision ?? {
+    outcome: "unknown" as const,
+  };
+
+  return {
+    ...times,
+    ...publicSubject({ instance, owner }),
+    decidedAt: item.decidedAt,
+    decision: outcome,
+    delivery: deliveryStatus(item),
+    id,
+  };
+};
+
+export const maintenanceStatusRows = Effect.fn("Maintenance.statusRows")(
+  function* maintenanceStatusRows(directory: string, now: number) {
+    const { state } = yield* readState(directory);
+
+    const windows = state.windows
+      .filter((window) => window.start <= now && coverEnd(window) >= now)
+      .toSorted((a, b) => b.start - a.start);
+
+    const requests = Object.entries(state.requests ?? {})
+      .toSorted(([, a], [, b]) => b.decidedAt - a.decidedAt)
+      .flatMap(([file, item]) => {
+        const id = file.slice(0, -5);
+
+        return file.endsWith(".json") && validId(id)
+          ? [requestStatus(id, item)]
+          : [];
+      });
+
+    const deferred = (state.clockDeferred ?? []).flatMap((file) => {
+      const id = file.slice(0, -5);
+
+      return file.endsWith(".json") &&
+        validId(id) &&
+        !Object.hasOwn(state.requests ?? {}, file)
+        ? [{ decision: "deferred" as const, delivery: null, id }]
+        : [];
+    });
+
+    return {
+      requests: [...deferred, ...requests].slice(0, 128),
+      truncated: windows.length > 64 || deferred.length + requests.length > 128,
+      windows: windows.slice(0, 64).map((window) => {
+        const { start, until, ended, requestId } = window;
+        const view = { ...publicSubject(window), ended, start, until };
+
+        return validId(requestId) ? { ...view, id: requestId } : view;
+      }),
+    };
+  }
+);
 
 const readDirectory = Effect.fn("MaintenanceInbox.readDirectory")(
   function* readDirectory({ alarmGid, inbox }: Inbox) {
@@ -327,8 +437,6 @@ const apply = (
   );
 };
 
-const validId = Schema.is(Id);
-
 const cancellationIndex = Effect.fn("MaintenanceInbox.ends")(
   function* cancellationIndex(
     config: Inbox,
@@ -386,6 +494,32 @@ const cancellationIndex = Effect.fn("MaintenanceInbox.ends")(
   }
 );
 
+const decisionOf = (
+  drop: Drop,
+  windows: readonly MaintenanceWindowValue[],
+  now: number
+): typeof Decision.Type => {
+  const window = windows.findLast((item) =>
+    drop.action === "start"
+      ? item.requestId === drop.id
+      : item.instance === drop.instance && item.ended === now
+  );
+
+  const base = {
+    instance: drop.instance,
+    outcome: "applied" as const,
+    owner: drop.owner,
+  };
+
+  if (window === undefined) {
+    return base;
+  }
+
+  const timed = { ...base, start: window.start, until: window.until };
+
+  return window.ended === undefined ? timed : { ...timed, ended: window.ended };
+};
+
 const decide = Effect.fn("MaintenanceInbox.decide")(function* decide(
   config: Inbox,
   windows: readonly MaintenanceWindowValue[],
@@ -394,13 +528,25 @@ const decide = Effect.fn("MaintenanceInbox.decide")(function* decide(
   now: number,
   ends: ReturnType<typeof cancellationIndex>
 ) {
+  const refused = { outcome: "refused" as const };
+
+  const metadata =
+    drop !== null && Result.isSuccess(drop) && drop.success.id === id
+      ? { ...refused, owner: drop.success.owner }
+      : refused;
+
   const refuse = (reason: string) => ({
+    decision: metadata,
     text: `refused: ${reason} (${id})`,
     windows,
   });
 
   if (!validId(id)) {
-    return { text: "refused: invalid request filename", windows };
+    return {
+      decision: refused,
+      text: "refused: invalid request filename",
+      windows,
+    };
   }
 
   if (drop === null) {
@@ -435,6 +581,7 @@ const decide = Effect.fn("MaintenanceInbox.decide")(function* decide(
   const ending = action === "start" ? ` until ${until}` : " now";
 
   return {
+    decision: decisionOf(drop.success, next.success, now),
     text: `maintenance ${action} on ${instance} by ${owner}${ending} (${id})`,
     windows: next.success,
   };
@@ -505,6 +652,7 @@ export const ingestMaintenance = Effect.fn("MaintenanceInbox.ingest")(
         requests[name] = Notice.cases.Queued.make({
           at: 0,
           decidedAt: now,
+          decision: decision.decision,
           fallback: false,
           text: decision.text,
         });
@@ -563,8 +711,13 @@ export const deliverMaintenance = Effect.fn("MaintenanceInbox.deliver")(
 
     for (const { item, name } of pending) {
       const at = yield* Clock.currentTimeMillis;
-      const { decidedAt } = item;
-      const stepped = { ...item, at };
+
+      const history =
+        item.decision === undefined
+          ? { decidedAt: item.decidedAt }
+          : { decidedAt: item.decidedAt, decision: item.decision };
+
+      const stepped = { ...item, at, deferred: true as const };
 
       yield* remember(name, stepped);
 
@@ -586,7 +739,7 @@ export const deliverMaintenance = Effect.fn("MaintenanceInbox.deliver")(
             }
 
             if (stepped.fallback) {
-              yield* remember(name, Notice.cases.Dropped.make({ decidedAt }));
+              yield* remember(name, Notice.cases.Dropped.make(history));
 
               return yield* ports.unavailable;
             }
@@ -597,8 +750,9 @@ export const deliverMaintenance = Effect.fn("MaintenanceInbox.deliver")(
             return yield* remember(
               name,
               Notice.cases.Queued.make({
+                ...history,
                 at,
-                decidedAt,
+                deferred: true,
                 fallback: true,
                 text: `maintenance notice refused: could not prepare original decision${label}`,
               })
@@ -608,8 +762,9 @@ export const deliverMaintenance = Effect.fn("MaintenanceInbox.deliver")(
           yield* remember(
             name,
             Notice.cases.Prepared.make({
+              ...history,
               at,
-              decidedAt,
+              deferred: true,
               receipt: prepared.success,
             })
           );
@@ -618,7 +773,7 @@ export const deliverMaintenance = Effect.fn("MaintenanceInbox.deliver")(
           yield* ports.send(stepped.receipt);
         }
 
-        return yield* remember(name, Notice.cases.Sent.make({ decidedAt }));
+        return yield* remember(name, Notice.cases.Sent.make(history));
       }).pipe(Effect.catch(() => ports.unavailable));
     }
   }
