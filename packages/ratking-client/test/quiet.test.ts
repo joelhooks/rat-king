@@ -6,6 +6,7 @@ import {
   Reasons,
   Verdicts,
 } from "@rat-king/ratking-client/attend";
+import { fyiHint } from "@rat-king/ratking-client/cc-lint";
 import {
   recipientLevels,
   recipientLines,
@@ -34,7 +35,7 @@ const ArrivalSample = Schema.Struct({
 });
 
 it.prop(
-  "Quiet sender intent never wakes without a receiver override",
+  "Quiet sender intent is held without receiver levers",
   [ArrivalSample],
   ([sample]) => {
     const verdict = attend(
@@ -69,7 +70,7 @@ it.prop(
 );
 
 it.prop(
-  "Joel and verified owners keep their exemption ahead of quiet and receiver levers",
+  "A quiet message from an owner or operator stays held",
   [ArrivalSample, Schema.Literals(["joel", "operator", "owner"])],
   ([sample, sender]) => {
     const verdict = attend(
@@ -84,8 +85,10 @@ it.prop(
       Option.some(Verdicts.Never({ reason: Reasons.judge({ facts: [] }) }))
     );
 
-    expect(verdict._tag).toBe("Now");
-    expect(verdict.reason._tag).toBe(sender === "owner" ? "intent" : "joel");
+    expect(verdict._tag).toBe(
+      sample.digestMinutes === undefined ? "Next" : "Later"
+    );
+    expect(verdict.reason.facts).toContain("quiet");
   }
 );
 
@@ -124,7 +127,7 @@ it.prop(
 );
 
 it.prop(
-  "Receiver levers and model advice remain ahead of quiet intent",
+  "A receiver may refuse quiet mail, but a model wake suggestion cannot start a turn",
   [ArrivalSample, Schema.Boolean],
   ([sample, refuse]) => {
     const suggestion = Verdicts.Now({
@@ -142,8 +145,25 @@ it.prop(
       Option.some(suggestion)
     );
 
-    expect(verdict._tag).toBe(refuse ? "Never" : "Now");
-    expect(verdict.reason._tag).toBe(refuse ? "lever" : "judge");
+    const held = sample.digestMinutes === undefined ? "Next" : "Later";
+    expect(verdict._tag).toBe(refuse ? "Never" : held);
+    expect(verdict.reason._tag).toBe(refuse ? "lever" : "intent");
+  }
+);
+
+it.prop(
+  "FYI status headings get a hint unless the body requests action",
+  [
+    Schema.Literals([
+      "FYI: deploy finished",
+      "FYI update: report landed",
+      "FYI: check passed",
+    ]),
+    Schema.Boolean,
+  ],
+  ([summary, request]) => {
+    const body = request ? "Please verify the receipt." : "No action needed.";
+    expect(fyiHint({ body, summary, to: "peer" }) !== undefined).toBe(!request);
   }
 );
 

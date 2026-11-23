@@ -1,5 +1,5 @@
 import type { Inbound, InboundRecord } from "@rat-king/ratking-client/payload";
-import type { Peeked } from "@rat-king/ratking-client/ratking";
+import type { ReceivedMail } from "@rat-king/ratking-client/received-mail";
 import { Option } from "effect";
 
 import { isRecord } from "./render.ts";
@@ -9,11 +9,14 @@ export const threadOf = (received: Inbound | InboundRecord) =>
     ? received.id
     : (received.reply?.root ?? received.thread ?? received.id);
 
-export const entryDocument = (entry: Peeked) => {
+export const entryDocument = (
+  entry: ReceivedMail & { readonly state: string }
+) => {
   const { received } = entry;
 
   if (isRecord(received)) {
     return {
+      ackOutcome: entry.ackOutcome === "acked" ? undefined : entry.ackOutcome,
       did: received.did,
       encrypted: entry.encrypted,
       from: received.from,
@@ -29,7 +32,9 @@ export const entryDocument = (entry: Peeked) => {
   }
 
   return {
+    ackOutcome: entry.ackOutcome === "acked" ? undefined : entry.ackOutcome,
     body: received.body,
+    carbonCopy: received.cc,
     cc: received.ccNames ?? [],
     did: received.did,
     encrypted: entry.encrypted,

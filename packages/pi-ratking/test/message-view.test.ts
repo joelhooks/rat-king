@@ -1,6 +1,6 @@
 import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { it } from "@effect/vitest";
-import { Kind } from "@rat-king/ratking-client/payload";
+import { COPY_BODY_MAX, Kind } from "@rat-king/ratking-client/payload";
 import { Arbitrary, Effect, Schema } from "effect";
 import { describe, expect } from "vitest";
 
@@ -94,6 +94,70 @@ it.effect.prop(
 );
 
 const squash = (input: string) => input.replaceAll(/[\s│]+/gu, "");
+
+it.prop(
+  "expanded TUI cc clips at the body cap with an exact read hint for plaintext",
+  [Schema.Boolean],
+  ([encrypted]) => {
+    const text =
+      messageView({
+        details: {
+          body: `${"x".repeat(COPY_BODY_MAX)}omitted-tail`,
+          canRead: true,
+          cc: true,
+          did: "sender",
+          encrypted,
+          from: "peer",
+          id: "copy",
+          kind: "message",
+          verified: true,
+        },
+        expanded: true,
+        theme: plainTheme,
+        tool: "ratking",
+      })
+        ?.render(120)
+        .join("\n") ?? "";
+
+    expect(text.includes("clipped")).toBe(!encrypted);
+    expect(text.includes("omitted-tail")).toBe(encrypted);
+    expect(text.includes('ratking({ action: "read", id: "copy" })')).toBe(
+      !encrypted
+    );
+  }
+);
+
+it("expanded data mail shows its typed record and full JSON fields", () => {
+  const body = JSON.stringify({
+    $type: "sh.mschf.agentgraph.outcome",
+    checkIn: "proof",
+    gate: "pass",
+    outcome: "committed",
+    version: "0.1",
+  });
+
+  const lines =
+    messageView({
+      details: {
+        body,
+        cc: true,
+        did: "sender",
+        encrypted: false,
+        from: "peer",
+        id: "data",
+        kind: "data",
+        verified: true,
+      },
+      expanded: true,
+      theme: plainTheme,
+      tool: "ratking",
+    })?.render(120) ?? [];
+
+  const text = lines.join("\n");
+  expect(text).toContain("```json");
+  expect(text).toContain('"outcome": "committed"');
+  expect(text).not.toContain('action: "read"');
+});
 
 const Readable = Schema.Struct({
   body: Schema.String.check(

@@ -118,6 +118,37 @@ export const ccLint = (input: LintInput) => {
   });
 };
 
+const FYI =
+  /^\s*(?:fyi|for your information|for awareness|heads[ -]up|no action (?:needed|required))\b[ .,;:—-]*/iu;
+
+const REQUEST =
+  /\?|(?:^|[.!;:\n])\s*(?:[-*]\s*)?(?:please|(?:can|could|would|will) you|ack|approve|check|confirm|deploy|investigate|review|reply|send|update|verify)\b/iu;
+
+const STATUS_LEAD =
+  /^(?:update:\s*|(?:deploy|update|check)\s+(?:finished|passed|failed|completed)\b(?=\s*(?:[.!;:\n]|$)))/iu;
+
+const asksForAction = (text: string) => {
+  const lead = FYI.exec(text);
+
+  return REQUEST.test(
+    lead === null ? text : text.slice(lead[0].length).replace(STATUS_LEAD, "")
+  );
+};
+
+export const fyiHint = (input: {
+  readonly body: string;
+  readonly summary?: string | undefined;
+  readonly to: string;
+}) => {
+  const texts = [input.summary ?? "", input.body];
+
+  return texts.some((text) => FYI.test(text)) &&
+    !texts.some(asksForAction) &&
+    forms(input.to).every((form) => Option.isNone(firstMatch(texts, form)))
+    ? "This reads like an FYI. Next time use cc for context or quiet for a direct message that should not start a turn."
+    : undefined;
+};
+
 const ccWhy = (addressed: AskAimedAtCcValue) =>
   `you sent to ${addressed.to} with ${addressed.name} in cc, and the text addresses ${addressed.name} (${addressed.snippet}), so ${addressed.name} would get a quiet copy and not wake.`;
 

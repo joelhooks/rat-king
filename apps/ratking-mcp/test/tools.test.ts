@@ -90,14 +90,18 @@ it.live.prop(
           message: { body, id },
         });
         expect(yield* mcp.call("pending")).toHaveProperty("pending");
-        expect(
-          yield* mcp.call("send", {
-            message: body,
-            quiet: true,
-            summary: "sent",
-            to: "peer",
-          })
-        ).toHaveProperty("delivered");
+
+        const sent = yield* mcp.call("send", {
+          message: "The report landed.",
+          summary: "FYI: report landed",
+          to: "peer",
+        });
+
+        const { hint } = yield* Schema.decodeUnknownEffect(
+          Schema.Struct({ delivered: Schema.JsonObject, hint: Schema.String })
+        )(sent);
+
+        expect(hint).toContain("use cc for context or quiet");
         expect(
           yield* mcp.call("ask", {
             message: body,

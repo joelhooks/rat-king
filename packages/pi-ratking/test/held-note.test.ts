@@ -36,7 +36,7 @@ it("A wake digest of cc copies keeps the cc note", () => {
     [
       {
         content: "",
-        details: {},
+        details: { body: "Copy", cc: true, from: "peer" },
         id: "a",
         reason: Reasons.intent({ facts: ["cc"] }),
       },

@@ -5,6 +5,7 @@ import { ownIdentity, prepare } from "@rat-king/mailbox-client";
 import { attend, Reasons, Verdicts } from "@rat-king/ratking-client/attend";
 import { Directory } from "@rat-king/ratking-client/directory";
 import { secretName } from "@rat-king/ratking-client/name";
+import { COPY_NOTE, renderInbound } from "@rat-king/ratking-client/payload";
 import { Inbox, RatKing } from "@rat-king/ratking-client/ratking";
 import { Arbitrary, Effect, FileSystem, Layer, Option, Schema } from "effect";
 import { FetchHttpClient } from "effect/http";
@@ -12,6 +13,10 @@ import { expect } from "vitest";
 
 import { plaintextBody } from "../../../packages/envelope/src/signed.ts";
 import { PayloadJson } from "../../../packages/mailbox-client/src/payload.ts";
+import {
+  inboundDetails,
+  renderDigest,
+} from "../../../packages/pi-ratking/src/extension.ts";
 import { harness } from "../../../packages/pi-ratking/test/harness.ts";
 import {
   ENDPOINT,
@@ -23,9 +28,12 @@ import {
 } from "./fixture.ts";
 
 it.live.prop(
-  "forwarded mail addresses and wakes the resolved row; reply-all omits self aliases but explicit self-cc still refuses",
-  [Arbitrary.schema(Schema.Boolean), Arbitrary.schema(Schema.Boolean)],
-  ([successor, legacyCc]) =>
+  "direct role mail wakes without a cc note even with a cc list; real copies are labeled quiet and reply-all omits self aliases",
+  [
+    Arbitrary.schema(Schema.Boolean),
+    Schema.Literals(["plain", "listed", "copy", "legacyCc", "envelope"]),
+  ],
+  ([successor, delivery]) =>
     Effect.gen(function* roundTrip() {
       const fs = yield* FileSystem.FileSystem;
       const who = yield* people;
@@ -92,16 +100,47 @@ it.live.prop(
         serviceDid: SERVICE,
       });
 
-      const envelope = legacyCc
-        ? yield* source.seal(
-            TESTER,
-            yield* Schema.encodeEffect(PayloadJson)({
-              ...payload,
+      const address = { body: payload.body, from: payload.from };
+
+      const copyRef = {
+        messageId: sent.aad.messageId,
+        senderDid: sent.aad.senderDid,
+      };
+
+      const copyBody = yield* Schema.encodeEffect(PayloadJson)(address);
+
+      const sign = (body: string) =>
+        source.seal(TESTER, body, { encrypt: false });
+
+      const wire = yield* Schema.encodeEffect(PayloadJson)(
+        delivery === "legacyCc"
+          ? { ...address, cc: [successor ? "tester" : "other"] }
+          : {
+              ...address,
               cc: ["proj"],
-            }),
-            { encrypt: false }
-          )
-        : sent;
+              to: delivery === "copy" ? "peer" : "tester",
+            }
+      );
+
+      const expiresAt = "2099-01-01T00:00:00.000Z";
+
+      const envelope = yield* Effect.suspend(() => {
+        if (delivery === "plain") {
+          return Effect.succeed(sent);
+        }
+
+        return delivery === "envelope"
+          ? source.seal(
+              TESTER,
+              JSON.stringify({
+                $type: "sh.mschf.ratking.mailbox.cc",
+                body: copyBody,
+                primary: { ...copyRef, recipientDid: who.peer.did },
+              }),
+              { encrypt: false, expiresAt, replyTo: copyRef }
+            )
+          : sign(wire);
+      });
 
       const event = yield* Schema.decodeUnknownEffect(
         Schema.toType(Defs.MessageEvent)
@@ -131,7 +170,10 @@ it.live.prop(
         yield* fs.makeTempDirectoryScoped(),
         inbound.http,
         [],
-        { secrets: seeded(who) }
+        {
+          ccDigestMinutes: successor ? { tester: 3 } : {},
+          secrets: seeded(who),
+        }
       );
 
       yield* Effect.gen(function* receiveAndReply() {
@@ -150,10 +192,63 @@ it.live.prop(
           return;
         }
 
-        expect(received.copy).toBe(false);
-        expect(attend(received, {}, 0, undefined, Option.none())).toEqual(
-          Verdicts.Now({ reason: Reasons.intent({ facts: ["to"] }) })
+        const rendered = renderInbound("ratking", received);
+
+        const cc =
+          delivery === "copy" ||
+          (delivery === "legacyCc" && successor) ||
+          delivery === "envelope";
+
+        expect(received.cc).toBe(cc);
+        expect(rendered.includes(COPY_NOTE)).toBe(cc);
+        expect(received.copy).toBe(cc);
+        expect(received.expiresAt).toBe(
+          delivery === "envelope" ? expiresAt : undefined
         );
+        const owner = { enabled: true, owner: received.from };
+        const verdict = attend(received, owner, 0, undefined, Option.none());
+
+        if (cc && successor) {
+          expect(received.digestMinutes).toBe(3);
+          expect(verdict).toEqual(
+            Verdicts.Later({
+              reason: Reasons.intent({ facts: ["cc", "digest"] }),
+              window: 180_000,
+            })
+          );
+        } else {
+          expect(verdict).toEqual(
+            cc
+              ? Verdicts.Next({ reason: Reasons.intent({ facts: ["cc"] }) })
+              : Verdicts.Now({ reason: Reasons.intent({ facts: ["to"] }) })
+          );
+        }
+
+        if (cc) {
+          expect(rendered).toContain(
+            successor ? "held: cc digest" : "quiet: cc"
+          );
+
+          const digest = renderDigest("ratking", [
+            {
+              content: rendered,
+              details: inboundDetails(received, false),
+              id: received.id,
+              reason: verdict.reason,
+            },
+          ]);
+
+          expect(digest.split("\n")[1]).toBe("held: cc digest");
+          expect(digest).toContain(COPY_NOTE);
+          expect(digest).toContain(received.body);
+
+          return;
+        }
+
+        if (delivery === "legacyCc") {
+          return;
+        }
+
         const ratking = yield* RatKing;
         yield* ratking.reply(received.id, "Invented reply", { replyAll: true });
         expect(inbound.sends.map((entry) => entry.aad.recipientDid)).toEqual([
@@ -171,5 +266,5 @@ it.live.prop(
       Effect.scoped,
       Effect.provide(Layer.merge(NodeServices.layer, FetchHttpClient.layer))
     ),
-  { arbitrary: { runs: 6 }, timeout: 60_000 }
+  { arbitrary: { runs: 25 }, timeout: 60_000 }
 );

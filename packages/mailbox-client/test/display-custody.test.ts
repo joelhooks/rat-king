@@ -7,6 +7,7 @@ import {
   DateTime,
   Effect,
   Layer,
+  Result,
   Schema,
   Stream,
 } from "effect";
@@ -15,6 +16,7 @@ import { expect } from "vitest";
 import { sealed, recipientDid } from "../../envelope/test/helpers.ts";
 import { consume } from "../src/consume.ts";
 import type { MessageMeta } from "../src/consume.ts";
+import { MailboxClientError } from "../src/error.ts";
 import { RatKingMailbox } from "../src/mailbox.ts";
 
 it.effect.prop(
@@ -59,15 +61,23 @@ it.effect.prop(
 
       const meta: MessageMeta[] = [];
       let acknowledgments = 0;
+      let rejectExpired = false;
 
       const mailbox = yield* RatKingMailbox.pipe(
         Effect.provide(
           Layer.mock(RatKingMailbox, {
             ack: (input) =>
-              Effect.sync(() => {
+              Effect.gen(function* acknowledge() {
                 expect(input.generation).toBe(1);
                 expect(input.leaseId).toBe(lease.leaseId);
                 acknowledgments += 1;
+
+                if (rejectExpired) {
+                  return yield* new MailboxClientError({
+                    error: "InvalidTransition",
+                    reason: "Expired message",
+                  });
+                }
 
                 return { receipt };
               }),
@@ -118,6 +128,14 @@ it.effect.prop(
       if (manual && !immediate) {
         yield* Effect.all(meta.map((received) => received.ack));
         expect(acknowledgments).toBe(1);
+      }
+
+      rejectExpired = true;
+
+      for (const message of meta) {
+        const result = yield* message.ack.pipe(Effect.result);
+        expect(Result.isFailure(result)).toBe(true);
+        expect(yield* message.ackOutcome).toBe("expired");
       }
     }).pipe(Effect.scoped)
 );

@@ -1,13 +1,23 @@
 /* oxlint-disable typescript/promise-function-async -- fast-check model command Promise boundary. */
 import { it } from "@effect/vitest";
+import { attend, formatReason } from "@rat-king/ratking-client/attend";
 import { renderInbound } from "@rat-king/ratking-client/payload";
 import type { Inbound } from "@rat-king/ratking-client/payload";
-import { deliverRelay } from "@rat-king/ratking-client/relay";
+import {
+  deliverRelay,
+  projectRelay,
+  RelayRecord,
+  relayRecord,
+} from "@rat-king/ratking-client/relay";
 import { Effect, Option, Schema } from "effect";
 import { asyncModelRun } from "fast-check";
 import type { AsyncCommand } from "fast-check";
 import { expect } from "vitest";
 
+import {
+  defaultPreferences,
+  defaultStatus,
+} from "../../mailbox-client/src/attention.ts";
 import { inboundLines } from "../src/message-view.ts";
 
 const Step = Schema.Struct({
@@ -19,6 +29,145 @@ const Step = Schema.Struct({
   sent: Schema.Boolean,
   verified: Schema.Boolean,
 });
+
+const {
+  copy: _copy,
+  expiresAt: _expiresAt,
+  quiet: _quiet,
+  ...legacyFields
+} = RelayRecord.fields;
+
+const LegacyRelay = Schema.Struct(legacyFields);
+
+it.prop(
+  "old relay readers accept new optional fields and new readers accept old records",
+  [Schema.String],
+  ([body]) => {
+    const legacy = {
+      $type: "sh.mschf.ratking.relay#message",
+      body,
+      cc: true,
+      did: "sender",
+      encrypted: false,
+      from: "peer",
+      id: "copy",
+      kind: "message",
+      label: null,
+      replyTo: null,
+      summary: null,
+      verified: true,
+    } satisfies typeof LegacyRelay.Encoded;
+
+    const current = {
+      ...legacy,
+      copy: true,
+      expiresAt: "2099-01-01T00:00:00Z",
+      quiet: true,
+    };
+
+    expect(Schema.decodeUnknownSync(LegacyRelay)(current)).toEqual(legacy);
+    expect(Schema.decodeUnknownSync(RelayRecord)(legacy)).toEqual(legacy);
+  }
+);
+
+it.prop(
+  "front relay wakes staff for work, but not for copied context",
+  [Schema.String, Schema.Boolean],
+  ([body, quiet]) => {
+    for (const mode of [
+      "old work",
+      "old copy",
+      "new work",
+      "new copy",
+    ] as const) {
+      const copy = mode.endsWith("copy");
+
+      const original = {
+        body,
+        cc: copy,
+        ccNames: mode === "new copy" ? [] : [copy ? "desk/ea" : "observer"],
+        did: "sender",
+        from: "peer",
+        id: "source",
+        kind: "message",
+        label: Option.none(),
+        ...(quiet ? { quiet: true } : undefined),
+        replyTo: Option.none(),
+        summary: Option.none(),
+        to: copy || mode === "new work" ? "another-recipient" : "desk",
+        verified: true,
+      } satisfies Inbound;
+
+      const encoded = relayRecord(original, true);
+      const { copy: _flag, ...old } = encoded;
+      const wire = mode.startsWith("old") ? old : encoded;
+
+      if (!mode.startsWith("old")) {
+        expect(wire).toHaveProperty("copy", copy);
+      }
+
+      expect(Schema.decodeUnknownSync(LegacyRelay)(wire).cc).toBe(
+        mode !== "new copy"
+      );
+
+      const projected = projectRelay(
+        { fallbackMinutes: 10, mode: "front", name: "desk", to: "desk/ea" },
+        "desk/ea",
+        {
+          did: "desk",
+          from: "desk",
+          id: "relay-envelope",
+          record: wire,
+          replyTo: Option.none(),
+          verified: true,
+        }
+      );
+
+      const incoming = Option.getOrThrow(projected);
+
+      const verdict = attend(
+        incoming,
+        { enabled: true },
+        0,
+        undefined,
+        Option.none()
+      );
+
+      expect(incoming.cc).toBe(copy);
+      expect(verdict._tag).toBe(copy ? "Next" : "Now");
+      expect(formatReason(verdict.reason)).toBe(
+        copy ? "quiet: cc" : "woken: to"
+      );
+
+      if (copy) {
+        const prefs = defaultPreferences();
+
+        const dnd = attend(
+          incoming,
+          {
+            enabled: true,
+            prefs,
+            status: { ...defaultStatus(), state: "dnd" },
+          },
+          0,
+          undefined,
+          Option.none()
+        );
+
+        const refused = attend(
+          incoming,
+          { enabled: true, prefs: { ...prefs, refuse: ["peer"] } },
+          0,
+          undefined,
+          Option.none()
+        );
+
+        expect(dnd._tag).toBe("Later");
+        expect(refused._tag).toBe("Never");
+      }
+    }
+  }
+);
 
 interface Model {
   deliveries: number;

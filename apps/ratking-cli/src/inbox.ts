@@ -1,6 +1,7 @@
 import { AskFailed, Inbox } from "@rat-king/ratking-client/ratking";
 import type { Peeked } from "@rat-king/ratking-client/ratking";
-import { Console, Effect, Option } from "effect";
+import type { ReceivedMail } from "@rat-king/ratking-client/received-mail";
+import { Console, Effect, Option, Result, Schema } from "effect";
 import { Argument, Command, Flag } from "effect/cli";
 
 import { entryDocument, threadOf } from "./entries.ts";
@@ -134,17 +135,70 @@ export const inboxCommand = Command.make(
   )
 );
 
+const readEntry = (
+  id: string,
+  saved: Option.Option<ReceivedMail>,
+  warning: string | undefined
+) =>
+  Effect.gen(function* readLatest() {
+    if (Option.isSome(saved) && saved.value.acked !== false) {
+      return { ...saved.value, state: "acked" };
+    }
+
+    const found = yield* locate(id).pipe(
+      Effect.map(({ entry }) => Option.some(entry)),
+      Effect.catchIf(
+        (error) =>
+          Schema.is(AskFailed)(error) && error.code === "NoSuchMessage",
+        () => Effect.succeed(Option.none<Peeked>())
+      )
+    );
+
+    if (Option.isSome(found)) {
+      return Option.isSome(saved) && saved.value.ackOutcome !== undefined
+        ? { ...found.value, ackOutcome: saved.value.ackOutcome }
+        : found.value;
+    }
+
+    if (Option.isSome(saved)) {
+      return { ...saved.value, state: saved.value.ackOutcome ?? "unknown" };
+    }
+
+    const error = notFound(id);
+
+    return yield* new AskFailed({
+      code: error.code,
+      reason: `${error.reason}; ${warning ?? "if shown earlier, it may have expired from the local journal"}`,
+    });
+  });
+
 export const readCommand = Command.make(
   "read",
   { ...commonFlags, id: Argument.String("id") },
   (args) =>
     named("read", args, () =>
       Effect.gen(function* read() {
-        const { entry } = yield* locate(args.id);
+        const inbox = yield* Inbox;
+        const local = yield* inbox.readReceived(args.id).pipe(Effect.result);
+
+        const warning = Result.isFailure(local)
+          ? local.failure.reason
+          : undefined;
+
+        const saved = Result.isSuccess(local) ? local.success : Option.none();
+
+        const entry = yield* readEntry(args.id, saved, warning);
 
         return {
-          document: { message: entryDocument(entry) },
-          lines: readLines(entry),
+          document: withField(
+            { message: entryDocument(entry) },
+            "warning",
+            warning
+          ),
+          lines:
+            warning === undefined
+              ? readLines(entry)
+              : [warning, ...readLines(entry)],
         } satisfies Report;
       })
     )

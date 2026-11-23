@@ -417,7 +417,11 @@ const makeHandlers = Effect.fn("RatkingMcp.makeHandlers")(
               sendOptions
             );
 
-            return { delivered: delivery(delivered) };
+            const result = { delivered: delivery(delivered) };
+
+            return delivered.hint === undefined
+              ? result
+              : { ...result, hint: delivered.hint };
           })
         ),
       whoami: () =>

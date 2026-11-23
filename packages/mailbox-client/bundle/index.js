@@ -4476,6 +4476,9 @@ var layer = (config, resolverLayer = staticResolver(config.documents)) => Layer5
           tid: payload.aad.messageId,
           verified: true
         };
+        if (payload.aad.expiresAt !== void 0) {
+          result.expiresAt = payload.aad.expiresAt;
+        }
         if (via !== void 0) {
           result.via = { desk: via.desk, deskDid: via.deskDid, run: via.run };
         }
@@ -5179,13 +5182,30 @@ var consume = (mailbox, did, handler, options) => Effect30.scoped(
               yield* skip(delivered.value);
               return;
             }
-            const ack = event.receipt.delegatedTo === void 0 ? mailbox.ack(input).pipe(
-              Effect30.catchIf(settledRefusal, () => Effect30.void),
-              Effect30.asVoid
-            ) : Effect30.void;
+            const attemptAck = event.receipt.delegatedTo === void 0 ? mailbox.ack(input).pipe(
+              Effect30.map(
+                ({ receipt }) => Match3.value(receipt.state).pipe(
+                  Match3.when("acked", () => "acked"),
+                  Match3.when("expired", () => "expired"),
+                  Match3.orElse(() => "settled")
+                )
+              ),
+              Effect30.catchIf(
+                (error) => settledRefusal(error) && !expiredRefusal(error),
+                () => Effect30.succeed("settled")
+              )
+            ) : Effect30.succeed("delegated");
+            const ack = Effect30.asVoid(attemptAck);
+            const ackOutcome = attemptAck.pipe(
+              Effect30.catchIf(
+                expiredRefusal,
+                () => Effect30.succeed("expired")
+              )
+            );
             handed.add(key);
             yield* handler(message, {
               ack,
+              ackOutcome,
               redelivered: event.receipt.state === "delivered",
               seq: event.seq
             }).pipe(

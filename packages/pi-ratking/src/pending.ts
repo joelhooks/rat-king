@@ -13,6 +13,11 @@ export const WAKE_REASON = Reasons.intent({ facts: ["wake"] });
 
 export const DEFAULT_DIGEST_MINUTES = 30;
 
+export const MAIL_HOLD_MS = 2 * 60_000;
+
+export const expiresDuringHold = (expiresAt: string | undefined, now: number) =>
+  expiresAt !== undefined && Date.parse(expiresAt) <= now + MAIL_HOLD_MS;
+
 export type DeliverAs = "followUp" | "nextTurn" | "steer";
 
 export type Hold = DeliverAs | "digest";
@@ -52,7 +57,19 @@ export const applyDelivery = <A>(
 export type DigestVariant = "cc" | "wake";
 
 export interface PendingMail {
+  readonly cc?: boolean;
+  readonly canRead?: (() => boolean) | undefined;
+  readonly presentation?:
+    | ((bodyLimit?: number) => {
+        readonly content: string;
+        readonly details: unknown;
+      })
+    | undefined;
   readonly coalesce?: boolean;
+  readonly customType?: "ratking_record_notice";
+  readonly notice?: string | undefined;
+  readonly holdUntil?: number | undefined;
+  readonly expiring?: boolean;
   readonly watch?: string;
   readonly wake?: boolean;
   readonly wakeSender?: string;
@@ -79,11 +96,23 @@ export const digestLabel = (reason: Reason = DIGEST_REASON) => {
 };
 
 export const digestReason = (mails: readonly PendingMail[]): Reason => {
-  if (mails.every((mail) => digestLabel(mail.reason) === "cc digest")) {
+  if (
+    mails.every(
+      (mail) =>
+        (mail.reason === undefined || Reasons.$is("intent")(mail.reason)) &&
+        (mail.cc ?? (mail.reason ?? DIGEST_REASON).facts.includes("cc"))
+    )
+  ) {
     return DIGEST_REASON;
   }
 
-  if (mails.every((mail) => digestLabel(mail.reason) === "quiet digest")) {
+  if (
+    mails.every(
+      (mail) =>
+        mail.reason?.facts.includes("quiet") === true &&
+        !Reasons.$is("lever")(mail.reason)
+    )
+  ) {
     return Reasons.intent({ facts: ["quiet", "digest"] });
   }
 
@@ -160,8 +189,13 @@ export interface FlushDelivery {
   readonly triggerTurn: boolean;
 }
 
-const NEXT_TURN_DELIVERY: FlushDelivery = {
+export const NEXT_TURN_DELIVERY: FlushDelivery = {
   deliverAs: "nextTurn",
+  triggerTurn: false,
+};
+
+export const DISPLAY_ONLY: FlushDelivery = {
+  deliverAs: "followUp",
   triggerTurn: false,
 };
 
@@ -185,22 +219,49 @@ const intervalMs = (mails: readonly PendingMail[]) =>
     ...mails.map((mail) =>
       mail.notBefore === undefined
         ? (mail.digestMinutes ?? DEFAULT_DIGEST_MINUTES)
-        : 0
+        : Infinity
     )
   ) * 60_000;
+
+const cadence = (mail: PendingMail) =>
+  mail.cc === true &&
+  mail.notBefore !== undefined &&
+  mail.digestMinutes !== undefined
+    ? mail.digestMinutes * 60_000
+    : undefined;
 
 export const inbox = (host: MailHost) => {
   const pending = new Map<string, PendingMail>();
   const digested = new Set<string>();
+  const lastByCadence = new Map<number, number>();
   let last = Option.none<number>();
 
   return {
     clear: () => {
       pending.clear();
       digested.clear();
+      lastByCadence.clear();
       last = Option.none();
     },
     empty: () => pending.size === 0,
+    flushHeld: (now: number, boundary = false, delivery = DISPLAY_ONLY) => {
+      const due = [...pending.values()].filter(
+        (mail) =>
+          mail.holdUntil !== undefined &&
+          ((boundary && !held(mail)) || now >= mail.holdUntil) &&
+          !digested.has(mail.id)
+      );
+
+      for (const mail of due) {
+        digested.add(mail.id);
+      }
+
+      if (due.length === 1 && due[0]?.deliverAs === "nextTurn") {
+        host.show(due[0], delivery.deliverAs, delivery.triggerTurn);
+      } else if (due.length > 0) {
+        host.digest(due.toReversed(), "cc", delivery);
+      }
+    },
     flushNext: (delivery: FlushDelivery = NEXT_TURN_DELIVERY) => {
       const due = [...pending.values()].filter(
         (mail) =>
@@ -238,20 +299,29 @@ export const inbox = (host: MailHost) => {
 
       pending.set(mail.id, mail);
 
+      const delivery = hold;
+
       if (
-        hold !== "digest" &&
-        !(hold === "nextTurn" && mail.coalesce === true)
+        mail.expiring === true &&
+        (delivery === "nextTurn" || delivery === "digest")
       ) {
-        host.show(mail, hold);
         digested.add(mail.id);
+        host.show(mail, "followUp", false);
+      } else if (
+        delivery !== "digest" &&
+        !(delivery === "nextTurn" && mail.coalesce === true)
+      ) {
+        digested.add(mail.id);
+        host.show(mail, delivery);
       }
     },
     tick: (now: number) => {
-      const due = [...pending.values()].filter(
-        (mail) =>
-          held(mail) &&
-          !digested.has(mail.id) &&
-          (mail.notBefore === undefined || now >= mail.notBefore)
+      const heldItems = [...pending.values()].filter(
+        (mail) => held(mail) && !digested.has(mail.id)
+      );
+
+      const due = heldItems.filter(
+        (mail) => mail.notBefore === undefined || now >= mail.notBefore
       );
 
       if (Option.isNone(last)) {
@@ -260,19 +330,53 @@ export const inbox = (host: MailHost) => {
         return;
       }
 
-      if (due.length === 0 || now - last.value < intervalMs(due)) {
+      const lastAt = last.value;
+
+      const readyCadences = new Set<number>();
+
+      for (const mail of due) {
+        const window = cadence(mail);
+
+        if (
+          window !== undefined &&
+          now - (lastByCadence.get(window) ?? -Infinity) >= window
+        ) {
+          readyCadences.add(window);
+        }
+      }
+
+      const interval = intervalMs(due);
+
+      const ready = heldItems.filter((mail) => {
+        const window = cadence(mail);
+
+        if (window !== undefined) {
+          return readyCadences.has(window);
+        }
+
+        return mail.notBefore === undefined
+          ? now - lastAt >= interval
+          : now >= mail.notBefore;
+      });
+
+      if (ready.length === 0) {
         return;
       }
 
       last = Option.some(now);
 
-      for (const mail of due) {
+      for (const window of readyCadences) {
+        lastByCadence.set(window, now);
+      }
+
+      for (const mail of ready) {
         digested.add(mail.id);
       }
 
       host.digest(
-        due.toReversed(),
-        due.every((mail) => mail.wake === true) ? "wake" : "cc"
+        ready.toReversed(),
+        ready.every((mail) => mail.wake === true) ? "wake" : "cc",
+        DISPLAY_ONLY
       );
     },
     withdraw: (watch: string, sender: string): readonly string[] => {

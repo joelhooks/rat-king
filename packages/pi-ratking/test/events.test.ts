@@ -41,6 +41,7 @@ import { expect } from "vitest";
 import { keypair } from "../../lexicon/test/pass-helpers.ts";
 import { WebSocketPort } from "../../mailbox-client/src/watch.ts";
 import { document, identity } from "../../mailbox-client/test/identity.ts";
+import { receivedMail } from "../../ratking-client/src/received-mail.ts";
 import type { PiHost, SessionStart } from "../src/extension.ts";
 import {
   collectFacts,
@@ -784,6 +785,7 @@ it.live.prop(
         "message",
         "raw",
         "relay",
+        "sealed-relay",
         "outbound",
       ])
     ),
@@ -800,6 +802,9 @@ it.live.prop(
       const person = yield* identity("did:web:person.agents.example.invalid");
       const personDocument = yield* document(person);
       const outbound: Defs.EncryptedEnvelopeValue[] = [];
+
+      const relay = mode === "relay" || mode === "sealed-relay";
+      const encrypted = mode !== "relay";
 
       const value = Match.value(mode).pipe(
         Match.when("record", () => ({ $type: "sh.example.desk.answer", body })),
@@ -829,16 +834,18 @@ it.live.prop(
           kind: "message",
         })),
         Match.when("raw", () => ({ $type: 17, body })),
-        Match.when("relay", () => ({
+        Match.whenOr("relay", "sealed-relay", () => ({
           $type: "sh.mschf.ratking.relay#message",
           body,
           cc: false,
           did: person.did,
-          encrypted: true,
+          encrypted,
+          expiresAt: "2099-01-01T00:00:00.000Z",
           from: "person",
           id: "3m7x2ka4xv22a",
-          kind: "ask",
+          kind: "message",
           label: "Yaffle",
+          quiet: true,
           replyTo: null,
           summary: "Original summary",
           verified: true,
@@ -873,6 +880,7 @@ it.live.prop(
         });
 
         return yield* client.seal(own.did, record, {
+          encrypt: encrypted,
           replyTo: yield* Schema.decodeUnknownEffect(
             Schema.toType(Defs.MessageRef)
           )({ messageId: "3m7x2ka4xv22a", senderDid: own.did }),
@@ -1074,10 +1082,15 @@ it.live.prop(
         });
       });
       yield* Deferred.await(taken).pipe(Effect.timeout("5 seconds"));
+
       display();
       yield* Deferred.await(acked).pipe(Effect.timeout("5 seconds"));
 
-      if (mode === "relay") {
+      if (relay) {
+        const journal = yield* receivedMail(state, "tester");
+
+        expect(Option.isNone(yield* journal.find("3m7x2ka4xv22a"))).toBe(true);
+
         const answered = yield* Deferred.make<
           typeof Result.Type,
           Schema.SchemaError
@@ -1127,7 +1140,7 @@ it.live.prop(
           messageId: "3m7x2ka4xv22a",
           senderDid: person.did,
         });
-        expect(answerOpened.encrypted).toBe(true);
+        expect(answerOpened.encrypted).toBe(encrypted);
         expect(
           (yield* Schema.decodeEffect(PayloadJson)(answerOpened.body)).thread
         ).toBe("3m7x2ka4xv22a");
@@ -1146,7 +1159,7 @@ it.live.prop(
           Effect.provideService(HttpClient.HttpClient, http)
         );
 
-        expect(confirmationOpened.encrypted).toBe(true);
+        expect(confirmationOpened.encrypted).toBe(encrypted);
         expect(
           yield* Schema.decodeEffect(Schema.fromJsonString(RelayHandled))(
             confirmationOpened.body
@@ -1229,7 +1242,7 @@ it.live.prop(
         );
         expect(message.content).toContain("Outcome from acme");
         expect(deliveries).toEqual([{ deliverAs: "steer", triggerTurn: true }]);
-      } else if (mode !== "relay") {
+      } else if (!relay) {
         expect(records).toEqual([]);
         expect(received).toHaveLength(1);
         expect(received[0]).toMatchObject({

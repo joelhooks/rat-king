@@ -9,7 +9,7 @@ import type {
 import { renderRecordBody } from "./agentgraph.ts";
 import { formatReason } from "./attend.ts";
 import type { Levers } from "./attend.ts";
-import { deliveryReason, quietCopy } from "./delivery.ts";
+import { deliveryReason } from "./delivery.ts";
 import { AgentName } from "./name.ts";
 
 export const LexiconRecord = Schema.StructWithRest(
@@ -27,6 +27,7 @@ export const decodeRecord = (body: string) =>
 export interface InboundRecord {
   readonly alarmCrashDid?: string | undefined;
   readonly encrypted?: boolean;
+  readonly expiresAt?: string;
   readonly levers?: unknown;
   readonly id: string;
   readonly did: string;
@@ -105,6 +106,8 @@ export interface Inbound {
   readonly label: Option.Option<string>;
   readonly verified: boolean;
   readonly body: string;
+  readonly encrypted?: boolean;
+  readonly expiresAt?: string;
   readonly kind: KindValue;
   readonly quiet?: boolean;
   readonly reply?: ReplyRefValue;
@@ -150,22 +153,55 @@ const renderSent = (inbound: Inbound, by: string) =>
     `Context only: ${by} already sent this. Do not reply to it.`,
   ].join("\n");
 
-export const COPY_BODY_MAX = 500;
+export const COPY_BODY_MAX = 4000;
+
+export const QUIET_BODY_MAX = 4000;
 
 export const COPY_NOTE =
-  "You are cc'd, so this did not wake you. No action is expected unless it names you; the sender uses to: for whoever must act.";
+  "You are cc'd. No action is expected unless it names you; the sender uses to: for whoever must act.";
 
-const copyBody = (inbound: Inbound) => {
-  if (Option.isSome(inbound.summary)) {
-    return "(Full text kept in the session view.)";
+const bodyLimit = (inbound: { readonly cc: boolean }) =>
+  inbound.cc ? COPY_BODY_MAX : Infinity;
+
+const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
+export const renderInboundBody = (
+  tool: string,
+  inbound: Pick<Inbound, "body" | "cc" | "id" | "kind"> & {
+    readonly encrypted?: boolean | undefined;
+    readonly quiet?: boolean | undefined;
+    readonly sentBy?: string | undefined;
+  },
+  max = bodyLimit(inbound),
+  canRead = false
+) => {
+  const { body } = inbound;
+
+  const render = (text: string) =>
+    inbound.kind === "data" ? renderRecordBody(text) : text;
+
+  if (body.length <= max || inbound.encrypted !== false || !canRead) {
+    return render(body);
   }
 
-  return inbound.body.length > COPY_BODY_MAX
-    ? `${inbound.body.slice(0, COPY_BODY_MAX)}… (clipped; full text kept in the session view)`
-    : inbound.body;
+  const end =
+    max === 0 ? 0 : (graphemes.segment(body).containing(max)?.index ?? max);
+
+  const hint = `read the full body with ${tool}({ action: "read", id: ${JSON.stringify(inbound.id)} })`;
+
+  const preview = `${body.slice(0, end)}…`;
+
+  const clipped =
+    inbound.kind === "data" ? `\`\`\`json\n${preview}\n\`\`\`` : preview;
+
+  return `${clipped}\n(clipped; ${hint})`;
 };
 
-export const renderInbound = (tool: string, inbound: Inbound) => {
+export const renderInbound = (
+  tool: string,
+  inbound: Inbound,
+  canRead = false
+) => {
   if (inbound.noReply === true) {
     return inbound.body;
   }
@@ -211,13 +247,8 @@ export const renderInbound = (tool: string, inbound: Inbound) => {
       onNone: () => [],
       onSome: (summary) => [`Summary: ${summary}`, ""],
     }),
-    ...(quietCopy(inbound)
-      ? [copyBody(inbound), "", COPY_NOTE]
-      : [
-          inbound.kind === "data"
-            ? renderRecordBody(inbound.body)
-            : inbound.body,
-        ]),
+    renderInboundBody(tool, inbound, bodyLimit(inbound), canRead),
+    ...(inbound.cc ? ["", COPY_NOTE] : []),
     "",
     replyHint(tool, inbound),
   ].join("\n");

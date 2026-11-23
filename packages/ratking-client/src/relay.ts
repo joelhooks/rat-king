@@ -2,6 +2,7 @@ import { Effect, Option, Schema, Semaphore } from "effect";
 import { createMachine, transition } from "xstate";
 
 import type { RelaySettingValue } from "./config.ts";
+import { addressedElsewhere } from "./name.ts";
 import { Kind, PassSource } from "./payload.ts";
 import type { Inbound, InboundRecord, LexiconRecordValue } from "./payload.ts";
 
@@ -10,12 +11,15 @@ export const RelayRecord = Schema.Struct({
   body: Schema.String,
   cc: Schema.Boolean,
   ccNames: Schema.optionalKey(Schema.Array(Schema.String)),
+  copy: Schema.optionalKey(Schema.Boolean),
   did: Schema.String,
   encrypted: Schema.Boolean,
+  expiresAt: Schema.optionalKey(Schema.String),
   from: Schema.String,
   id: Schema.String,
   kind: Kind,
   label: Schema.NullOr(Schema.String),
+  quiet: Schema.optionalKey(Schema.Literal(true)),
   replyTo: Schema.NullOr(Schema.String),
   summary: Schema.NullOr(Schema.String),
   thread: Schema.optionalKey(Schema.String),
@@ -53,6 +57,20 @@ export const RelayHandled = Schema.Struct({
   id: Schema.String,
 });
 
+const passiveFlags = (input: Pick<Inbound, "copy" | "quiet">) => {
+  const flags: Pick<typeof RelayRecord.Type, "copy" | "quiet"> = {};
+
+  if (input.copy === true) {
+    Object.assign(flags, { copy: true });
+  }
+
+  if (input.quiet === true) {
+    Object.assign(flags, { quiet: true });
+  }
+
+  return flags;
+};
+
 export const relayRecord = (
   inbound: Inbound,
   encrypted: boolean
@@ -60,7 +78,9 @@ export const relayRecord = (
   const record: typeof RelayRecord.Type = {
     $type: "sh.mschf.ratking.relay#message",
     body: inbound.body,
-    cc: inbound.cc,
+    cc: (inbound.ccNames?.length ?? 0) > 0,
+    ...passiveFlags(inbound),
+    copy: inbound.cc,
     did: inbound.did,
     encrypted,
     from: inbound.from,
@@ -71,6 +91,10 @@ export const relayRecord = (
     summary: Option.getOrNull(inbound.summary),
     verified: inbound.verified,
   };
+
+  if (inbound.expiresAt !== undefined) {
+    Object.assign(record, { expiresAt: inbound.expiresAt });
+  }
 
   if (inbound.via !== undefined) {
     Object.assign(record, { via: inbound.via });
@@ -94,8 +118,10 @@ export const relayRecord = (
 export const relayedInbound = (record: typeof RelayRecord.Type): Inbound => {
   const inbound: Inbound = {
     body: record.body,
-    cc: record.cc,
+    cc: record.copy === true,
+    ...passiveFlags(record),
     did: record.did,
+    encrypted: record.encrypted,
     from: record.from,
     id: record.id,
     kind: record.kind,
@@ -104,6 +130,10 @@ export const relayedInbound = (record: typeof RelayRecord.Type): Inbound => {
     summary: Option.fromNullishOr(record.summary),
     verified: record.verified,
   };
+
+  if (record.expiresAt !== undefined) {
+    Object.assign(inbound, { expiresAt: record.expiresAt });
+  }
 
   if (record.via !== undefined) {
     Object.assign(inbound, { via: record.via });
@@ -132,6 +162,7 @@ const sentCopy = (
   cc: false,
   ccNames: record.cc,
   did: inbound.did,
+  encrypted: inbound.encrypted !== false || record.encrypted,
   from: inbound.from,
   id: record.id,
   kind: record.kind,
@@ -143,6 +174,26 @@ const sentCopy = (
   to: record.to,
   verified: true,
 });
+
+const relayCopy = (
+  record: typeof RelayRecord.Type,
+  ownName: string,
+  desk: string
+) => {
+  if (record.copy !== undefined) {
+    return record.copy;
+  }
+
+  if (!record.cc) {
+    return false;
+  }
+
+  return record.to === undefined
+    ? (record.ccNames?.some((name) => name === ownName || name === desk) ??
+        false)
+    : addressedElsewhere({}, record.to, ownName) &&
+        addressedElsewhere({}, record.to, desk);
+};
 
 export const projectRelay = (
   config: RelaySettingValue,
@@ -165,14 +216,23 @@ export const projectRelay = (
 
   return Schema.decodeUnknownOption(RelayRecord)(inbound.record).pipe(
     Option.filter((record) => record.kind !== "data"),
-    Option.map((record) => ({
-      ...relayedInbound(record),
-      relay: {
-        did: inbound.did,
-        encrypted: record.encrypted,
-        name: config.name,
-      },
-    }))
+    Option.map((record) => {
+      const copy = relayCopy(record, ownName, config.name);
+
+      return {
+        ...relayedInbound(record),
+        cc: copy,
+        copy,
+        encrypted: inbound.encrypted !== false || record.encrypted,
+        relay: {
+          did: inbound.did,
+          encrypted: record.encrypted,
+          name: config.name,
+        },
+        routedCopy: copy,
+        routedWake: config.mode === "front" && !copy,
+      };
+    })
   );
 };
 

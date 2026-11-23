@@ -46,7 +46,7 @@ const reader = async () => {
   let streaming = false;
   const entries: HistoryEntry[] = [];
   const next: Message[] = [];
-  const steering: Message[] = [];
+  const boundary: Message[] = [];
   const sent: Message[] = [];
   const acks = new Map<string, number>();
   const early: string[] = [];
@@ -76,15 +76,10 @@ const reader = async () => {
     sendMessage: (message, delivery) => {
       sent.push(message);
 
-      if (delivery?.deliverAs === "nextTurn") {
-        next.push(message);
-      } else {
-        expect(streaming).toBe(true);
-        expect(delivery?.deliverAs).toBe(
-          delivery?.triggerTurn === true ? "steer" : "followUp"
-        );
-        steering.push(message);
-      }
+      expect(delivery?.triggerTurn).toBe(false);
+      expect(["nextTurn", "followUp"]).toContain(delivery?.deliverAs);
+      const queue = delivery?.deliverAs === "nextTurn" ? next : boundary;
+      queue.push(message);
     },
     shownInSession: () => shownInHistory(entries),
   };
@@ -166,23 +161,32 @@ const reader = async () => {
       }
 
       turnEnd();
+
+      for (const message of boundary.splice(0)) {
+        entries.push({
+          customType: message.customType,
+          details: message.details,
+          type: "custom_message",
+        });
+
+        for (const id of shownIds({ ...message, role: "custom" })) {
+          shown(id);
+        }
+      }
+
       await settle();
     },
     run: async (kind: typeof Run.Type) => {
       streaming = true;
 
-      if (kind === "prompt") {
+      if (kind !== "continuation") {
         before();
-        steering.push(...next.splice(0));
-      }
-
-      if (kind === "continuation") {
-        turnEnd();
-      } else {
         await agentStart();
       }
 
-      const messages = steering.splice(0);
+      const messages = kind === "continuation" ? [] : next.splice(0);
+
+      streaming = false;
 
       for (const message of messages) {
         for (const id of shownIds({ ...message, role: "custom" })) {
@@ -246,8 +250,13 @@ const runCommand = (kind: typeof Run.Type): AsyncCommand<Model, Real> => ({
       shownIds({ ...message, role: "custom" })
     );
 
-    expect(new Set(ids)).toEqual(model.pending);
-    expect(ids).toHaveLength(model.pending.size);
+    if (kind === "continuation") {
+      expect(ids).toEqual([]);
+    } else {
+      expect(new Set(ids)).toEqual(model.pending);
+      expect(ids).toHaveLength(model.pending.size);
+    }
+
     verify(model, real);
     await real.reader.record(messages);
 
@@ -262,7 +271,7 @@ const runCommand = (kind: typeof Run.Type): AsyncCommand<Model, Real> => ({
 });
 
 it.effect.prop(
-  "quiet copies enter the next prompt, custom run or continuation, and events without a display entry never ack them",
+  "quiet copies enter an independent run or are appended at a turn boundary, and are never acked from events alone",
   [
     Arbitrary.schema(Kind),
     Arbitrary.schema(Run),

@@ -13,6 +13,7 @@ import {
   PassSource,
   passMarker,
   RelaySource,
+  renderInboundBody,
   replyHint,
 } from "@rat-king/ratking-client/payload";
 import type { Inbound } from "@rat-king/ratking-client/payload";
@@ -34,15 +35,19 @@ import { Party } from "./ui/party.ts";
 
 const Details = Schema.Struct({
   body: Schema.String,
+  bodyLimit: Schema.optional(Schema.Number),
+  canRead: Schema.optional(Schema.Boolean),
   cc: Schema.Boolean,
   ccNames: Schema.optional(Schema.Array(Schema.String)),
   delegatedFor: Schema.optional(Schema.String),
   delegatedTo: Schema.optional(Schema.String),
   did: Schema.String,
+  encrypted: Schema.optional(Schema.Boolean),
   from: Schema.String,
   id: Schema.String,
   kind: Kind,
   label: Schema.optional(Schema.String),
+  quiet: Schema.optional(Schema.Boolean),
   reason: Schema.optional(Schema.Union([DeliveryReason, Schema.String])),
   relay: Schema.optional(RelaySource),
   replyTo: Schema.optional(Schema.String),
@@ -204,18 +209,28 @@ const turnLines = (input: InboundInput): readonly string[] | undefined => {
   });
 };
 
-const previewBody = (value: InboundView, expanded: boolean): string => {
-  if (value.kind === "data") {
-    return expanded
-      ? value.body
-      : Option.getOrElse(compactRecord(value.body), () => value.body);
+const previewBody = (
+  value: InboundView,
+  expanded: boolean,
+  tool: string
+): string => {
+  if (value.kind === "data" && !expanded && !value.cc) {
+    return Option.getOrElse(compactRecord(value.body), () => value.body);
   }
 
-  const summary = clean(value.summary ?? "").trim();
+  const body = renderInboundBody(
+    tool,
+    value,
+    value.bodyLimit,
+    value.canRead === true
+  );
 
-  return summary !== "" && clean(value.body).trimStart().startsWith(summary)
-    ? clean(value.body).trimStart().slice(summary.length).trimStart()
-    : value.body;
+  const summary = clean(value.summary ?? "").trim();
+  const text = clean(body).trimStart();
+
+  return value.kind !== "data" && summary !== "" && text.startsWith(summary)
+    ? text.slice(summary.length).trimStart()
+    : body;
 };
 
 const statusGlyph = (value: InboundView): string => {
@@ -260,7 +275,7 @@ export const inboundLines = (input: InboundInput): readonly string[] => {
 
   const headline = `${value.sentBy === undefined ? "from" : "sent to"} ${value.sentBy === undefined ? name : recipient}${value.summary === undefined ? "" : ` · ${oneLine(value.summary)}`}`;
 
-  const bodyText = previewBody(value, expanded);
+  const bodyText = previewBody(value, expanded, input.tool);
 
   const body = paragraphs(
     value.via === undefined

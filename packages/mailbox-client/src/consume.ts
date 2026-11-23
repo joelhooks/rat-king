@@ -63,6 +63,10 @@ export const consumerMachine = createMachine({
 
 export interface MessageMeta {
   readonly ack: Effect.Effect<void, MailboxClientError>;
+  readonly ackOutcome: Effect.Effect<
+    "acked" | "settled" | "delegated" | "expired",
+    MailboxClientError
+  >;
   readonly redelivered: boolean;
   readonly seq: number;
 }
@@ -623,17 +627,36 @@ export const consume = <E, R>(
                   return;
                 }
 
-                const ack =
+                const attemptAck: MessageMeta["ackOutcome"] =
                   event.receipt.delegatedTo === undefined
                     ? mailbox.ack(input).pipe(
-                        Effect.catchIf(settledRefusal, () => Effect.void),
-                        Effect.asVoid
+                        Effect.map(({ receipt }) =>
+                          Match.value(receipt.state).pipe(
+                            Match.when("acked", () => "acked" as const),
+                            Match.when("expired", () => "expired" as const),
+                            Match.orElse(() => "settled" as const)
+                          )
+                        ),
+                        Effect.catchIf(
+                          (error) =>
+                            settledRefusal(error) && !expiredRefusal(error),
+                          () => Effect.succeed("settled" as const)
+                        )
                       )
-                    : Effect.void;
+                    : Effect.succeed("delegated" as const);
+
+                const ack = Effect.asVoid(attemptAck);
+
+                const ackOutcome = attemptAck.pipe(
+                  Effect.catchIf(expiredRefusal, () =>
+                    Effect.succeed("expired" as const)
+                  )
+                );
 
                 handed.add(key);
                 yield* handler(message, {
                   ack,
+                  ackOutcome,
                   redelivered: event.receipt.state === "delivered",
                   seq: event.seq,
                 }).pipe(

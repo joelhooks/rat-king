@@ -174,13 +174,18 @@ export const sendCommand = Command.make(
 
         return {
           document: withField(
-            { delivered: deliveredDocument(delivered) },
+            withField(
+              { delivered: deliveredDocument(delivered) },
+              "hint",
+              delivered.hint
+            ),
             "note",
             clamp?.note
           ),
           lines: [
             sentLine("sent", delivered),
             ...presenceLines(delivered),
+            ...(delivered.hint === undefined ? [] : [delivered.hint]),
             ...(clamp === undefined ? [] : [clamp.note]),
           ],
         } satisfies Report;

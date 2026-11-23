@@ -226,7 +226,7 @@ it.effect.prop(
       const lines = content.split("\n").filter((line) => line.startsWith("- "));
 
       expect(lines).toHaveLength(count);
-      expect(content.split(COPY_NOTE)).toHaveLength(2);
+      expect(content.split(COPY_NOTE)).toHaveLength(count + 1);
       expect(content.split("To reply:")).toHaveLength(2);
       expect(acknowledgments).toEqual(Array.from({ length: count }, () => 0));
       shown("not-in-the-digest");

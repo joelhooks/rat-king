@@ -218,7 +218,7 @@ const intent = (arrival: Arrival): Verdict => {
   const quiet =
     (arrival.copy === true || arrival.quiet === true) &&
     arrival.kind !== "ask" &&
-    arrival.relay === undefined;
+    (arrival.quiet === true || arrival.relay === undefined);
 
   if (quiet && arrival.digestMinutes !== undefined) {
     facts.push("digest");
@@ -249,7 +249,14 @@ const ownerVerdict = (arrival: Arrival, levers: Levers): Verdict | undefined =>
     ? Verdicts.Now({ reason: intent(arrival).reason })
     : undefined;
 
-export const attend = (
+const passive = (arrival: Arrival) =>
+  arrival.kind !== "ask" &&
+  (arrival.quiet === true ||
+    (arrival.copy === true &&
+      arrival.relay === undefined &&
+      arrival.routedWake !== true));
+
+const preferredVerdict = (
   arrival: Arrival,
   levers: Levers,
   now: number,
@@ -276,6 +283,44 @@ export const attend = (
   leverVerdict(arrival, levers, now) ??
   Option.getOrUndefined(suggestion) ??
   intent(arrival);
+
+export const attend = (
+  arrival: Arrival,
+  levers: Levers,
+  now: number,
+  turnFold: TurnFold | undefined,
+  suggestion: Option.Option<Verdict>
+): Verdict => {
+  if (arrival.relay !== undefined && arrival.routedCopy === true) {
+    const rule =
+      levers.enabled === true
+        ? ruleVerdict(arrival, levers.prefs?.rules, now)
+        : undefined;
+
+    const lever = leverVerdict(arrival, levers, now);
+
+    if (rule?._tag === "Never") {
+      return rule;
+    }
+
+    return (
+      lever ??
+      (Verdicts.$is("Later")(rule)
+        ? rule
+        : Verdicts.Next({ reason: Reasons.intent({ facts: ["cc"] }) }))
+    );
+  }
+
+  const verdict = preferredVerdict(arrival, levers, now, turnFold, suggestion);
+
+  if (arrival.relay !== undefined && arrival.routedWake === true) {
+    return verdict;
+  }
+
+  return Verdicts.$is("Now")(verdict) && passive(arrival)
+    ? intent(arrival)
+    : verdict;
+};
 
 export const reasonTone = (reason: Reason): "held" | "quiet" | "woken" => {
   if (reason.facts.includes("digest")) {
