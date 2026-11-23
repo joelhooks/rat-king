@@ -8,7 +8,9 @@
     "./auth": "./src/auth.ts",
     "./deadline": "./src/deadline.ts",
     "./health": "./src/health.ts",
-    "./owner-queue": "./src/owner-queue.ts"
+    "./identity": "./src/identity.ts",
+    "./owner-queue": "./src/owner-queue.ts",
+    "./payload": "./src/payload.ts"
   },
   "dependencies": {
     "@rat-king/envelope": "workspace:*",

@@ -9,6 +9,7 @@
     "src/**/*.ts",
     "test/**/*.ts",
     "cli/**/*.ts",
+    "viewer/**/*.ts",
     "../../stacks/nest/**/*.ts",
     "*.config.ts"
   ]
