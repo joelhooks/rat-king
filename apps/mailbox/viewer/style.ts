@@ -46,7 +46,7 @@ a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .caption { padding: .25rem var(--space-small); border-block: 1px solid; background: var(--code-bg); }
 .row { display: block; color: inherit; text-decoration: none; border-bottom: 1px solid var(--code-border); border-left: 2px solid transparent; padding: var(--space-tight) var(--space-small); min-height: 5rem; }
 .row strong { display: block; margin-block: .25rem; }
-.rowtop { display: flex; justify-content: space-between; align-items: center; gap: var(--space-tight); flex-wrap: wrap; }
+.rowtop { display: flex; align-items: center; gap: var(--space-tight); flex-wrap: wrap; }
 .chip { display: inline-block; background: var(--code-bg); border: 1px solid var(--code-border); padding: .1em .25em; font-size: .75rem; line-height: 1.25; color: var(--code-keyword); }
 .chip.sealed,.chip.pending { color: var(--accent-text); }
 .detailtop { padding: var(--space-small) var(--space-section) 0; }
