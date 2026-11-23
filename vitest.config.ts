@@ -79,6 +79,13 @@ export default defineConfig({
         test: { name: "mailbox" },
       },
       {
+        extends: false,
+        test: {
+          include: ["packages/board-domain/test/**/*.test.ts"],
+          name: "board-domain",
+        },
+      },
+      {
         extends: "packages/remembers/vitest.config.ts",
         test: { name: "remembers" },
       },

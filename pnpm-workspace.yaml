@@ -32,6 +32,7 @@ minimumReleaseAgeExclude:
   - "@alchemy.run/sql@2.0.0-beta.87"
   - "@alchemy.run/node-utils@2.0.0-beta.87"
   - "@alchemy.run/test@2.0.0-beta.87"
+  - "@alchemy.run/domain@2.0.0-beta.87"
   - foldkit@0.170.0
   - xstate@6.0.0-beta.1
   - "@xstate/effect@1.0.0-beta.0"
