@@ -168,7 +168,9 @@ export const proveInterruptedSnapshot = async ({
 
     await assert.rejects(publish("/usr/bin/false"));
     assert.deepEqual(await readdir(backups), []);
+    assert.deepEqual(await readdir(privateRoot), partials);
     await publish(age);
+    assert.deepEqual(await readdir(privateRoot), partials);
     assert.deepEqual(await readdir(backups), [path.basename(destination)]);
     const archive = await stat(destination);
     const exportRoot = await stat(backups);

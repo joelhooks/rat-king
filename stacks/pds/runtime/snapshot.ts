@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import {
   chmod,
   copyFile,
@@ -13,6 +12,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+import { backup, DatabaseSync } from "node:sqlite";
 
 import { encryptArchive } from "./archive.ts";
 import {
@@ -24,25 +24,7 @@ import {
   recover,
   withControl,
 } from "./control.ts";
-
-const exec = async (
-  binary: string,
-  args: string[],
-  options?: { readonly cwd: string }
-) => {
-  const result = Promise.withResolvers<{ readonly stdout: string }>();
-
-  // oxlint-disable-next-line promise/prefer-await-to-callbacks -- Bridge Node's execFile callback into the awaited result.
-  execFile(binary, args, { ...options, encoding: "utf-8" }, (error, stdout) => {
-    if (error === null) {
-      result.resolve({ stdout });
-    } else {
-      result.reject(error);
-    }
-  });
-
-  return await result.promise;
-};
+import { pinnedAgePath } from "./recipient.ts";
 
 const manifest = ".rat-king-pds-snapshot";
 
@@ -138,24 +120,16 @@ const sqliteBackup = async (source: string, destination: string) => {
       copyJournal(source, local, "-wal"),
       copyJournal(source, local, "-journal"),
     ]);
-    await exec(
-      "/usr/bin/sqlite3",
-      ["-batch", "-bail", local, `.backup ${name}`],
-      { cwd: path.dirname(destination) }
-    );
+    using sourceDb = new DatabaseSync(local);
+    await backup(sourceDb, destination);
   } finally {
     await rm(scratch, { force: true, recursive: true });
   }
 
-  const { stdout } = await exec("/usr/bin/sqlite3", [
-    "-batch",
-    "-bail",
-    "-readonly",
-    destination,
-    "PRAGMA quick_check",
-  ]);
+  using copiedDb = new DatabaseSync(destination, { readOnly: true });
+  const rows = copiedDb.prepare("PRAGMA quick_check").all();
 
-  if (stdout.trim() !== "ok") {
+  if (rows.length !== 1 || rows[0]?.quick_check !== "ok") {
     throw new Error("Snapshot SQLite quick_check failed.");
   }
 };
@@ -301,6 +275,7 @@ export const publishSnapshot = async ({
         recipient,
       });
       await chmod(encrypted, 0o640);
+      await rm(generation, { recursive: true });
       await link(encrypted, destination);
       await using exports = await open(path.dirname(destination), "r");
       await exports.sync();
@@ -411,7 +386,7 @@ const scheduledSnapshot = async (
   }
 
   await publishSnapshot({
-    age: "/usr/bin/age",
+    age: pinnedAgePath,
     copy: async (generation) => {
       await snapshotTree(source, generation);
     },
@@ -427,7 +402,7 @@ const scheduledSnapshot = async (
 if (import.meta.main) {
   process.umask(0o077);
 
-  const [mode, location, source, privateRoot, exports, recipient] =
+  const [mode, location, source, privateRoot, exports, recipient, ageBin] =
     process.argv.slice(2);
 
   if (mode === "recover" && location !== undefined) {
@@ -445,12 +420,13 @@ if (import.meta.main) {
     source !== undefined &&
     privateRoot !== undefined &&
     exports !== undefined &&
-    recipient !== undefined
+    recipient !== undefined &&
+    ageBin === pinnedAgePath
   ) {
     await scheduledSnapshot(location, source, privateRoot, exports, recipient);
   } else {
     throw new Error(
-      "Expected snapshot <control> <source> <scratch> <exports> <recipient>, recover <control>, or snapshot-age <exports> <max-hours>."
+      "Expected snapshot <control> <source> <scratch> <exports> <recipient> /usr/local/bin/age, recover <control>, or snapshot-age <exports> <max-hours>."
     );
   }
 }

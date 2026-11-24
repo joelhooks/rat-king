@@ -1,7 +1,7 @@
 import { Schema } from "effect";
 
 import type { UnitProps } from "../../packages/alchemy-nest/src/systemd.ts";
-import { ageRecipient } from "./runtime/recipient.ts";
+import { ageRecipient, pinnedAgePath } from "./runtime/recipient.ts";
 
 export const UnitPath = Schema.String.check(
   Schema.isPattern(
@@ -196,7 +196,7 @@ export const pdsArtifacts = (input: {
             ["TimeoutStartSec", "30min"],
             [
               "ExecStart",
-              `${node} ${release}/snapshot.ts snapshot ${control} ${data} ${backups} ${encryptedArchives} ${input.snapshotRecipient}`,
+              `${node} ${release}/snapshot.ts snapshot ${control} ${data} ${backups} ${encryptedArchives} ${input.snapshotRecipient} ${pinnedAgePath}`,
             ],
             [
               "ExecStopPost",

@@ -61,7 +61,7 @@ it.prop(
     ]);
     expect(tunnel.text).toContain(`\nRequisite=${origin.name}\n`);
     expect(snapshot.text).toContain(
-      ` snapshot /run/rat-king-pds/control.sock /data/pds /data/pds-snapshots /data/pds-snapshot-archives ${examples.snapshotRecipient}\n`
+      ` snapshot /run/rat-king-pds/control.sock /data/pds /data/pds-snapshots /data/pds-snapshot-archives ${examples.snapshotRecipient} /usr/local/bin/age\n`
     );
     expect(snapshot.text).toContain(
       "\nUser=pds\nUMask=0077\nIPAddressDeny=any\nRestrictAddressFamilies=AF_UNIX\n"

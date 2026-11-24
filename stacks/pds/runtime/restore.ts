@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  field,
   getLexicon,
   localIdentity,
   textField,
@@ -13,17 +14,10 @@ import {
 } from "./local.ts";
 import { assertSnapshot, snapshotTree } from "./snapshot.ts";
 
-export const restoreLexicon = async ({
-  cid,
-  did,
-  nsid,
-  snapshot,
-}: {
-  readonly cid: string;
-  readonly did: string;
-  readonly nsid: string;
-  readonly snapshot: string;
-}) => {
+const withRestored = async (
+  snapshot: string,
+  verify: (origin: string, version: string) => Promise<void>
+) => {
   await assertSnapshot(snapshot);
 
   const data = await mkdtemp(path.join(tmpdir(), "rat-king-pds-restore-"));
@@ -53,17 +47,7 @@ export const restoreLexicon = async ({
       },
       async (origin) => {
         const version = textField(await xrpc(origin, "_health"), "version");
-        const restored = await getLexicon(origin, did, nsid);
-
-        if (restored.cid !== cid) {
-          throw new Error(
-            "Restored Lexicon CID does not match the independently recorded CID."
-          );
-        }
-
-        console.log(
-          `PDS_RESTORE_OK version=${version} did=${did} nsid=${nsid} cid=${cid}`
-        );
+        await verify(origin, version);
       }
     );
   } finally {
@@ -72,11 +56,54 @@ export const restoreLexicon = async ({
   }
 };
 
+export const restoreLexicon = async ({
+  cid,
+  did,
+  nsid,
+  snapshot,
+}: {
+  readonly cid: string;
+  readonly did: string;
+  readonly nsid: string;
+  readonly snapshot: string;
+}) => {
+  await withRestored(snapshot, async (origin, version) => {
+    const restored = await getLexicon(origin, did, nsid);
+
+    if (restored.cid !== cid) {
+      throw new Error(
+        "Restored Lexicon CID does not match the independently recorded CID."
+      );
+    }
+
+    console.log(
+      `PDS_RESTORE_OK version=${version} did=${did} nsid=${nsid} cid=${cid}`
+    );
+  });
+};
+
+export const restoreEmpty = async (snapshot: string) => {
+  await withRestored(snapshot, async (origin, version) => {
+    const repos = field(
+      await xrpc(origin, "com.atproto.sync.listRepos"),
+      "repos"
+    );
+
+    if (!Array.isArray(repos) || repos.length !== 0) {
+      throw new Error("The pre-account restore must have no repos.");
+    }
+
+    console.log(`PDS_EMPTY_RESTORE_OK version=${version} repos=0`);
+  });
+};
+
 if (import.meta.main) {
   process.umask(0o077);
   const [snapshot, did, nsid, cid] = process.argv.slice(2);
 
-  if (
+  if (snapshot === "--empty" && did !== undefined && nsid === undefined) {
+    await restoreEmpty(did);
+  } else if (
     snapshot === undefined ||
     did === undefined ||
     nsid === undefined ||
@@ -86,9 +113,9 @@ if (import.meta.main) {
     !/^[a-z0-9]+$/u.test(cid)
   ) {
     throw new Error(
-      "Usage: node restore.ts <completed-snapshot> <publisher-did> <nsid> <expected-cid>"
+      "Usage: node restore.ts --empty <completed-snapshot> or restore.ts <completed-snapshot> <publisher-did> <nsid> <expected-cid>"
     );
+  } else {
+    await restoreLexicon({ cid, did, nsid, snapshot });
   }
-
-  await restoreLexicon({ cid, did, nsid, snapshot });
 }

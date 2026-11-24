@@ -17,7 +17,8 @@ import {
   withPds,
   xrpc,
 } from "./local.ts";
-import { restoreLexicon } from "./restore.ts";
+import { restoreEmpty, restoreLexicon } from "./restore.ts";
+import { snapshotTree } from "./snapshot.ts";
 
 process.umask(0o077);
 
@@ -110,6 +111,17 @@ try {
   assert.ok(address !== null && typeof address !== "string");
 
   const localPlc = `http://127.0.0.1:${address.port}`;
+
+  const empty = path.join(root, "empty-fixture");
+  await mkdir(empty, { mode: 0o700 });
+  await withPds(
+    { ...identity, commit, data, hostname, localPlc },
+    async (origin) => {
+      await xrpc(origin, "_health");
+    }
+  );
+  await snapshotTree(data, empty);
+  await restoreEmpty(empty);
 
   const result = await withPds(
     { ...identity, commit, data, hostname, localPlc },
