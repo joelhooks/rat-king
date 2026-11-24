@@ -2,17 +2,19 @@ import { execFile } from "node:child_process";
 import {
   chmod,
   copyFile,
+  link,
   lstat,
   mkdir,
   mkdtemp,
+  open,
   readdir,
   readFile,
-  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
 
+import { encryptArchive } from "./archive.ts";
 import {
   accepted,
   command,
@@ -46,7 +48,9 @@ const manifest = ".rat-king-pds-snapshot";
 
 const version = "rat-king-pds-snapshot-v1\n";
 
-const datePattern = /^\d{4}-\d{2}-\d{2}$/u;
+const archivePattern = /^\d{4}-\d{2}-\d{2}\.tar\.age$/u;
+
+const hourMs = 60 * 60 * 1000;
 
 const dateFormat = new Intl.DateTimeFormat("en-CA", {
   day: "2-digit",
@@ -160,7 +164,6 @@ const sqliteBackup = async (source: string, destination: string) => {
 const copyTree = async (
   source: string,
   destination: string,
-  groupReadable: boolean,
   root = true
 ): Promise<void> => {
   for (const name of await readdir(source)) {
@@ -173,8 +176,8 @@ const copyTree = async (
     const entry = await lstat(from);
 
     if (entry.isDirectory()) {
-      await mkdir(to, { mode: groupReadable ? 0o750 : 0o700 });
-      await copyTree(from, to, groupReadable, false);
+      await mkdir(to, { mode: 0o700 });
+      await copyTree(from, to, false);
     } else if (!entry.isFile() || entry.nlink !== 1) {
       throw new Error("Snapshot refused a link or non-regular state entry.");
     } else if (name.endsWith(".sqlite")) {
@@ -185,17 +188,13 @@ const copyTree = async (
       await copyFile(from, to);
     }
 
-    if (groupReadable && entry.isFile()) {
-      await chmod(to, 0o640);
+    if (entry.isFile()) {
+      await chmod(to, 0o600);
     }
   }
 };
 
-export const snapshotTree = async (
-  source: string,
-  destination: string,
-  groupReadable = false
-) => {
+export const snapshotTree = async (source: string, destination: string) => {
   const directory = await lstat(source);
   const accounts = await lstat(path.join(source, "account.sqlite"));
 
@@ -203,10 +202,10 @@ export const snapshotTree = async (
     throw new Error("Snapshot requires an initialized PDS data directory.");
   }
 
-  await copyTree(source, destination, groupReadable);
+  await copyTree(source, destination);
   await writeFile(path.join(destination, manifest), version, {
     flag: "wx",
-    mode: groupReadable ? 0o640 : 0o600,
+    mode: 0o600,
   });
 };
 
@@ -253,19 +252,12 @@ const prune = async (root: string, now: Date) => {
   const keepFrom = days.toISOString().slice(0, 10);
 
   for (const name of await readdir(root)) {
-    if (datePattern.test(name) && name < keepFrom) {
+    if (archivePattern.test(name) && name.slice(0, 10) < keepFrom) {
       const old = path.join(root, name);
-      const receipt = path.join(old, manifest);
-      const directory = await lstat(old);
+      const archive = await lstat(old);
 
-      if (!directory.isDirectory() || !(await exists(receipt))) {
-        continue;
-      }
-
-      const entry = await lstat(receipt);
-
-      if (entry.isFile() && (await readFile(receipt, "utf-8")) === version) {
-        await rm(old, { recursive: true });
+      if (archive.isFile()) {
+        await rm(old);
       }
     }
   }
@@ -273,92 +265,192 @@ const prune = async (root: string, now: Date) => {
 
 /* oxlint-enable no-await-in-loop */
 
-export const publishSnapshot = async (
-  location: string,
-  destination: string,
-  copy: (generation: string) => Promise<void>
-) => {
-  const stage = await mkdtemp(
-    path.join(path.dirname(destination), ".partial-")
-  );
+export const publishSnapshot = async ({
+  age,
+  copy,
+  destination,
+  location,
+  privateRoot,
+  recipient,
+}: {
+  readonly age: string;
+  readonly copy: (generation: string) => Promise<void>;
+  readonly destination: string;
+  readonly location: string;
+  readonly privateRoot: string;
+  readonly recipient: string;
+}) => {
+  const generation = await mkdtemp(path.join(privateRoot, ".partial-"));
 
   try {
-    const generation = path.join(stage, "generation");
-    await mkdir(generation, { mode: 0o750 });
     await withSnapshotLease(location, async () => {
       await copy(generation);
     });
-    await rename(generation, destination);
+    await assertSnapshot(generation);
+
+    const stage = await mkdtemp(
+      path.join(path.dirname(destination), ".partial-")
+    );
+
+    try {
+      const encrypted = path.join(stage, "archive.age");
+      await encryptArchive({
+        age,
+        destination: encrypted,
+        generation,
+        recipient,
+      });
+      await chmod(encrypted, 0o640);
+      await link(encrypted, destination);
+      await using exports = await open(path.dirname(destination), "r");
+      await exports.sync();
+    } finally {
+      await rm(stage, { force: true, recursive: true });
+    }
   } finally {
-    await rm(stage, { force: true, recursive: true });
+    await rm(generation, { force: true, recursive: true });
+  }
+};
+
+const archiveEntry = async (file: string) => {
+  const entry = await lstat(file);
+
+  if (!entry.isFile() || entry.size === 0 || entry.mode % 0o1000 !== 0o640) {
+    throw new Error(
+      "Expected a nonempty regular snapshot archive at mode 0640."
+    );
+  }
+
+  return entry;
+};
+
+export const snapshotAge = async (
+  root: string,
+  maxHours: number,
+  now = Date.now()
+) => {
+  if (!Number.isSafeInteger(maxHours) || maxHours < 1 || maxHours > 168) {
+    throw new Error("Expected a maximum snapshot age from 1 to 168 hours.");
+  }
+
+  const names = await readdir(root);
+
+  const newest = names
+    .filter((name) => archivePattern.test(name))
+    .toSorted()
+    .at(-1);
+
+  if (newest === undefined) {
+    throw new Error("No completed PDS snapshot archive.");
+  }
+
+  const entry = await archiveEntry(path.join(root, newest));
+  const elapsed = now - entry.mtimeMs;
+
+  if (elapsed < 0 || elapsed > maxHours * hourMs) {
+    throw new Error(
+      "Newest PDS snapshot archive is stale or timestamped in the future."
+    );
+  }
+
+  return Math.floor(elapsed / 1000);
+};
+
+const checkSnapshotRoot = async (
+  root: string,
+  mode: number,
+  privateRoot: boolean
+) => {
+  await checkRootControlled(path.dirname(root));
+  const target = await lstat(root);
+
+  if (
+    !target.isDirectory() ||
+    target.uid !== process.getuid?.() ||
+    target.mode % 0o1_0000 !== mode ||
+    (privateRoot && target.gid !== process.getgid?.())
+  ) {
+    throw new Error("Snapshot roots have incorrect ownership or permissions.");
   }
 };
 
 const scheduledSnapshot = async (
   location: string,
   source: string,
-  root: string
+  privateRoot: string,
+  exports: string,
+  recipient: string
 ) => {
+  const paths = [source, privateRoot, exports];
+
   if (
-    path.resolve(root) !== root ||
-    path.resolve(source) !== source ||
-    root === source ||
-    root.startsWith(`${source}/`) ||
-    source.startsWith(`${root}/`)
+    paths.some(
+      (dir) =>
+        dir === "/" ||
+        path.resolve(dir) !== dir ||
+        paths.filter((other) => other === dir || other.startsWith(`${dir}/`))
+          .length !== 1
+    )
   ) {
     throw new Error(
-      "Snapshot source and destination must be distinct absolute trees."
+      "Snapshot source, scratch and export paths must be distinct absolute trees."
     );
   }
 
-  await checkRootControlled(path.dirname(root));
   await checkRootControlled(path.dirname(source));
-
-  const target = await lstat(root);
-
-  if (
-    !target.isDirectory() ||
-    target.uid !== process.getuid?.() ||
-    target.mode % 0o1_0000 !== 0o2750
-  ) {
-    throw new Error(
-      "Backup root must be owned by the snapshot user and have mode 2750."
-    );
-  }
-
+  await checkSnapshotRoot(privateRoot, 0o700, true);
+  await checkSnapshotRoot(exports, 0o2750, false);
   const now = new Date();
-  const destination = path.join(root, dateKey(now));
+  const destination = path.join(exports, `${dateKey(now)}.tar.age`);
 
   if (await exists(destination)) {
-    await assertSnapshot(destination);
+    await archiveEntry(destination);
     console.log("PDS_SNAPSHOT_ALREADY_COMPLETE");
 
     return;
   }
 
-  await publishSnapshot(location, destination, async (generation) => {
-    await snapshotTree(source, generation, true);
+  await publishSnapshot({
+    age: "/usr/bin/age",
+    copy: async (generation) => {
+      await snapshotTree(source, generation);
+    },
+    destination,
+    location,
+    privateRoot,
+    recipient,
   });
-  await prune(root, now);
+  await prune(exports, now);
   console.log("PDS_SNAPSHOT_OK");
 };
 
 if (import.meta.main) {
-  process.umask(0o027);
-  const [mode, location, source, root] = process.argv.slice(2);
+  process.umask(0o077);
+
+  const [mode, location, source, privateRoot, exports, recipient] =
+    process.argv.slice(2);
 
   if (mode === "recover" && location !== undefined) {
     await recover(location);
   } else if (
+    mode === "snapshot-age" &&
+    location !== undefined &&
+    source !== undefined
+  ) {
+    const age = await snapshotAge(location, Number(source));
+    console.log(`PDS_SNAPSHOT_FRESH ageSeconds=${age}`);
+  } else if (
     mode === "snapshot" &&
     location !== undefined &&
     source !== undefined &&
-    root !== undefined
+    privateRoot !== undefined &&
+    exports !== undefined &&
+    recipient !== undefined
   ) {
-    await scheduledSnapshot(location, source, root);
+    await scheduledSnapshot(location, source, privateRoot, exports, recipient);
   } else {
     throw new Error(
-      "Expected snapshot <control> <source> <backup-root> or recover <control>."
+      "Expected snapshot <control> <source> <scratch> <exports> <recipient>, recover <control>, or snapshot-age <exports> <max-hours>."
     );
   }
 }

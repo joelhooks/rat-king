@@ -2,13 +2,19 @@ import { it } from "@effect/vitest";
 import { Arbitrary, Schema } from "effect";
 import { expect } from "vitest";
 
-import { OriginPort, pdsArtifacts, UnitPath } from "./unit.ts";
+import {
+  OriginPort,
+  pdsArtifacts,
+  SnapshotRecipient,
+  UnitPath,
+} from "./unit.ts";
 
 const examples = {
   commit: "a".repeat(40),
   hostname: "pds.example.org",
   port: 2583,
   rotationPublicKey: `02${"a".repeat(64)}`,
+  snapshotRecipient: `age1${"a".repeat(58)}`,
   tunnel: "00000000-0000-4000-8000-000000000001",
 };
 
@@ -55,11 +61,14 @@ it.prop(
     ]);
     expect(tunnel.text).toContain(`\nRequisite=${origin.name}\n`);
     expect(snapshot.text).toContain(
-      " snapshot /run/rat-king-pds/control.sock /data/pds /data/pds-snapshots\n"
+      ` snapshot /run/rat-king-pds/control.sock /data/pds /data/pds-snapshots /data/pds-snapshot-archives ${examples.snapshotRecipient}\n`
     );
-    expect(snapshot.text).toContain("\nUser=pds\n");
     expect(snapshot.text).toContain(
-      "\nReadOnlyPaths=/data/pds\nReadWritePaths=/data/pds-snapshots\n"
+      "\nUser=pds\nUMask=0077\nIPAddressDeny=any\nRestrictAddressFamilies=AF_UNIX\n"
+    );
+    expect(snapshot.text).not.toContain("IPAddressAllow=");
+    expect(snapshot.text).toContain(
+      "\nReadOnlyPaths=/data/pds\nReadWritePaths=/data/pds-snapshots /data/pds-snapshot-archives\n"
     );
     expect(snapshot.text).toContain(
       `\nExecStopPost=/usr/local/bin/node ${release}/snapshot.ts recover /run/rat-king-pds/control.sock\n`
@@ -126,7 +135,7 @@ it("does not stage an ingress route before the connector is assigned", () => {
 });
 
 it.prop(
-  "unit path inputs cannot inject systemd substitutions or traverse a parent",
+  "unit path and age recipient inputs reject systemd substitutions",
   {
     bad: Arbitrary.schema(
       Schema.Literals(["..", "a b", "%i", "$HOME", "a\nb", ""])
@@ -134,5 +143,8 @@ it.prop(
   },
   ({ bad }) => {
     expect(Schema.is(UnitPath)(`/srv/${bad}/pds`)).toBe(false);
+    expect(Schema.is(SnapshotRecipient)(`age1${"a".repeat(53)}${bad}`)).toBe(
+      false
+    );
   }
 );

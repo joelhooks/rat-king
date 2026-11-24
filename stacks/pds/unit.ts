@@ -1,6 +1,7 @@
 import { Schema } from "effect";
 
 import type { UnitProps } from "../../packages/alchemy-nest/src/systemd.ts";
+import { ageRecipient } from "./runtime/recipient.ts";
 
 export const UnitPath = Schema.String.check(
   Schema.isPattern(
@@ -29,6 +30,10 @@ export const TunnelId = Schema.String.check(
   Schema.isPattern(/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/u)
 );
 
+export const SnapshotRecipient = Schema.String.check(
+  Schema.isPattern(ageRecipient)
+);
+
 const originUnit = "rat-king-pds.service";
 
 const tunnelUnit = "rat-king-pds-tunnel.service";
@@ -46,6 +51,8 @@ const cloudflared = "/usr/local/bin/cloudflared";
 const data = "/data/pds";
 
 const backups = "/data/pds-snapshots";
+
+const encryptedArchives = "/data/pds-snapshot-archives";
 
 const control = "/run/rat-king-pds/control.sock";
 
@@ -67,11 +74,11 @@ const hardening = [
   ["LockPersonality", "yes"],
   ["CapabilityBoundingSet", ""],
   ["SystemCallFilter", "@system-service"],
-  ["RestrictAddressFamilies", "AF_UNIX AF_INET AF_INET6"],
 ] as const;
 
 const longRunning = [
   ...hardening,
+  ["RestrictAddressFamilies", "AF_UNIX AF_INET AF_INET6"],
   ["Type", "exec"],
   ["UMask", "0077"],
   ["Restart", "on-failure"],
@@ -88,6 +95,7 @@ export const pdsArtifacts = (input: {
   readonly hostname: string;
   readonly port: number;
   readonly rotationPublicKey: string;
+  readonly snapshotRecipient: typeof SnapshotRecipient.Type;
   readonly tunnel: string | undefined;
 }) => {
   const release = `/opt/rat-king-pds/releases/${input.commit}`;
@@ -177,16 +185,18 @@ export const pdsArtifacts = (input: {
             ...hardening,
             ["Type", "oneshot"],
             ["User", "pds"],
-            ["UMask", "0027"],
+            ["UMask", "0077"],
+            ["IPAddressDeny", "any"],
+            ["RestrictAddressFamilies", "AF_UNIX"],
             ["ReadOnlyPaths", data],
-            ["ReadWritePaths", backups],
+            ["ReadWritePaths", `${backups} ${encryptedArchives}`],
             ["MemoryMax", "512M"],
             ["CPUQuota", "100%"],
             ["TasksMax", "32"],
             ["TimeoutStartSec", "30min"],
             [
               "ExecStart",
-              `${node} ${release}/snapshot.ts snapshot ${control} ${data} ${backups}`,
+              `${node} ${release}/snapshot.ts snapshot ${control} ${data} ${backups} ${encryptedArchives} ${input.snapshotRecipient}`,
             ],
             [
               "ExecStopPost",

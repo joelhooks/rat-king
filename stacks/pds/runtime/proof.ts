@@ -98,7 +98,7 @@ const root = await mkdtemp(path.join(tmpdir(), "rat-king-pds-proof-"));
 
 try {
   const data = path.join(root, "state");
-  const snapshot = path.join(root, "backups", "snapshot");
+  const snapshot = path.join(root, "decrypted");
 
   await mkdir(data, { mode: 0o700 });
   plc.listen(0, "127.0.0.1");

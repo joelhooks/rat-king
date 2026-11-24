@@ -24,6 +24,7 @@ import {
   pdsArtifacts,
   ReleaseCommit,
   RotationPublicKey,
+  SnapshotRecipient,
   TunnelId,
   UnitPath,
 } from "./unit.ts";
@@ -92,6 +93,11 @@ export default Stack(
       "RAT_KING_PDS_PLC_PUBLIC_KEY"
     );
 
+    const snapshotRecipient = yield* Config.schema(
+      SnapshotRecipient,
+      "RAT_KING_PDS_SNAPSHOT_RECIPIENT"
+    );
+
     const home = yield* Schema.decodeEffect(UnitPath)(host.home);
 
     const artifacts = pdsArtifacts({
@@ -99,6 +105,7 @@ export default Stack(
       hostname,
       port,
       rotationPublicKey,
+      snapshotRecipient,
       tunnel: Option.getOrUndefined(tunnel),
     });
 
