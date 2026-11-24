@@ -306,6 +306,7 @@ const readShipReceipts = (fs: FileSystem.FileSystem, path: string) =>
         Schema.decodeEffect(Schema.fromJsonString(ShipReceipt))(line)
       )
     ),
+    Effect.timeout("30 seconds"),
     Effect.option
   );
 
@@ -376,6 +377,7 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
                     )
                   )
               ),
+              Effect.timeout("30 seconds"),
               Effect.option
             ),
         }),
@@ -397,6 +399,7 @@ export const collectAlarmFacts = Effect.fn("Alarm.collect")(
                 ? Effect.succeed(null)
                 : Schema.decodeEffect(Schema.fromJsonString(FleetDigest))(last);
             }),
+            Effect.timeout("30 seconds"),
             Effect.option
           ),
         doctor: optionalMeasurement(sources.doctor, () =>

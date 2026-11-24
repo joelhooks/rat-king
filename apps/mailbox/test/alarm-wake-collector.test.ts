@@ -1,7 +1,8 @@
 import { NodeServices } from "@effect/platform-node";
 import { it } from "@effect/vitest";
-import { Effect, FileSystem, Schema } from "effect";
+import { Deferred, Effect, Fiber, FileSystem, Option, Schema } from "effect";
 import { HttpClient, HttpClientResponse } from "effect/http";
+import { TestClock } from "effect/testing";
 import { expect } from "vitest";
 
 import {
@@ -58,9 +59,20 @@ it.effect.prop(
       });
 
       const requests: string[] = [];
+      const started = yield* Deferred.make<null>();
+      let stall = false;
 
       const http = HttpClient.make((request) => {
         requests.push(request.url);
+
+        if (
+          stall &&
+          new URL(request.url).searchParams.get("name") === "target"
+        ) {
+          return Deferred.succeed(started, null).pipe(
+            Effect.andThen(Effect.never)
+          );
+        }
 
         return Effect.succeed(
           HttpClientResponse.fromWeb(
@@ -193,6 +205,27 @@ it.effect.prop(
           },
         ]);
         expect(requests).toHaveLength(2);
+
+        stall = true;
+
+        const pending = yield* collectDeskWakeHealth(optedIn).pipe(
+          Effect.forkChild
+        );
+
+        yield* Deferred.await(started);
+
+        const observed = yield* Fiber.join(pending).pipe(
+          Effect.timeoutOption("9 seconds"),
+          Effect.forkChild
+        );
+
+        yield* TestClock.adjust("9 seconds");
+
+        const result = yield* Fiber.join(observed);
+
+        expect(Option.getOrNull(result)).toEqual([
+          { health: null, name: "target" },
+        ]);
       }).pipe(
         Effect.provide(fs),
         Effect.provideService(HttpClient.HttpClient, http),

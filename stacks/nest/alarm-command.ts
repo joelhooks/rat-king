@@ -24,6 +24,13 @@ import {
   sendAlarmDelivery,
   withAlarmMailTransport,
 } from "./alarm-mail.ts";
+import {
+  ALARM_INTERVAL_MS,
+  alarmCycleReporter,
+  runAlarmPass,
+  runAlarmWork,
+  sendSystemdWatchdog,
+} from "./alarm-pass.ts";
 import { collectPush, dispatchPush, loadAlarmPush } from "./alarm-push.ts";
 import { updateReaderWindows } from "./alarm-reader-windows.ts";
 import type { ReaderWindowObservation } from "./alarm-reader-windows.ts";
@@ -51,6 +58,8 @@ import { watchReaderCrashes } from "./turn-crashes.ts";
 export { alarmPlist } from "./alarm-service.ts";
 
 export { readAlarmJournal } from "./alarm-journal.ts";
+
+type TrackStep = (pending: string) => void;
 
 const reportMissing = (facts: typeof AlarmFacts.Type) =>
   facts.failed === undefined || facts.failed.length === 0
@@ -151,21 +160,24 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
     const drifted = yield* runnerDrift(config.ship?.checkpoint);
     let heartbeat = yield* readAlarmHeartbeat(directory);
 
-    for (;;) {
+    const reportCycle = alarmCycleReporter();
+
+    const pass = Effect.fn("Alarm.pass")(function* pass(track: TrackStep) {
       yield* rotateLogs(
         [launch.outputLog, launch.errorLog],
         yield* Clock.currentTimeMillis
       );
 
       if (yield* drifted) {
-        return yield* Console.log(
+        yield* Console.log(
           JSON.stringify({
             runner: "code changed; exiting for supervisor restart",
           })
         );
+
+        return false;
       }
 
-      const started = yield* Clock.currentTimeMillis;
       let outcome: (typeof AlarmHeartbeat.Type)["outcome"] = "ok";
 
       const notification = <A, Failure, Requirements>(
@@ -181,6 +193,8 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
         );
 
       const cycle = Effect.gen(function* cycle() {
+        track("journal-read");
+
         const prior = yield* alarmStep(
           "journal.read",
           readAlarmJournal(directory)
@@ -284,6 +298,8 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           ),
         };
 
+        track("desk-wake-facts-notifications");
+
         const main = runAlarmCycle(
           prior,
           facts,
@@ -302,6 +318,8 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
           [main, collectPush(config, settings.push.names)],
           { concurrency: "unbounded" }
         );
+
+        track("push-dispatch");
 
         yield* dispatchPush(
           journal.pushAttempts ?? {},
@@ -337,16 +355,15 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
               }
             );
 
-      yield* run.pipe(
-        withAlarmMailTransport,
-        Effect.timeout("55 seconds"),
-        (effect) => alarmStep("cycle", effect),
-        Effect.catch((error) => {
-          outcome = alarmFailure(error);
+      track("alarm-transport-and-maintenance");
 
-          return Console.error(`${outcome}; input values withheld`);
-        })
-      );
+      yield* runAlarmWork(run.pipe(withAlarmMailTransport), (error) => {
+        outcome = alarmFailure(error);
+
+        return Console.error(`${outcome}; input values withheld`);
+      });
+      track("heartbeat-write");
+
       heartbeat = nextAlarmHeartbeat(
         heartbeat,
         yield* Clock.currentTimeMillis,
@@ -355,6 +372,8 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
       yield* writeAlarmHeartbeat(directory, heartbeat).pipe(
         Effect.catch(() => unavailable)
       );
+
+      track("maintenance-status");
 
       yield* publishMaintenanceStatus(settings, directory, heartbeat).pipe(
         Effect.timeout("2 seconds"),
@@ -367,8 +386,26 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
 
       yield* checkAlarmWorkerHealth(heartbeat);
 
+      return true;
+    });
+
+    for (;;) {
+      const started = yield* Clock.currentTimeMillis;
+      const reportStarted = yield* Clock.monotonicTimeNanos;
+
+      const completed = yield* runAlarmPass(pass, {
+        notify: sendSystemdWatchdog,
+        notifySocket: process.env.NOTIFY_SOCKET,
+      });
+
+      if (!completed) {
+        return yield* Effect.void;
+      }
+
+      yield* reportCycle(reportStarted);
+
       const elapsed = (yield* Clock.currentTimeMillis) - started;
-      yield* Effect.sleep(Math.max(0, 60_000 - elapsed));
+      yield* Effect.sleep(Math.max(0, ALARM_INTERVAL_MS - elapsed));
     }
   },
   Effect.scoped,
