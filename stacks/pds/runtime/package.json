@@ -1,0 +1,15 @@
+{
+  "name": "rat-king-pds-runtime",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "proof": "node proof.ts"
+  },
+  "dependencies": {
+    "@atproto/pds": "0.5.65"
+  },
+  "devDependencies": {
+    "@did-plc/lib": "0.0.4"
+  }
+}
