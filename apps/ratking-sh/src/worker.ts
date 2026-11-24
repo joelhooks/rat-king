@@ -1,5 +1,6 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
-import { Config, Effect, Option, Schema } from "effect";
+import { signatures } from "@rat-king/lexicon/webcrypto";
+import { Config, Effect, Layer, Option, Schema } from "effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 
@@ -7,10 +8,15 @@ import { Directory } from "./authority.ts";
 import ContactSession, { publicDesk, trustLayer } from "./contact-session.ts";
 import DeskPeon from "./desk-peon.ts";
 import { handleEdge } from "./http.ts";
+import { Issuer, issuerConfig } from "./identity/admin.ts";
+import { identityLive } from "./identity/cloudflare.ts";
+import { identityZone } from "./identity/names.ts";
+import { identityRouter } from "./identity/router.ts";
 import { PublicDesk } from "./policy.ts";
 
 interface EdgeEnvironment {
   RATKING_COMMIT: string;
+  RATKING_IDENTITY_ISSUER?: string;
   RATKING_PUBLIC_DESK: string;
   RATKING_TRUST_DIRECTORY?: string;
 }
@@ -41,16 +47,24 @@ export default class RatKingEdge extends Cloudflare.Worker<RatKingEdge>()(
       env.RATKING_TRUST_DIRECTORY = directory.value;
     }
 
+    const issuer = yield* issuerConfig;
+
+    if (Option.isSome(issuer)) {
+      env.RATKING_IDENTITY_ISSUER = JSON.stringify(issuer.value);
+    }
+
     return {
       compatibility: { date: "2026-07-28" },
       env,
       main: import.meta.url,
+      workersDev: false,
     };
   }).pipe(Effect.orDie),
   Effect.gen(function* edgeWorker() {
     const contacts = yield* ContactSession;
     yield* DeskPeon;
     const desk = yield* publicDesk;
+    const routeIdentity = yield* identityRouter;
 
     const throttle = yield* Cloudflare.RateLimit("MCP_PER_IP", {
       namespaceId: "41001",
@@ -64,6 +78,26 @@ export default class RatKingEdge extends Cloudflare.Worker<RatKingEdge>()(
         const request = yield* HttpServerRequest.toWeb(incoming).pipe(
           Effect.orDie
         );
+
+        const env = yield* Cloudflare.WorkerEnvironment;
+        const configured: unknown = env.RATKING_IDENTITY_ISSUER;
+
+        const issuer =
+          configured === undefined
+            ? undefined
+            : yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Issuer))(
+                configured
+              );
+
+        const identity = yield* routeIdentity({
+          issuer,
+          request,
+          zone: identityZone,
+        });
+
+        if (Option.isSome(identity)) {
+          return HttpServerResponse.fromWeb(identity.value);
+        }
 
         return HttpServerResponse.fromWeb(
           yield* handleEdge(request, {
@@ -86,9 +120,17 @@ export default class RatKingEdge extends Cloudflare.Worker<RatKingEdge>()(
                 Effect.map((result) => result.success),
                 Effect.orDie
               ),
-          })
+          }).pipe(Effect.provide(trustLayer))
         );
-      }).pipe(Effect.provide(trustLayer), Effect.orDie),
+      }).pipe(Effect.orDie),
     };
-  }).pipe(Effect.provide(Cloudflare.Workers.RateLimitBinding))
+  }).pipe(
+    Effect.provide(
+      Layer.mergeAll(
+        identityLive,
+        signatures,
+        Cloudflare.Workers.RateLimitBinding
+      )
+    )
+  )
 ) {}
