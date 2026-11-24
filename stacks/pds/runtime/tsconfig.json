@@ -1,0 +1,10 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "target": "ES2024",
+    "lib": ["ES2024"],
+    "allowImportingTsExtensions": true,
+    "plugins": []
+  },
+  "include": ["*.ts"]
+}
