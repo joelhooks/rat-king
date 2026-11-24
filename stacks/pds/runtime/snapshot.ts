@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import {
+  chmod,
   copyFile,
   lstat,
   mkdir,
@@ -11,6 +12,16 @@ import {
   writeFile,
 } from "node:fs/promises";
 import path from "node:path";
+
+import {
+  accepted,
+  command,
+  copied,
+  pause,
+  quiesced,
+  recover,
+  withControl,
+} from "./control.ts";
 
 const exec = async (
   binary: string,
@@ -31,10 +42,6 @@ const exec = async (
   return await result.promise;
 };
 
-const unit = "rat-king-pds.service";
-
-const marker = "/run/rat-king-pds-snapshot/resume";
-
 const manifest = ".rat-king-pds-snapshot";
 
 const version = "rat-king-pds-snapshot-v1\n";
@@ -50,15 +57,6 @@ const dateFormat = new Intl.DateTimeFormat("en-CA", {
 
 const dateKey = (date: Date) => dateFormat.format(date);
 
-const ctl = async (...args: string[]) =>
-  await exec("/usr/bin/systemctl", [...args, unit]);
-
-const activeState = async () => {
-  const { stdout } = await ctl("show", "--property=ActiveState", "--value");
-
-  return stdout.trim();
-};
-
 const checkRootControlled = async (directory: string): Promise<void> => {
   const entry = await lstat(directory);
   const mode = (entry.mode % 0o1000).toString(8).padStart(3, "0");
@@ -69,95 +67,12 @@ const checkRootControlled = async (directory: string): Promise<void> => {
     /[2367]/u.test(mode.slice(1))
   ) {
     throw new Error(
-      "Snapshot destination and its ancestors must be root-controlled real directories."
+      "Snapshot tree parents must be root-controlled real directories."
     );
   }
 
   if (directory !== "/") {
     await checkRootControlled(path.dirname(directory));
-  }
-};
-
-const sqliteBackup = async (source: string, destination: string) => {
-  const name = path.basename(destination);
-
-  if (!/^[a-zA-Z0-9_-]+\.sqlite$/u.test(name)) {
-    throw new Error("Unexpected SQLite database filename.");
-  }
-
-  await exec(
-    "/usr/bin/sqlite3",
-    ["-batch", "-bail", "-readonly", source, `.backup ${name}`],
-    { cwd: path.dirname(destination) }
-  );
-
-  const { stdout } = await exec("/usr/bin/sqlite3", [
-    "-batch",
-    "-bail",
-    "-readonly",
-    destination,
-    "PRAGMA quick_check",
-  ]);
-
-  if (stdout.trim() !== "ok") {
-    throw new Error("Snapshot SQLite quick_check failed.");
-  }
-};
-
-/* oxlint-disable no-await-in-loop -- Serialize SQLite copies and retention to bound I/O while the origin is quiesced. */
-const copyTree = async (
-  source: string,
-  destination: string,
-  root = true
-): Promise<void> => {
-  for (const name of await readdir(source)) {
-    if (root && name === manifest) {
-      continue;
-    }
-
-    const from = path.join(source, name);
-    const to = path.join(destination, name);
-    const entry = await lstat(from);
-
-    if (entry.isDirectory()) {
-      await mkdir(to, { mode: 0o700 });
-      await copyTree(from, to, false);
-    } else if (!entry.isFile() || entry.nlink !== 1) {
-      throw new Error("Snapshot refused a link or non-regular state entry.");
-    } else if (name.endsWith(".sqlite")) {
-      await sqliteBackup(from, to);
-    } else if (!/\.sqlite-(?:shm|wal|journal)$/u.test(name)) {
-      await copyFile(from, to);
-    }
-  }
-};
-
-export const snapshotTree = async (source: string, destination: string) => {
-  const directory = await lstat(source);
-  const accounts = await lstat(path.join(source, "account.sqlite"));
-
-  if (!directory.isDirectory() || !accounts.isFile()) {
-    throw new Error("Snapshot requires an initialized PDS data directory.");
-  }
-
-  await copyTree(source, destination);
-  await writeFile(path.join(destination, manifest), version, {
-    flag: "wx",
-    mode: 0o600,
-  });
-};
-
-export const assertSnapshot = async (snapshot: string) => {
-  const receipt = path.join(snapshot, manifest);
-  const directory = await lstat(snapshot);
-  const entry = await lstat(receipt);
-
-  if (
-    !directory.isDirectory() ||
-    !entry.isFile() ||
-    (await readFile(receipt, "utf-8")) !== version
-  ) {
-    throw new Error("Not a completed PDS snapshot.");
   }
 };
 
@@ -179,16 +94,157 @@ const exists = async (location: string) => {
   }
 };
 
-const resume = async () => {
-  if (await exists(marker)) {
-    await ctl("start");
+const copyJournal = async (
+  source: string,
+  destination: string,
+  suffix: string
+) => {
+  const journal = source + suffix;
 
-    if ((await activeState()) !== "active") {
-      throw new Error("PDS did not return to active state after its snapshot.");
+  if (await exists(journal)) {
+    const entry = await lstat(journal);
+
+    if (!entry.isFile() || entry.nlink !== 1) {
+      throw new Error(
+        "Snapshot refused a linked or non-regular SQLite journal."
+      );
     }
 
-    await rm(marker);
+    await copyFile(journal, destination + suffix);
   }
+};
+
+const sqliteBackup = async (source: string, destination: string) => {
+  const name = path.basename(destination);
+
+  if (!/^[a-zA-Z0-9_-]+\.sqlite$/u.test(name)) {
+    throw new Error("Unexpected SQLite database filename.");
+  }
+
+  const scratch = await mkdtemp(
+    path.join(path.dirname(destination), ".sqlite-")
+  );
+
+  const local = path.join(scratch, name);
+
+  try {
+    await copyFile(source, local);
+    await chmod(local, 0o600);
+    await Promise.all([
+      copyJournal(source, local, "-wal"),
+      copyJournal(source, local, "-journal"),
+    ]);
+    await exec(
+      "/usr/bin/sqlite3",
+      ["-batch", "-bail", local, `.backup ${name}`],
+      { cwd: path.dirname(destination) }
+    );
+  } finally {
+    await rm(scratch, { force: true, recursive: true });
+  }
+
+  const { stdout } = await exec("/usr/bin/sqlite3", [
+    "-batch",
+    "-bail",
+    "-readonly",
+    destination,
+    "PRAGMA quick_check",
+  ]);
+
+  if (stdout.trim() !== "ok") {
+    throw new Error("Snapshot SQLite quick_check failed.");
+  }
+};
+
+/* oxlint-disable no-await-in-loop -- Serialize SQLite copies and retention to bound I/O while the origin is quiesced. */
+const copyTree = async (
+  source: string,
+  destination: string,
+  groupReadable: boolean,
+  root = true
+): Promise<void> => {
+  for (const name of await readdir(source)) {
+    if (root && name === manifest) {
+      continue;
+    }
+
+    const from = path.join(source, name);
+    const to = path.join(destination, name);
+    const entry = await lstat(from);
+
+    if (entry.isDirectory()) {
+      await mkdir(to, { mode: groupReadable ? 0o750 : 0o700 });
+      await copyTree(from, to, groupReadable, false);
+    } else if (!entry.isFile() || entry.nlink !== 1) {
+      throw new Error("Snapshot refused a link or non-regular state entry.");
+    } else if (name.endsWith(".sqlite")) {
+      await sqliteBackup(from, to);
+    } else if (/\.sqlite-(?:shm|wal|journal)$/u.test(name)) {
+      continue;
+    } else {
+      await copyFile(from, to);
+    }
+
+    if (groupReadable && entry.isFile()) {
+      await chmod(to, 0o640);
+    }
+  }
+};
+
+export const snapshotTree = async (
+  source: string,
+  destination: string,
+  groupReadable = false
+) => {
+  const directory = await lstat(source);
+  const accounts = await lstat(path.join(source, "account.sqlite"));
+
+  if (!directory.isDirectory() || !accounts.isFile()) {
+    throw new Error("Snapshot requires an initialized PDS data directory.");
+  }
+
+  await copyTree(source, destination, groupReadable);
+  await writeFile(path.join(destination, manifest), version, {
+    flag: "wx",
+    mode: groupReadable ? 0o640 : 0o600,
+  });
+};
+
+export const assertSnapshot = async (snapshot: string) => {
+  const receipt = path.join(snapshot, manifest);
+  const directory = await lstat(snapshot);
+  const entry = await lstat(receipt);
+
+  if (
+    !directory.isDirectory() ||
+    !entry.isFile() ||
+    (await readFile(receipt, "utf-8")) !== version
+  ) {
+    throw new Error("Not a completed PDS snapshot.");
+  }
+};
+
+export const withSnapshotLease = async (
+  location: string,
+  copy: () => Promise<void>
+) => {
+  await withControl(location, async (socket) => {
+    socket.write(pause);
+
+    if ((await command(socket)) !== quiesced) {
+      throw new Error("PDS did not quiesce; refusing to snapshot.");
+    }
+
+    await copy();
+
+    socket.write(copied);
+
+    if ((await command(socket)) !== accepted) {
+      throw new Error("Lost PDS quiesce lease during the snapshot.");
+    }
+  });
+
+  await recover(location);
 };
 
 const prune = async (root: string, now: Date) => {
@@ -217,7 +273,32 @@ const prune = async (root: string, now: Date) => {
 
 /* oxlint-enable no-await-in-loop */
 
-const scheduledSnapshot = async (source: string, root: string) => {
+export const publishSnapshot = async (
+  location: string,
+  destination: string,
+  copy: (generation: string) => Promise<void>
+) => {
+  const stage = await mkdtemp(
+    path.join(path.dirname(destination), ".partial-")
+  );
+
+  try {
+    const generation = path.join(stage, "generation");
+    await mkdir(generation, { mode: 0o750 });
+    await withSnapshotLease(location, async () => {
+      await copy(generation);
+    });
+    await rename(generation, destination);
+  } finally {
+    await rm(stage, { force: true, recursive: true });
+  }
+};
+
+const scheduledSnapshot = async (
+  location: string,
+  source: string,
+  root: string
+) => {
   if (
     path.resolve(root) !== root ||
     path.resolve(source) !== source ||
@@ -230,8 +311,20 @@ const scheduledSnapshot = async (source: string, root: string) => {
     );
   }
 
-  await checkRootControlled(root);
+  await checkRootControlled(path.dirname(root));
   await checkRootControlled(path.dirname(source));
+
+  const target = await lstat(root);
+
+  if (
+    !target.isDirectory() ||
+    target.uid !== process.getuid?.() ||
+    target.mode % 0o1_0000 !== 0o2750
+  ) {
+    throw new Error(
+      "Backup root must be owned by the snapshot user and have mode 2750."
+    );
+  }
 
   const now = new Date();
   const destination = path.join(root, dateKey(now));
@@ -243,52 +336,29 @@ const scheduledSnapshot = async (source: string, root: string) => {
     return;
   }
 
-  if ((await activeState()) !== "active") {
-    console.log("PDS_SNAPSHOT_SKIPPED_ORIGIN_NOT_ACTIVE");
-
-    return;
-  }
-
-  const stage = await mkdtemp(path.join(root, ".partial-"));
-
-  try {
-    await writeFile(marker, "resume\n", { flag: "wx", mode: 0o600 });
-
-    try {
-      await ctl("stop");
-
-      if ((await activeState()) !== "inactive") {
-        throw new Error(
-          "PDS did not quiesce; refusing to copy SQLite and blobs."
-        );
-      }
-
-      await snapshotTree(source, stage);
-    } finally {
-      await resume();
-    }
-
-    await rename(stage, destination);
-    await prune(root, now);
-    console.log("PDS_SNAPSHOT_OK");
-  } finally {
-    await rm(stage, { force: true, recursive: true });
-  }
+  await publishSnapshot(location, destination, async (generation) => {
+    await snapshotTree(source, generation, true);
+  });
+  await prune(root, now);
+  console.log("PDS_SNAPSHOT_OK");
 };
 
 if (import.meta.main) {
-  process.umask(0o077);
-  const [mode, source, root] = process.argv.slice(2);
+  process.umask(0o027);
+  const [mode, location, source, root] = process.argv.slice(2);
 
-  if (mode === "recover") {
-    await resume();
+  if (mode === "recover" && location !== undefined) {
+    await recover(location);
   } else if (
     mode === "snapshot" &&
+    location !== undefined &&
     source !== undefined &&
     root !== undefined
   ) {
-    await scheduledSnapshot(source, root);
+    await scheduledSnapshot(location, source, root);
   } else {
-    throw new Error("Expected snapshot <source> <backup-root> or recover.");
+    throw new Error(
+      "Expected snapshot <control> <source> <backup-root> or recover <control>."
+    );
   }
 }

@@ -9,6 +9,7 @@ import { json } from "node:stream/consumers";
 
 import { assureValidCreationOp, formatDidDoc } from "@did-plc/lib";
 
+import { proveInterruptedSnapshot } from "./interruption.ts";
 import {
   getLexicon,
   localIdentity,
@@ -17,7 +18,6 @@ import {
   xrpc,
 } from "./local.ts";
 import { restoreLexicon } from "./restore.ts";
-import { snapshotTree } from "./snapshot.ts";
 
 process.umask(0o077);
 
@@ -98,10 +98,9 @@ const root = await mkdtemp(path.join(tmpdir(), "rat-king-pds-proof-"));
 
 try {
   const data = path.join(root, "state");
-  const snapshot = path.join(root, "snapshot");
+  const snapshot = path.join(root, "backups", "snapshot");
 
   await mkdir(data, { mode: 0o700 });
-  await mkdir(snapshot, { mode: 0o700 });
   plc.listen(0, "127.0.0.1");
   await once(plc, "listening");
 
@@ -196,7 +195,7 @@ try {
   );
 
   await writeFile(path.join(data, "blobs", "snapshot-fixture"), "blob bytes");
-  await snapshotTree(data, snapshot);
+  await proveInterruptedSnapshot({ commit, data, hostname, root, snapshot });
   assert.equal(
     await readFile(path.join(snapshot, "blobs", "snapshot-fixture"), "utf-8"),
     "blob bytes"

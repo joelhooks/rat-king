@@ -5,6 +5,8 @@ import path from "node:path";
 
 import { PDS } from "@atproto/pds";
 
+import { online } from "./control.ts";
+
 const readCredential = async (directory: string, name: string) => {
   const content = await readFile(path.join(directory, name), "utf-8");
 
@@ -132,6 +134,18 @@ export const runPds = async ({
 };
 
 if (import.meta.main) {
+  const stop = new AbortController();
+
+  if (process.send !== undefined) {
+    process.once("disconnect", () => {
+      stop.abort();
+    });
+
+    if (!process.connected) {
+      stop.abort();
+    }
+  }
+
   const [hostname, port, data, commit, rotationPublicKey] =
     process.argv.slice(2);
 
@@ -167,8 +181,14 @@ if (import.meta.main) {
     commit,
     data,
     hostname,
+    onStarted: () => {
+      if (process.connected) {
+        process.send?.(online);
+      }
+    },
     port: Number(port),
     rotationPublicKey,
     secrets,
+    signal: stop.signal,
   });
 }

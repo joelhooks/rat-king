@@ -39,11 +39,40 @@ const config = "/etc/rat-king-pds/ingress.yml";
 
 const credentialRoot = "/etc/credstore";
 
+const node = "/usr/local/bin/node";
+
+const cloudflared = "/usr/local/bin/cloudflared";
+
+const data = "/data/pds";
+
+const backups = "/data/pds-snapshots";
+
+const control = "/run/rat-king-pds/control.sock";
+
 const hardening = [
-  ["Type", "exec"],
   ["ProtectHome", "yes"],
   ["ProtectSystem", "strict"],
   ["NoNewPrivileges", "yes"],
+  ["PrivateTmp", "yes"],
+  ["PrivateDevices", "yes"],
+  ["ProtectKernelTunables", "yes"],
+  ["ProtectKernelModules", "yes"],
+  ["ProtectControlGroups", "yes"],
+  ["ProtectKernelLogs", "yes"],
+  ["ProtectClock", "yes"],
+  ["ProtectHostname", "yes"],
+  ["RestrictSUIDSGID", "yes"],
+  ["RestrictRealtime", "yes"],
+  ["RestrictNamespaces", "yes"],
+  ["LockPersonality", "yes"],
+  ["CapabilityBoundingSet", ""],
+  ["SystemCallFilter", "@system-service"],
+  ["RestrictAddressFamilies", "AF_UNIX AF_INET AF_INET6"],
+] as const;
+
+const longRunning = [
+  ...hardening,
+  ["Type", "exec"],
   ["UMask", "0077"],
   ["Restart", "on-failure"],
   ["RestartSec", "5s"],
@@ -52,164 +81,168 @@ const hardening = [
 const renderSystemUnit = (sections: UnitProps["sections"]): string =>
   `${sections.map((section) => [`[${section.name}]`, ...section.lines.map(([key, value]) => `${key}=${value}`)].join("\n")).join("\n\n")}\n`;
 
-const publicReadAndSyncPath = String.raw`^/(\.well-known/did\.json|xrpc/(_health|com\.atproto\.(repo\.(describeRepo|getRecord|listRecords)|sync\.(getBlob|getBlocks|getLatestCommit|getRepo|getRepoStatus|listBlobs|listRepos|subscribeRepos))))$`;
+const publicReadAndSyncPath = String.raw`^/(\.well-known/(did\.json|atproto-did)|xrpc/(_health|com\.atproto\.(repo\.(describeRepo|getRecord|listRecords)|sync\.(getBlob|getBlocks|getLatestCommit|getRepo|getRepoStatus|listBlobs|listRepos|subscribeRepos))))$`;
 
 export const pdsArtifacts = (input: {
-  readonly backups: string;
-  readonly cloudflared: string;
-  readonly commit: string;
-  readonly data: string;
+  readonly commit: typeof ReleaseCommit.Type;
   readonly hostname: string;
-  readonly node: string;
   readonly port: number;
-  readonly release: string;
   readonly rotationPublicKey: string;
   readonly tunnel: string | undefined;
-}) => ({
-  ingress:
-    input.tunnel === undefined
-      ? undefined
-      : {
-          name: "ingress.yml",
-          text: [
-            `tunnel: ${input.tunnel}`,
-            `credentials-file: /run/credentials/${tunnelUnit}/tunnel.json`,
-            "no-autoupdate: true",
-            "ingress:",
-            `  - hostname: ${input.hostname}`,
-            `    path: '${publicReadAndSyncPath}'`,
-            `    service: http://127.0.0.1:${input.port}`,
-            "    originRequest:",
-            `      httpHostHeader: ${input.hostname}`,
-            `  - hostname: ${input.hostname}`,
-            "    service: http_status:403",
-            "  - service: http_status:404",
-            "",
-          ].join("\n"),
+}) => {
+  const release = `/opt/rat-king-pds/releases/${input.commit}`;
+
+  return {
+    ingress:
+      input.tunnel === undefined
+        ? undefined
+        : {
+            name: "ingress.yml",
+            text: [
+              `tunnel: ${input.tunnel}`,
+              `credentials-file: /run/credentials/${tunnelUnit}/tunnel.json`,
+              "no-autoupdate: true",
+              "ingress:",
+              `  - hostname: ${input.hostname}`,
+              `    path: '${publicReadAndSyncPath}'`,
+              `    service: http://127.0.0.1:${input.port}`,
+              "    originRequest:",
+              `      httpHostHeader: ${input.hostname}`,
+              `  - hostname: ${input.hostname}`,
+              "    service: http_status:403",
+              "  - service: http_status:404",
+              "",
+            ].join("\n"),
+          },
+    origin: {
+      name: originUnit,
+      text: renderSystemUnit([
+        {
+          lines: [
+            ["Description", "Rat King AT Protocol Personal Data Server"],
+            ["RequiresMountsFor", "/data"],
+          ],
+          name: "Unit",
         },
-  origin: {
-    name: originUnit,
-    text: renderSystemUnit([
-      {
-        lines: [
-          ["Description", "Rat King AT Protocol Personal Data Server"],
-          ["RequiresMountsFor", input.data],
-        ],
-        name: "Unit",
-      },
-      {
-        lines: [
-          ...hardening,
-          ["User", "pds"],
-          ["ReadWritePaths", input.data],
-          ["MemoryHigh", "768M"],
-          ["MemoryMax", "1G"],
-          ["CPUQuota", "100%"],
-          ["TasksMax", "64"],
-          ["LoadCredential", `jwt:${credentialRoot}/rat-king-pds.jwt-secret`],
-          [
-            "LoadCredential",
-            `admin:${credentialRoot}/rat-king-pds.admin-password`,
+        {
+          lines: [
+            ...longRunning,
+            ["User", "pds"],
+            ["KillMode", "mixed"],
+            ["RuntimeDirectory", "rat-king-pds"],
+            ["RuntimeDirectoryMode", "0700"],
+            ["IPAddressDeny", "any"],
+            ["IPAddressAllow", "127.0.0.0/8 ::1/128"],
+            ["UnsetEnvironment", "PDS_EMAIL_SMTP_URL"],
+            ["ReadWritePaths", data],
+            ["MemoryHigh", "768M"],
+            ["MemoryMax", "1G"],
+            ["CPUQuota", "100%"],
+            ["TasksMax", "64"],
+            ["LoadCredential", `jwt:${credentialRoot}/rat-king-pds.jwt-secret`],
+            [
+              "LoadCredential",
+              `admin:${credentialRoot}/rat-king-pds.admin-password`,
+            ],
+            [
+              "LoadCredential",
+              `plc:${credentialRoot}/rat-king-pds.plc-rotation-key`,
+            ],
+            ["WorkingDirectory", release],
+            [
+              "ExecStart",
+              `${node} ${release}/supervisor.ts ${control} ${input.hostname} ${input.port} ${data} ${input.commit} ${input.rotationPublicKey}`,
+            ],
+            ["TimeoutStopSec", "60s"],
           ],
-          [
-            "LoadCredential",
-            `plc:${credentialRoot}/rat-king-pds.plc-rotation-key`,
+          name: "Service",
+        },
+        { lines: [["WantedBy", "multi-user.target"]], name: "Install" },
+      ]),
+    },
+    snapshot: {
+      name: snapshotUnit,
+      text: renderSystemUnit([
+        {
+          lines: [
+            ["Description", "Rat King PDS consistent local snapshot"],
+            ["RequiresMountsFor", "/data"],
+            ["Requisite", originUnit],
+            ["After", originUnit],
           ],
-          ["WorkingDirectory", input.release],
-          [
-            "ExecStart",
-            `${input.node} ${input.release}/server.ts ${input.hostname} ${input.port} ${input.data} ${input.commit} ${input.rotationPublicKey}`,
+          name: "Unit",
+        },
+        {
+          lines: [
+            ...hardening,
+            ["Type", "oneshot"],
+            ["User", "pds"],
+            ["UMask", "0027"],
+            ["ReadOnlyPaths", data],
+            ["ReadWritePaths", backups],
+            ["MemoryMax", "512M"],
+            ["CPUQuota", "100%"],
+            ["TasksMax", "32"],
+            ["TimeoutStartSec", "30min"],
+            [
+              "ExecStart",
+              `${node} ${release}/snapshot.ts snapshot ${control} ${data} ${backups}`,
+            ],
+            [
+              "ExecStopPost",
+              `${node} ${release}/snapshot.ts recover ${control}`,
+            ],
           ],
-          ["TimeoutStopSec", "60s"],
-        ],
-        name: "Service",
-      },
-      { lines: [["WantedBy", "multi-user.target"]], name: "Install" },
-    ]),
-  },
-  snapshot: {
-    name: snapshotUnit,
-    text: renderSystemUnit([
-      {
-        lines: [
-          ["Description", "Rat King PDS consistent local snapshot"],
-          ["RequiresMountsFor", `${input.data} ${input.backups}`],
-        ],
-        name: "Unit",
-      },
-      {
-        lines: [
-          ["Type", "oneshot"],
-          ["User", "root"],
-          ["ProtectHome", "yes"],
-          ["ProtectSystem", "strict"],
-          ["NoNewPrivileges", "yes"],
-          ["UMask", "0077"],
-          ["RuntimeDirectory", "rat-king-pds-snapshot"],
-          ["RuntimeDirectoryMode", "0700"],
-          ["ReadWritePaths", `${input.data} ${input.backups}`],
-          ["MemoryMax", "512M"],
-          ["CPUQuota", "100%"],
-          ["TasksMax", "32"],
-          ["TimeoutStartSec", "30min"],
-          [
-            "ExecStart",
-            `${input.node} ${input.release}/snapshot.ts snapshot ${input.data} ${input.backups}`,
+          name: "Service",
+        },
+      ]),
+    },
+    timer: {
+      name: "rat-king-pds-snapshot.timer",
+      text: renderSystemUnit([
+        {
+          lines: [["Description", "Nightly Rat King PDS snapshot"]],
+          name: "Unit",
+        },
+        {
+          lines: [
+            ["OnCalendar", "*-*-* 01:00:00 America/Los_Angeles"],
+            ["Unit", snapshotUnit],
           ],
-          [
-            "ExecStopPost",
-            `${input.node} ${input.release}/snapshot.ts recover`,
+          name: "Timer",
+        },
+        { lines: [["WantedBy", "timers.target"]], name: "Install" },
+      ]),
+    },
+    tunnel: {
+      name: tunnelUnit,
+      text: renderSystemUnit([
+        {
+          lines: [
+            ["Description", "Rat King PDS Cloudflare Tunnel connector"],
+            ["After", `network-online.target ${originUnit}`],
+            ["Wants", "network-online.target"],
+            ["Requisite", originUnit],
           ],
-        ],
-        name: "Service",
-      },
-    ]),
-  },
-  timer: {
-    name: "rat-king-pds-snapshot.timer",
-    text: renderSystemUnit([
-      {
-        lines: [["Description", "Nightly Rat King PDS snapshot"]],
-        name: "Unit",
-      },
-      {
-        lines: [
-          ["OnCalendar", "*-*-* 01:00:00 America/Los_Angeles"],
-          ["Unit", snapshotUnit],
-        ],
-        name: "Timer",
-      },
-      { lines: [["WantedBy", "timers.target"]], name: "Install" },
-    ]),
-  },
-  tunnel: {
-    name: tunnelUnit,
-    text: renderSystemUnit([
-      {
-        lines: [
-          ["Description", "Rat King PDS Cloudflare Tunnel connector"],
-          ["After", `network-online.target ${originUnit}`],
-          ["Wants", "network-online.target"],
-          ["Requisite", originUnit],
-        ],
-        name: "Unit",
-      },
-      {
-        lines: [
-          ...hardening,
-          ["DynamicUser", "yes"],
-          ["MemoryMax", "256M"],
-          ["CPUQuota", "50%"],
-          ["TasksMax", "32"],
-          [
-            "LoadCredential",
-            `tunnel.json:${credentialRoot}/rat-king-pds.tunnel.json`,
+          name: "Unit",
+        },
+        {
+          lines: [
+            ...longRunning,
+            ["DynamicUser", "yes"],
+            ["MemoryMax", "256M"],
+            ["CPUQuota", "50%"],
+            ["TasksMax", "32"],
+            [
+              "LoadCredential",
+              `tunnel.json:${credentialRoot}/rat-king-pds.tunnel.json`,
+            ],
+            ["ExecStart", `${cloudflared} tunnel --config ${config} run`],
           ],
-          ["ExecStart", `${input.cloudflared} tunnel --config ${config} run`],
-        ],
-        name: "Service",
-      },
-      { lines: [["WantedBy", "multi-user.target"]], name: "Install" },
-    ]),
-  },
-});
+          name: "Service",
+        },
+        { lines: [["WantedBy", "multi-user.target"]], name: "Install" },
+      ]),
+    },
+  };
+};

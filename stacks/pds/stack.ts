@@ -82,16 +82,6 @@ export default Stack(
     const hostname = yield* Config.schema(OriginHost, "RAT_KING_PDS_HOSTNAME");
     const port = yield* Config.schema(OriginPort, "RAT_KING_PDS_PORT");
     const commit = yield* Config.schema(ReleaseCommit, "RAT_KING_PDS_COMMIT");
-    const node = yield* Config.schema(UnitPath, "RAT_KING_PDS_NODE_BIN");
-
-    const cloudflared = yield* Config.schema(
-      UnitPath,
-      "RAT_KING_PDS_CLOUDFLARED_BIN"
-    );
-
-    const data = yield* Config.schema(UnitPath, "RAT_KING_PDS_DATA");
-    const backups = yield* Config.schema(UnitPath, "RAT_KING_PDS_BACKUPS");
-    const releases = yield* Config.schema(UnitPath, "RAT_KING_PDS_RELEASES");
 
     const tunnel = yield* Config.option(
       Config.schema(TunnelId, "RAT_KING_PDS_TUNNEL_ID")
@@ -105,14 +95,9 @@ export default Stack(
     const home = yield* Schema.decodeEffect(UnitPath)(host.home);
 
     const artifacts = pdsArtifacts({
-      backups,
-      cloudflared,
       commit,
-      data,
       hostname,
-      node,
       port,
-      release: `${releases}/${commit}`,
       rotationPublicKey,
       tunnel: Option.getOrUndefined(tunnel),
     });

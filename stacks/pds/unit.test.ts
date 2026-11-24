@@ -5,14 +5,9 @@ import { expect } from "vitest";
 import { OriginPort, pdsArtifacts, UnitPath } from "./unit.ts";
 
 const examples = {
-  backups: "/srv/example/backups/pds",
-  cloudflared: "/usr/bin/cloudflared",
   commit: "a".repeat(40),
-  data: "/srv/example/pds",
   hostname: "pds.example.org",
-  node: "/usr/bin/node",
   port: 2583,
-  release: "/opt/example/pds/releases/current",
   rotationPublicKey: `02${"a".repeat(64)}`,
   tunnel: "00000000-0000-4000-8000-000000000001",
 };
@@ -20,15 +15,11 @@ const examples = {
 it.prop(
   "the connector and origin agree on a loopback port without relaxing service isolation",
   {
-    data: Arbitrary.schema(
-      Schema.Literals(["/srv/example/data", "/var/lib/example"])
-    ),
     port: Arbitrary.schema(OriginPort),
   },
-  ({ data, port }) => {
+  ({ port }) => {
     const { ingress, origin, snapshot, timer, tunnel } = pdsArtifacts({
       ...examples,
-      data,
       port,
     });
 
@@ -38,10 +29,20 @@ it.prop(
         ?.map((line) => line.trim())
     ).toEqual([`service: http://127.0.0.1:${port}`]);
     expect(origin.text).toContain(
-      ` ${examples.hostname} ${port} ${data} ${examples.commit} `
+      ` ${examples.hostname} ${port} /data/pds ${examples.commit} `
     );
     expect(origin.text).toContain("\nUser=pds\n");
-    expect(origin.text).toContain(`\nReadWritePaths=${data}\n`);
+    expect(origin.text).toContain("\nReadWritePaths=/data/pds\n");
+    expect(origin.text).toContain(
+      "\nIPAddressDeny=any\nIPAddressAllow=127.0.0.0/8 ::1/128\n"
+    );
+    expect(origin.text).toContain("\nUnsetEnvironment=PDS_EMAIL_SMTP_URL\n");
+    const release = `/opt/rat-king-pds/releases/${examples.commit}`;
+
+    expect(origin.text).toContain(
+      `\nExecStart=/usr/local/bin/node ${release}/supervisor.ts `
+    );
+    expect(tunnel.text).toContain("\nExecStart=/usr/local/bin/cloudflared ");
     expect(origin.text).toContain("\nProtectHome=yes\n");
     expect(origin.text).not.toContain("EnvironmentFile=");
     expect(origin.text.match(/^LoadCredential=.*$/gmu)).toEqual([
@@ -53,8 +54,25 @@ it.prop(
       "LoadCredential=tunnel.json:/etc/credstore/rat-king-pds.tunnel.json",
     ]);
     expect(tunnel.text).toContain(`\nRequisite=${origin.name}\n`);
-    expect(snapshot.text).toContain(` snapshot ${data} ${examples.backups}\n`);
-    expect(snapshot.text).toContain("\nUser=root\n");
+    expect(snapshot.text).toContain(
+      " snapshot /run/rat-king-pds/control.sock /data/pds /data/pds-snapshots\n"
+    );
+    expect(snapshot.text).toContain("\nUser=pds\n");
+    expect(snapshot.text).toContain(
+      "\nReadOnlyPaths=/data/pds\nReadWritePaths=/data/pds-snapshots\n"
+    );
+    expect(snapshot.text).toContain(
+      `\nExecStopPost=/usr/local/bin/node ${release}/snapshot.ts recover /run/rat-king-pds/control.sock\n`
+    );
+
+    for (const service of [origin, snapshot, tunnel]) {
+      expect(service.text).toContain("\nProtectHome=yes\n");
+      expect(service.text).toContain(
+        "\nCapabilityBoundingSet=\nSystemCallFilter=@system-service\n"
+      );
+      expect(service.text).not.toContain("MemoryDenyWriteExecute=");
+    }
+
     expect(timer.text).toContain(`\nUnit=${snapshot.name}\n`);
     expect(timer.text).toContain(
       "OnCalendar=*-*-* 01:00:00 America/Los_Angeles"
@@ -94,6 +112,7 @@ it.prop(
     expect(allowed.test("/xrpc/com.atproto.repo.getRecord")).toBe(true);
     expect(allowed.test("/xrpc/com.atproto.sync.subscribeRepos")).toBe(true);
     expect(allowed.test("/.well-known/did.json")).toBe(true);
+    expect(allowed.test("/.well-known/atproto-did")).toBe(true);
     expect(text).toContain(
       `  - hostname: ${examples.hostname}\n    service: http_status:403\n  - service: http_status:404`
     );
