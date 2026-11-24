@@ -2,6 +2,14 @@ import { Option, Schema } from "effect";
 
 export const identityZone = "ratking.dev";
 
+export const boardHost = `board.${identityZone}`;
+
+export const pdsHost = `pds.${identityZone}`;
+
+export const reservedIdentityHost = (host: string, zone: string) =>
+  zone === identityZone &&
+  (host === boardHost || host === pdsHost || host.endsWith(`.${pdsHost}`));
+
 const label = "[a-z0-9]+(?:-[a-z0-9]+)*";
 
 const dnsLabel = "[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?";
@@ -26,10 +34,11 @@ export const didForHost = (hostname: string, zone: string) => {
   const prefix = hostname.slice(0, -(zone.length + 1));
 
   if (
-    hostname !== zone &&
-    (!hostname.endsWith(`.${zone}`) ||
-      prefix.length > 63 ||
-      !agentLabel.test(prefix))
+    reservedIdentityHost(hostname, zone) ||
+    (hostname !== zone &&
+      (!hostname.endsWith(`.${zone}`) ||
+        prefix.length > 63 ||
+        !agentLabel.test(prefix)))
   ) {
     return Option.none();
   }
@@ -38,6 +47,7 @@ export const didForHost = (hostname: string, zone: string) => {
 };
 
 export const handleForHost = (hostname: string, zone: string) =>
+  !reservedIdentityHost(hostname, zone) &&
   hostname.endsWith(`.${zone}`) &&
   handleLabels.test(hostname.slice(0, -(zone.length + 1)))
     ? Schema.decodeOption(Handle)(hostname)

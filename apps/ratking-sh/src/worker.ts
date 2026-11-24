@@ -8,7 +8,7 @@ import { Directory } from "./authority.ts";
 import ContactSession, { publicDesk, trustLayer } from "./contact-session.ts";
 import DeskPeon from "./desk-peon.ts";
 import { handleEdge } from "./http.ts";
-import { Issuer, issuerConfig } from "./identity/admin.ts";
+import { issuerConfig, issuerFromBinding } from "./identity/admin.ts";
 import { identityLive } from "./identity/cloudflare.ts";
 import { identityZone } from "./identity/names.ts";
 import { identityRouter } from "./identity/router.ts";
@@ -80,14 +80,7 @@ export default class RatKingEdge extends Cloudflare.Worker<RatKingEdge>()(
         );
 
         const env = yield* Cloudflare.WorkerEnvironment;
-        const configured: unknown = env.RATKING_IDENTITY_ISSUER;
-
-        const issuer =
-          configured === undefined
-            ? undefined
-            : yield* Schema.decodeUnknownEffect(Schema.fromJsonString(Issuer))(
-                configured
-              );
+        const issuer = yield* issuerFromBinding(env.RATKING_IDENTITY_ISSUER);
 
         const identity = yield* routeIdentity({
           issuer,

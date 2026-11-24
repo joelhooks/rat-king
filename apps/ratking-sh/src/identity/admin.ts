@@ -14,8 +14,14 @@ export const Issuer = Schema.Struct({
   key: PublicKey,
 });
 
+const IssuerJson = Schema.fromJsonString(Issuer);
+
 export const issuerConfig = Config.option(
-  Config.schema(Schema.fromJsonString(Issuer), "RATKING_IDENTITY_ISSUER")
+  Config.schema(IssuerJson, "RATKING_IDENTITY_ISSUER")
+);
+
+export const issuerFromBinding = Schema.decodeUnknownEffect(
+  Schema.UndefinedOr(IssuerJson)
 );
 
 export const Mutation = Schema.TaggedUnion({
