@@ -1,6 +1,9 @@
 import { Clock, Console, Effect, Fiber } from "effect";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
+import { alarmStep } from "./alarm-heartbeat.ts";
+import type { FleetError } from "./stage-config.ts";
+
 export const ALARM_INTERVAL_MS = 60_000;
 
 export const ALARM_CYCLE_DEADLINE_MS = 5 * ALARM_INTERVAL_MS;
@@ -81,6 +84,14 @@ export const alarmCycleReporter = (
     );
   });
 };
+
+export const runAlarmWork = <A, E, R>(
+  work: Effect.Effect<A, E, R>,
+  onFailure: (failure: FleetError) => Effect.Effect<void>
+) =>
+  alarmStep("cycle", work.pipe(Effect.timeout("55 seconds"))).pipe(
+    Effect.matchEffect({ onFailure, onSuccess: Effect.succeed })
+  );
 
 export const runAlarmPass = <E, R, N, F = never>(
   cycle: (track: (pending: string) => void) => Effect.Effect<boolean, E, R>,

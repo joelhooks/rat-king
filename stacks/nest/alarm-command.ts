@@ -28,6 +28,7 @@ import {
   ALARM_INTERVAL_MS,
   alarmCycleReporter,
   runAlarmPass,
+  runAlarmWork,
   sendSystemdWatchdog,
 } from "./alarm-pass.ts";
 import { collectPush, dispatchPush, loadAlarmPush } from "./alarm-push.ts";
@@ -356,15 +357,11 @@ export const alarmWorker = Effect.fn("Alarm.worker")(
 
       track("alarm-transport-and-maintenance");
 
-      yield* run.pipe(
-        withAlarmMailTransport,
-        (effect) => alarmStep("cycle", effect),
-        Effect.catch((error) => {
-          outcome = alarmFailure(error);
+      yield* runAlarmWork(run.pipe(withAlarmMailTransport), (error) => {
+        outcome = alarmFailure(error);
 
-          return Console.error(`${outcome}; input values withheld`);
-        })
-      );
+        return Console.error(`${outcome}; input values withheld`);
+      });
       track("heartbeat-write");
 
       heartbeat = nextAlarmHeartbeat(

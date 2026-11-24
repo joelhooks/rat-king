@@ -6,6 +6,7 @@ import { expect } from "vitest";
 import {
   alarmCycleReporter,
   runAlarmPass,
+  runAlarmWork,
 } from "../../../stacks/nest/alarm-pass.ts";
 
 it.effect.prop(
@@ -16,9 +17,9 @@ it.effect.prop(
       const expired = yield* Deferred.make<{ ms: number; pending: string }>();
       const release = yield* Deferred.make<null>();
 
-      const hung = Effect.never.pipe(
-        Effect.ensuring(stuckCleanup ? Deferred.await(release) : Effect.void)
-      );
+      const hung = stuckCleanup
+        ? Effect.never.pipe(Effect.ensuring(Deferred.await(release)))
+        : Effect.uninterruptible(Deferred.await(release));
 
       const pings: string[] = [];
 
@@ -26,7 +27,10 @@ it.effect.prop(
         (track) =>
           Effect.sync(() => {
             track("fixture-read");
-          }).pipe(Effect.andThen(hung)),
+          }).pipe(
+            Effect.andThen(runAlarmWork(hung, () => Effect.void)),
+            Effect.as(true)
+          ),
         {
           notify: (socket) =>
             Effect.sync(() => {
@@ -52,6 +56,49 @@ it.effect.prop(
         expect(pings).toEqual([]);
       }).pipe(Effect.ensuring(Deferred.succeed(release, null)));
       expect(yield* Fiber.join(pass).pipe(Effect.flip)).toBe("fatal");
+    })
+);
+
+it.effect.prop(
+  "a 70-second cycle fails at 55 seconds without exiting, then the next pass runs",
+  [Schema.Boolean],
+  ([withWatchdog]) =>
+    Effect.gen(function* proof() {
+      const events: string[] = [];
+
+      const record = (event: string) =>
+        Effect.sync(() => {
+          events.push(event);
+        });
+
+      const options = {
+        notify: () => record("ping"),
+        notifySocket: withWatchdog ? "/fixture/notify" : undefined,
+        onDeadline: () => Effect.fail("unexpected fatal deadline"),
+      };
+
+      const passes = yield* Effect.gen(function* runTwoPasses() {
+        yield* runAlarmPass(
+          () =>
+            runAlarmWork(Effect.sleep("70 seconds"), ({ reason }) =>
+              record(reason)
+            ).pipe(Effect.as(true)),
+          options
+        );
+        yield* runAlarmPass(
+          () => record("next pass").pipe(Effect.as(true)),
+          options
+        );
+      }).pipe(Effect.forkChild);
+
+      yield* TestClock.adjust(54_999);
+      expect(events).toEqual([]);
+      yield* TestClock.adjust(1);
+      expect(events).toEqual([
+        "Alarm step cycle failed (TimeoutError)",
+        ...(withWatchdog ? ["ping", "next pass", "ping"] : ["next pass"]),
+      ]);
+      yield* Fiber.join(passes);
     })
 );
 
