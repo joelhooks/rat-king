@@ -8,6 +8,7 @@
     "src/**/*.ts",
     "test/**/*.ts",
     "alchemy.run.ts",
+    "seed-identity.ts",
     "../../packages/lexicon/trust.ts",
     "../../packages/lexicon/test/trust*.ts"
   ]

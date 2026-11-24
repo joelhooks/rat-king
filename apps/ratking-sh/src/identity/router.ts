@@ -61,6 +61,10 @@ const routeIdentity = Effect.fn("Identity.route")(function* routeIdentity({
 
   switch (url.pathname) {
     case adminPath: {
+      if (url.hostname !== zone) {
+        return Option.some(notFound());
+      }
+
       return Option.some(
         request.method === "POST"
           ? yield* adminResponse({ issuer, request, zone })
@@ -74,7 +78,7 @@ const routeIdentity = Effect.fn("Identity.route")(function* routeIdentity({
     }
 
     default: {
-      return Option.none<Response>();
+      return Option.some(notFound());
     }
   }
 

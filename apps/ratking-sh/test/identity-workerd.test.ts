@@ -9,18 +9,40 @@ import {
 // @effect-diagnostics-next-line nodeBuiltinImport:off -- Connect to loopback while supplying the virtual Host verbatim.
 import { request as nodeRequest } from "node:http";
 
-import { providers as cloudflareProviders } from "@alchemy.run/cloudflare";
+import {
+  Worker,
+  providers as cloudflareProviders,
+} from "@alchemy.run/cloudflare";
 import { providers as domainProviders } from "@alchemy.run/domain/Cloudflare";
 import { resolveDev } from "@alchemy.run/test/Core";
 import * as Test from "@alchemy.run/test/Vitest";
-import { Clock, Effect, Layer, Schema } from "effect";
+import { Clock, ConfigProvider, Effect, Layer, Schema } from "effect";
 import { uuidV4Unsafe } from "effect/crypto/SecureRandom";
 import { base58btc } from "multiformats/bases/base58";
 import { assert, expect } from "vitest";
 
-import { adminBytes, adminPath, Mutation } from "../src/identity/admin.ts";
-import { Handle } from "../src/identity/names.ts";
+import { bindIdentityRoutes } from "../src/deploy-routing.ts";
+import {
+  adminBytes,
+  adminPath,
+  Issuer,
+  Mutation,
+} from "../src/identity/admin.ts";
+import {
+  boardHost,
+  Handle,
+  identityZone,
+  pdsHost,
+} from "../src/identity/names.ts";
+import {
+  importIssuer,
+  peopleHandle,
+  peopleHost,
+  SeedFailure,
+  seedIdentity,
+} from "../src/identity/seed.ts";
 import { Document } from "../src/identity/views.ts";
+import RatKingEdge from "../src/worker.ts";
 import IdentityProofWorker, { ProofIssuer } from "./identity-proof-worker.ts";
 
 if (!resolveDev({ dev: true })) {
@@ -34,7 +56,7 @@ const { test } = Test.make({
   sidecar: false,
 });
 
-const zone = "example.invalid";
+const zone = identityZone;
 
 const issuerDid = "did:web:issuer.example.invalid";
 
@@ -142,6 +164,171 @@ const send = ({
   });
 
 const decodeDocument = Schema.decodeEffect(Schema.fromJsonString(Document));
+
+const portOf = (url: string | undefined) => {
+  assert(url !== undefined);
+  const parsed = new URL(url);
+  assert(parsed.protocol === "http:" && parsed.port !== "");
+
+  return parsed.port;
+};
+
+const routeSeed = Effect.fn("Proof.routeSeed")(function* routeSeed(
+  request: Request,
+  ports: ReadonlyMap<string, string>
+) {
+  const { hostname, pathname } = new URL(request.url);
+  const port = ports.get(hostname);
+  assert(port !== undefined);
+
+  const body =
+    request.method === "POST"
+      ? yield* Effect.promise(request.text.bind(request))
+      : undefined;
+
+  const response = yield* send({ body, hostname, path: pathname, port }).pipe(
+    Effect.mapError(
+      () => new SeedFailure({ reason: "Loopback request failed" })
+    )
+  );
+
+  assert(response.status !== undefined);
+
+  return new Response(response.body, { status: response.status });
+});
+
+test.provider(
+  "workerd routes production hosts, protects existing origins, and seeds only with the deployed issuer pin",
+  (stack) =>
+    Effect.gen(function* proveDeployment() {
+      const issuer = keyPair();
+
+      const pin = yield* Schema.decodeUnknownEffect(Issuer)({
+        did: issuerDid,
+        key: issuer.jwk,
+      });
+
+      const signingKey = yield* importIssuer(
+        JSON.stringify({
+          did: issuerDid,
+          signing: issuer.privateKey.export({ format: "jwk" }),
+        }),
+        pin
+      );
+
+      const plan = {
+        apexKeys: [
+          {
+            publicKeyMultibase: keyPair().publicKeyMultibase,
+            purpose: "atproto" as const,
+          },
+        ],
+      };
+
+      const tenant = `tenant.${pdsHost}`;
+      const other = `existing.${zone}`;
+      const preserved = [boardHost, pdsHost, tenant, other];
+
+      const deploy = (pinned: boolean) =>
+        // @effect-diagnostics-next-line anyUnknownInErrorContext:off -- Alchemy's scratch provider erases its errors.
+        stack.deploy(
+          Effect.gen(function* deployProof() {
+            const commitBinding = { RATKING_COMMIT: "a".repeat(40) };
+
+            const env = pinned
+              ? {
+                  ...commitBinding,
+                  RATKING_IDENTITY_ISSUER: JSON.stringify(pin),
+                }
+              : commitBinding;
+
+            const edge = yield* RatKingEdge.pipe(
+              Effect.provide(
+                ConfigProvider.layer(ConfigProvider.fromUnknown(env))
+              )
+            );
+
+            const url = yield* bindIdentityRoutes({
+              protectedHosts: [other],
+              script: edge.workerName,
+              zoneId: "test-zone",
+            });
+
+            const loopbackOrigins = yield* Effect.forEach(
+              [...preserved, peopleHost, peopleHandle],
+              (hostname) =>
+                Worker(`Origin-${hostname}`, {
+                  domain: hostname,
+                  main: new URL("routing-origin.ts", import.meta.url).href,
+                }).pipe(Effect.map((worker) => ({ hostname, url: worker.url })))
+            );
+
+            return { origins: loopbackOrigins, url };
+          })
+        );
+
+      // @effect-diagnostics-next-line anyUnknownInErrorContext:off -- Alchemy's scratch provider erases its errors.
+      const unpinned = yield* deploy(false).pipe(Effect.orDie);
+
+      const ports = (deployed: typeof unpinned) =>
+        new Map([
+          [zone, portOf(deployed.url)],
+          ...deployed.origins.map(
+            ({ hostname, url }) => [hostname, portOf(url)] as const
+          ),
+        ]);
+
+      const seed = (deployed: typeof unpinned) =>
+        seedIdentity({
+          pin,
+          plan,
+          send: (request) => routeSeed(request, ports(deployed)),
+          signingKey,
+        });
+
+      const refusal = yield* Effect.flip(seed(unpinned));
+      expect(refusal.reason).toContain(
+        "Register for did:web:ratking.dev returned HTTP 401"
+      );
+
+      // @effect-diagnostics-next-line anyUnknownInErrorContext:off -- Alchemy's scratch provider erases its errors.
+      const pinned = yield* deploy(true).pipe(Effect.orDie);
+      yield* seed(pinned);
+      yield* seed(pinned);
+
+      const get = (hostname: string, path: string) => {
+        const port = ports(pinned).get(hostname);
+        assert(port !== undefined);
+
+        return send({ hostname, path, port });
+      };
+
+      const people = yield* decodeDocument(
+        (yield* get(peopleHost, documentPath)).body
+      );
+
+      expect(people.verificationMethod).toEqual([]);
+      expect(people.alsoKnownAs).toEqual([`at://${peopleHandle}`]);
+      expect(yield* get(peopleHandle, handlePath)).toEqual({
+        body: people.id,
+        status: 200,
+      });
+      expect((yield* get(zone, "/")).status).toBe(404);
+      expect((yield* get(peopleHost, "/mcp")).status).toBe(404);
+
+      for (const hostname of preserved) {
+        expect(yield* get(hostname, "/board/tasks?keep=query")).toEqual({
+          body: "existing origin",
+          status: 200,
+        });
+        expect(yield* get(hostname, documentPath)).toEqual({
+          body: "existing origin",
+          status: 200,
+        });
+      }
+    }),
+  { timeout: 30_000 }
+);
 
 test.provider(
   "workerd serves the identity graph, rejects untrusted writes and retains historical verification keys",

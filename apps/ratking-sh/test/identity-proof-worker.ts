@@ -1,24 +1,25 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
 import { signatures } from "@rat-king/lexicon/webcrypto";
-import { Context, Effect, Layer, Option, Schema } from "effect";
+import { Context, Effect, Layer, Option } from "effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 
 import { trustLayer } from "../src/contact-session.ts";
 import { handleEdge } from "../src/http.ts";
-import { Issuer } from "../src/identity/admin.ts";
+import { issuerFromBinding } from "../src/identity/admin.ts";
 import { identityLive } from "../src/identity/cloudflare.ts";
+import { identityZone } from "../src/identity/names.ts";
 import { identityRouter } from "../src/identity/router.ts";
 
 export const ProofIssuer = Context.Reference("IdentityProofIssuer", {
-  defaultValue: () => "",
+  defaultValue: (): string | undefined => undefined,
 });
 
 export default class IdentityProofWorker extends Cloudflare.Worker<IdentityProofWorker>()(
   "IdentityProofWorker",
   ProofIssuer.pipe(
     Effect.map((issuer) => ({
-      env: { PROOF_ISSUER: issuer },
+      env: issuer === undefined ? {} : { RATKING_IDENTITY_ISSUER: issuer },
       main: import.meta.url,
     }))
   ),
@@ -29,9 +30,7 @@ export default class IdentityProofWorker extends Cloudflare.Worker<IdentityProof
       fetch: Effect.gen(function* fetch() {
         const env = yield* Cloudflare.WorkerEnvironment;
 
-        const issuer = yield* Schema.decodeUnknownEffect(
-          Schema.fromJsonString(Issuer)
-        )(env.PROOF_ISSUER);
+        const issuer = yield* issuerFromBinding(env.RATKING_IDENTITY_ISSUER);
 
         const incoming = yield* HttpServerRequest.HttpServerRequest;
         const request = yield* HttpServerRequest.toWeb(incoming);
@@ -39,7 +38,7 @@ export default class IdentityProofWorker extends Cloudflare.Worker<IdentityProof
         const response = yield* routeIdentity({
           issuer,
           request,
-          zone: "example.invalid",
+          zone: identityZone,
         });
 
         if (Option.isSome(response)) {
