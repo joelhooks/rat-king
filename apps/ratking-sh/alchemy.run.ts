@@ -1,13 +1,17 @@
 import * as Cloudflare from "@alchemy.run/cloudflare";
+import { providers as domainProviders } from "@alchemy.run/domain/Cloudflare";
 import { Stack, Stage, localState } from "alchemy";
-import { Config, Effect } from "effect";
+import { Config, Effect, Layer } from "effect";
 
 import { requireZoneAccount } from "./src/deploy-target.ts";
 import RatKingEdge from "./src/worker.ts";
 
 export default Stack(
   "ratking-sh",
-  { providers: Cloudflare.providers(), state: localState() },
+  {
+    providers: Layer.merge(Cloudflare.providers(), domainProviders()),
+    state: localState(),
+  },
   Effect.gen(function* publicEdgeStage() {
     const stage = yield* Stage;
 
