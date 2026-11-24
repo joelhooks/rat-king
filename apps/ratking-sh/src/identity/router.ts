@@ -55,6 +55,10 @@ const routeIdentity = Effect.fn("Identity.route")(function* routeIdentity({
 }) {
   const url = new URL(request.url);
 
+  if (url.hostname !== zone && !url.hostname.endsWith(`.${zone}`)) {
+    return Option.none<Response>();
+  }
+
   switch (url.pathname) {
     case adminPath: {
       return Option.some(

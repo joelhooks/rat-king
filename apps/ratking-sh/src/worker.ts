@@ -57,7 +57,7 @@ export default class RatKingEdge extends Cloudflare.Worker<RatKingEdge>()(
       compatibility: { date: "2026-07-28" },
       env,
       main: import.meta.url,
-      workersDev: true,
+      workersDev: false,
     };
   }).pipe(Effect.orDie),
   Effect.gen(function* edgeWorker() {

@@ -208,6 +208,20 @@ test.provider(
       };
 
       const register = Mutation.cases.Register.make({});
+      const publicEdgeFallback = { body: "Not found", status: 404 };
+
+      expect(yield* get("ratking.sh", documentPath)).toEqual(
+        publicEdgeFallback
+      );
+      expect(yield* get("ratking.sh", handlePath)).toEqual(publicEdgeFallback);
+      expect(
+        yield* send({
+          body: signed({ mutation: register, target: did }),
+          hostname: "ratking.sh",
+          path: adminPath,
+          port,
+        })
+      ).toEqual(publicEdgeFallback);
       expect((yield* post(JSON.stringify(register))).status).toBe(401);
       expect(
         (yield* post(

@@ -4,6 +4,8 @@ import { Context, Effect, Layer, Option, Schema } from "effect";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 
+import { trustLayer } from "../src/contact-session.ts";
+import { handleEdge } from "../src/http.ts";
 import { Issuer } from "../src/identity/admin.ts";
 import { identityLive } from "../src/identity/cloudflare.ts";
 import { identityRouter } from "../src/identity/router.ts";
@@ -40,9 +42,21 @@ export default class IdentityProofWorker extends Cloudflare.Worker<IdentityProof
           zone: "example.invalid",
         });
 
-        return Option.isSome(response)
-          ? HttpServerResponse.fromWeb(response.value)
-          : HttpServerResponse.empty({ status: 404 });
+        if (Option.isSome(response)) {
+          return HttpServerResponse.fromWeb(response.value);
+        }
+
+        return HttpServerResponse.fromWeb(
+          yield* handleEdge(request, {
+            desk: "lobby",
+            forwardContact: () =>
+              Effect.die("Contact session not available in identity proof"),
+            freshId: Effect.die(
+              "Contact session not available in identity proof"
+            ),
+            limit: () => Effect.succeed(false),
+          }).pipe(Effect.provide(trustLayer))
+        );
       }).pipe(Effect.orDie),
     };
   }).pipe(Effect.provide(Layer.merge(identityLive, signatures)))

@@ -29,7 +29,7 @@ Send `POST /identity/admin` with JSON `{ "payload": "<serialized JSON>", "signat
 - `nonce`: a fresh 32-character lowercase hex value. Resend the same signed payload when retrying. Domain deduplicates committed commands by payload digest, so a retry cannot reapply an old mutation. A handle claim retried after retirement can be refused.
 - `mutation`: an object tagged with `_tag`. `Register` and `Retire` take no other fields. `ClaimHandle` takes `handle`. `PublishKey` and `RotateKey` take `key: { purpose, publicKeyMultibase }`. Signing purposes accept P-256 or secp256k1, `encryption` accepts P-256 or X25519, and `kem` accepts ML-KEM-768.
 
-Alchemy declares the Worker on `workers.dev` and the Domain Durable Objects only. No custom domain, route, certificate, or DNS mutation is part of this slice.
+Alchemy declares the Worker and Domain Durable Objects, with `workers.dev` and version previews disabled for the public edge. The identity routes only handle the apex and subdomains of `ratking.dev`; other hosts fall through to the existing edge. No custom domain, route, certificate, or DNS mutation is part of this slice.
 
 ## Admission and limits
 
