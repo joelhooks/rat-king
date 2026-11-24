@@ -86,6 +86,71 @@ it.effect.prop(
 );
 
 it.effect.prop(
+  "stalled disk measurements and liveness become unavailable without stalling facts",
+  [StageConfig, ShipSettings, LaunchdAlarmSettings, Schema.Boolean],
+  ([base, ship, alarm, stalls]) =>
+    Effect.gen(function* proof() {
+      const cacheHealth = "/fixture/cache.jsonl";
+      const receipts = "/fixture/receipts.jsonl";
+      const state = "/fixture/state";
+      const digest = `${state}/health.jsonl`;
+
+      const fs = FileSystem.layerNoop({
+        exists: (path) => Effect.succeed(path === digest || path === receipts),
+        readFileString: (path) =>
+          stalls &&
+          (path === cacheHealth || path === receipts || path === digest)
+            ? Effect.never
+            : Effect.succeed(""),
+      });
+
+      const config = {
+        ...base,
+        alarm: {
+          broadcast: alarm.broadcast,
+          cacheHealth,
+          enabled: true,
+          launchd: alarm.launchd,
+          musterDesk: alarm.musterDesk,
+          notify: alarm.notify,
+          owners: alarm.owners,
+          sources: { doctor: false, quarantine: false, receipts: true },
+        },
+        runtime: { ...base.runtime, RAT_KING_STATE_DIR: state },
+        ship: { ...ship, receipts },
+      };
+
+      const pending = yield* collectAlarmFacts(
+        config,
+        Effect.fail("no health fallback"),
+        Effect.succeed(null),
+        undefined,
+        undefined,
+        {
+          comms: () => Effect.die("quarantine is disabled"),
+          doctor: () => Effect.die("doctor is disabled"),
+          liveness: stalls ? Effect.never : Effect.succeed(200),
+        }
+      ).pipe(
+        Effect.provide(fs),
+        Effect.provide([NodeServices.layer, FetchHttpClient.layer]),
+        Effect.timeout("31 seconds"),
+        Effect.forkChild
+      );
+
+      yield* TestClock.adjust("31 seconds");
+      const facts = yield* Fiber.join(pending);
+
+      expect(facts.cacheBreaches).toEqual(stalls ? null : []);
+      expect(facts.receiptsKnown).toBe(!stalls);
+      expect(facts.failed?.includes("digest")).toBe(stalls);
+      expect(facts.failed?.includes("liveness")).toBe(stalls);
+      expect(facts.health).toBe(stalls ? null : 200);
+    }),
+  { arbitrary: { runs: 10 } }
+);
+
+it.effect.prop(
   "disabled alarm inputs are not read or counted missing and cannot clear a firing incident",
   [
     StageConfig,

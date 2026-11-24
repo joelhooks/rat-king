@@ -122,6 +122,7 @@ export const collectDeskWakeHealth = Effect.fn("Alarm.collectDeskWakeHealth")(
         return target === undefined
           ? Effect.succeed({ health: null, name })
           : client.health(target.did, name).pipe(
+              Effect.timeout("8 seconds"),
               Effect.orElseSucceed(() => null),
               Effect.map((health) => ({ health, name }))
             );
