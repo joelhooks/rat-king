@@ -54,6 +54,7 @@ export interface NameChoice {
 
 export interface NamedFacts extends SessionFacts {
   readonly source?: NameSourceValue;
+  readonly t3?: boolean;
 }
 
 export const connectedFacts = (
