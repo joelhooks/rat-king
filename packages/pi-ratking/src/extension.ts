@@ -31,7 +31,11 @@ import { claimName } from "@rat-king/ratking-client/identity";
 import type { SessionFacts } from "@rat-king/ratking-client/identity";
 import { issuerLayer } from "@rat-king/ratking-client/issuer";
 import { appendLog } from "@rat-king/ratking-client/log";
-import { canonicalName, secretName } from "@rat-king/ratking-client/name";
+import {
+  canonicalName,
+  isReserved,
+  secretName,
+} from "@rat-king/ratking-client/name";
 import type { ReservedValue } from "@rat-king/ratking-client/name";
 import {
   importDeskSigningKey,
@@ -161,6 +165,7 @@ import {
 } from "./retire.ts";
 import type { RetireOutcome, Retirement } from "./retire.ts";
 import { forkLabel, parentSessionId } from "./session-parent.ts";
+import { enrolledName, T3_NOT_ENROLLED } from "./t3-enrollment.ts";
 import { callView, resultView } from "./tool-view.ts";
 import {
   cancelledText,
@@ -477,16 +482,14 @@ const alive = (pid: number) => {
   }
 };
 
-export const collectFacts = (
+const legacyName = (
   session: string,
-  sessionName?: () => string | undefined,
-  interactive = true,
-  entries: readonly NameEntryValue[] = [],
-  parentSession?: string
+  sessionName: (() => string | undefined) | undefined,
+  interactive: boolean,
+  entries: readonly NameEntryValue[],
+  parentSession: string | undefined
 ) =>
-  Effect.gen(function* sessionFacts() {
-    const path = yield* Path.Path;
-
+  Effect.gen(function* selectLegacyName() {
     const given = yield* Config.option(
       Config.String(interactive ? "RATKING_NAME" : "RATKING_PRINT_NAME")
     );
@@ -543,6 +546,53 @@ export const collectFacts = (
         }
       : selected;
 
+    return {
+      choice,
+      disabled: Option.contains(given, "off"),
+      nameless:
+        Option.isNone(choice.name) &&
+        !entries.some(
+          (entry) => entry.session === session && entry.source === "default"
+        ),
+      succeeds: Option.getOrUndefined(succeeds),
+      successor: successor && choice.source === "env",
+    };
+  });
+
+const t3Name = (thread: string) =>
+  enrolledName(thread).pipe(
+    Effect.map((name) => ({
+      choice: { name, source: "env" } satisfies NameChoice,
+      disabled: false,
+      nameless: Option.isNone(name),
+      succeeds: undefined,
+      successor: false,
+    }))
+  );
+
+export const collectFacts = (
+  session: string,
+  sessionName?: () => string | undefined,
+  interactive = true,
+  entries: readonly NameEntryValue[] = [],
+  parentSession?: string,
+  mode?: string
+) =>
+  Effect.gen(function* sessionFacts() {
+    const path = yield* Path.Path;
+
+    const thread =
+      mode === "rpc"
+        ? yield* Config.option(Config.String("T3CODE_THREAD_ID"))
+        : Option.none<string>();
+
+    const naming = yield* Option.match(thread, {
+      onNone: () =>
+        legacyName(session, sessionName, interactive, entries, parentSession),
+      onSome: t3Name,
+    });
+
+    const choice: NameChoice = naming.choice;
     const env = choice.name;
 
     const paneId = interactive
@@ -559,17 +609,11 @@ export const collectFacts = (
       Config.String("MUSTER_RESTART_GATE")
     );
 
-    const nameless =
-      Option.isNone(env) &&
-      !entries.some(
-        (entry) => entry.session === session && entry.source === "default"
-      );
-
     return {
       alive,
       ancestors: () => ancestorsOf(process.pid, parentOfProcess),
       derived: choice.derived === true,
-      disabled: Option.contains(given, "off"),
+      disabled: naming.disabled,
       env,
       fork: choice.fork,
       label: () =>
@@ -580,7 +624,7 @@ export const collectFacts = (
           ),
           () => pane
         ),
-      nameless,
+      nameless: naming.nameless,
       owner,
       pane,
       parent: choice.parent,
@@ -592,8 +636,9 @@ export const collectFacts = (
       ),
       session,
       source: choice.source,
-      succeeds: Option.getOrUndefined(succeeds),
-      successor: successor && choice.source === "env",
+      succeeds: naming.succeeds,
+      successor: naming.successor,
+      t3: Option.isSome(thread),
       via: () =>
         `${Option.fromNullishOr(sessionName?.()).pipe(
           Option.filter((name) => name.trim() !== ""),
@@ -682,6 +727,7 @@ export interface SessionStart {
   readonly turnCount?: number;
   readonly rememberTurn?: (n: number) => void;
   readonly interactive?: boolean;
+  readonly mode?: string;
   readonly connectionName?: string;
   readonly onReaderState?: (reader: ReaderState) => void;
   readonly names?: readonly NameEntryValue[];
@@ -796,6 +842,7 @@ export const piHost = (pi: ExtensionAPI): PiHost => {
           hasPendingMessages: () => ctx.hasPendingMessages(),
           interactive: interactiveSession(ctx),
           isIdle: () => ctx.isIdle(),
+          mode: ctx.mode,
           names: parseNameEntries(ctx.sessionManager.getEntries()),
           parentSession: await Effect.runPromise(
             parentSessionId(ctx.sessionManager.getHeader()?.parentSession).pipe(
@@ -894,7 +941,8 @@ export interface ExtensionOptions {
     sessionName?: () => string | undefined,
     interactive?: boolean,
     entries?: readonly NameEntryValue[],
-    parentSession?: string
+    parentSession?: string,
+    mode?: string
   ) => Effect.Effect<NamedFacts, Config.ConfigError>;
   readonly tool: Effect.Effect<string>;
 }
@@ -2392,7 +2440,8 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               start.sessionName,
               start.interactive,
               names,
-              start.parentSession
+              start.parentSession,
+              start.mode
             )
             .pipe(
               Effect.mapError(
@@ -2400,6 +2449,10 @@ export const ratkingExtension = (options: ExtensionOptions) =>
               ),
               Effect.withSpan("RatKing.startup.facts")
             );
+
+          if (initial.t3 === true && initial.nameless === true) {
+            return yield* new NotConfigured({ reason: T3_NOT_ENROLLED });
+          }
 
           const collected: NamedFacts =
             start.connectionName === undefined
@@ -2563,6 +2616,19 @@ export const ratkingExtension = (options: ExtensionOptions) =>
 
           return Layer.effectDiscard(
             Effect.gen(function* startReader() {
+              const settings = yield* Settings;
+
+              if (
+                collected.t3 === true &&
+                Option.exists(collected.env, (name) =>
+                  isReserved(settings.reserved, name)
+                )
+              ) {
+                return yield* new NotConfigured({
+                  reason: "T3 enrollment cannot claim a reserved name",
+                });
+              }
+
               const context = yield* Effect.context<Services>();
               const built = yield* Clock.currentTimeMillis;
 
@@ -2587,7 +2653,8 @@ export const ratkingExtension = (options: ExtensionOptions) =>
                   })
                 );
               yield* digestTicks;
-              yield* RatKing.use((ratking) =>
+
+              return yield* RatKing.use((ratking) =>
                 ratking.run(
                   facts,
                   deliver,
