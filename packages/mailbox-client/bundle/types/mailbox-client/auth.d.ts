@@ -16,6 +16,12 @@ export declare const Claims: Schema.Struct<{
     readonly lxm: Schema.String;
 }>;
 export type ClaimsValue = typeof Claims.Type;
+type ClaimsCheck = "aud" | "lxm" | "iat-future" | "expired" | "exp-before-iat" | "lifetime" | "stale";
+interface ClaimsDiagnostics {
+    readonly check: ClaimsCheck;
+    readonly claimedIssuer: ClaimsValue["iss"];
+}
+export declare const getClaimsDiagnostics: (error: XrpcFailure) => ClaimsDiagnostics | undefined;
 export declare const Document: Schema.Struct<{
     readonly authentication: Schema.$Array<Schema.String>;
     readonly id: Schema.String;
