@@ -149,6 +149,16 @@ export const Refused = Schema.TaggedStruct("Refused", {
   reason: Schema.NullOr(Schema.String),
 });
 
+export const ShipCapabilities = Schema.Struct({
+  capabilities: Schema.Array(Schema.String),
+  v: Schema.Literal(1),
+});
+
+const shipCapabilities: typeof ShipCapabilities.Type = {
+  capabilities: ["one-way"],
+  v: 1,
+};
+
 export const shipWindows = (
   shippedAt: number,
   windowMinutes: number,
@@ -684,7 +694,7 @@ export const gitIn = Effect.fn("ShipJudge.gitIn")(function* gitIn(
 });
 
 const usageText =
-  "Usage: ship-judge --sha <40hex> --shipped-at <ISO> --input <traffic.jsonl> [--window-minutes 10] [--baseline-end <ISO>] [--health <health.json>] [--pre-health <health.json>] [--restarted true|false] | ship-judge --revertible <base>..<sha> [--repo <dir>] | ship-judge --one-way <base>..<sha> [--repo <dir>] | ship-judge --one-way-replay --last 30 [--repo <dir>]";
+  "Usage: ship-judge --sha <40hex> --shipped-at <ISO> --input <traffic.jsonl> [--window-minutes 10] [--baseline-end <ISO>] [--health <health.json>] [--pre-health <health.json>] [--restarted true|false] | ship-judge --revertible <base>..<sha> [--repo <dir>] | ship-judge --one-way <base>..<sha> [--repo <dir>] | ship-judge --one-way-replay --last 30 [--repo <dir>] | ship-judge --capabilities";
 
 const parseFlags = (args: readonly string[], known: readonly string[]) => {
   const flags = new Map<string, string>();
@@ -845,6 +855,14 @@ const refuse = (error: string, reason: string | null) =>
 
 export const shipJudgeCommand = (args: readonly string[]) =>
   Effect.gen(function* shipJudge() {
+    if (args.length === 1 && args[0] === "--capabilities") {
+      yield* Console.log(
+        JSON.stringify(shipCapabilities, ["v", "capabilities"])
+      );
+
+      return 0;
+    }
+
     if (args.includes("--one-way") || args.includes("--one-way-replay")) {
       return yield* oneWayCommand(args);
     }
