@@ -19,8 +19,10 @@ import {
   judgeShip,
   OneWay,
   Pass,
+  Refused,
   Revertible,
   revertibility,
+  ShipCapabilities,
   shipJudgeCommand,
   ShipLimits,
   ShipVerdict,
@@ -1083,4 +1085,59 @@ it.effect.prop(
       );
     }).pipe(Effect.provide(NodeServices.layer)),
   { arbitrary: { runs: 15 } }
+);
+
+const invoke = (args: readonly string[]) =>
+  Effect.gen(function* capturedCapabilities() {
+    const errors: string[] = [];
+    const output: string[] = [];
+
+    const code = yield* shipJudgeCommand(args).pipe(
+      Effect.provideService(Console.Console, {
+        ...console,
+        error: (...values: readonly unknown[]) => {
+          errors.push(values.join(" "));
+        },
+        log: (...values: readonly unknown[]) => {
+          output.push(values.join(" "));
+        },
+      })
+    );
+
+    return { code, errors, output };
+  });
+
+it.effect(
+  "ship-judge --capabilities prints v1 capabilities as JSON and exits 0 without reading traffic or Git, while extra arguments are refused",
+  () =>
+    Effect.gen(function* capabilities() {
+      const result = yield* invoke(["--capabilities"]);
+
+      const decoded = yield* Schema.decodeEffect(
+        Schema.fromJsonString(ShipCapabilities)
+      )(result.output.join(""));
+
+      expect(result.code).toBe(0);
+      expect(result.errors).toEqual([]);
+      expect(result.output).toEqual(['{"v":1,"capabilities":["one-way"]}']);
+      expect(decoded).toEqual({ capabilities: ["one-way"], v: 1 });
+
+      for (const extra of [
+        ["--capabilities", "--repo", "."],
+        ["--capabilities", "--one-way", "main..HEAD"],
+      ]) {
+        const refusedResult = yield* invoke(extra);
+
+        const refused = yield* Schema.decodeEffect(
+          Schema.fromJsonString(Refused)
+        )(refusedResult.errors.join(""));
+
+        expect(refusedResult.code).toBe(3);
+        expect(refusedResult.output).toEqual([]);
+        expect(refused._tag).toBe("Refused");
+        expect(refused.error).toBe("FleetError");
+        expect(refused.reason).toMatch(/^Usage: ship-judge /u);
+        expect(refused.reason).toContain("--capabilities");
+      }
+    }).pipe(Effect.provide(NodeServices.layer))
 );
