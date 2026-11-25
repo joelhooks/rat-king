@@ -3559,6 +3559,7 @@ var Claims = Schema39.Struct({
   jti: Schema39.String.check(Schema39.isMinLength(16)),
   lxm: Schema39.String
 });
+var claimsDiagnostics = /* @__PURE__ */ new WeakMap();
 var authFailure = (error, status = 400, message = error) => new ServiceAuthFailure({
   error,
   message,
@@ -3623,6 +3624,31 @@ var Header = Schema39.Struct({
   kid: Schema39.optionalKey(Schema39.String),
   typ: Schema39.optionalKey(Schema39.Literal("JWT"))
 });
+var failedClaimsCheck = (claims, request) => {
+  const now = Math.floor(request.now / 1e3);
+  if (claims.aud !== request.audience) {
+    return "aud";
+  }
+  if (claims.lxm !== request.nsid) {
+    return "lxm";
+  }
+  if (claims.iat > now + (request.skewSeconds ?? 0)) {
+    return "iat-future";
+  }
+  if (claims.exp <= now) {
+    return "expired";
+  }
+  if (claims.exp <= claims.iat) {
+    return "exp-before-iat";
+  }
+  if (now - claims.iat > 60) {
+    return "stale";
+  }
+  if (claims.exp - claims.iat > 60) {
+    return "lifetime";
+  }
+  return void 0;
+};
 var json = (text) => Effect19.try({
   catch: () => authFailure("AuthRequired", 401),
   try: () => new TextDecoder().decode(unbase64url(text))
@@ -3646,11 +3672,15 @@ var authenticateClaims = Effect19.fn("ServiceAuth.authenticateClaims")(
     )(yield* json(claimsText)).pipe(
       Effect19.mapError(() => authFailure("AuthRequired", 401))
     );
-    const now = Math.floor(request.now / 1e3);
-    if (claims.aud !== request.audience || claims.lxm !== request.nsid || claims.iat > now + (request.skewSeconds ?? 0) || claims.exp <= now || claims.exp <= claims.iat || claims.exp - claims.iat > 60 || now - claims.iat > 60) {
-      return yield* Effect19.fail(
-        authFailure("AuthRequired", 401, "Invalid service-auth claims")
+    const check = failedClaimsCheck(claims, request);
+    if (check !== void 0) {
+      const refusal2 = authFailure(
+        "AuthRequired",
+        401,
+        "Invalid service-auth claims"
       );
+      claimsDiagnostics.set(refusal2, { check, claimedIssuer: claims.iss });
+      return yield* Effect19.fail(refusal2);
     }
     const kid = header.kid ?? "#atproto";
     const keyId2 = kid.startsWith("#") ? `${claims.iss}${kid}` : kid;

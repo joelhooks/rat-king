@@ -52,7 +52,11 @@ import {
   didAllowlist,
   peerDocument,
 } from "./documents.ts";
-import { logFailure } from "./failure-log.ts";
+import {
+  logFailure,
+  logSocketClaimsFailure,
+  respondToFailure,
+} from "./failure-log.ts";
 import type { FailureScope } from "./failure-log.ts";
 import { errorResponse, failure } from "./failure.ts";
 import { wakeHosted } from "./hosted-wake.ts";
@@ -240,6 +244,9 @@ export class Mailbox extends DurableObject<Bindings> {
             })
           ),
           Effect.provide(Layer.merge(documentsLayer(env), replayLayer(env))),
+          Effect.tapError((error) =>
+            logSocketClaimsFailure(SubscribeTraffic.Method.nsid, error)
+          ),
           Effect.tap((claims) =>
             storageOperation(() => {
               trafficPermission(
@@ -1076,6 +1083,9 @@ export class Mailbox extends DurableObject<Bindings> {
           }).pipe(
             Effect.provide(
               Layer.merge(documentsLayer(this.env), replayLayer(this.env))
+            ),
+            Effect.tapError((error) =>
+              logSocketClaimsFailure(Subscribe.Method.nsid, error)
             )
           );
 
@@ -1855,10 +1865,8 @@ export const fetchRequest = (
   const scope: FailureScope = { method: methods.has(nsid) ? nsid : "unknown" };
 
   return handleRequest(request, env, scope, context).pipe(
-    Effect.catchTag("XrpcFailure", (error) =>
-      Effect.succeed(errorResponse(error))
-    ),
-    Effect.tap((response) => logFailure(scope, response))
+    Effect.tap((response) => logFailure(scope, response)),
+    Effect.catchTag("XrpcFailure", (error) => respondToFailure(scope, error))
   );
 };
 

@@ -114,6 +114,8 @@ var Claims = Schema3.Struct({
   jti: Schema3.String.check(Schema3.isMinLength(16)),
   lxm: Schema3.String
 });
+var claimsDiagnostics = /* @__PURE__ */ new WeakMap();
+var getClaimsDiagnostics = (error) => claimsDiagnostics.get(error);
 var authFailure = (error, status = 400, message = error) => new ServiceAuthFailure({
   error,
   message,
@@ -178,6 +180,31 @@ var Header = Schema3.Struct({
   kid: Schema3.optionalKey(Schema3.String),
   typ: Schema3.optionalKey(Schema3.Literal("JWT"))
 });
+var failedClaimsCheck = (claims, request) => {
+  const now = Math.floor(request.now / 1e3);
+  if (claims.aud !== request.audience) {
+    return "aud";
+  }
+  if (claims.lxm !== request.nsid) {
+    return "lxm";
+  }
+  if (claims.iat > now + (request.skewSeconds ?? 0)) {
+    return "iat-future";
+  }
+  if (claims.exp <= now) {
+    return "expired";
+  }
+  if (claims.exp <= claims.iat) {
+    return "exp-before-iat";
+  }
+  if (now - claims.iat > 60) {
+    return "stale";
+  }
+  if (claims.exp - claims.iat > 60) {
+    return "lifetime";
+  }
+  return void 0;
+};
 var json = (text) => Effect3.try({
   catch: () => authFailure("AuthRequired", 401),
   try: () => new TextDecoder().decode(unbase64url(text))
@@ -201,11 +228,15 @@ var authenticateClaims = Effect3.fn("ServiceAuth.authenticateClaims")(
     )(yield* json(claimsText)).pipe(
       Effect3.mapError(() => authFailure("AuthRequired", 401))
     );
-    const now = Math.floor(request.now / 1e3);
-    if (claims.aud !== request.audience || claims.lxm !== request.nsid || claims.iat > now + (request.skewSeconds ?? 0) || claims.exp <= now || claims.exp <= claims.iat || claims.exp - claims.iat > 60 || now - claims.iat > 60) {
-      return yield* Effect3.fail(
-        authFailure("AuthRequired", 401, "Invalid service-auth claims")
+    const check = failedClaimsCheck(claims, request);
+    if (check !== void 0) {
+      const refusal = authFailure(
+        "AuthRequired",
+        401,
+        "Invalid service-auth claims"
       );
+      claimsDiagnostics.set(refusal, { check, claimedIssuer: claims.iss });
+      return yield* Effect3.fail(refusal);
     }
     const kid = header.kid ?? "#atproto";
     const keyId = kid.startsWith("#") ? `${claims.iss}${kid}` : kid;
@@ -250,6 +281,7 @@ export {
   authenticateClaims,
   base64url,
   documentResolver,
+  getClaimsDiagnostics,
   lowS,
   normalizeSignature,
   p256Order,

@@ -56,6 +56,25 @@ export const Claims = Schema.Struct({
 
 export type ClaimsValue = typeof Claims.Type;
 
+type ClaimsCheck =
+  | "aud"
+  | "lxm"
+  | "iat-future"
+  | "expired"
+  | "exp-before-iat"
+  | "lifetime"
+  | "stale";
+
+interface ClaimsDiagnostics {
+  readonly check: ClaimsCheck;
+  readonly claimedIssuer: ClaimsValue["iss"];
+}
+
+const claimsDiagnostics = new WeakMap<XrpcFailure, ClaimsDiagnostics>();
+
+export const getClaimsDiagnostics = (error: XrpcFailure) =>
+  claimsDiagnostics.get(error);
+
 const authFailure = (
   error: string,
   status = 400,
@@ -169,6 +188,43 @@ export interface AuthenticateRequest {
   readonly skewSeconds?: number;
 }
 
+const failedClaimsCheck = (
+  claims: ClaimsValue,
+  request: AuthenticateRequest
+): ClaimsCheck | undefined => {
+  const now = Math.floor(request.now / 1000);
+
+  if (claims.aud !== request.audience) {
+    return "aud";
+  }
+
+  if (claims.lxm !== request.nsid) {
+    return "lxm";
+  }
+
+  if (claims.iat > now + (request.skewSeconds ?? 0)) {
+    return "iat-future";
+  }
+
+  if (claims.exp <= now) {
+    return "expired";
+  }
+
+  if (claims.exp <= claims.iat) {
+    return "exp-before-iat";
+  }
+
+  if (now - claims.iat > 60) {
+    return "stale";
+  }
+
+  if (claims.exp - claims.iat > 60) {
+    return "lifetime";
+  }
+
+  return undefined;
+};
+
 const json = (text: string) =>
   Effect.try({
     catch: () => authFailure("AuthRequired", 401),
@@ -200,20 +256,18 @@ export const authenticateClaims = Effect.fn("ServiceAuth.authenticateClaims")(
       Effect.mapError(() => authFailure("AuthRequired", 401))
     );
 
-    const now = Math.floor(request.now / 1000);
+    const check = failedClaimsCheck(claims, request);
 
-    if (
-      claims.aud !== request.audience ||
-      claims.lxm !== request.nsid ||
-      claims.iat > now + (request.skewSeconds ?? 0) ||
-      claims.exp <= now ||
-      claims.exp <= claims.iat ||
-      claims.exp - claims.iat > 60 ||
-      now - claims.iat > 60
-    ) {
-      return yield* Effect.fail(
-        authFailure("AuthRequired", 401, "Invalid service-auth claims")
+    if (check !== undefined) {
+      const refusal = authFailure(
+        "AuthRequired",
+        401,
+        "Invalid service-auth claims"
       );
+
+      claimsDiagnostics.set(refusal, { check, claimedIssuer: claims.iss });
+
+      return yield* Effect.fail(refusal);
     }
 
     const kid = header.kid ?? "#atproto";

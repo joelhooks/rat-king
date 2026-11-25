@@ -1,9 +1,8 @@
-import { authenticateClaims } from "@rat-king/mailbox-client";
+import { authenticateClaims as verifyClaims } from "@rat-king/mailbox-client";
 import type { AuthenticateRequest } from "@rat-king/mailbox-client";
 import { Effect } from "effect";
 
 export {
-  authenticateClaims,
   base64url,
   unbase64url,
   Claims,
@@ -22,7 +21,14 @@ export type {
   DocumentsValue,
 } from "@rat-king/mailbox-client";
 
+const mailboxAuthSkewSeconds = 5;
+
+type MailboxAuthenticateRequest = Omit<AuthenticateRequest, "skewSeconds">;
+
+export const authenticateClaims = (request: MailboxAuthenticateRequest) =>
+  verifyClaims({ ...request, skewSeconds: mailboxAuthSkewSeconds });
+
 export const authenticate = Effect.fn("ServiceAuth.authenticate")(
-  (request: AuthenticateRequest) =>
+  (request: MailboxAuthenticateRequest) =>
     authenticateClaims(request).pipe(Effect.map((claims) => claims.iss))
 );

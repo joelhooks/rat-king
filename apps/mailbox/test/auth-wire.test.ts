@@ -1,10 +1,6 @@
 import { it } from "@effect/vitest";
-import {
-  authenticateClaims,
-  serviceToken,
-  staticResolver,
-} from "@rat-king/mailbox-client/auth";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer, Logger, Schema } from "effect";
+import { CurrentLogAnnotations } from "effect/References";
 import { expect } from "vitest";
 
 import { importSigning } from "../../../packages/mailbox-client/src/identity.ts";
@@ -13,10 +9,16 @@ import {
   document,
   identity,
 } from "../../../packages/mailbox-client/test/identity.ts";
-import { errorResponse, failure } from "../src/failure.ts";
+import {
+  authenticateClaims,
+  serviceToken,
+  staticResolver,
+} from "../src/auth.ts";
+import { respondToFailure } from "../src/failure-log.ts";
+import { failure } from "../src/failure.ts";
 
 it.effect.prop(
-  "mailbox auth refusals preserve wire bytes and catchTag compatibility",
+  "mailbox allows five seconds of forward skew and logs claims failures without changing wire bytes",
   [Schema.Int.check(Schema.isBetween({ maximum: 1_000_000, minimum: 100 }))],
   ([now]) =>
     Effect.gen(function* wireProof() {
@@ -53,7 +55,15 @@ it.effect.prop(
         lxm: "sh.mschf.ratking.mailbox.send",
       };
 
-      let caught = 0;
+      const warnings: unknown[] = [];
+
+      const capture = Logger.make(({ fiber, logLevel, message }) => {
+        warnings.push({
+          fields: fiber.getRef(CurrentLogAnnotations),
+          level: logLevel,
+          message,
+        });
+      });
 
       const run = (authorization: string | null) =>
         authenticateClaims({
@@ -65,15 +75,18 @@ it.effect.prop(
           Effect.provide(services),
           Effect.catchTag("XrpcFailure", (refusal) =>
             Effect.gen(function* renderFailure() {
-              caught += 1;
-              const response = errorResponse(refusal);
+              const response = yield* respondToFailure(
+                { method: claims.lxm },
+                refusal
+              );
 
               return {
                 body: yield* Effect.promise(response.text.bind(response)),
                 status: response.status,
               };
             })
-          )
+          ),
+          Effect.provide(Logger.layer([capture]))
         );
 
       const valid = yield* serviceToken(claims, key);
@@ -84,23 +97,9 @@ it.effect.prop(
         wrongKey
       );
 
-      const expired = yield* serviceToken(
-        {
-          ...claims,
-          exp: now,
-          iat: now - 60,
-          jti: "wire-auth-expired-token-0003",
-        },
-        key
-      );
-
       for (const [authorization, body] of [
         [null, '{"error":"AuthRequired","message":"AuthRequired"}'],
         [`Bearer ${bad}`, '{"error":"AuthRequired","message":"AuthRequired"}'],
-        [
-          `Bearer ${expired}`,
-          '{"error":"AuthRequired","message":"Invalid service-auth claims"}',
-        ],
         [
           `Bearer ${valid}`,
           '{"error":"AuthRequired","message":"Reused service token"}',
@@ -109,6 +108,75 @@ it.effect.prop(
         expect(yield* run(authorization)).toEqual({ body, status: 401 });
       }
 
-      expect(caught).toBe(4);
+      for (const ahead of [3, 5]) {
+        const adjusted = {
+          ...claims,
+          exp: now + ahead + 60,
+          iat: now + ahead,
+          jti: `wire-auth-ahead-${ahead}-seconds`,
+        };
+
+        expect(
+          yield* run(`Bearer ${yield* serviceToken(adjusted, key)}`)
+        ).toEqual(adjusted);
+      }
+
+      for (const [check, overrides] of [
+        ["aud", { aud: "did:web:other.invalid#mailbox" }],
+        ["lxm", { lxm: "sh.mschf.ratking.mailbox.ack" }],
+        ["iat-future", { exp: now + 66, iat: now + 6 }],
+        ["expired", { exp: now, iat: now - 60 }],
+        ["exp-before-iat", { exp: now + 3, iat: now + 3 }],
+        ["lifetime", { exp: now + 64, iat: now + 3 }],
+        ["stale", { exp: now + 1, iat: now - 61 }],
+      ] as const) {
+        warnings.length = 0;
+
+        const tokenWithUnverifiedIssuer = yield* serviceToken(
+          { ...claims, ...overrides },
+          wrongKey
+        );
+
+        expect(yield* run(`Bearer ${tokenWithUnverifiedIssuer}`)).toEqual({
+          body: '{"error":"AuthRequired","message":"Invalid service-auth claims"}',
+          status: 401,
+        });
+        expect(warnings).toEqual([
+          {
+            fields: {
+              check,
+              claimedIssuer: sender.did,
+              detail: "Invalid service-auth claims",
+              error: "AuthRequired",
+              method: claims.lxm,
+              status: 401,
+            },
+            level: "Warn",
+            message: ["Mailbox XRPC failure"],
+          },
+        ]);
+      }
+
+      warnings.length = 0;
+
+      const nonDid = yield* serviceToken(
+        { ...claims, exp: now, iss: "arbitrary untrusted text" },
+        key
+      );
+
+      yield* run(`Bearer ${nonDid}`);
+      expect(warnings).toEqual([
+        {
+          fields: {
+            check: "expired",
+            detail: "Invalid service-auth claims",
+            error: "AuthRequired",
+            method: claims.lxm,
+            status: 401,
+          },
+          level: "Warn",
+          message: ["Mailbox XRPC failure"],
+        },
+      ]);
     })
 );
