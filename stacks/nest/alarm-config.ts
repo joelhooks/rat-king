@@ -186,7 +186,10 @@ const AlarmCommon = Schema.Struct({
     secret: Schema.NonEmptyString,
     sender: Schema.optionalKey(AgentName),
   }),
-  owners: Schema.Record(Schema.NonEmptyString, AgentName),
+  owners: Schema.Record(Schema.NonEmptyString, AgentName).annotate({
+    description:
+      "Alarm key or dotted prefix to owning desk, e.g. digest for digest.fail.",
+  }),
   page: Schema.optionalKey(
     Schema.Struct({
       node: Schema.NonEmptyString,

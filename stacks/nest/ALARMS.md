@@ -21,14 +21,22 @@ Phone paging is optional. When `alarm.page` is omitted, the alarm sends the same
 `stage.json` owns all identities, recipients, paths, commands and owner mappings. Add an optional `alarm` section with:
 
 - `enabled`: explicit boolean, initially false.
-- `broadcast`: destination agent name for operator alarms, excluding retired wake alarms and owner-only opt-ins.
+- `broadcast`: destination agent name for critical alarms or alarms with no matching owner. `instance.down` still includes broadcast and the affected instance owners at either severity. Retired wake alarms and owner-only opt-ins still skip the static fan-out.
 - `musterDesk`: the configured Muster desk name, included for `readers.*`, `issuer.*` and `mail.stranded/*`. A firing `readers.stuck` also goes to each stuck reader's owner, named in its heartbeat (`MUSTER_OWNER_NAME`). The all-clear goes to the static recipients only.
-- `owners`: key or dotted-prefix to owning desk. The longest matching prefix wins. Recipient fan-out is deduplicated.
+- `owners`: key or dotted-prefix to owning desk. The longest matching prefix wins. An owned warning skips broadcast but retains any added Muster desk or source recipients. Recovery uses the last firing severity for this rule. Recipient fan-out is deduplicated. Set `owners.digest` to the desk responsible for `digest.fail`.
 - `renotifyMinutes`: optional positive integer, default 120.
 - `notify`: operator identity secret, directory path and optional Pi config path. The sender is always `operator`; its identity must match the directory's operator DID.
 - `page`: Node executable and the approved notification gateway script path.
 - Set exactly one supervisor. `launchd` takes `label`, `node`, checkout `source`, `path` (PATH), `outputLog` and `errorLog`. `systemd` takes `unit` (the `.service` filename) instead of `label`, plus the same remaining fields. Systemd needs absolute executable, checkout and log paths. Its user manager must start at boot for the alarm to run before login.
 - `readerHeartbeats`: one entry per host, with a display `host`, the Pi state's `readers` directory as `dir`, and an `ssh` destination for every host but the alarm's own. The worker reads each host's heartbeats with one bounded call per check (10 seconds, `BatchMode=yes`). Pid liveness is checked on that host. If the list is omitted, reader monitoring is unknown, not healthy. If a host's directory is missing, that host has no readers. The older `readers` list with `aliveCommand` is ignored. It is accepted only so existing configs keep loading, so delete it when you add `readerHeartbeats`.
+
+Example `alarm.owners` map (replace the example name in your stage):
+
+```json
+{
+  "digest": "example/ops-desk"
+}
+```
 
 Optional `alarm.wakeTargets: [{ name, owner, unackedMinutes?, page? }]` preserves explicit owner opt-ins. The threshold defaults to `alarm.wakeUnackedMinutes` (15 minutes when omitted). Each overdue target fires `mail.owner/<name>` to its owner only, never to broadcast, the desk or the operator gateway. The legacy `page` option still decodes but no longer grants operator paging authority. Owner notices and their recovery use the normal durable outbox.
 

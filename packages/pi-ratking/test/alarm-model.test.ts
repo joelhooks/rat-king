@@ -9,6 +9,7 @@ import { expect } from "vitest";
 import {
   AlarmSettings,
   AlarmState,
+  Severity,
 } from "../../../stacks/nest/alarm-config.ts";
 import type { AlarmStateValue } from "../../../stacks/nest/alarm-config.ts";
 import {
@@ -350,11 +351,55 @@ it.effect.prop(
           commands
         )
       );
-      expect(alarmRecipients(settings, "issuer.broken")).toEqual([
-        "observer-invalid",
-        "desk-invalid",
-      ]);
     })
+);
+
+it.prop(
+  "routes an owned warning to the longest-prefix owner and adds broadcast for critical",
+  [Severity, Schema.Literals(["digest.fail", "ship.failed", "ship.churn"])],
+  ([severity, key]) => {
+    const config = {
+      ...settings,
+      owners: {
+        digest: "owner-invalid",
+        ship: "other-invalid",
+        "ship.churn": "owner-invalid",
+        "ship.failed": "owner-invalid",
+      },
+    };
+
+    expect(alarmRecipients(config, key, severity)).toEqual(
+      severity === "warn"
+        ? ["owner-invalid"]
+        : ["observer-invalid", "owner-invalid"]
+    );
+  }
+);
+
+it.prop(
+  "falls back to broadcast for unowned warnings",
+  [Schema.Literals(["digest.fail", "quarantine.growth", "celld.restarted"])],
+  ([key]) => {
+    expect(alarmRecipients(settings, key, "warn")).toEqual([
+      "observer-invalid",
+    ]);
+  }
+);
+
+it.prop(
+  "retains the Muster desk for owned warnings with a desk route",
+  [Schema.Literals(["issuer.broken", "readers.stuck"])],
+  ([key]) => {
+    const config = {
+      ...settings,
+      owners: { issuer: "owner-invalid", readers: "owner-invalid" },
+    };
+
+    expect(alarmRecipients(config, key, "warn")).toEqual([
+      "desk-invalid",
+      "owner-invalid",
+    ]);
+  }
 );
 
 const Page = Schema.Struct({

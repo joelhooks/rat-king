@@ -401,7 +401,7 @@ it.effect.prop(
 );
 
 it.effect.prop(
-  "persisted instance fire recipients receive aggregate recovery, while mailbox clear routing stays unchanged",
+  "aggregate recovery retains instance recipients and mailbox clears follow severity routing",
   { renotify: Schema.Boolean },
   ({ renotify }) =>
     Effect.gen(function* recovery() {
@@ -600,10 +600,7 @@ it.effect.prop(
       expect(stable.instanceRecipients).toBeUndefined();
       expect(notices).toHaveLength(1);
       expect(notices[0]?.text).toContain("celld.restarted cleared");
-      expect(notices[0]?.recipients.toSorted()).toEqual([
-        "mailbox-owner",
-        "observer-invalid",
-      ]);
+      expect(notices[0]?.recipients).toEqual(["mailbox-owner"]);
     })
 );
 

@@ -148,7 +148,7 @@ describe("backup.sessions-index collection", () => {
 });
 
 describe("backup.sessions-index routing", () => {
-  it("goes to the broadcast and the configured owner", () => {
+  it("routes the backup warning to its configured owner", () => {
     expect(
       alarmRecipients(
         {
@@ -167,8 +167,9 @@ describe("backup.sessions-index routing", () => {
           owners: { "backup.sessions-index": "steward/desk" },
           page: { node: "/n", script: "/s" },
         },
-        "backup.sessions-index"
+        "backup.sessions-index",
+        "warn"
       )
-    ).toEqual(["ops/desk", "steward/desk"]);
+    ).toEqual(["steward/desk"]);
   });
 });
