@@ -48,6 +48,7 @@ export const RuntimeConfig = Schema.Struct({
   RAT_KING_LOCAL_AGENT: OptionalText,
   RAT_KING_LOCAL_DID: OptionalText,
   RAT_KING_MODEL_GATEWAY_SECRET_NAME: OptionalText,
+  RAT_KING_NAME_STATE_VIEWS: OptionalText,
   RAT_KING_OBSERVER_DIDS: Schema.Array(Text),
   RAT_KING_OFFLINE_PLAN: OptionalBoolean,
   RAT_KING_OPERATOR_DIDS: Schema.Array(Text),

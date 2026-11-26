@@ -28,7 +28,7 @@ import {
   DocumentRegistry,
   issuerHandlers,
   issuerRoute,
-  RetirementRegistry,
+  NamedCell,
 } from "../src/issuer.ts";
 import { storeDocument } from "../src/mailbox.ts";
 import { MailboxStore } from "../src/store.ts";
@@ -170,7 +170,7 @@ const staticPolicyLayer = (
   }).pipe(
     Layer.provide(store),
     Layer.provide(Layer.mock(DocumentRegistry, {})),
-    Layer.provide(Layer.mock(RetirementRegistry, {})),
+    Layer.provide(Layer.mock(NamedCell, {})),
     Layer.provide(Layer.succeed(Caller, { did: host }))
   );
 
@@ -463,7 +463,7 @@ it.effect.prop(
         }).pipe(
           Layer.provide(issuerStore(issuer.sql)),
           Layer.provide(registry),
-          Layer.provide(storeRetirements(mailbox)),
+          Layer.provide(storeRetirements(mailbox, issuerStore(issuer.sql))),
           Layer.provide(Layer.succeed(Caller, { did: caller }))
         );
 

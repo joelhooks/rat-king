@@ -33,9 +33,14 @@ import type {
   Refusal,
 } from "./issuer-policy.ts";
 import { IssuerStore } from "./issuer-store.ts";
-import type { IssuerTransaction, RetiredName } from "./issuer-store.ts";
-import { namePage } from "./list-names.ts";
-import { isoTime } from "./retirement.ts";
+import type { IssuerTransaction } from "./issuer-store.ts";
+import {
+  enumeration,
+  IssuerEnumeration,
+  projectionViews,
+  retiredOutput,
+} from "./list-names.ts";
+import type { ProjectionViews } from "./list-names.ts";
 import { MAX_HOPS, resolveRoute } from "./roles.ts";
 import type { RouteView } from "./roles.ts";
 import type { RetirementValue } from "./store.ts";
@@ -55,20 +60,25 @@ export const issuerMethods = [
   SetSuccessor.Method,
 ];
 
-export class RetirementRegistry extends Context.Service<
-  RetirementRegistry,
+export class NamedCell extends Context.Service<
+  NamedCell,
   {
     readonly retire: (
       did: string,
       retirement: RetirementValue,
-      holderMayRetire: boolean
-    ) => Effect.Effect<void, XrpcFailure>;
+      holderMayRetire: boolean,
+      expected?: number
+    ) => Effect.Effect<number, XrpcFailure>;
     readonly repoint: (
       did: string,
       successor: string,
       updatedAt: number
     ) => Effect.Effect<RetirementValue, XrpcFailure>;
-    readonly clear: (did: string) => Effect.Effect<boolean, XrpcFailure>;
+    readonly clear: (
+      did: string,
+      name: string,
+      expected?: number
+    ) => Effect.Effect<boolean, XrpcFailure>;
     readonly current: (
       did: string
     ) => Effect.Effect<RetirementValue | undefined, XrpcFailure>;
@@ -77,11 +87,12 @@ export class RetirementRegistry extends Context.Service<
         readonly exists: boolean;
         readonly leaseExpiresAt?: number | undefined;
         readonly retirement?: RetirementValue;
+        readonly version?: number;
       },
       XrpcFailure
     >;
   }
->()("mailbox/RetirementRegistry") {}
+>()("mailbox/NamedCell") {}
 
 export class DocumentRegistry extends Context.Service<
   DocumentRegistry,
@@ -187,33 +198,22 @@ const reservedIn = (policy: IssuerPolicy, name: string) =>
 const templateDidIn = (policy: IssuerPolicy, name: string) =>
   policy.config.pipe(Option.map((config) => nameDid(config.didTemplate, name)));
 
-const retiredOutput = (retired: RetiredName) => {
-  const encoded = {
-    by: retired.by,
-    did: retired.did,
-    name: retired.name,
-    retiredAt: isoTime(retired.retiredAt),
-  };
-
-  if (retired.successor !== undefined) {
-    Object.assign(encoded, { successor: retired.successor });
-  }
-
-  if (retired.updatedAt !== undefined) {
-    Object.assign(encoded, { updatedAt: isoTime(retired.updatedAt) });
-  }
-
-  return encoded;
-};
-
-export const issuerHandlers = (policy: IssuerPolicy) =>
+export const issuerHandlers = (
+  policy: IssuerPolicy,
+  views: ProjectionViews = projectionViews()
+) =>
   Layer.effect(
     IssuerHandlers,
     Effect.gen(function* makeIssuerHandlers() {
       const store = yield* IssuerStore;
       const registry = yield* DocumentRegistry;
-      const retirements = yield* RetirementRegistry;
+      const retirements = yield* NamedCell;
       const caller = yield* Caller;
+
+      const listing = yield* IssuerEnumeration.pipe(
+        Effect.provide(enumeration(views)),
+        Effect.provideService(IssuerStore, store)
+      );
 
       const subject = Effect.fn("Issuer.subject")(function* subject(
         name: string
@@ -459,78 +459,12 @@ export const issuerHandlers = (policy: IssuerPolicy) =>
 
           yield* registry.put(document);
           yield* store.transaction((tx) => {
-            tx.enroll(document.id);
+            tx.enroll(document.id, document);
           });
 
           return yield* output(Enroll.Output, { did: document.id });
         }),
-        listNames: Effect.fn("Issuer.listNames")(function* listNames(params) {
-          const page = yield* namePage(
-            params,
-            retirements.presence,
-            store,
-            caller.did
-          );
-
-          const { names: rows } = page;
-
-          const names = yield* Effect.forEach(
-            rows,
-            (row) =>
-              Effect.gen(function* encodeName() {
-                const entry = {
-                  did: row.did,
-                  document: row.document,
-                  name: row.name,
-                };
-
-                if (row.roleTarget) {
-                  Object.assign(entry, { roleTarget: true });
-                }
-
-                if (row.status !== undefined) {
-                  Object.assign(entry, { status: row.status });
-                }
-
-                if (row.parent !== undefined) {
-                  Object.assign(entry, {
-                    parent: yield* Schema.encodeEffect(ListNames.Parent)(
-                      row.parent
-                    ).pipe(
-                      Effect.mapError(() => failure("MailboxUnavailable", 503))
-                    ),
-                  });
-                }
-
-                return entry;
-              }),
-            { concurrency: 1 }
-          );
-
-          return yield* output(ListNames.Output, { ...page, names });
-        }),
-        listRetired: Effect.fn("Issuer.listRetired")(
-          function* listRetired(params) {
-            const limit = params.limit ?? ListRetired.Method.defaults.limit;
-
-            const rows = yield* store.transaction((tx) =>
-              tx.retired(params.cursor ?? "", limit + 1)
-            );
-
-            const page = rows.slice(0, limit);
-
-            const retired = page.map(retiredOutput);
-
-            const last = page.at(-1);
-
-            return yield* output(
-              ListRetired.Output,
-              rows.length > limit && last !== undefined
-                ? { cursor: last.name, retired }
-                : { retired }
-            );
-          }
-        ),
+        ...listing,
         listRoles: Effect.fn("Issuer.listRoles")(function* listRoles(params) {
           const limit = params.limit ?? ListRoles.Method.defaults.limit;
 
@@ -711,7 +645,7 @@ export const issuerHandlers = (policy: IssuerPolicy) =>
             yield* requireLive(input.name, input.successor, successorAt);
           }
 
-          const previous = yield* retirements.current(did);
+          const previous = yield* retirements.presence(did);
 
           const retirement: RetirementValue = {
             by: caller.did,
@@ -725,7 +659,12 @@ export const issuerHandlers = (policy: IssuerPolicy) =>
 
           const holderMayRetire = caller.did === did;
 
-          yield* retirements.retire(did, retirement, holderMayRetire);
+          const applied = yield* retirements.retire(
+            did,
+            retirement,
+            holderMayRetire,
+            previous.version
+          );
 
           if (input.successor !== undefined && successorAt !== undefined) {
             const rechecked = yield* requireLive(
@@ -735,9 +674,16 @@ export const issuerHandlers = (policy: IssuerPolicy) =>
             ).pipe(Effect.result);
 
             if (Result.isFailure(rechecked)) {
-              yield* previous === undefined
-                ? Effect.asVoid(retirements.clear(did))
-                : retirements.retire(did, previous, holderMayRetire);
+              const expected = applied;
+
+              yield* previous.retirement === undefined
+                ? Effect.asVoid(retirements.clear(did, input.name, expected))
+                : retirements.retire(
+                    did,
+                    previous.retirement,
+                    holderMayRetire,
+                    expected
+                  );
 
               return yield* Effect.fail(
                 failure(
@@ -748,10 +694,6 @@ export const issuerHandlers = (policy: IssuerPolicy) =>
               );
             }
           }
-
-          yield* store.transaction((tx) => {
-            tx.retire({ ...retirement, did });
-          });
 
           return yield* output(
             Retire.Output,
@@ -863,10 +805,6 @@ export const issuerHandlers = (policy: IssuerPolicy) =>
                 )
               );
 
-            yield* store.transaction((tx) => {
-              tx.retire({ ...retirement, did });
-            });
-
             return yield* output(
               SetSuccessor.Output,
               retiredOutput({ ...retirement, did })
@@ -876,11 +814,7 @@ export const issuerHandlers = (policy: IssuerPolicy) =>
         unretireName: Effect.fn("Issuer.unretireName")(
           function* unretireName(input) {
             const did = yield* subject(input.name);
-            const cleared = yield* retirements.clear(did);
-
-            yield* store.transaction((tx) => {
-              tx.unretire(input.name);
-            });
+            const cleared = yield* retirements.clear(did, input.name);
 
             return yield* output(Unretire.Output, {
               cleared,

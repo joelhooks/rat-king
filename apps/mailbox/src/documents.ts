@@ -7,6 +7,7 @@ import { base64url, Document, Documents, documentResolver } from "./auth.ts";
 import type { Bindings } from "./bindings.ts";
 import { bundledDocuments } from "./bundled-documents.ts";
 import { failure } from "./failure.ts";
+import { issuerInstance } from "./issuer-policy.ts";
 
 export const didAllowlist = (value: string | undefined) =>
   Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.String)))(
@@ -97,7 +98,7 @@ export const peerDocument = (env: Bindings, issuer: string, did: string) =>
     did
   );
 
-export const documentsLayer = (env: Bindings) => {
+export const documentsLayer = (env: Bindings, directoryOnly = false) => {
   const documents = configuredDocuments(env);
 
   return documentResolver(
@@ -114,7 +115,12 @@ export const documentsLayer = (env: Bindings) => {
 
       const registered = yield* Effect.tryPromise({
         catch: () => failure("MailboxUnavailable", 503),
-        try: () => env.MAILBOX.getByName(did).registeredDocument(),
+        try: () =>
+          directoryOnly
+            ? Promise.resolve(
+                env.ISSUER?.getByName(issuerInstance).directoryDocument(did)
+              )
+            : env.MAILBOX.getByName(did).registeredDocument(),
       });
 
       return registered === undefined

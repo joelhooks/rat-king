@@ -95,7 +95,7 @@ const makeLeases = (store: typeof MailboxStore.Service): LeaseInterface =>
     acquire: Effect.fn("Lease.acquire")(function* acquire(input) {
       const now = yield* Clock.currentTimeMillis;
 
-      return yield* store.transaction((tx) => {
+      return yield* store.standingTransaction(now, (tx) => {
         if (input.did !== tx.recipient()) {
           throw failure("Forbidden", 403);
         }
@@ -203,7 +203,7 @@ const makeLeases = (store: typeof MailboxStore.Service): LeaseInterface =>
     release: Effect.fn("Lease.release")(function* release(input) {
       const now = yield* Clock.currentTimeMillis;
 
-      return yield* store.transaction((tx): undefined => {
+      return yield* store.standingTransaction(now, (tx): undefined => {
         if (input.did !== tx.recipient()) {
           throw failure("Forbidden", 403);
         }
@@ -214,7 +214,7 @@ const makeLeases = (store: typeof MailboxStore.Service): LeaseInterface =>
     renew: Effect.fn("Lease.renew")(function* renew(input) {
       const now = yield* Clock.currentTimeMillis;
 
-      return yield* store.transaction((tx) => {
+      return yield* store.standingTransaction(now, (tx) => {
         if (input.did !== tx.recipient()) {
           throw failure("Forbidden", 403);
         }

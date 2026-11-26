@@ -8,6 +8,7 @@ import type { XrpcFailure } from "@rat-king/lexicon/xrpc-failure";
 import { Context, Effect, Schema } from "effect";
 
 import { failure } from "./failure.ts";
+import type { NameStateValue } from "./name-state.ts";
 
 export interface Message {
   readonly critical?: boolean;
@@ -96,6 +97,10 @@ export class MailboxStore extends Context.Service<
   {
     readonly transaction: <A>(
       operation: (tx: Transaction) => A
+    ) => Effect.Effect<A, XrpcFailure>;
+    readonly standingTransaction: <A>(
+      now: number,
+      operation: (tx: Transaction, stage: () => NameStateValue) => A
     ) => Effect.Effect<A, XrpcFailure>;
   }
 >()("mailbox/Store") {}

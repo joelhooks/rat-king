@@ -36,7 +36,7 @@ import {
   DocumentRegistry,
   issuerHandlers,
   issuerRoute,
-  RetirementRegistry,
+  NamedCell,
 } from "../src/issuer.ts";
 import {
   Caller,
@@ -538,14 +538,16 @@ it.effect.prop(
                   Layer.provide(issuerLayer),
                   Layer.provide(unusedDocuments),
                   Layer.provide(
-                    storeRetirements((did) =>
-                      Effect.succeed(
-                        {
-                          [otherDid]: otherStore,
-                          [templatedDid]: templatedStore,
-                          "did:web:proj.ghost.pi.example.invalid": ghostStore,
-                        }[did] ?? store
-                      )
+                    storeRetirements(
+                      (did) =>
+                        Effect.succeed(
+                          {
+                            [otherDid]: otherStore,
+                            [templatedDid]: templatedStore,
+                            "did:web:proj.ghost.pi.example.invalid": ghostStore,
+                          }[did] ?? store
+                        ),
+                      issuerLayer
                     )
                   ),
                   Layer.provide(Layer.succeed(Caller, { did: caller }))
@@ -706,21 +708,23 @@ it.effect.prop(
 
       let calls = 0;
 
-      const base = storeRetirements((did) =>
-        Effect.succeed(did === templatedDid ? successorStore : subjectStore)
+      const base = storeRetirements(
+        (did) =>
+          Effect.succeed(did === templatedDid ? successorStore : subjectStore),
+        issuerStore(issuerStorage.sql)
       );
 
       const racing = Layer.effect(
-        RetirementRegistry,
+        NamedCell,
         Effect.gen(function* racingRegistry() {
-          const registry = yield* RetirementRegistry;
+          const registry = yield* NamedCell;
 
-          return RetirementRegistry.of({
+          return NamedCell.of({
             ...registry,
             presence: (did) => {
               calls += 1;
 
-              return raceLoses && calls > 1
+              return raceLoses && did === templatedDid && calls > 2
                 ? Effect.succeed({ exists: false })
                 : registry.presence(did);
             },
@@ -816,10 +820,12 @@ it.effect(
               Layer.mock(DocumentRegistry, { put: () => Effect.void })
             ),
             Layer.provide(
-              storeRetirements((did) =>
-                Effect.succeed(
-                  did === templatedDid ? successorStore : subjectStore
-                )
+              storeRetirements(
+                (did) =>
+                  Effect.succeed(
+                    did === templatedDid ? successorStore : subjectStore
+                  ),
+                issuerStore(issuerStorage.sql)
               )
             ),
             Layer.provide(Layer.succeed(Caller, { did: operator }))

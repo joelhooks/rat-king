@@ -19,4 +19,5 @@ export const bindings = {
     deskMigration,
   ],
   name: "rat-king-mailbox",
+  triggers: { crons: ["* * * * *"] },
 };

@@ -14,7 +14,7 @@ import {
   DocumentRegistry,
   issuerHandlers,
   issuerRoute,
-  RetirementRegistry,
+  NamedCell,
 } from "../src/issuer.ts";
 import { isoTime } from "../src/retirement.ts";
 import { MailboxStore } from "../src/store.ts";
@@ -67,8 +67,13 @@ const setup = (allowCurrent = false) =>
       }
     });
 
-    const registry = yield* RetirementRegistry.pipe(
-      Effect.provide(storeRetirements(() => Effect.succeed(mailbox)))
+    const registry = yield* NamedCell.pipe(
+      Effect.provide(
+        storeRetirements(
+          () => Effect.succeed(mailbox),
+          Layer.succeed(IssuerStore, store)
+        )
+      )
     );
 
     let clears = 0;
@@ -90,11 +95,11 @@ const setup = (allowCurrent = false) =>
               })
             ),
             Layer.provide(
-              Layer.succeed(RetirementRegistry, {
-                clear: (did) => {
+              Layer.succeed(NamedCell, {
+                clear: (did, name) => {
                   clears += 1;
 
-                  return registry.clear(did);
+                  return registry.clear(did, name);
                 },
                 current: (did) => {
                   reads += 1;

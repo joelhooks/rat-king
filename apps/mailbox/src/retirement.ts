@@ -1,4 +1,3 @@
-import type * as Defs from "@rat-king/lexicon/defs";
 import { DateTime } from "effect";
 
 import { failure } from "./failure.ts";
@@ -24,7 +23,7 @@ export const refuseRetired = (tx: Transaction) => {
 
 export const standingOf = (
   tx: Transaction,
-  staticDocuments: readonly Defs.DidDocumentValue[]
+  staticDocuments: readonly { readonly id: string }[]
 ) => {
   const recipient = tx.recipient();
 
@@ -38,9 +37,10 @@ export const standingOf = (
 
 export const markRetired = (
   tx: Transaction,
-  staticDocuments: readonly Defs.DidDocumentValue[],
+  staticDocuments: readonly { readonly id: string }[],
   retirement: RetirementValue,
-  holderMayRetire: boolean
+  holderMayRetire: boolean,
+  now = retirement.retiredAt
 ) => {
   if (!standingOf(tx, staticDocuments).exists) {
     throw failure("NameNotFound", 404);
@@ -48,11 +48,7 @@ export const markRetired = (
 
   const lease = tx.lease();
 
-  if (
-    !holderMayRetire &&
-    lease !== undefined &&
-    lease.expiresAt > retirement.retiredAt
-  ) {
+  if (!holderMayRetire && lease !== undefined && lease.expiresAt > now) {
     throw failure(
       "LeaseLive",
       409,

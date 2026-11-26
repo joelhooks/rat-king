@@ -23,6 +23,7 @@ export const mailboxManifest: typeof PreparedManifest.Type = {
     "ISSUER_DID_TEMPLATE",
     "ISSUER_RESERVED",
     "LEASE_RESOLVERS",
+    "NAME_STATE_VIEWS",
     "OBSERVER_DIDS",
     "OPERATOR_DIDS",
     "SERVICE_DID",

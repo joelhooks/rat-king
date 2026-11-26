@@ -5644,6 +5644,11 @@ var Retirement = Schema57.StructWithRest(
       Schema57.brand("Lexicon:did")
     ),
     name: lexString({ maxLength: 128, type: "string" }),
+    observedAt: Schema57.optionalKey(
+      lexString({ format: "datetime", type: "string" }).pipe(
+        Schema57.brand("Lexicon:datetime")
+      )
+    ),
     retiredAt: lexString({ format: "datetime", type: "string" }).pipe(
       Schema57.brand("Lexicon:datetime")
     ),
@@ -5682,7 +5687,8 @@ var Params22 = Schema58.StructWithRest(
         Schema58.isGreaterThanOrEqualTo(1),
         Schema58.isLessThanOrEqualTo(100)
       )
-    )
+    ),
+    snapshot: Schema58.optionalKey(Schema58.Boolean)
   }),
   [Schema58.Record(Schema58.String, Data)]
 );
@@ -5702,7 +5708,8 @@ var Output19 = Schema58.StructWithRest(
 var ParamsFromQuery10 = Schema58.StructWithRest(
   Schema58.Struct({
     cursor: Schema58.optionalKey(Schema58.String),
-    limit: Schema58.optionalKey(Schema58.FiniteFromString)
+    limit: Schema58.optionalKey(Schema58.FiniteFromString),
+    snapshot: Schema58.optionalKey(BooleanFromQuery)
   }),
   [Schema58.Record(Schema58.String, Data)]
 ).pipe(Schema58.decodeTo(Params22));

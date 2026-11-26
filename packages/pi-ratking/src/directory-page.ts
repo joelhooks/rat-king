@@ -3,7 +3,12 @@ import { matchesName } from "@rat-king/ratking-client/directory-view";
 import type { RatKing } from "@rat-king/ratking-client/ratking";
 import { Effect, Schema } from "effect";
 
-export const DirectoryStatus = Schema.Literals(["live", "idle", "retired"]);
+export const DirectoryStatus = Schema.Literals([
+  "live",
+  "idle",
+  "retired",
+  "unknown",
+]);
 
 const renderPage = (page: ListNames.OutputValue, match: string | undefined) => {
   const lines: string[] = [];
@@ -94,7 +99,7 @@ export const directoryPage = Effect.fn("RatKing.directoryPage")(
       params.all !== true &&
       statuses?.some((value) => value === "live" || value === "idle")
     ) {
-      return "Live/idle pages use cursor: instead of offset: and share a scan budget. Use `ratking snapshot` for inventory or look up a single named row.";
+      return "Live/idle pages use cursor: instead of offset:. Use `ratking snapshot` for inventory or look up a single named row.";
     }
 
     let { cursor } = params;

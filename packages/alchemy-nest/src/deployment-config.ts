@@ -25,6 +25,9 @@ export const Declaration = Schema.Struct({
   name: Schema.String.check(
     Schema.isPattern(/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/u)
   ),
+  triggers: Schema.optionalKey(
+    Schema.Struct({ crons: Schema.Array(Schema.NonEmptyString) })
+  ),
 });
 
 export const GeneratedConfiguration = Schema.Struct({

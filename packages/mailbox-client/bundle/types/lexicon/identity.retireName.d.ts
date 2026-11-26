@@ -4,6 +4,7 @@ export declare const Retirement: Schema.StructWithRest<Schema.Struct<{
     readonly by: Schema.brand<Schema.String, "Lexicon:did">;
     readonly did: Schema.brand<Schema.String, "Lexicon:did">;
     readonly name: Schema.String;
+    readonly observedAt: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:datetime">>;
     readonly retiredAt: Schema.brand<Schema.String, "Lexicon:datetime">;
     readonly successor: Schema.optionalKey<Schema.String>;
     readonly updatedAt: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:datetime">>;
@@ -20,6 +21,7 @@ export declare const Output: Schema.StructWithRest<Schema.Struct<{
     readonly by: Schema.brand<Schema.String, "Lexicon:did">;
     readonly did: Schema.brand<Schema.String, "Lexicon:did">;
     readonly name: Schema.String;
+    readonly observedAt: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:datetime">>;
     readonly retiredAt: Schema.brand<Schema.String, "Lexicon:datetime">;
     readonly successor: Schema.optionalKey<Schema.String>;
     readonly updatedAt: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:datetime">>;
@@ -50,6 +52,7 @@ export declare const Method: {
         readonly by: Schema.brand<Schema.String, "Lexicon:did">;
         readonly did: Schema.brand<Schema.String, "Lexicon:did">;
         readonly name: Schema.String;
+        readonly observedAt: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:datetime">>;
         readonly retiredAt: Schema.brand<Schema.String, "Lexicon:datetime">;
         readonly successor: Schema.optionalKey<Schema.String>;
         readonly updatedAt: Schema.optionalKey<Schema.brand<Schema.String, "Lexicon:datetime">>;

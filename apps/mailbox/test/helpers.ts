@@ -10,7 +10,8 @@ import {
   senderDid,
 } from "../../../packages/envelope/test/helpers.ts";
 import { Documents } from "../src/auth.ts";
-import { RetirementRegistry } from "../src/issuer.ts";
+import { IssuerStore } from "../src/issuer-store.ts";
+import { NamedCell } from "../src/issuer.ts";
 import { markRetired, repointRetirement } from "../src/retirement.ts";
 import { SenderFence } from "../src/sender-fence.ts";
 import { sqliteStore } from "../src/sqlite.ts";
@@ -99,12 +100,13 @@ export const testStoreFor = (did: string) =>
 export const testStore = testStoreFor(recipientDid);
 
 export const storeRetirements = (
-  mailbox: (did: string) => Effect.Effect<typeof MailboxStore.Service>
+  mailbox: (did: string) => Effect.Effect<typeof MailboxStore.Service>,
+  issuer?: Layer.Layer<IssuerStore>
 ) =>
   Layer.succeed(
-    RetirementRegistry,
-    RetirementRegistry.of({
-      clear: (did) =>
+    NamedCell,
+    NamedCell.of({
+      clear: (did, name) =>
         mailbox(did).pipe(
           Effect.flatMap((store) =>
             store.transaction((tx) => {
@@ -113,6 +115,15 @@ export const storeRetirements = (
 
               return cleared;
             })
+          ),
+          Effect.tap(() =>
+            issuer === undefined
+              ? Effect.void
+              : IssuerStore.use((store) =>
+                  store.transaction((tx) => {
+                    tx.unretire(name);
+                  })
+                ).pipe(Effect.provide(issuer))
           )
         ),
       current: (did) =>
@@ -137,6 +148,15 @@ export const storeRetirements = (
             store.transaction((tx) =>
               repointRetirement(tx, successor, updatedAt)
             )
+          ),
+          Effect.tap((retirement) =>
+            issuer === undefined
+              ? Effect.void
+              : IssuerStore.use((store) =>
+                  store.transaction((tx) => {
+                    tx.retire({ ...retirement, did });
+                  })
+                ).pipe(Effect.provide(issuer))
           )
         ),
       retire: (did, retirement, holderMayRetire) =>
@@ -144,7 +164,18 @@ export const storeRetirements = (
           Effect.flatMap((store) =>
             store.transaction((tx) => {
               markRetired(tx, [], retirement, holderMayRetire);
+
+              return 0;
             })
+          ),
+          Effect.tap(() =>
+            issuer === undefined
+              ? Effect.void
+              : IssuerStore.use((store) =>
+                  store.transaction((tx) => {
+                    tx.retire({ ...retirement, did });
+                  })
+                ).pipe(Effect.provide(issuer))
           )
         ),
     })

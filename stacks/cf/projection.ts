@@ -47,7 +47,7 @@ export const projectWorker = (
     AGENT_IDENTITIES_CREDENTIAL: identity,
   };
 
-  return {
+  const worker = {
     bundle: false,
     compatibility: {
       date: declaration.compatibility_date,
@@ -64,4 +64,8 @@ export const projectWorker = (
   } satisfies WorkerProps<
     Record<string, string | DurableObjectLike | Redacted.Redacted>
   >;
+
+  return declaration.triggers === undefined
+    ? worker
+    : { ...worker, crons: [...declaration.triggers.crons] };
 };

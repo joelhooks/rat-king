@@ -3,9 +3,13 @@ import * as AttentionReceipt from "@rat-king/lexicon/attention.receipt";
 import * as Status from "@rat-king/lexicon/attention.status";
 import * as Defs from "@rat-king/lexicon/defs";
 import * as List from "@rat-king/lexicon/mailbox.list";
+import { XrpcFailure } from "@rat-king/lexicon/xrpc-failure";
 import { Effect, Layer, Schema } from "effect";
 
 import { base64url, unbase64url } from "./auth.ts";
+import { cellNameTables, writeNameState } from "./cell-name-state.ts";
+import { failure } from "./failure.ts";
+import type { NameStateValue } from "./name-state.ts";
 import { Lease, MailboxStore, Retirement, storageOperation } from "./store.ts";
 import type { Event, LeaseValue, Message, Transaction } from "./store.ts";
 import { projectTraffic, trafficTables } from "./traffic-store.ts";
@@ -70,12 +74,20 @@ const firstValue = (
     : Schema.decodeUnknownSync(Row)(row).value;
 };
 
+export interface StandingStorage {
+  readonly transaction: <A>(
+    operation: () => A,
+    staged: () => boolean
+  ) => Promise<A>;
+}
+
 export const sqliteStore = (
   sql: Sql,
   recipient: string,
   committed?: (events: readonly Event[], lease: LeaseValue | undefined) => void,
   beforeTransaction: Effect.Effect<void> = Effect.void,
-  delegation = false
+  delegation = false,
+  standingStorage?: StandingStorage
 ) => {
   sql.exec(
     "CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
@@ -105,6 +117,7 @@ export const sqliteStore = (
   );
 
   trafficTables(sql);
+  cellNameTables(sql);
 
   const transaction: Transaction = {
     admissionsThrough: (through, limit) =>
@@ -296,46 +309,92 @@ export const sqliteStore = (
     },
   };
 
+  const run = <A>(
+    operation: (tx: Transaction, stage: () => NameStateValue) => A,
+    now?: number
+  ) => {
+    const appended: Event[] = [];
+    let staged: NameStateValue | undefined;
+
+    const perform = () => {
+      let changed = false;
+
+      const stage = () => {
+        if (now === undefined) {
+          throw new Error("Standing write requires a standing transaction");
+        }
+
+        staged ??= writeNameState(sql, transaction, now);
+
+        return staged;
+      };
+
+      const result = operation(
+        {
+          ...transaction,
+          append: (event) => {
+            transaction.append(event);
+            appended.push(event);
+          },
+          setLease: (lease) => {
+            changed = true;
+            transaction.setLease(lease);
+          },
+          setRetirement: (retirement) => {
+            changed = true;
+            transaction.setRetirement(retirement);
+          },
+        },
+        stage
+      );
+
+      if (changed && (now !== undefined || standingStorage !== undefined)) {
+        stage();
+      }
+
+      for (const event of appended) {
+        if (!Schema.is(AttentionReceipt.Main)(event)) {
+          const entry = projectTraffic(transaction, event, delegation);
+          sql.exec(
+            "INSERT INTO traffic_outbox (seq,value) VALUES (?,?)",
+            entry.recipientSeq,
+            JSON.stringify(entry)
+          );
+        }
+      }
+
+      return result;
+    };
+
+    return beforeTransaction.pipe(
+      Effect.andThen(
+        now === undefined || standingStorage === undefined
+          ? storageOperation(() => sql.transaction(perform))
+          : Effect.tryPromise({
+              catch: (error) =>
+                Schema.is(XrpcFailure)(error)
+                  ? error
+                  : failure("MailboxUnavailable", 503),
+              // oxlint-disable-next-line typescript/promise-function-async -- Preserve the provider transaction Promise and event context.
+              try: () =>
+                standingStorage.transaction(
+                  perform,
+                  () => staged !== undefined
+                ),
+            })
+      ),
+      Effect.tap(() =>
+        storageOperation(() => committed?.(appended, transaction.lease()))
+      )
+    );
+  };
+
   return Layer.succeed(
     MailboxStore,
     MailboxStore.of({
-      transaction: (operation) =>
-        beforeTransaction.pipe(
-          Effect.andThen(
-            storageOperation(() => {
-              const appended: Event[] = [];
-
-              const result = sql.transaction(() => {
-                const value = operation({
-                  ...transaction,
-                  append: (event) => {
-                    transaction.append(event);
-                    appended.push(event);
-                  },
-                });
-
-                for (const event of appended) {
-                  if (Schema.is(AttentionReceipt.Main)(event)) {
-                    continue;
-                  }
-
-                  const entry = projectTraffic(transaction, event, delegation);
-                  sql.exec(
-                    "INSERT INTO traffic_outbox (seq,value) VALUES (?,?)",
-                    entry.recipientSeq,
-                    JSON.stringify(entry)
-                  );
-                }
-
-                return value;
-              });
-
-              committed?.(appended, transaction.lease());
-
-              return result;
-            })
-          )
-        ),
+      standingTransaction: (now, operation) =>
+        Effect.suspend(() => run(operation, now)),
+      transaction: (operation) => Effect.suspend(() => run(operation)),
     })
   );
 };

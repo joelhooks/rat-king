@@ -1,6 +1,8 @@
-/* oxlint-disable typescript/promise-function-async -- Effect adapters require lazy Promise thunks, not callback-style control flow. */
+/* oxlint-disable typescript/promise-function-async -- Effect adapters require lazy Promise thunks. */
+import * as ListNames from "@rat-king/lexicon/identity.listNames";
+import * as ListRetired from "@rat-king/lexicon/identity.listRetired";
 import type { Request as XrpcRequest } from "@rat-king/lexicon/transport";
-import { Effect, Layer, Option, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 
 import { Caller } from "./caller.ts";
 import { failure } from "./failure.ts";
@@ -10,32 +12,62 @@ import {
   DocumentRegistry,
   issuerHandlers,
   issuerRoute,
-  RetirementRegistry,
+  NamedCell,
+  respond,
 } from "./issuer.ts";
 import type { IssuerPolicy } from "./issuer.ts";
+import {
+  enumeration,
+  IssuerEnumeration,
+  projectionViews,
+} from "./list-names.ts";
+import type { ProjectionViews } from "./list-names.ts";
+import { NameCommand } from "./name-state.ts";
+import { mailboxCall, runNameTicket } from "./name-tickets.ts";
+import type { TicketCells } from "./name-tickets.ts";
 import { Retirement } from "./store.ts";
 import { trafficDid } from "./traffic-store.ts";
 import type { Mailbox } from "./worker.ts";
 
-interface IssuerMailboxes {
+interface IssuerMailboxes extends TicketCells {
   readonly getByName: (
     did: string
   ) => Pick<
     Mailbox,
     | "storeDocument"
-    | "unretire"
     | "retirement"
     | "standing"
-    | "repoint"
-    | "retire"
+    | "standingRevision"
+    | "applyStandingTicket"
   >;
 }
 
-const mailboxCall = <A>(call: () => Promise<A>) =>
-  Effect.tryPromise({
-    catch: () => failure("MailboxUnavailable", 503),
-    try: call,
-  });
+const readRetirement = (json: string) =>
+  Schema.decodeEffect(Schema.fromJsonString(Retirement))(json).pipe(
+    Effect.mapError(() => failure("MailboxUnavailable", 503))
+  );
+
+const enumerationRequest = Effect.fn("Issuer.enumerationRequest")(
+  function* enumerationRequest(request: XrpcRequest) {
+    const handlers = yield* IssuerEnumeration;
+
+    if (request.nsid === ListNames.Method.nsid) {
+      return yield* respond(
+        ListNames.Output,
+        Schema.decodeUnknownEffect(ListNames.Params)(request.params ?? {}).pipe(
+          Effect.flatMap(handlers.listNames)
+        )
+      );
+    }
+
+    return yield* respond(
+      ListRetired.Output,
+      Schema.decodeUnknownEffect(ListRetired.Params)(request.params ?? {}).pipe(
+        Effect.flatMap(handlers.listRetired)
+      )
+    );
+  }
+);
 
 export const routeIssuer = (input: {
   readonly request: XrpcRequest;
@@ -43,8 +75,25 @@ export const routeIssuer = (input: {
   readonly mailboxes: IssuerMailboxes;
   readonly store: Layer.Layer<IssuerStore>;
   readonly policy: IssuerPolicy;
+  readonly views?: ProjectionViews;
 }) => {
-  const { request, caller, mailboxes, store, policy } = input;
+  const {
+    request,
+    caller,
+    mailboxes,
+    store,
+    policy,
+    views = projectionViews(),
+  } = input;
+
+  if (
+    request.nsid === ListNames.Method.nsid ||
+    request.nsid === ListRetired.Method.nsid
+  ) {
+    return enumerationRequest(request).pipe(
+      Effect.provide(enumeration(views).pipe(Layer.provide(store)))
+    );
+  }
 
   const registry = Layer.succeed(
     DocumentRegistry,
@@ -53,23 +102,21 @@ export const routeIssuer = (input: {
         document: PublicDocument
       ) {
         if (document.id === trafficDid) {
-          return yield* Effect.fail(failure("Forbidden", 403));
+          return yield* failure("Forbidden", 403);
         }
 
-        const outcome = yield* Effect.tryPromise({
-          catch: () => failure("MailboxUnavailable", 503),
-          try: () =>
-            mailboxes
-              .getByName(document.id)
-              .storeDocument(JSON.stringify(document)),
-        });
+        const outcome = yield* mailboxCall(() =>
+          mailboxes
+            .getByName(document.id)
+            .storeDocument(JSON.stringify(document))
+        );
 
         if (outcome === "DocumentConflict") {
-          return yield* Effect.fail(failure("DocumentConflict", 409));
+          return yield* failure("DocumentConflict", 409);
         }
 
         if (outcome !== "stored") {
-          return yield* Effect.fail(failure("MailboxUnavailable", 503));
+          return yield* failure("MailboxUnavailable", 503);
         }
 
         return yield* Effect.void;
@@ -77,120 +124,69 @@ export const routeIssuer = (input: {
     })
   );
 
-  const retirements = Layer.succeed(
-    RetirementRegistry,
-    RetirementRegistry.of({
-      clear: (did) => mailboxCall(() => mailboxes.getByName(did).unretire()),
-      current: Effect.fn("RetirementRegistry.current")(function* current(
-        did: string
-      ) {
+  const named = Layer.succeed(
+    NamedCell,
+    NamedCell.of({
+      clear: (did, name, expected) =>
+        runNameTicket(
+          mailboxes,
+          did,
+          NameCommand.cases.Clear.make({ name }),
+          expected
+        ).pipe(
+          Effect.map(({ cleared }) => cleared),
+          Effect.provide(store)
+        ),
+      current: Effect.fn("NamedCell.current")(function* current(did) {
         const json = yield* mailboxCall(() =>
           mailboxes.getByName(did).retirement()
         );
 
-        return json === undefined
-          ? undefined
-          : yield* Schema.decodeUnknownEffect(
-              Schema.fromJsonString(Retirement)
-            )(json).pipe(
-              Effect.mapError(() => failure("MailboxUnavailable", 503))
-            );
+        return json === undefined ? undefined : yield* readRetirement(json);
       }),
-      presence: Effect.fn("RetirementRegistry.presence")(function* presence(
-        did: string
-      ) {
-        const standing = yield* mailboxCall(() =>
+      presence: Effect.fn("NamedCell.presence")(function* presence(did) {
+        const { retirement, ...standing } = yield* mailboxCall(() =>
           mailboxes.getByName(did).standing()
         );
 
-        return standing.retirement === undefined
-          ? {
-              exists: standing.exists,
-              leaseExpiresAt: standing.leaseExpiresAt,
-            }
-          : {
-              exists: standing.exists,
-              leaseExpiresAt: standing.leaseExpiresAt,
-              retirement: yield* Schema.decodeUnknownEffect(
-                Schema.fromJsonString(Retirement)
-              )(standing.retirement).pipe(
-                Effect.mapError(() => failure("MailboxUnavailable", 503))
-              ),
-            };
+        return retirement === undefined
+          ? standing
+          : { ...standing, retirement: yield* readRetirement(retirement) };
       }),
-      repoint: Effect.fn("RetirementRegistry.repoint")(function* repoint(
-        did: string,
-        successor: string,
-        updatedAt: number
-      ) {
-        const json = yield* mailboxCall(() =>
-          mailboxes.getByName(did).repoint(successor, updatedAt)
-        );
+      repoint: Effect.fn("NamedCell.repoint")(
+        function* repoint(did, successor, updatedAt) {
+          const { state } = yield* runNameTicket(
+            mailboxes,
+            did,
+            NameCommand.cases.Repoint.make({ successor, updatedAt })
+          ).pipe(Effect.provide(store));
 
-        const refusal = Schema.decodeUnknownOption(
-          Schema.fromJsonString(Schema.Struct({ error: Schema.String }))
-        )(json);
-
-        if (Option.isSome(refusal)) {
-          return yield* refusal.value.error === "NotRetired"
-            ? failure("NotRetired", 409)
-            : failure("MailboxUnavailable", 503);
-        }
-
-        return yield* Schema.decodeUnknownEffect(
-          Schema.fromJsonString(Retirement)
-        )(json).pipe(Effect.mapError(() => failure("MailboxUnavailable", 503)));
-      }),
-      retire: Effect.fn("RetirementRegistry.retire")(
-        function* retire(did, retirement, holderMayRetire) {
-          if (did === trafficDid) {
-            return yield* Effect.fail(failure("Forbidden", 403));
-          }
-
-          const outcome = yield* mailboxCall(() =>
-            mailboxes
-              .getByName(did)
-              .retire(
-                Schema.encodeSync(Schema.fromJsonString(Retirement))(
-                  retirement
-                ),
-                holderMayRetire
-              )
+          return (
+            state.retirement ?? (yield* failure("MailboxUnavailable", 503))
           );
-
-          if (outcome === "NameNotFound") {
-            return yield* Effect.fail(failure("NameNotFound", 404));
-          }
-
-          const leaseLive = Schema.decodeUnknownOption(
-            Schema.fromJsonString(
-              Schema.Struct({
-                error: Schema.Literal("LeaseLive"),
-                message: Schema.String,
-              })
-            )
-          )(outcome);
-
-          if (Option.isSome(leaseLive)) {
-            return yield* failure("LeaseLive", 409, leaseLive.value.message);
-          }
-
-          if (outcome !== "retired") {
-            return yield* Effect.fail(failure("MailboxUnavailable", 503));
-          }
-
-          return yield* Effect.void;
         }
       ),
+      retire: (did, retirement, holderMayRetire, expected) =>
+        did === trafficDid
+          ? Effect.fail(failure("Forbidden", 403))
+          : runNameTicket(
+              mailboxes,
+              did,
+              NameCommand.cases.Retire.make({ holderMayRetire, retirement }),
+              expected
+            ).pipe(
+              Effect.map(({ state }) => state.version),
+              Effect.provide(store)
+            ),
     })
   );
 
   return issuerRoute(request).pipe(
     Effect.provide(
-      issuerHandlers(policy).pipe(
+      issuerHandlers(policy, views).pipe(
         Layer.provide(store),
         Layer.provide(registry),
-        Layer.provide(retirements),
+        Layer.provide(named),
         Layer.provide(Layer.succeed(Caller, { did: caller }))
       )
     )

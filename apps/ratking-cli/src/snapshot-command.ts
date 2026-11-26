@@ -15,6 +15,7 @@ interface PageParams {
   all?: boolean;
   cursor?: string;
   limit: number;
+  snapshot: boolean;
 }
 
 const page = Effect.fn("Snapshot.page")(function* page<S extends Schema.Top>(
@@ -24,6 +25,7 @@ const page = Effect.fn("Snapshot.page")(function* page<S extends Schema.Top>(
 ) {
   const params: PageParams = {
     limit: 100,
+    snapshot: true,
   };
 
   if (nsid === Names.Method.nsid) {

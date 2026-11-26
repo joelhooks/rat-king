@@ -39,6 +39,12 @@ import { attentionMethods, attentionRequest } from "./attention-http.ts";
 import { authenticate, authenticateClaims, DidResolver } from "./auth.ts";
 import type { Bindings } from "./bindings.ts";
 import {
+  ackNameState,
+  applyNameTicket,
+  pendingNameState,
+  standingState,
+} from "./cell-name-state.ts";
+import {
   DelegatedCopy,
   DelegationTransport,
   acceptDelegated,
@@ -51,6 +57,7 @@ import {
   documentsLayer,
   didAllowlist,
   peerDocument,
+  configuredDocuments,
 } from "./documents.ts";
 import {
   logFailure,
@@ -75,6 +82,8 @@ import {
 } from "./mailbox.ts";
 import { nameHealthReaders, nameHealthRequest } from "./name-health-http.ts";
 import { nameHealth } from "./name-health.ts";
+import { seedNameStateNsid } from "./name-state-seed.ts";
+import { NameState, Ticket, TicketReply } from "./name-state.ts";
 import { replayLayer } from "./replay.ts";
 import { confirmResolution } from "./resolution.ts";
 import {
@@ -264,9 +273,41 @@ export class Mailbox extends DurableObject<Bindings> {
       recipient,
       (events, lease) => {
         this.committed(events, lease);
+
+        if (
+          env.ISSUER !== undefined &&
+          recipient !== trafficDid &&
+          pendingNameState(this.sql) !== undefined
+        ) {
+          ctx.waitUntil(Effect.runPromise(this.flushNameState()));
+        }
       },
       armTraffic(this.ctx),
-      env.DELEGATION === "true"
+      env.DELEGATION === "true",
+      {
+        transaction: (operation, staged) =>
+          ctx.storage.transaction((tx) =>
+            Effect.runPromise(
+              Effect.gen(function* standingCommit() {
+                const result = operation();
+
+                if (
+                  staged() &&
+                  env.ISSUER !== undefined &&
+                  recipient !== trafficDid
+                ) {
+                  const alarm = yield* Effect.promise(() => tx.getAlarm());
+                  const now = yield* Clock.currentTimeMillis;
+                  yield* Effect.promise(() =>
+                    tx.setAlarm(Math.min(alarm ?? Infinity, now + 1000))
+                  );
+                }
+
+                return result;
+              })
+            )
+          ),
+      }
     );
   }
   recordTraffic(json: string) {
@@ -747,6 +788,69 @@ export class Mailbox extends DurableObject<Bindings> {
       }).pipe(Effect.provide(this.store))
     );
   }
+  private flushNameState() {
+    const { env, sql } = this;
+    const issuers = env.ISSUER;
+
+    return Effect.gen(function* flushNameState() {
+      const pending = yield* storageOperation(() => pendingNameState(sql));
+
+      if (pending === undefined || issuers === undefined) {
+        return;
+      }
+
+      const json = yield* Schema.encodeEffect(Schema.fromJsonString(NameState))(
+        pending
+      ).pipe(Effect.mapError(() => failure("MailboxUnavailable", 503)));
+
+      const ack = yield* Effect.tryPromise({
+        catch: () => failure("MailboxUnavailable", 503),
+        try: () => issuers.getByName(issuerInstance).observeStanding(json),
+      });
+
+      if (ack === pending.version) {
+        yield* storageOperation(() => {
+          ackNameState(sql, ack);
+        });
+      }
+    }).pipe(
+      Effect.tapError(() => Effect.logWarning("Standing outbox retry pending")),
+      Effect.ignore
+    );
+  }
+
+  standingRevision() {
+    return Effect.runPromise(
+      MailboxStore.use((store) =>
+        store.transaction((tx) =>
+          Schema.encodeSync(Schema.fromJsonString(NameState))(
+            standingState(this.sql, tx)
+          )
+        )
+      ).pipe(Effect.provide(this.store))
+    );
+  }
+
+  applyStandingTicket(json: string) {
+    const ticket = Schema.decodeSync(Schema.fromJsonString(Ticket))(json);
+    const { sql, env } = this;
+
+    return Effect.runPromise(
+      Effect.gen(function* applyStandingTicket() {
+        const store = yield* MailboxStore;
+        const now = yield* Clock.currentTimeMillis;
+
+        const reply = yield* store.standingTransaction(now, (tx, stage) =>
+          applyNameTicket(sql, tx, ticket, configuredDocuments(env), now, stage)
+        );
+
+        return yield* Schema.encodeEffect(Schema.fromJsonString(TicketReply))(
+          reply
+        );
+      }).pipe(Effect.provide(this.store))
+    );
+  }
+
   retire(json: string, holderMayRetire: boolean) {
     const retirement = Schema.decodeSync(Schema.fromJsonString(Retirement))(
       json
@@ -758,11 +862,14 @@ export class Mailbox extends DurableObject<Bindings> {
 
     return Effect.runPromise(
       MailboxStore.use((store) =>
-        store.transaction((tx) => {
-          markRetired(tx, staticDocuments, retirement, holderMayRetire);
+        store.standingTransaction(
+          Effect.runSync(Clock.currentTimeMillis),
+          (tx) => {
+            markRetired(tx, staticDocuments, retirement, holderMayRetire);
 
-          return "retired";
-        })
+            return "retired";
+          }
+        )
       ).pipe(
         Effect.catchTag("XrpcFailure", (error) =>
           Effect.succeed(
@@ -778,10 +885,12 @@ export class Mailbox extends DurableObject<Bindings> {
   repoint(successor: string, updatedAt: number) {
     return Effect.runPromise(
       MailboxStore.use((store) =>
-        store.transaction((tx) =>
-          Schema.encodeSync(Schema.fromJsonString(Retirement))(
-            repointRetirement(tx, successor, updatedAt)
-          )
+        store.standingTransaction(
+          Effect.runSync(Clock.currentTimeMillis),
+          (tx) =>
+            Schema.encodeSync(Schema.fromJsonString(Retirement))(
+              repointRetirement(tx, successor, updatedAt)
+            )
         )
       ).pipe(
         Effect.catchTag("XrpcFailure", (error) =>
@@ -794,12 +903,15 @@ export class Mailbox extends DurableObject<Bindings> {
   unretire() {
     return Effect.runPromise(
       MailboxStore.use((store) =>
-        store.transaction((tx) => {
-          const cleared = tx.retirement() !== undefined;
-          tx.setRetirement(undefined);
+        store.standingTransaction(
+          Effect.runSync(Clock.currentTimeMillis),
+          (tx) => {
+            const cleared = tx.retirement() !== undefined;
+            tx.setRetirement(undefined);
 
-          return cleared;
-        })
+            return cleared;
+          }
+        )
       ).pipe(Effect.provide(this.store))
     );
   }
@@ -835,6 +947,7 @@ export class Mailbox extends DurableObject<Bindings> {
                 : Schema.encodeSync(Schema.fromJsonString(Retirement))(
                     retirement
                   ),
+            version: standingState(this.sql, tx).version,
           };
         })
       ).pipe(Effect.provide(this.store))
@@ -1214,7 +1327,8 @@ export class Mailbox extends DurableObject<Bindings> {
     }
 
     return Effect.runPromise(
-      flushTraffic(this.sql, this.env).pipe(
+      this.flushNameState().pipe(
+        Effect.andThen(flushTraffic(this.sql, this.env)),
         Effect.andThen(
           this.hasPendingDelegations()
             ? flushDelegations.pipe(
@@ -1255,7 +1369,12 @@ export class Mailbox extends DurableObject<Bindings> {
       }
     }
 
-    if (pendingTraffic(this.sql).length > 0 || this.hasPendingDelegations()) {
+    if (
+      pendingTraffic(this.sql).length > 0 ||
+      this.hasPendingDelegations() ||
+      (this.env.ISSUER !== undefined &&
+        pendingNameState(this.sql) !== undefined)
+    ) {
       deadline = Math.min(
         deadline,
         Effect.runSync(Clock.currentTimeMillis) + 1000
@@ -1290,8 +1409,8 @@ const methods = new Set<string>(
     ...deskMethods,
     ...deviceMethods,
     ...inboxMethods,
-  ].map((method) => method.nsid)
-);
+  ].map<string>((method) => method.nsid)
+).add(seedNameStateNsid);
 
 const issuerQuery = (
   nsid: string,
@@ -1618,6 +1737,84 @@ const serviceRequest = (
   });
 };
 
+const directoryAuthMethods = new Set([
+  ListNames.Method.nsid,
+  ListRetired.Method.nsid,
+  seedNameStateNsid,
+]);
+
+const seedStanding = Effect.fn("Issuer.seedStanding")(function* seedStanding(
+  request: Request,
+  env: Bindings,
+  issuer: string
+) {
+  if (
+    request.method !== "POST" ||
+    !didAllowlist(env.OPERATOR_DIDS).includes(issuer)
+  ) {
+    return yield* failure("Forbidden", 403);
+  }
+
+  const issuers = env.ISSUER;
+
+  if (issuers === undefined) {
+    return yield* failure("MailboxUnavailable", 503);
+  }
+
+  const body = yield* Effect.tryPromise({
+    catch: () => failure("InvalidRequest"),
+    try: () => request.text(),
+  });
+
+  if (body.length > 512_000) {
+    return yield* failure("InvalidRequest");
+  }
+
+  const { status } = yield* Effect.tryPromise({
+    catch: () => failure("MailboxUnavailable", 503),
+    try: () => issuers.getByName(issuerInstance).seedNameState(body, issuer),
+  });
+
+  return Response.json(
+    status === 200 ? { ok: true } : { error: "SeedRefused" },
+    { status }
+  );
+});
+
+const cacheDirectoryDocument = Effect.fn("Issuer.cacheDirectoryDocument")(
+  function* cacheDirectoryDocument(
+    nsid: string,
+    response: { readonly status: number },
+    env: Bindings,
+    transport: XrpcRequest
+  ) {
+    const issuers = env.ISSUER;
+
+    if (
+      nsid !== PutDocument.Method.nsid ||
+      response.status !== 200 ||
+      issuers === undefined
+    ) {
+      return;
+    }
+
+    const { document } = yield* Schema.decodeUnknownEffect(PutDocument.Input)(
+      transport.input
+    ).pipe(Effect.mapError(() => failure("InvalidRequest")));
+
+    yield* Effect.tryPromise({
+      catch: () => failure("MailboxUnavailable", 503),
+      try: () =>
+        issuers
+          .getByName(issuerInstance)
+          .cacheDirectoryDocument(JSON.stringify(document)),
+    });
+  }
+);
+
+const knownXrpc = (path: string, nsid: string) =>
+  path.startsWith("/xrpc/") && methods.has(nsid);
+
 const handleRequest = (
   request: Request,
   env: Bindings,
@@ -1653,33 +1850,7 @@ const handleRequest = (
       });
     }
 
-    const procedures = [
-      Send.Method,
-      Ack.Method,
-      Deliver.Method,
-      Acquire.Method,
-      Renew.Method,
-      Release.Method,
-      PutDocument.Method,
-    ];
-
-    if (
-      !url.pathname.startsWith("/xrpc/") ||
-      ![
-        ...procedures,
-        List.Method,
-        NameHealth.Method,
-        Traffic.Method,
-        Resolve.Method,
-        Peer.Method,
-        Presence.Method,
-        ...attentionMethods,
-        ...issuerMethods,
-        ...deskMethods,
-        ...deviceMethods,
-        ...inboxMethods,
-      ].some((method) => method.nsid === nsid)
-    ) {
+    if (!knownXrpc(url.pathname, nsid)) {
       return Response.json({ error: "InvalidRequest" }, { status: 404 });
     }
 
@@ -1688,7 +1859,18 @@ const handleRequest = (
       authorization: request.headers.get("authorization"),
       now: yield* Clock.currentTimeMillis,
       nsid,
-    }).pipe(Effect.provide(Layer.merge(documentsLayer(env), replayLayer(env))));
+    }).pipe(
+      Effect.provide(
+        Layer.merge(
+          documentsLayer(env, directoryAuthMethods.has(nsid)),
+          replayLayer(env)
+        )
+      )
+    );
+
+    if (nsid === seedNameStateNsid) {
+      return yield* seedStanding(request, env, issuer);
+    }
 
     if (nsid === Peer.Method.nsid) {
       if (request.method !== "GET") {
@@ -1847,6 +2029,8 @@ const handleRequest = (
       scope.seq = response.seq;
     }
 
+    yield* cacheDirectoryDocument(nsid, response, env, transport);
+
     if (nsid === Send.Method.nsid && response.status === 200) {
       yield* wakeHosted(env, recipient, response.body, context).pipe(
         Effect.ignore
@@ -1873,6 +2057,15 @@ export const fetchRequest = (
 export default {
   fetch: (request: Request, env: Bindings, context?: ExecutionContext) =>
     Effect.runPromise(fetchRequest(request, env, context)),
+  scheduled: (
+    _controller: ScheduledController,
+    env: Bindings,
+    context: ExecutionContext
+  ) => {
+    if (env.ISSUER !== undefined) {
+      context.waitUntil(env.ISSUER.getByName(issuerInstance).drainTickets());
+    }
+  },
 };
 
 export { AuthTokens } from "./auth-tokens.ts";

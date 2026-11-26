@@ -37,7 +37,7 @@ Digest requires both collectors to succeed and records the local route, fallback
 
 Use `ratking snapshot --out <new-directory>` for a complete inventory. With the configured operator document, it reads the issuer index without waking Mailbox cells. The retirement list reflects that index, not live cell state. A lease reacquire can leave an indexed retirement visible until named recipient resolution or explicit unretire clears it. Backfilled rows retain their indexed values, and older rows may lack the optional `updatedAt` until their next issuer retirement write.
 
-Live and idle name filters inspect Mailbox leases. The issuer allows 500 reads per caller DID in any rolling ten minutes, including operator DIDs. It reserves each batch before touching the cells, so overlapping requests share the same allowance. A page that cannot finish within the budget returns `ScanBudgetSpent` (HTTP 429), not a partial page. Use a snapshot for inventory or resolve one named row. Plain inventory, retired-only lists and named resolution do not spend this budget.
+Name, retirement and snapshot enumeration do not open Mailbox cells. An enabled standing view classifies projected leases at read time; unseeded or conflicting names are `unknown`. The degraded view reads only the issuer index and cannot classify live or idle. Follow [the standing projection runbook](../../apps/mailbox/NAME-STATE.md) to seed, qualify and cut over each view.
 
 ## Script sends
 
