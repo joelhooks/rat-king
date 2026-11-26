@@ -30,7 +30,7 @@ import { Transport } from "@rat-king/lexicon/transport";
 import { PublicKey } from "@rat-king/lexicon/trust";
 import { signatures } from "@rat-king/lexicon/webcrypto";
 import { Clock, Context, Effect, Layer, Option, Schema } from "effect";
-import type { Stream } from "effect";
+import type { Duration, Stream } from "effect";
 import type { HttpClient } from "effect/http";
 
 import { attentionClient } from "./attention.ts";
@@ -377,7 +377,8 @@ export class RatKingMailbox extends Context.Service<
     readonly watch: (
       afterSeq: number,
       fence: LeaseFence,
-      onRetry?: (error: MailboxClientError) => Effect.Effect<void>
+      onRetry?: (error: MailboxClientError) => Effect.Effect<void>,
+      idlePollInterval?: Duration.Input
     ) => Stream.Stream<Batch, MailboxClientError>;
     readonly open: (
       envelope: Defs.EncryptedEnvelopeValue,
@@ -727,8 +728,8 @@ export const layer = (
               Effect.mapError(clientError)
             )
         ),
-        watch: (afterSeq, fence, onRetry) =>
-          watch(config, poll, afterSeq, fence, onRetry),
+        watch: (afterSeq, fence, onRetry, idlePollInterval) =>
+          watch(config, poll, afterSeq, fence, onRetry, idlePollInterval),
       });
     })
   ).pipe(

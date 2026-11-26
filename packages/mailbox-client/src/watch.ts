@@ -59,7 +59,8 @@ export const watch = (
   poll: (afterSeq: number) => Effect.Effect<Batch, MailboxClientError>,
   afterSeq: number,
   fence: LeaseFence,
-  onRetry?: (error: MailboxClientError) => Effect.Effect<void>
+  onRetry?: (error: MailboxClientError) => Effect.Effect<void>,
+  idlePollInterval?: Duration.Input
 ): Stream.Stream<Batch, MailboxClientError> =>
   Stream.suspend(() => {
     let checkpoint = afterSeq;
@@ -160,12 +161,22 @@ export const watch = (
           }
         });
 
-        yield* receiveNotice;
+        const waitForNoticeOrReconcile =
+          idlePollInterval === undefined
+            ? receiveNotice
+            : receiveNotice.pipe(
+                Effect.timeoutOption(idlePollInterval),
+                Effect.asVoid
+              );
+
+        yield* waitForNoticeOrReconcile;
 
         let catchUp = true;
 
         return Stream.fromEffectRepeat(
-          Effect.suspend(() => (catchUp ? Effect.void : receiveNotice)).pipe(
+          Effect.suspend(() =>
+            catchUp ? Effect.void : waitForNoticeOrReconcile
+          ).pipe(
             Effect.flatMap(() => poll(checkpoint)),
             Effect.tap((batch) =>
               Effect.sync(() => {

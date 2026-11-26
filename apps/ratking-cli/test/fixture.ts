@@ -1,5 +1,6 @@
 import * as Defs from "@rat-king/lexicon/defs";
 import * as List from "@rat-king/lexicon/mailbox.list";
+import * as Renew from "@rat-king/lexicon/runtime.renewLease";
 import { ownIdentity, prepare } from "@rat-king/mailbox-client";
 import { PayloadJson } from "@rat-king/ratking-client/payload";
 import type { PayloadValue } from "@rat-king/ratking-client/payload";
@@ -239,6 +240,27 @@ export const fakeMailbox = (
       return { body: { lease }, status: 200 };
     });
 
+  const renewal = (text: string, now: number) =>
+    Effect.gen(function* renew() {
+      const input = yield* Schema.decodeUnknownEffect(
+        Schema.fromJsonString(Renew.Input)
+      )(text);
+
+      if (
+        lease === undefined ||
+        Date.parse(lease.expiresAt) <= now ||
+        lease.leaseId !== input.leaseId ||
+        lease.generation !== input.generation ||
+        lease.did !== input.did
+      ) {
+        return { body: { error: "LeaseMismatch" }, status: 409 };
+      }
+
+      lease = { ...lease, expiresAt: input.expiresAt };
+
+      return { body: { lease }, status: 200 };
+    });
+
   const settlement = (text: string, state: string) =>
     Effect.gen(function* settle() {
       const input = yield* Schema.decodeUnknownEffect(
@@ -328,6 +350,10 @@ export const fakeMailbox = (
 
       if (nsid.endsWith(".acquireLease")) {
         return yield* acquisition(text, now);
+      }
+
+      if (nsid.endsWith(".renewLease")) {
+        return yield* renewal(text, now);
       }
 
       if (nsid.endsWith(".releaseLease")) {
@@ -436,31 +462,46 @@ export const captured = (
   };
 };
 
-export const socketLayer = Layer.succeed(WebSocketPort, {
-  connect: () => {
-    const target = new EventTarget();
+export const mailboxSocket = (announce = () => true) => {
+  let active: EventTarget | undefined;
 
-    return {
-      addEventListener: (type, listener, options) => {
-        target.addEventListener(type, listener, options);
-      },
-      close: () => {
-        target.dispatchEvent(new Event("close"));
-      },
-      readyState: 1,
-      removeEventListener: (type, listener) => {
-        target.removeEventListener(type, listener);
-      },
-      send: () => {
-        queueMicrotask(() => {
-          target.dispatchEvent(
-            new MessageEvent("message", { data: JSON.stringify({ seq: 1 }) })
-          );
-        });
-      },
-    };
-  },
-});
+  const notify = () => {
+    active?.dispatchEvent(
+      new MessageEvent("message", { data: JSON.stringify({ seq: 1 }) })
+    );
+  };
+
+  const layer = Layer.succeed(WebSocketPort, {
+    connect: () => {
+      const target = new EventTarget();
+      active = target;
+
+      return {
+        addEventListener: (type, listener, options) => {
+          target.addEventListener(type, listener, options);
+        },
+        close: () => {
+          target.dispatchEvent(new Event("close"));
+        },
+        readyState: 1,
+        removeEventListener: (type, listener) => {
+          target.removeEventListener(type, listener);
+        },
+        send: () => {
+          if (announce()) {
+            queueMicrotask(notify);
+          }
+        },
+      };
+    },
+  });
+
+  return { layer, notify };
+};
+
+export const socketLayer = Layer.unwrap(
+  Effect.sync(() => mailboxSocket().layer)
+);
 
 export const SECRET = "rat_king_fleet_agent_tester_identity";
 

@@ -33,7 +33,9 @@ There are no relay, attention-write, filter-write, directory-dump or retirement 
 
 ## Leased citizen reader
 
-The [Antigravity plugin](../../plugins/antigravity-ratking/README.md) uses the same tools through a dedicated host socket. In this mode `inbox` returns the current ordered batch, `ack` settles only its handled prefix under the existing lease, and `wake` reports an opaque batch token without acknowledging. The ordinary stdio entrypoint keeps its short-lease behavior.
+The [Antigravity plugin](../../plugins/antigravity-ratking/README.md) uses the same tools through a dedicated host socket. In this mode `inbox` returns the current ordered batch, and `ack` settles only its handled prefix under the existing lease. The citizen reader checks for missed subscription notices after 30 seconds of socket silence. The ordinary stdio entrypoint keeps its short-lease behavior.
+
+`wake` changes no mail state. `wakeFingerprint` is the lowercase SHA-256 of the compact JSON array of wake-worthy IDs in the current `inbox` window, in order, or `null` when none are visible. Quiet mail and CCs do not contribute. Compare it with the last dispatched fingerprint; do not fall back to legacy `batch` and `wakes` unless `wakeFingerprint` is absent.
 
 ## Checks
 
