@@ -33,6 +33,12 @@ The read-only Python collector emits route receipts and one frame per recent qua
 
 Digest requires both collectors to succeed and records the local route, fallback, loss and quarantine counts. Done-bar checks losses on both hosts. A failed measurement does not append a successful digest.
 
+## Directory inventory and lease scans
+
+Use `ratking snapshot --out <new-directory>` for a complete inventory. With the configured operator document, it reads the issuer index without waking Mailbox cells. The retirement list reflects that index, not live cell state. A lease reacquire can leave an indexed retirement visible until named recipient resolution or explicit unretire clears it. Backfilled rows retain their indexed values, and older rows may lack the optional `updatedAt` until their next issuer retirement write.
+
+Live and idle name filters inspect Mailbox leases. The issuer allows 500 reads per caller DID in any rolling ten minutes, including operator DIDs. It reserves each batch before touching the cells, so overlapping requests share the same allowance. A page that cannot finish within the budget returns `ScanBudgetSpent` (HTTP 429), not a partial page. Use a snapshot for inventory or resolve one named row. Plain inventory, retired-only lists and named resolution do not spend this budget.
+
 ## Script sends
 
 Cron jobs and launchd monitors send through a dedicated **send-only identity**, for example `acme/alert-cron`. It is never a desk's name. `send` never claims a name, starts a reader or takes a lease; it leases the identity key for one minute, signs, sends and exits.

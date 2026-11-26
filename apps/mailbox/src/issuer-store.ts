@@ -29,6 +29,11 @@ export interface RoleEntry {
 }
 
 export interface IssuerTransaction {
+  readonly spendScanReads: (
+    caller: string,
+    now: number,
+    reads: number
+  ) => boolean;
   readonly enrolled: (host: string) => boolean;
   readonly enroll: (host: string) => void;
   readonly binding: (name: string) => Binding | undefined;
@@ -93,7 +98,32 @@ const RetiredRow = Schema.Struct({
   name: Schema.String,
   retiredAt: Schema.Int,
   successor: Schema.String,
+  updatedAt: Schema.NullOr(Schema.Int),
 });
+
+const projectRetired = ({
+  successor,
+  updatedAt,
+  ...row
+}: typeof RetiredRow.Type): RetiredName => {
+  if (successor !== "") {
+    Object.assign(row, { successor });
+  }
+
+  if (updatedAt !== null) {
+    Object.assign(row, { updatedAt });
+  }
+
+  return row;
+};
+
+const scanReadLimit = 500;
+
+const scanWindowMillis = 10 * 60 * 1000;
+
+const ScanTotal = Schema.Struct({ reads: Schema.Int });
+
+const TableColumn = Schema.Struct({ name: Schema.String });
 
 export const issuerStore = (sql: Sql) => {
   sql.exec("CREATE TABLE IF NOT EXISTS hosts (did TEXT PRIMARY KEY)");
@@ -104,11 +134,24 @@ export const issuerStore = (sql: Sql) => {
     "CREATE TABLE IF NOT EXISTS name_parents (name TEXT PRIMARY KEY, parent TEXT NOT NULL)"
   );
   sql.exec(
-    "CREATE TABLE IF NOT EXISTS retired (name TEXT PRIMARY KEY, did TEXT NOT NULL, retired_at INTEGER NOT NULL, successor TEXT NOT NULL, by TEXT NOT NULL)"
+    "CREATE TABLE IF NOT EXISTS retired (name TEXT PRIMARY KEY, did TEXT NOT NULL, retired_at INTEGER NOT NULL, successor TEXT NOT NULL, by TEXT NOT NULL, updated_at INTEGER)"
   );
+  sql.transaction(() => {
+    const columns = Array.from(sql.exec("PRAGMA table_info(retired)"), (row) =>
+      Schema.decodeUnknownSync(TableColumn)(row)
+    );
+
+    if (!columns.some(({ name }) => name === "updated_at")) {
+      sql.exec("ALTER TABLE retired ADD COLUMN updated_at INTEGER");
+    }
+  });
   sql.exec(
     "CREATE TABLE IF NOT EXISTS roles (name TEXT PRIMARY KEY, target TEXT NOT NULL, role TEXT NOT NULL)"
   );
+  sql.exec(
+    "CREATE TABLE IF NOT EXISTS scan_reads (caller TEXT NOT NULL, at INTEGER NOT NULL, reads INTEGER NOT NULL, PRIMARY KEY(caller, at))"
+  );
+  sql.exec("CREATE INDEX IF NOT EXISTS scan_reads_expiry ON scan_reads (at)");
 
   const transaction: IssuerTransaction = {
     bind: (name, binding, document, parent) => {
@@ -186,40 +229,31 @@ export const issuerStore = (sql: Sql) => {
       ).at(0),
     retire: (retired) => {
       sql.exec(
-        "INSERT INTO retired (name,did,retired_at,successor,by) VALUES (?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET did=excluded.did, retired_at=excluded.retired_at, successor=excluded.successor, by=excluded.by",
+        "INSERT INTO retired (name,did,retired_at,successor,by,updated_at) VALUES (?,?,?,?,?,NULLIF(?,'')) ON CONFLICT(name) DO UPDATE SET did=excluded.did, retired_at=excluded.retired_at, successor=excluded.successor, by=excluded.by, updated_at=excluded.updated_at",
         retired.name,
         retired.did,
         retired.retiredAt,
         retired.successor ?? "",
-        retired.by
+        retired.by,
+        retired.updatedAt ?? ""
       );
     },
     retired: (after, limit) =>
       Array.from(
         sql.exec(
-          "SELECT name,did,retired_at AS retiredAt,successor,by FROM retired WHERE name > ? ORDER BY name ASC LIMIT ?",
+          "SELECT name,did,retired_at AS retiredAt,successor,by,updated_at AS updatedAt FROM retired WHERE name > ? ORDER BY name ASC LIMIT ?",
           after,
           limit
         ),
-        (row) => {
-          const { successor, ...decoded } =
-            Schema.decodeUnknownSync(RetiredRow)(row);
-
-          return successor === "" ? decoded : { ...decoded, successor };
-        }
+        (row) => projectRetired(Schema.decodeUnknownSync(RetiredRow)(row))
       ),
     retiredEntry: (name) =>
       Array.from(
         sql.exec(
-          "SELECT name,did,retired_at AS retiredAt,successor,by FROM retired WHERE name=?",
+          "SELECT name,did,retired_at AS retiredAt,successor,by,updated_at AS updatedAt FROM retired WHERE name=?",
           name
         ),
-        (row) => {
-          const { successor, ...decoded } =
-            Schema.decodeUnknownSync(RetiredRow)(row);
-
-          return successor === "" ? decoded : { ...decoded, successor };
-        }
+        (row) => projectRetired(Schema.decodeUnknownSync(RetiredRow)(row))
       ).at(0),
     role: (name) =>
       Array.from(
@@ -242,6 +276,29 @@ export const issuerStore = (sql: Sql) => {
         entry.target,
         entry.role
       );
+    },
+    spendScanReads: (caller, now, reads) => {
+      sql.exec("DELETE FROM scan_reads WHERE at <= ?", now - scanWindowMillis);
+
+      const [total] = sql.exec(
+        "SELECT COALESCE(SUM(reads),0) AS reads FROM scan_reads WHERE caller=?",
+        caller
+      );
+
+      const spent = Schema.decodeUnknownSync(ScanTotal)(total).reads;
+
+      if (spent + reads > scanReadLimit) {
+        return false;
+      }
+
+      sql.exec(
+        "INSERT INTO scan_reads (caller,at,reads) VALUES (?,?,?) ON CONFLICT(caller,at) DO UPDATE SET reads=scan_reads.reads+excluded.reads",
+        caller,
+        now,
+        reads
+      );
+
+      return true;
     },
     unretire: (name, retiredAt) => {
       if (retiredAt === undefined) {

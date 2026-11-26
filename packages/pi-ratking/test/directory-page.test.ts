@@ -1,11 +1,40 @@
 import { it } from "@effect/vitest";
 import * as ListNames from "@rat-king/lexicon/identity.listNames";
+import { IssuerError } from "@rat-king/ratking-client/issuer";
 import { Arbitrary, Effect, Schema } from "effect";
 import { expect } from "vitest";
 
 import { directoryPage } from "../src/directory-page.ts";
 
 const Status = Schema.Literals(["live", "idle", "retired"]);
+
+it.effect.prop(
+  "a refused lease page is surfaced without retrying or following the cursor",
+  [Arbitrary.schema(Schema.Literals(["live", "idle"]))],
+  ([status]) =>
+    Effect.gen(function* refusal() {
+      let calls = 0;
+
+      const refused = new IssuerError({
+        reason:
+          "HTTP 429; ScanBudgetSpent: use ratking snapshot or look up a single named row",
+      });
+
+      const error = yield* directoryPage(
+        {
+          directory: (params) =>
+            Effect.sync(() => {
+              expect(params.cursor).toBe("previous-page");
+              calls += 1;
+            }).pipe(Effect.andThen(Effect.fail(refused))),
+        },
+        { cursor: "previous-page", status }
+      ).pipe(Effect.flip);
+
+      expect(error).toBe(refused);
+      expect(calls).toBe(1);
+    })
+);
 
 it.effect.prop(
   "explicit filters, matches and byte-limited continuation preserve every matching name",

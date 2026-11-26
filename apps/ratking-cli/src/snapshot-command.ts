@@ -136,6 +136,6 @@ export const snapshotCommand = Command.make(
     )
 ).pipe(
   Command.withDescription(
-    "Operator: atomically export complete names, retirements and issuer placements to a new directory."
+    "Operator: atomically export complete names, indexed retirements and issuer placements to a new directory. Reads only the issuer index, not mailbox cells."
   )
 );

@@ -82,6 +82,7 @@ interface Model {
   now: number;
   otherRetired: boolean;
   retired?: { readonly successor?: string; readonly at: number };
+  indexed?: Model["retired"];
   holder?: RuntimeLease.MainValue;
   lastHeldAt?: number;
 }
@@ -156,9 +157,9 @@ const checkModel = async (model: Model, real: Real) => {
       listed.body
     ).retired.map((entry) => [entry.name, entry.did, entry.successor])
   ).toEqual([
-    ...(model.retired === undefined
+    ...(model.indexed === undefined
       ? []
-      : [[name, recipientDid, model.retired.successor]]),
+      : [[name, recipientDid, model.indexed.successor]]),
     ...(model.otherRetired ? [[other, otherDid, undefined]] : []),
   ]);
 
@@ -254,6 +255,7 @@ const retireCommand = async (
   ]);
   model.retired =
     successor === undefined ? { at: model.now } : { at: model.now, successor };
+  model.indexed = model.retired;
 };
 
 const command = (spec: SpecValue): fc.AsyncCommand<Model, Real> => ({
@@ -314,6 +316,7 @@ const command = (spec: SpecValue): fc.AsyncCommand<Model, Real> => ({
           ).cleared
         ).toBe(model.retired !== undefined);
         delete model.retired;
+        delete model.indexed;
         break;
       }
 

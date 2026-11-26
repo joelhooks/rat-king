@@ -465,7 +465,12 @@ export const issuerHandlers = (policy: IssuerPolicy) =>
           return yield* output(Enroll.Output, { did: document.id });
         }),
         listNames: Effect.fn("Issuer.listNames")(function* listNames(params) {
-          const page = yield* namePage(params, retirements.presence, store);
+          const page = yield* namePage(
+            params,
+            retirements.presence,
+            store,
+            caller.did
+          );
 
           const { names: rows } = page;
 
@@ -514,24 +519,7 @@ export const issuerHandlers = (policy: IssuerPolicy) =>
 
             const page = rows.slice(0, limit);
 
-            const retired = yield* Effect.forEach(
-              page,
-              (row) =>
-                Effect.gen(function* validateRetirement() {
-                  const current = yield* retirements.current(row.did);
-
-                  if (current !== undefined) {
-                    return [retiredOutput({ ...current, did: row.did })];
-                  }
-
-                  yield* store.transaction((tx) => {
-                    tx.unretire(row.name, row.retiredAt);
-                  });
-
-                  return [];
-                }),
-              { concurrency: 8 }
-            ).pipe(Effect.map((validated) => validated.flat()));
+            const retired = page.map(retiredOutput);
 
             const last = page.at(-1);
 
