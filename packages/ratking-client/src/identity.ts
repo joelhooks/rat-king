@@ -1,7 +1,8 @@
 /* oxlint-disable typescript/promise-function-async -- Private WebCrypto generation stays on this host. */
 import { cryptoOperation } from "@rat-king/envelope/webcrypto";
 import { Identity, PrivateJwk } from "@rat-king/mailbox-client";
-import type { IdentityValue, PeerDocument } from "@rat-king/mailbox-client";
+import type { PeerDocument } from "@rat-king/mailbox-client";
+import type { RuntimeIdentity } from "@rat-king/mailbox-client/identity";
 import {
   Effect,
   FileSystem,
@@ -13,6 +14,7 @@ import {
 } from "effect";
 
 import { Settings } from "./config.ts";
+import { bindDeskSigner, signerFd } from "./desk-signer-client.ts";
 import {
   Directory,
   readDirectoryEntries,
@@ -92,14 +94,14 @@ const generateKey = Effect.fn("RatKing.generateKey")(function* generateKey(
   );
 });
 
-const publicKey = (key: typeof PrivateJwk.Type) => ({
+const publicKey = (key: RuntimeIdentity["signing"]) => ({
   crv: key.crv,
   kty: key.kty,
   x: key.x,
   y: key.y,
 });
 
-export const publicDocument = (identity: IdentityValue): PeerDocument => ({
+export const publicDocument = (identity: RuntimeIdentity): PeerDocument => ({
   authentication: [`${identity.did}#atproto`],
   id: identity.did,
   keyAgreement: [`${identity.did}#encryption`],
@@ -118,6 +120,25 @@ export const publicDocument = (identity: IdentityValue): PeerDocument => ({
 });
 
 const fail = (reason: string) => new IdentityError({ reason });
+
+export const signerSelection = Effect.fn("RatKing.signerSelection")(
+  function* signerSelection(name: string) {
+    const settings = yield* Settings;
+    const canonical = canonicalName(settings.reserved, name);
+
+    const fd = yield* signerFd.pipe(
+      Effect.mapError(() =>
+        fail("Invalid desk signer descriptor configuration")
+      )
+    );
+
+    return {
+      fd,
+      required:
+        Option.isSome(fd) || settings.signerNames?.includes(canonical) === true,
+    };
+  }
+);
 
 export const claimName = Effect.fn("RatKing.claimName")(function* claimName(
   facts: SessionFacts
@@ -216,6 +237,31 @@ export const ensureIdentity = Effect.fn("RatKing.ensureIdentity")(
     requireExisting?: boolean
   ) {
     const settings = yield* Settings;
+    const selection = yield* signerSelection(name);
+
+    if (selection.required) {
+      if (Option.isNone(selection.fd)) {
+        return yield* fail(
+          "Protected Rat King name requires an inherited desk signer grant"
+        );
+      }
+
+      const canonical = canonicalName(settings.reserved, name);
+
+      const entries = yield* readDirectoryEntries(settings.directory).pipe(
+        Effect.mapError(() => fail("Desk signer directory unavailable"))
+      );
+
+      const did =
+        settings.reserved[canonical]?.did ??
+        entries[canonical]?.did ??
+        didFor(settings.didTemplate, settings.reserved, canonical);
+
+      return yield* bindDeskSigner(selection.fd.value, canonical, did).pipe(
+        Effect.mapError((error) => fail(error.reason))
+      );
+    }
+
     const store = yield* SecretStore;
     const issuer = yield* Issuer;
     const path = yield* Path.Path;

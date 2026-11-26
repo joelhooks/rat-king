@@ -1,0 +1,12 @@
+[Unit]
+Description=Rat King desk signer approved launch profile %i
+
+[Service]
+Type=exec
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/ratking-desk-signer-launch %i
+Restart=no
+UMask=0077
+NoNewPrivileges=yes
+LimitCORE=0
+StandardInput=null
+KillMode=control-group

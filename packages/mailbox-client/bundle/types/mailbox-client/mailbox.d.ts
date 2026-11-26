@@ -11,7 +11,7 @@ import type { HttpClient } from "effect/http";
 import type { AttentionClient } from "./attention.js";
 import { DidResolver } from "./auth.js";
 import { MailboxClientError } from "./error.js";
-import type { IdentityValue } from "./identity.js";
+import type { RuntimeIdentity } from "./identity.js";
 import type { RetryObserver } from "./retry-metrics.js";
 export { Identity, PrivateJwk, importSigning, importAgreement, } from "./identity.js";
 export type { IdentityValue } from "./identity.js";
@@ -25,7 +25,7 @@ export interface ClientConfig {
     readonly onRetryMetric?: RetryObserver;
     readonly endpoint: string;
     readonly serviceDid: string;
-    readonly identity: IdentityValue;
+    readonly identity: RuntimeIdentity;
     readonly documents: readonly Defs.DidDocumentValue[];
 }
 export interface LeaseFence {

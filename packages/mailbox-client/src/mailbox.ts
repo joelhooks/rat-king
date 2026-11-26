@@ -39,8 +39,8 @@ import { DidResolver, staticResolver } from "./auth.ts";
 import * as Deadline from "./deadline.ts";
 import { openDelegated } from "./delegation.ts";
 import { clientError, MailboxClientError } from "./error.ts";
-import { importSigning, importAgreement } from "./identity.ts";
-import type { IdentityValue } from "./identity.ts";
+import { recipientFor, signingFor } from "./identity.ts";
+import type { RuntimeIdentity } from "./identity.ts";
 import { PayloadJson } from "./payload.ts";
 import { lookupPresence, readerCannotRender } from "./record-visibility.ts";
 import type { RetryObserver } from "./retry-metrics.ts";
@@ -113,7 +113,7 @@ export interface ClientConfig {
   readonly onRetryMetric?: RetryObserver;
   readonly endpoint: string;
   readonly serviceDid: string;
-  readonly identity: IdentityValue;
+  readonly identity: RuntimeIdentity;
   readonly documents: readonly Defs.DidDocumentValue[];
 }
 
@@ -289,7 +289,7 @@ const openReceived = Effect.fn("RatKingMailbox.openReceived")(
   function* openReceived(
     envelope: Defs.EncryptedEnvelopeValue,
     receipt: Defs.ReceiptValue | undefined,
-    identity: IdentityValue,
+    identity: RuntimeIdentity,
     resolver: typeof DidResolver.Service
   ) {
     if (receipt?.via !== undefined) {
@@ -318,7 +318,7 @@ const openReceived = Effect.fn("RatKingMailbox.openReceived")(
     return yield* openEnvelope({
       envelope,
       recipientDid: identity.did,
-      recipientKey: yield* importAgreement(identity),
+      recipientKey: yield* recipientFor(identity),
       recipientKeyId: `${identity.did}#encryption`,
       resolveSigningKey,
     });
@@ -700,7 +700,7 @@ export const layer = (
                 "keyAgreement"
               ),
               recipientKeyId: payload.aad.recipientKeyId,
-              signingKey: yield* importSigning(identity),
+              signingKey: yield* signingFor(identity),
               signingKeyId: `${identity.did}#atproto`,
             });
 

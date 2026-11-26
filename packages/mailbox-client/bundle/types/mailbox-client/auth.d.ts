@@ -1,3 +1,4 @@
+import type { Es256Signer } from "../envelope/es256.js";
 import type { XrpcFailure } from "../lexicon/xrpc-failure.js";
 import { Context, Effect, Layer, Schema } from "effect";
 import { ReplayAuthority } from "./replay.js";
@@ -84,4 +85,4 @@ export declare const serviceToken: (claims: {
     readonly iss: string;
     readonly jti: string;
     readonly lxm: string;
-}, key: CryptoKey, kid?: string | undefined) => Effect.Effect<string, import("../envelope/envelope.js").EnvelopeFailure, never>;
+}, key: CryptoKey | Es256Signer, kid?: string | undefined) => Effect.Effect<string, import("../envelope/envelope.js").EnvelopeFailure, never>;

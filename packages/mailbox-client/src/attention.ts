@@ -11,8 +11,8 @@ import { Effect, Schema } from "effect";
 
 import { clientError } from "./error.ts";
 import type { MailboxClientError } from "./error.ts";
-import { importSigning } from "./identity.ts";
-import type { IdentityValue } from "./identity.ts";
+import { signingFor } from "./identity.ts";
+import type { RuntimeIdentity } from "./identity.ts";
 
 export const attentionBytes = (
   did: string,
@@ -38,7 +38,7 @@ export interface AttentionClient {
 
 export const attentionClient = (
   client: MailboxInterface,
-  identity: IdentityValue
+  identity: RuntimeIdentity
 ): AttentionClient => ({
   getPreferences: Effect.fn("AttentionClient.getPreferences")(() =>
     Schema.decodeUnknownEffect(GetPreferences.Params)({
@@ -59,7 +59,7 @@ export const attentionClient = (
   putPreferences: Effect.fn("AttentionClient.putPreferences")(
     function* putPreferences(prefs) {
       const validated = yield* Schema.decodeUnknownEffect(Prefs.Main)(prefs);
-      const key = yield* importSigning(identity);
+      const key = yield* signingFor(identity);
 
       const signature = yield* sign(
         key,
@@ -83,7 +83,7 @@ export const attentionClient = (
     status
   ) {
     const validated = yield* Schema.decodeUnknownEffect(Status.Main)(status);
-    const key = yield* importSigning(identity);
+    const key = yield* signingFor(identity);
 
     const signature = yield* sign(
       key,

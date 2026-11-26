@@ -1,4 +1,5 @@
 /* oxlint-disable typescript/promise-function-async -- Effect adapters require lazy Promise thunks, not callback-style control flow. */
+import type { Es256Signer } from "@rat-king/envelope/es256";
 import { sign, verify } from "@rat-king/envelope/es256";
 import { cryptoOperation } from "@rat-king/envelope/webcrypto";
 import type { XrpcFailure } from "@rat-king/lexicon/xrpc-failure";
@@ -298,7 +299,11 @@ export const authenticateClaims = Effect.fn("ServiceAuth.authenticateClaims")(
 );
 
 export const serviceToken = Effect.fn("ServiceAuth.sign")(
-  function* serviceToken(claims: ClaimsValue, key: CryptoKey, kid?: string) {
+  function* serviceToken(
+    claims: ClaimsValue,
+    key: CryptoKey | Es256Signer,
+    kid?: string
+  ) {
     const header = base64url(
       new TextEncoder().encode(
         JSON.stringify({ alg: "ES256", kid: kid ?? "#atproto", typ: "JWT" })

@@ -21,7 +21,6 @@ import {
 } from "@rat-king/mailbox-client";
 import type {
   ConsumeOptions,
-  IdentityValue,
   LeaseFence,
   MessageMeta,
   OpenedMessage,
@@ -29,6 +28,7 @@ import type {
   SendOutcome,
 } from "@rat-king/mailbox-client";
 import * as Deadline from "@rat-king/mailbox-client/deadline";
+import type { RuntimeIdentity } from "@rat-king/mailbox-client/identity";
 import {
   Cause,
   Clock,
@@ -76,7 +76,12 @@ import { Directory, writePrivateJson } from "./directory.ts";
 import type { Listed, Resolved } from "./directory.ts";
 import { quietAsk, reasonOf } from "./errors.ts";
 import type { QuietAsk } from "./errors.ts";
-import { claimName, ensureIdentity, publicDocument } from "./identity.ts";
+import {
+  claimName,
+  ensureIdentity,
+  publicDocument,
+  signerSelection,
+} from "./identity.ts";
 import type { SessionFacts } from "./identity.ts";
 import { Issuer, IssuerError } from "./issuer.ts";
 import {
@@ -329,7 +334,7 @@ export const AdmissionBackoff = Context.Reference<
 export interface Self {
   readonly name: string;
   readonly did: string;
-  readonly identity: IdentityValue;
+  readonly identity: RuntimeIdentity;
   readonly label?: () => Option.Option<string>;
 }
 
@@ -2040,7 +2045,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     }).pipe(Effect.scoped, Effect.provideService(HttpClient.HttpClient, http))
   );
 
-  const issuerCall = (identity: IdentityValue) => (request: XrpcRequest) =>
+  const issuerCall = (identity: RuntimeIdentity) => (request: XrpcRequest) =>
     Transport.use((transport) => transport.request(request)).pipe(
       Effect.provide(
         transportLayer(
@@ -3197,6 +3202,25 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       return yield* refused("UnknownName")(
         `${requested} is not a valid Rat King name`
       );
+    }
+
+    const selection = yield* signerSelection(name).pipe(
+      Effect.provideService(Settings, settings),
+      Effect.mapError((error) => refused("NoIdentity")(error.reason))
+    );
+
+    if (selection.required) {
+      const identity = yield* ensureIdentity(name, undefined, true).pipe(
+        services,
+        Effect.mapError((error) => refused("NoIdentity")(error.reason))
+      );
+
+      return {
+        did: identity.did,
+        held: true,
+        name,
+        secret: "inherited desk signer grant",
+      } satisfies Located;
     }
 
     const { held, secret } = yield* locateIdentitySecret(name).pipe(
