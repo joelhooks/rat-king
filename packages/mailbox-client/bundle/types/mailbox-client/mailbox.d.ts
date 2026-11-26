@@ -6,7 +6,7 @@ import * as List from "../lexicon/mailbox.list.js";
 import * as Send from "../lexicon/mailbox.send.js";
 import type * as Lease from "../lexicon/runtime.lease.js";
 import { Context, Effect, Layer } from "effect";
-import type { Stream } from "effect";
+import type { Duration, Stream } from "effect";
 import type { HttpClient } from "effect/http";
 import type { AttentionClient } from "./attention.js";
 import { DidResolver } from "./auth.js";
@@ -95,7 +95,7 @@ declare const RatKingMailbox_base: Context.ServiceClass<RatKingMailbox, "@rat-ki
         readonly limit?: number;
     }) => Effect.Effect<List.OutputValue, MailboxClientError>;
     readonly poll: (afterSeq: number) => Effect.Effect<Batch, MailboxClientError>;
-    readonly watch: (afterSeq: number, fence: LeaseFence, onRetry?: (error: MailboxClientError) => Effect.Effect<void>) => Stream.Stream<Batch, MailboxClientError>;
+    readonly watch: (afterSeq: number, fence: LeaseFence, onRetry?: (error: MailboxClientError) => Effect.Effect<void>, idlePollInterval?: Duration.Input) => Stream.Stream<Batch, MailboxClientError>;
     readonly open: (envelope: Defs.EncryptedEnvelopeValue, receipt?: Defs.ReceiptValue) => Effect.Effect<OpenedMessage, MailboxClientError>;
     readonly deliver: (input: FencedMessage) => Effect.Effect<Deliver.OutputValue, MailboxClientError>;
     readonly ack: (input: FencedMessage) => Effect.Effect<Ack.OutputValue, MailboxClientError>;

@@ -116,6 +116,7 @@ export interface ConsumeOptions {
     receipt: AttentionReceipt.MainValue
   ) => Effect.Effect<void>;
   readonly ackOnReturn?: boolean;
+  readonly idlePollInterval?: Duration.Input | undefined;
   readonly harness: Lease.MainValue["harness"];
   readonly renders?: readonly string[];
   readonly resume?: LeaseFence;
@@ -544,7 +545,12 @@ export const consume = <E, R>(
       const handed = handoffHistory();
 
       const intake = Stream.suspend(() =>
-        mailbox.watch(checkpoint, fence(), (error) => retrying(error, true))
+        mailbox.watch(
+          checkpoint,
+          fence(),
+          (error) => retrying(error, true),
+          options.idlePollInterval
+        )
       ).pipe(
         Stream.tap(() => recovered(false)),
         Stream.tapError((error) => retrying(error, true)),

@@ -4166,7 +4166,7 @@ var socketError = (error) => {
   });
 };
 var socketRetry = (observer) => (error) => error.error === "SocketDisconnected" ? observer?.(error) ?? Effect28.void : Effect28.void;
-var watch = (config, poll, afterSeq, fence, onRetry) => Stream.suspend(() => {
+var watch = (config, poll, afterSeq, fence, onRetry, idlePollInterval) => Stream.suspend(() => {
   let checkpoint = afterSeq;
   let connections = 0;
   const connection = Stream.unwrap(
@@ -4241,10 +4241,16 @@ var watch = (config, poll, afterSeq, fence, onRetry) => Stream.suspend(() => {
           ).pipe(Effect28.mapError(clientError));
         }
       });
-      yield* receiveNotice;
+      const waitForNoticeOrReconcile = idlePollInterval === void 0 ? receiveNotice : receiveNotice.pipe(
+        Effect28.timeoutOption(idlePollInterval),
+        Effect28.asVoid
+      );
+      yield* waitForNoticeOrReconcile;
       let catchUp = true;
       return Stream.fromEffectRepeat(
-        Effect28.suspend(() => catchUp ? Effect28.void : receiveNotice).pipe(
+        Effect28.suspend(
+          () => catchUp ? Effect28.void : waitForNoticeOrReconcile
+        ).pipe(
           Effect28.flatMap(() => poll(checkpoint)),
           Effect28.tap(
             (batch) => Effect28.sync(() => {
@@ -4647,7 +4653,7 @@ var layer = (config, resolverLayer = staticResolver(config.documents)) => Layer5
           Effect29.mapError(clientError)
         )
       ),
-      watch: (afterSeq, fence, onRetry) => watch(config, poll, afterSeq, fence, onRetry)
+      watch: (afterSeq, fence, onRetry, idlePollInterval) => watch(config, poll, afterSeq, fence, onRetry, idlePollInterval)
     });
   })
 ).pipe(
@@ -5163,7 +5169,12 @@ var consume = (mailbox, did, handler, options) => Effect31.scoped(
     }).pipe(Effect31.repeat(Schedule3.spaced("0 millis")), Effect31.catch(lost));
     const handed = handoffHistory();
     const intake = Stream2.suspend(
-      () => mailbox.watch(checkpoint, fence(), (error) => retrying(error, true))
+      () => mailbox.watch(
+        checkpoint,
+        fence(),
+        (error) => retrying(error, true),
+        options.idlePollInterval
+      )
     ).pipe(
       Stream2.tap(() => recovered(false)),
       Stream2.tapError((error) => retrying(error, true)),

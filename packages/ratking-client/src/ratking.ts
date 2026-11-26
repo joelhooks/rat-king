@@ -3835,6 +3835,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
             kind: "ratking-mcp",
             sessionId: options.session,
           },
+          idlePollInterval: "30 seconds",
           leaseName: own.name,
           onDrained: () => options.ready,
           onRetry: () => options.retrying,

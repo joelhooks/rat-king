@@ -2,7 +2,7 @@ import * as AttentionReceipt from "../lexicon/attention.receipt.js";
 import * as Defs from "../lexicon/defs.js";
 import type * as Lease from "../lexicon/runtime.lease.js";
 import type { Scope } from "effect";
-import { Effect, Option } from "effect";
+import { Duration, Effect, Option } from "effect";
 import { MailboxClientError } from "./error.js";
 import type { LeaseFence, OpenedMessage, RatKingMailbox } from "./mailbox.js";
 import type { RetryObserver } from "./retry-metrics.js";
@@ -164,6 +164,7 @@ export interface ConsumeOptions {
     readonly onRetryMetric?: RetryObserver;
     readonly onAttentionReceipt?: (receipt: AttentionReceipt.MainValue) => Effect.Effect<void>;
     readonly ackOnReturn?: boolean;
+    readonly idlePollInterval?: Duration.Input | undefined;
     readonly harness: Lease.MainValue["harness"];
     readonly renders?: readonly string[];
     readonly resume?: LeaseFence;

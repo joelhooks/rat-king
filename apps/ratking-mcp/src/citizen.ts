@@ -22,6 +22,10 @@ interface Waiting {
   readonly ack: Effect.Effect<void, NotDelivered>;
 }
 
+const wakeWorthy = ({ item: { received } }: Waiting) =>
+  received.cc !== true &&
+  !("quiet" in received && received.quiet !== undefined);
+
 export const makeCitizen = Effect.fn("RatKingMcp.makeCitizen")(
   function* makeCitizen(name: string) {
     const inbox = yield* Inbox;
@@ -131,11 +135,9 @@ export const makeCitizen = Effect.fn("RatKingMcp.makeCitizen")(
       ready: needLease,
       wake: needLease.pipe(
         Effect.map(() => {
-          const wakes = [...waiting.values()].some(
-            ({ item: { received } }) =>
-              received.cc !== true &&
-              !("quiet" in received && received.quiet !== undefined)
-          );
+          const wakeIds = current()
+            .filter(wakeWorthy)
+            .map(({ item }) => item.received.id);
 
           const first = waiting.values().next().value;
 
@@ -146,7 +148,13 @@ export const makeCitizen = Effect.fn("RatKingMcp.makeCitizen")(
                 : createHash("sha256")
                     .update(first.item.received.id)
                     .digest("hex"),
-            wakes,
+            wakeFingerprint:
+              wakeIds.length === 0
+                ? null
+                : createHash("sha256")
+                    .update(JSON.stringify(wakeIds))
+                    .digest("hex"),
+            wakes: [...waiting.values()].some(wakeWorthy),
           };
         })
       ),
