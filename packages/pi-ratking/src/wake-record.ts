@@ -306,6 +306,7 @@ export const flushWake = (
 
 export interface WakeHost {
   readonly consume: (id: string) => void;
+  readonly observe?: (verdict?: Verdict) => void;
   readonly take: (mail: PendingMail, hold: Hold) => void;
   readonly withdraw: (watch: string, sender: string) => readonly string[];
 }
@@ -348,6 +349,7 @@ export const receiveWake = (
   const decoded = Schema.decodeUnknownOption(WakeRecord)(inbound.record);
 
   if (settled || Option.isNone(decoded)) {
+    host.observe?.();
     host.consume(inbound.id);
 
     return;
@@ -356,6 +358,8 @@ export const receiveWake = (
   const record = decoded.value;
 
   if (record.status === "cancelled") {
+    host.observe?.();
+
     if (inbound.verified) {
       for (const id of host.withdraw(record.watch, inbound.did)) {
         host.consume(id);
@@ -395,6 +399,7 @@ export const receiveWake = (
       Option.none()
     );
 
+  host.observe?.(verdict);
   const decision = verdictToHold(verdict);
 
   Dispositions.$match(decision, {
