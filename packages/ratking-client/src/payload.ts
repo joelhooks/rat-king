@@ -26,6 +26,7 @@ export const decodeRecord = (body: string) =>
 
 export interface InboundRecord {
   readonly alarmCrashDid?: string | undefined;
+  readonly cc?: boolean;
   readonly encrypted?: boolean;
   readonly expiresAt?: string;
   readonly levers?: unknown;

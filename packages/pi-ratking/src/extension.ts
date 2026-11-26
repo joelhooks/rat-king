@@ -110,6 +110,9 @@ import { ancestorsOf, parentOfProcess } from "./ancestry.ts";
 import { drainSetting, drainWindow, watchDrain } from "./drained.ts";
 import type { DrainClock } from "./drained.ts";
 import { paneLabel } from "./herdr.ts";
+import { piClassifier, shadowJournal } from "./jev-shadow-host.ts";
+import { shadowReader } from "./jev-shadow.ts";
+import type { ClassifyJev } from "./jev-shadow.ts";
 import { messageView } from "./message-view.ts";
 import {
   autoName,
@@ -719,6 +722,7 @@ type Runtime = ManagedRuntime.ManagedRuntime<Services, NotConfigured>;
 type DrainedReader = "live" | "send-only";
 
 export interface SessionStart {
+  readonly classifyJev?: ClassifyJev;
   readonly digestTickMillis?: number;
   readonly exitDrained?: (reader: DrainedReader) => void;
   readonly hasPendingMessages?: () => boolean;
@@ -839,6 +843,7 @@ export const piHost = (pi: ExtensionAPI): PiHost => {
         }
 
         const start: SessionStart = {
+          classifyJev: piClassifier(ctx.modelRegistry),
           hasPendingMessages: () => ctx.hasPendingMessages(),
           interactive: interactiveSession(ctx),
           isIdle: () => ctx.isIdle(),
@@ -1296,6 +1301,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
     let runtime = Option.none<Runtime>();
     let currentStart: SessionStart | undefined;
     let starts = 0;
+    let shadow: ReturnType<typeof shadowReader> | undefined;
     let turns: TurnReporter | undefined;
     let turnSource = Deferred.makeUnsafe<Option.Option<TurnReporter>>();
 
@@ -1449,6 +1455,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       }),
       send: (message, delivery) => {
         if (delivery?.triggerTurn === true) {
+          shadow?.offer({ ...message, role: "custom" });
           resetDrain();
         }
 
@@ -1490,16 +1497,19 @@ export const ratkingExtension = (options: ExtensionOptions) =>
 
     const wakes = inbox({
       digest: (mails) => {
+        const message = {
+          content: renderDigest(tool, mails, "wake"),
+          customType: WAKE_MESSAGE,
+          details: {
+            ...digestDetails(mails, "wake"),
+            messages: mails.map((held) => held.details),
+          },
+        };
+
+        shadow?.offer({ ...message, role: "custom" });
         flushWake(
           { events: pi.events, sendMessage: dispatch.send },
-          {
-            content: renderDigest(tool, mails, "wake"),
-            customType: WAKE_MESSAGE,
-            details: {
-              ...digestDetails(mails, "wake"),
-              messages: mails.map((held) => held.details),
-            },
-          },
+          message,
           mails.map((held) => held.id).join(":")
         );
       },
@@ -1542,6 +1552,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
     });
 
     pi.onAgentStart?.(async () => {
+      shadow?.startTurn();
       resetDrain();
       sweep();
       busy = true;
@@ -1549,6 +1560,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
     });
 
     pi.onAgentEnd?.(async (messages) => {
+      shadow?.endTurn(messages);
       mail.flushHeld(0, true);
       sweep();
       busy = false;
@@ -1599,6 +1611,14 @@ export const ratkingExtension = (options: ExtensionOptions) =>
 
     let recordHit = ignoreFilterHit;
 
+    const observeShadow = (
+      inbound: Inbound | InboundRecord,
+      now: number,
+      verdict?: Verdict
+    ) => {
+      shadow?.observe(inbound, verdict?._tag ?? null, now);
+    };
+
     const deliverRecord = Effect.fn("RatKing.deliverRecord")(
       function* deliverRecord(
         inbound: InboundRecord,
@@ -1626,6 +1646,9 @@ export const ratkingExtension = (options: ExtensionOptions) =>
           receiveWake(
             {
               consume,
+              observe: (verdict) => {
+                observeShadow(inbound, now, verdict);
+              },
               take: quiet ? mail.take : wakes.take,
               withdraw: wakes.withdraw,
             },
@@ -1641,6 +1664,8 @@ export const ratkingExtension = (options: ExtensionOptions) =>
 
           return;
         }
+
+        observeShadow(inbound, now, filtered);
 
         if (filtered?._tag === "Never") {
           consume(inbound.id);
@@ -1767,6 +1792,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
         }
 
         if (inbound.sentBy !== undefined || settled) {
+          observeShadow(inbound, now);
           dispatch.send(
             {
               content: renderInbound(tool, inbound),
@@ -1798,6 +1824,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
           Option.none()
         );
 
+        observeShadow(inbound, now, verdict);
         yield* recordHit(verdict);
 
         if (
@@ -2080,6 +2107,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
       const request = Schema.decodeUnknownOption(SendRequest)(data);
 
       if (Option.isSome(request)) {
+        shadow?.send();
         void forward(request.value);
 
         return;
@@ -2652,6 +2680,13 @@ export const ratkingExtension = (options: ExtensionOptions) =>
                     onSuccess: () => Effect.void,
                   })
                 );
+              shadow = shadowReader({
+                append: shadowJournal(settings.state),
+                classify:
+                  start.classifyJev ?? (() => Effect.fail("unavailable")),
+                envEnabled: process.env.RATKING_JEV_SHADOW === "1",
+                reader: () => ownName,
+              });
               yield* digestTicks;
 
               return yield* RatKing.use((ratking) =>
@@ -2717,6 +2752,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
 
       const epoch = starts;
 
+      shadow = undefined;
       mail.clear();
       wakes.clear();
       acknowledgments.clear();

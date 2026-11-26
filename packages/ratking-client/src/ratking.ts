@@ -1498,6 +1498,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
             const direct: InboundRecord = {
               alarmCrashDid: settings.alarmCrashDid,
+              cc: inbound.cc,
               did: inbound.did,
               encrypted: message.encrypted ?? true,
               from: inbound.from,
@@ -3570,6 +3571,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
 
     const direct: InboundRecord = {
       alarmCrashDid: settings.alarmCrashDid,
+      cc: inbound.cc,
       did: inbound.did,
       encrypted: message.encrypted ?? true,
       from: inbound.from,

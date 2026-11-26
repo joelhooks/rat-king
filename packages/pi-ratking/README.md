@@ -37,7 +37,7 @@ The reader fetches its own private preferences and public status at startup. Pri
 
 `ratking({ action: "filter", op: "add", rule: { id: "quiet-fleet", match: { from: "fleet/*" }, route: "quiet" } })` adds or replaces a receiver rule; `op: "remove", id` removes it and `op: "list"` lists local hits and expiry (8 per page, use `offset`). Up to 32 rules match exact record `type` (or `message`), exact sender or trailing-`*` prefix, and sender `project`. First live match wins: `wake`, `quiet`, `digest` (requires `minutes` 1–1440), or `hide`; optional `until` is ISO. Rules change wake/display only, never delivery. Operator mail, direct asks and the resolved owner bypass filters. Records keep firing `ratking/record`; quiet/digest record notices wait for the next turn without waking. Only hidden arrivals ack without display. Local hit counts stay in private `state/filters/hits.json` (0600, directory 0700), not in preferences.
 
-`ratking({ action: "attention" })` shows both values. `status`, `until` and `note` replace public status; `prefs` replaces private preferences. The mailbox verifies each write against the name's authentication key. Other authenticated names can read public status, but only the owning DID can read preferences. Jev `now` and `later` use decimals from 0 to 1 in the tool, with at most four decimal places. The wire stores integer `nowBp` and `laterBp` from 0 to 10000. Triage request and verdict contracts exist, but no model runs in this slice.
+`ratking({ action: "attention" })` shows both values. `status`, `until` and `note` replace public status; `prefs` replaces private preferences. The mailbox verifies each write against the name's authentication key. Other authenticated names can read public status, but only the owning DID can read preferences. Jev `now` and `later` use decimals from 0 to 1 in the tool, with at most four decimal places. The wire stores integer `nowBp` and `laterBp` from 0 to 10000. Model scores never feed those rules.
 
 Private preferences optionally accept `digest: [{ name: "project/worker", minutes: 2 }]` (1–1440 integer minutes, at most 256 senders). A listed sender gets `Later` when levers are on. Joel and verified direct owner mail stay `Now`; refusal and allow precede digest. Records without `digest` still decode. Preferences are strict: widen and restart every reader before writing this field. Only the proof reader may write it before the fleet restart.
 
@@ -48,6 +48,20 @@ Later batches are labelled from their verdict reasons: intent cc digests show `c
 With levers enabled, authenticated Joel/operator mail stays immediate. Direct prompts from the verified resolved turn owner (`RATKING_TURN_OWNER`, else `MUSTER_OWNER_NAME`) keep their intent verdict, even under refuse, DND, mute or a model suggestion. A forged owner label or an unverified sender is not exempt; owner context copies are not direct prompts. Refuse settles an injectable message without waking; DND or a matching thread/group mute holds it unless its authenticated sender is allowlisted. An expired DND `until` stops holding new arrivals. Forward sends encrypted copies signed by the receiving name, preserves the original's delivery and display acknowledgment, and does not forward copies again.
 
 Levers apply only at the injectable-message seam. Typed control records, including turn, friction and crash telemetry, retain their existing silent routing and custody. Refuse, mute and DND do not change how a turn record is handled. Settled messages also keep their existing delivery path. Changing control-record policy needs a separate slice.
+
+### Jev shadow scoring
+
+Shadow scoring is off by default. Opt in one Pi reader with `RATKING_JEV_SHADOW=1` at launch or set its private attention model to `kind: "jev"`. The Pi Model Registry uses `typesafe/jev-latest` with the TypeSafe provider's standard API key environment variable. It does not use stored Pi credentials. The default question asks whether the message needs attention or an answer now. Defaults are 7500 bp for `now`, 2500 bp for `later`, and a two-second timeout. At or above `nowBp` maps to `now`; at or above `laterBp` maps to `later`; lower scores map to `quiet`. None of these predictions can wake, suppress, hold, digest or display mail.
+
+Jev receives the existing summary, message kind, sender, recipient role and quiet flag. It receives the body only when the reader's Jev preferences explicitly set `body: "full"`. Encrypted mail (including encrypted relay originals), unverified senders, `front-desk`, `switchboard/ea` and `secret-cell` namespaces are excluded. The EA reader's incoming mail is excluded as well. Missing credentials, timeouts and provider errors are recorded as skips without logging the error text or changing delivery.
+
+Read the private `state/jev-shadow/<name-label>.jsonl` (0600) with:
+
+```sh
+node packages/pi-ratking/src/jev-shadow-cli.ts /path/to/state/jev-shadow/example.desk.jsonl
+```
+
+Score rows contain only IDs, timestamps, verdicts, model, probability, latency, token counts and skip codes. The reader deduplicates within a running session; a crash before a mailbox checkpoint can replay a score. Outcome rows join by ID and can arrive before the detached score. A tool call or Rat King send request in the triggered Pi run counts as `acted`; assistant text alone counts as `ack`. No observed woken turn counts as `none`. The report maps `Now` to `now`, `Next` and `Later` to `later`, and `Never` to `quiet`. Records with no rule verdict are excluded from agreement, not from score totals. The last seven days are held out by receipt time. AUC uses observed `acted` labels; mail that rules did not wake does not get a counterfactual label. Keep these journals and the message IDs in the report private. To stop scoring, remove the environment opt-in and set the model kind back to `none`.
 
 ## Names
 
