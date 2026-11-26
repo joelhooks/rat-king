@@ -3,6 +3,7 @@ import * as Runtime from "./runtime.js";
 export declare const Params: Schema.Undefined;
 export type ParamsValue = typeof Params.Type;
 export declare const Input: Schema.StructWithRest<Schema.Struct<{
+    readonly attempt: Schema.optionalKey<Schema.String>;
     readonly did: Schema.brand<Schema.String, "Lexicon:did">;
     readonly expiresAt: Schema.brand<Schema.String, "Lexicon:datetime">;
     readonly generation: Schema.optionalKey<Schema.Int>;
@@ -84,7 +85,7 @@ export declare const ErrorBody: Schema.StructWithRest<Schema.Struct<{
     readonly message: Schema.optionalKey<Schema.String>;
 }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
 export type ErrorBodyValue = typeof ErrorBody.Type;
-export declare const KnownErrors: readonly ["InvalidRequest", "AuthRequired", "Forbidden", "LeaseHeld"];
+export declare const KnownErrors: readonly ["InvalidRequest", "AuthRequired", "Forbidden", "LeaseHeld", "AcquireAttemptExpired"];
 export type KnownError = (typeof KnownErrors)[number];
 export declare const isKnownError: (value: string) => value is KnownError;
 export declare const Method: {
@@ -94,6 +95,7 @@ export declare const Method: {
         readonly message: Schema.optionalKey<Schema.String>;
     }>, readonly [Schema.$Record<Schema.String, Schema.Codec<Runtime.LexValue, Runtime.LexJson, never, never>>]>;
     readonly input: Schema.StructWithRest<Schema.Struct<{
+        readonly attempt: Schema.optionalKey<Schema.String>;
         readonly did: Schema.brand<Schema.String, "Lexicon:did">;
         readonly expiresAt: Schema.brand<Schema.String, "Lexicon:datetime">;
         readonly generation: Schema.optionalKey<Schema.Int>;

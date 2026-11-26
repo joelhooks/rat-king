@@ -77,6 +77,11 @@ const RENEW_FLOOR_MS = 250;
 
 const LEASE_TTL_MS = 300_000;
 
+export const HELD_RETRY_JITTER_MS = 2000;
+
+export const heldRetryDelay = (remaining: number, jitter: number) =>
+  Math.max(1, Math.min(10_000 - HELD_RETRY_JITTER_MS, remaining) + jitter);
+
 const attemptTimedOut = (reason: string) =>
   new MailboxClientError({ error: "MailboxUnavailable", reason });
 
@@ -114,6 +119,10 @@ export interface ConsumeOptions {
   readonly harness: Lease.MainValue["harness"];
   readonly renders?: readonly string[];
   readonly resume?: LeaseFence;
+  readonly acquireAttempt?: string;
+  readonly onAcquired?: (
+    lease: Lease.MainValue
+  ) => Effect.Effect<void, MailboxClientError>;
   readonly afterSeq?: number;
   readonly onLease?: (
     lease: Lease.MainValue,
@@ -159,6 +168,10 @@ export const consume = <E, R>(
           harness: options.harness,
         };
 
+        if (options.acquireAttempt !== undefined) {
+          Object.assign(input, { attempt: options.acquireAttempt });
+        }
+
         if (options.renders !== undefined) {
           Object.assign(input, { renders: options.renders });
         }
@@ -186,6 +199,7 @@ export const consume = <E, R>(
             orElse: () =>
               Effect.fail(attemptTimedOut("Acquire attempt timed out")),
           }),
+          Effect.tap((lease) => options.onAcquired?.(lease) ?? Effect.void),
           Effect.tap(() => options.onRetryMetric?.("acquireOk") ?? Effect.void),
           Effect.tapError(
             (error) =>
@@ -220,13 +234,19 @@ export const consume = <E, R>(
 
                 const current = yield* Clock.currentTimeMillis;
 
-                if (holder !== undefined) {
-                  yield* Effect.interruptible(
-                    Effect.sleep(
-                      Math.max(1, Date.parse(holder.expiresAt) - current)
-                    )
-                  );
-                }
+                const jitter = yield* Random.nextIntBetween(
+                  0,
+                  HELD_RETRY_JITTER_MS
+                );
+
+                const remaining =
+                  holder === undefined
+                    ? 0
+                    : Date.parse(holder.expiresAt) - current;
+
+                yield* Effect.interruptible(
+                  Effect.sleep(heldRetryDelay(remaining, jitter))
+                );
 
                 yield* step("RETRY");
 
@@ -236,8 +256,7 @@ export const consume = <E, R>(
         );
       }).pipe(
         Effect.retry(
-          Schedule.spaced("1 millis").pipe(
-            Schedule.modifyDelay(() => Random.nextBetween(0, 2000)),
+          Schedule.spaced("0 millis").pipe(
             Schedule.while(
               ({ input }: { readonly input: MailboxClientError }) =>
                 Deadline.canAttempt(ATTEMPT_MS).pipe(

@@ -206,9 +206,13 @@ it.effect.prop(
               if (step === "held") {
                 yield* TestClock.adjust(35_000);
                 yield* parked;
-                expect(
-                  ReaderState.$is("SendOnly")((yield* child.king.status).reader)
-                ).toBe(true);
+                yield* eventually(
+                  child.king.status.pipe(
+                    Effect.filterOrFail(({ reader }) =>
+                      ReaderState.$is("SendOnly")(reader)
+                    )
+                  )
+                );
                 expect((yield* beat()).session).toBe("parent");
                 expect(server.maximum()).toBe(1);
 

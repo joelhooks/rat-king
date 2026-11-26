@@ -15,6 +15,12 @@
             "expiresAt"
           ],
           "properties": {
+            "attempt": {
+              "type": "string",
+              "minLength": 32,
+              "maxLength": 32,
+              "description": "Private 128-bit acquire-attempt credential, encoded as lowercase hex. Replays only its own current lease; never authorizes takeover."
+            },
             "leaseId": {
               "type": "string",
               "format": "tid"
@@ -80,6 +86,9 @@
         },
         {
           "name": "LeaseHeld"
+        },
+        {
+          "name": "AcquireAttemptExpired"
         }
       ]
     }
