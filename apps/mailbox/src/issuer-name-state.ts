@@ -1,7 +1,11 @@
 import { Schema } from "effect";
 
 import { NameState, Ticket } from "./name-state.ts";
-import type { NameStateValue, TicketValue } from "./name-state.ts";
+import type {
+  CompensationValue,
+  NameStateValue,
+  TicketValue,
+} from "./name-state.ts";
 import type { Sql } from "./sqlite.ts";
 
 const StateRow = Schema.Struct({
@@ -124,11 +128,30 @@ export const claimDueTickets = (sql: Sql, now: number) => {
   return due.map(({ payload }) => payload);
 };
 
+export const beginCompensation = (
+  sql: Sql,
+  ticket: TicketValue,
+  compensation: CompensationValue
+) => {
+  const next = { ...ticket, compensation };
+
+  const [row] = sql.exec(
+    "UPDATE pending_ops SET payload=? WHERE did=? AND op_id=? AND payload=? RETURNING op_id",
+    Schema.encodeSync(Payload)(next),
+    ticket.did,
+    ticket.opId,
+    Schema.encodeSync(Payload)(ticket)
+  );
+
+  return row === undefined ? undefined : next;
+};
+
 export const finishTicket = (sql: Sql, ticket: TicketValue) =>
   [
     ...sql.exec(
-      "DELETE FROM pending_ops WHERE did=? AND op_id=? RETURNING op_id",
+      "DELETE FROM pending_ops WHERE did=? AND op_id=? AND payload=? RETURNING op_id",
       ticket.did,
-      ticket.opId
+      ticket.opId,
+      Schema.encodeSync(Payload)(ticket)
     ),
   ].length === 1;

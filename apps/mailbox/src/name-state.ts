@@ -23,11 +23,29 @@ export const NameCommand = Schema.TaggedUnion({
 
 export type NameCommandValue = typeof NameCommand.Type;
 
+export const SuccessorCheck = Schema.Struct({
+  did: NameState.fields.did,
+  expected: Schema.Literal("registered-unretired"),
+  name: Schema.NonEmptyString,
+  previous: Schema.NullOr(Retirement),
+});
+
+export type SuccessorCheckValue = typeof SuccessorCheck.Type;
+
+export const Compensation = Schema.Struct({
+  reason: Schema.String,
+  version: Count,
+});
+
+export type CompensationValue = typeof Compensation.Type;
+
 export const Ticket = Schema.Struct({
   command: NameCommand,
+  compensation: Schema.optionalKey(Compensation),
   did: NameState.fields.did,
   expectedVersion: Count,
   opId: Schema.NonEmptyString,
+  successorCheck: Schema.optionalKey(SuccessorCheck),
 });
 
 export type TicketValue = typeof Ticket.Type;

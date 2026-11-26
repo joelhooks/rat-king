@@ -36,7 +36,6 @@ import {
   DocumentRegistry,
   issuerHandlers,
   issuerRoute,
-  NamedCell,
 } from "../src/issuer.ts";
 import {
   Caller,
@@ -645,13 +644,9 @@ const deskDocument = (id: string) =>
   });
 
 it.effect.prop(
-  "a successor is live only through its mailbox, a retirement it cannot outlive is restored not cleared, and a lost race leaves the original retirement",
-  [
-    Arbitrary.schema(Schema.Boolean),
-    Arbitrary.schema(Schema.Boolean),
-    Arbitrary.schema(Schema.Boolean),
-  ],
-  ([hasDocument, retiredBefore, raceLoses]) =>
+  "the named successor must be registered in its mailbox before a retire is submitted",
+  [Arbitrary.schema(Schema.Boolean)],
+  ([hasDocument]) =>
     Effect.gen(function* successorLiveness() {
       const subjectStorage = yield* testStoreFor(recipientDid);
       const successorStorage = yield* testStoreFor(templatedDid);
@@ -693,44 +688,11 @@ it.effect.prop(
         });
       }
 
-      const original = {
-        by: operator,
-        name,
-        retiredAt: 1,
-        successor: "proj/original",
-      };
-
-      if (retiredBefore) {
-        yield* subjectStore.transaction((tx) => {
-          tx.setRetirement(original);
-        });
-      }
-
-      let calls = 0;
-
-      const base = storeRetirements(
+      const named = storeRetirements(
         (did) =>
           Effect.succeed(did === templatedDid ? successorStore : subjectStore),
         issuerStore(issuerStorage.sql)
       );
-
-      const racing = Layer.effect(
-        NamedCell,
-        Effect.gen(function* racingRegistry() {
-          const registry = yield* NamedCell;
-
-          return NamedCell.of({
-            ...registry,
-            presence: (did) => {
-              calls += 1;
-
-              return raceLoses && did === templatedDid && calls > 2
-                ? Effect.succeed({ exists: false })
-                : registry.presence(did);
-            },
-          });
-        })
-      ).pipe(Layer.provide(base));
 
       const response = yield* issuerRoute({
         input: { name, successor: templated },
@@ -751,22 +713,15 @@ it.effect.prop(
             Layer.provide(
               Layer.mock(DocumentRegistry, { put: () => Effect.void })
             ),
-            Layer.provide(racing),
+            Layer.provide(named),
             Layer.provide(Layer.succeed(Caller, { did: operator }))
           )
         )
       );
 
       const current = yield* subjectStore.transaction((tx) => tx.retirement());
-      const accepted = hasDocument && !raceLoses;
-
-      expect(response.status).toBe(accepted ? 200 : 404);
-
-      if (accepted) {
-        expect(current?.successor).toBe(templated);
-      } else {
-        expect(current).toEqual(retiredBefore ? original : undefined);
-      }
+      expect(response.status).toBe(hasDocument ? 200 : 404);
+      expect(current?.successor).toBe(hasDocument ? templated : undefined);
     }).pipe(Effect.scoped)
 );
 

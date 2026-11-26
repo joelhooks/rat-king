@@ -6,6 +6,7 @@ import type { Effect } from "effect";
 import { Document } from "./auth.ts";
 import { failure } from "./failure.ts";
 import {
+  beginCompensation,
   claimDueTickets,
   decodeProjection,
   finishTicket,
@@ -18,7 +19,11 @@ import {
 import { fingerprint } from "./issuer-policy.ts";
 import type { Binding, PublicDocument } from "./issuer-policy.ts";
 import { NameState } from "./name-state.ts";
-import type { NameStateValue, TicketValue } from "./name-state.ts";
+import type {
+  CompensationValue,
+  NameStateValue,
+  TicketValue,
+} from "./name-state.ts";
 import type { Sql } from "./sqlite.ts";
 import { storageOperation } from "./store.ts";
 import type { RetirementValue } from "./store.ts";
@@ -63,6 +68,10 @@ export interface IssuerTransaction {
   readonly writeTicket: (ticket: TicketValue, now: number) => boolean;
   readonly dueTickets: (now: number) => readonly TicketValue[];
   readonly finishTicket: (ticket: TicketValue) => boolean;
+  readonly beginCompensation: (
+    ticket: TicketValue,
+    compensation: CompensationValue
+  ) => TicketValue | undefined;
   readonly binding: (name: string) => Binding | undefined;
   readonly bind: (
     name: string,
@@ -199,6 +208,8 @@ export const issuerStore = (sql: Sql) => {
             Schema.Struct({ document: NameRow.fields.document })
           )(row).document;
     },
+    beginCompensation: (ticket, compensation) =>
+      beginCompensation(sql, ticket, compensation),
     bind: (name, binding, document, parent) => {
       sql.exec(
         "INSERT INTO names (name,did,host,fingerprint,document) VALUES (?,?,?,?,?)",

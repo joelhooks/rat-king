@@ -166,14 +166,15 @@ export const routeIssuer = (input: {
           );
         }
       ),
-      retire: (did, retirement, holderMayRetire, expected) =>
+      retire: (did, retirement, holderMayRetire, expected, successorCheck) =>
         did === trafficDid
           ? Effect.fail(failure("Forbidden", 403))
           : runNameTicket(
               mailboxes,
               did,
               NameCommand.cases.Retire.make({ holderMayRetire, retirement }),
-              expected
+              expected,
+              successorCheck
             ).pipe(
               Effect.map(({ state }) => state.version),
               Effect.provide(store)

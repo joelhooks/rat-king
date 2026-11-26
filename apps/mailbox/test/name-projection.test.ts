@@ -21,6 +21,7 @@ import {
   NameState,
   observedStatus,
   Ticket,
+  TicketOutcome,
   TicketReply,
 } from "../src/name-state.ts";
 import type { NameStateValue, TicketValue } from "../src/name-state.ts";
@@ -348,6 +349,7 @@ it.effect.prop(
                 })
               )
             ),
+          standing: () => Promise.resolve({ exists: true }),
           standingRevision: () =>
             run(
               real.current.pipe(Effect.flatMap(Schema.encodeEffect(StateJson)))
@@ -391,6 +393,188 @@ it.effect.prop(
       expect([...real.index.sql.exec("SELECT op_id FROM pending_ops")]).toEqual(
         []
       );
+    }).pipe(Effect.scoped)
+);
+
+it.effect.prop(
+  "a lost source or successor answer leaves guarded retire due; compensation survives loss and never overwrites a newer revision",
+  {
+    firstLoss: Schema.Literals(["source", "successor"]),
+    previouslyRetired: Schema.Boolean,
+    race: Schema.Boolean,
+    successor: Schema.Literals(["missing", "retired", "valid"]),
+    undoLoss: Schema.Boolean,
+  },
+  ({ firstLoss, previouslyRetired, undoLoss, race, successor }) =>
+    Effect.gen(function* retryGuardedRetirement() {
+      yield* TestClock.setTime(1000);
+      const real = yield* fixture;
+
+      const previous = previouslyRetired
+        ? { ...retirement, successor: "previous" }
+        : null;
+
+      if (previous !== null) {
+        yield* real.apply({
+          command: NameCommand.cases.Retire.make({
+            holderMayRetire: true,
+            retirement: previous,
+          }),
+          did,
+          expectedVersion: 0,
+          opId: "previous",
+        });
+      }
+
+      const before = yield* real.current;
+      const nextDid = "did:web:next.example.invalid";
+      const guardedRetirement = { ...retirement, successor: "next" };
+      let initial = true;
+      let observedSuccessor = "valid";
+      let checks = 0;
+      let sourceCalls = 0;
+      let undoCalls = 0;
+      const context = yield* Effect.context();
+      // oxlint-disable-next-line effect-tests/no-manual-effect-runtime-in-tests -- Exercise the driver's real Promise RPC boundary.
+      const run = Effect.runPromiseWith(context);
+
+      const sendToSource = Effect.fn("Projection.sendToSource")(
+        function* sendToSource(ticket: TicketValue) {
+          const undo = ticket.opId.endsWith("/compensate");
+
+          if (undo) {
+            undoCalls += 1;
+
+            if (race && undoCalls === 1) {
+              yield* real.apply({
+                command: repointCommand("newer"),
+                did,
+                expectedVersion: ticket.expectedVersion,
+                opId: "newer",
+              });
+            }
+          } else {
+            sourceCalls += 1;
+          }
+
+          const reply = yield* real.apply(ticket);
+
+          if (
+            (!undo && initial && firstLoss === "source") ||
+            (undo && undoCalls === 1 && undoLoss)
+          ) {
+            return yield* Effect.die("answer lost after SQLite commit");
+          }
+
+          return yield* Schema.encodeEffect(ReplyJson)(reply);
+        }
+      );
+
+      const cells = {
+        getByName: (target: string) => ({
+          applyStandingTicket: (json: string) => {
+            expect(target).toBe(did);
+
+            return run(
+              Schema.decodeEffect(TicketJson)(json).pipe(
+                Effect.flatMap(sendToSource)
+              )
+            );
+          },
+          standing: () => {
+            expect(target).toBe(nextDid);
+            checks += 1;
+
+            if (initial) {
+              return Promise.reject(new Error("successor reply lost"));
+            }
+
+            return Promise.resolve({
+              exists: observedSuccessor !== "missing",
+              retirement: observedSuccessor === "retired" ? "{}" : undefined,
+            });
+          },
+          standingRevision: () =>
+            Promise.reject(new Error("unexpected revision read")),
+        }),
+      };
+
+      const pending = () => [
+        ...real.index.sql.exec("SELECT op_id FROM pending_ops"),
+      ];
+
+      const attempt = yield* runNameTicket(
+        cells,
+        did,
+        NameCommand.cases.Retire.make({
+          holderMayRetire: true,
+          retirement: guardedRetirement,
+        }),
+        before.version,
+        {
+          did: nextDid,
+          expected: "registered-unretired",
+          name: "next",
+          previous,
+        }
+      ).pipe(Effect.provide(real.layer), Effect.flip);
+
+      expect(attempt.status).toBe(503);
+      expect(pending()).toHaveLength(1);
+      expect((yield* real.current).retirement).toEqual(guardedRetirement);
+      expect(checks).toBe(firstLoss === "source" ? 0 : 1);
+      initial = false;
+      observedSuccessor = successor;
+      yield* TestClock.setTime(6000);
+
+      const drain = drainTickets(cells).pipe(Effect.provide(real.layer));
+      const [first] = yield* drain;
+      const invalid = successor !== "valid";
+      const remainsDue = invalid && undoLoss;
+      const expectedChecks = firstLoss === "source" ? 1 : 2;
+      expect(checks).toBe(expectedChecks);
+      expect(sourceCalls).toBe(2);
+
+      if (remainsDue) {
+        expect(first?._tag).toBe("Failure");
+        expect(pending()).toHaveLength(1);
+        observedSuccessor = "valid";
+        yield* TestClock.setTime(12_000);
+      }
+
+      const answer = remainsDue ? (yield* drain)[0] : first;
+      expect(answer?._tag).toBe("Success");
+      expect(checks).toBe(expectedChecks);
+      const expectedUndoCalls = undoLoss ? 2 : 1;
+      expect(undoCalls).toBe(invalid ? expectedUndoCalls : 0);
+      expect(pending()).toEqual([]);
+      const current = yield* real.current;
+
+      const compensated = race
+        ? { ...guardedRetirement, successor: "newer", updatedAt: 1000 }
+        : previous;
+
+      expect(current.retirement).toEqual(
+        invalid ? compensated : guardedRetirement
+      );
+      expect(
+        yield* real.issuer.transaction((tx) => tx.observation(did))
+      ).toEqual(current);
+
+      if (answer !== undefined && Result.isSuccess(answer)) {
+        expect(answer.success.outcome._tag).toBe(
+          invalid ? "Refused" : "Applied"
+        );
+
+        if (TicketOutcome.guards.Refused(answer.success.outcome)) {
+          expect(answer.success.outcome.message).toContain(
+            successor === "missing" ? "no longer registered" : "now retired"
+          );
+          expect(answer.success.outcome.message).toContain(
+            race ? "was not restored" : "standing restored"
+          );
+        }
+      }
     }).pipe(Effect.scoped)
 );
 

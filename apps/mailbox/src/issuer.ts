@@ -41,6 +41,7 @@ import {
   retiredOutput,
 } from "./list-names.ts";
 import type { ProjectionViews } from "./list-names.ts";
+import type { SuccessorCheckValue } from "./name-state.ts";
 import { MAX_HOPS, resolveRoute } from "./roles.ts";
 import type { RouteView } from "./roles.ts";
 import type { RetirementValue } from "./store.ts";
@@ -67,7 +68,8 @@ export class NamedCell extends Context.Service<
       did: string,
       retirement: RetirementValue,
       holderMayRetire: boolean,
-      expected?: number
+      expected?: number,
+      successorCheck?: SuccessorCheckValue
     ) => Effect.Effect<number, XrpcFailure>;
     readonly repoint: (
       did: string,
@@ -659,41 +661,20 @@ export const issuerHandlers = (
 
           const holderMayRetire = caller.did === did;
 
-          const applied = yield* retirements.retire(
+          yield* retirements.retire(
             did,
             retirement,
             holderMayRetire,
-            previous.version
+            previous.version,
+            input.successor === undefined || successorAt === undefined
+              ? undefined
+              : {
+                  did: successorAt,
+                  expected: "registered-unretired",
+                  name: input.successor,
+                  previous: previous.retirement ?? null,
+                }
           );
-
-          if (input.successor !== undefined && successorAt !== undefined) {
-            const rechecked = yield* requireLive(
-              input.name,
-              input.successor,
-              successorAt
-            ).pipe(Effect.result);
-
-            if (Result.isFailure(rechecked)) {
-              const expected = applied;
-
-              yield* previous.retirement === undefined
-                ? Effect.asVoid(retirements.clear(did, input.name, expected))
-                : retirements.retire(
-                    did,
-                    previous.retirement,
-                    holderMayRetire,
-                    expected
-                  );
-
-              return yield* Effect.fail(
-                failure(
-                  "NameNotFound",
-                  404,
-                  `Successor ${input.successor} changed during retirement; ${input.name} was not retired. Retire it without a successor, or name a live one.`
-                )
-              );
-            }
-          }
 
           return yield* output(
             Retire.Output,
