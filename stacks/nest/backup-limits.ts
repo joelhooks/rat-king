@@ -1,5 +1,13 @@
 import { Duration } from "effect";
 
+export const snapshotBudgetSeconds = 90;
+
+const snapshotFailureReportingSeconds = 5;
+
+export const snapshotLimit = Duration.seconds(
+  snapshotBudgetSeconds + snapshotFailureReportingSeconds
+);
+
 export const precopyMaxLimit = Duration.minutes(90);
 
 export const armSlack = Duration.minutes(20);

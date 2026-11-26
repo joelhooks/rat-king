@@ -14,10 +14,11 @@ import {
   precopyLimit,
   precopyMaxLimit,
   precopyRequestedMinutes,
+  snapshotLimit,
 } from "./backup-limits.ts";
 import { backupScript } from "./backup-script.ts";
 
-export { precopyLimit } from "./backup-limits.ts";
+export { precopyLimit, snapshotLimit } from "./backup-limits.ts";
 
 export const BackupInput = Schema.Struct({
   backupRoot: Schema.String,
@@ -55,7 +56,7 @@ const BackupName = Schema.String.check(
 
 export const stepLimit = Duration.seconds(60);
 
-export const snapshotLimit = Duration.seconds(60);
+const stagingCleanupLimit = Duration.minutes(5);
 
 export const packLimit = (bytes: number) =>
   Duration.minutes(45 + Math.max(0, Math.ceil(bytes / 1_073_741_824) - 40));
@@ -197,7 +198,11 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
     );
 
   yield* Effect.log(
-    (yield* bounded("prune-staging", stepLimit, script("prune-staging"))).trim()
+    (yield* bounded(
+      "prune-staging",
+      stagingCleanupLimit,
+      script("prune-staging")
+    )).trim()
   );
   const preflight = yield* bounded("preflight", stepLimit, script("preflight"));
   yield* Effect.log(preflight.trim());
@@ -400,7 +405,7 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
           yield* checkpoint("verified");
           yield* bounded(
             "cleanup",
-            stepLimit,
+            stagingCleanupLimit,
             script("cleanup", staging, name)
           );
           yield* Effect.log("BACKUP_PUBLISHED", name);
@@ -444,7 +449,7 @@ export const runBackup = Effect.fn("Nest.backup")(function* runBackup(
     (staging) =>
       bounded(
         "cleanup-staging",
-        stepLimit,
+        stagingCleanupLimit,
         script("cleanup-staging", staging)
       ).pipe(Effect.orDie)
   );

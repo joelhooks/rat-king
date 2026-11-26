@@ -155,3 +155,44 @@ it.effect.prop(
       ).toBe(sourceBytes > 165 * gib);
     })
 );
+
+it.effect(
+  "a slow stale-staging prune gets five minutes without stopping mail",
+  () =>
+    Effect.gen(function* pruneTimeout() {
+      const entered = yield* Deferred.make<null>();
+      const finished = yield* Deferred.make<null>();
+      const calls: string[] = [];
+
+      const shell = {
+        exec: Effect.fn("PruneLimit.exec")(function* exec(
+          argv: readonly string[]
+        ) {
+          calls.push(argv[3] ?? "unknown");
+          yield* Deferred.succeed(entered, null);
+
+          return yield* Effect.never;
+        }),
+      };
+
+      const fiber = yield* runBackup(shell, {
+        backupRoot: "/mnt/example",
+        commit: "invented",
+        dataRoot: "/srv/example",
+        home: "/home/example",
+        version: "invented",
+      }).pipe(
+        Effect.ensuring(Deferred.succeed(finished, null)),
+        Effect.forkChild
+      );
+
+      yield* Deferred.await(entered);
+      yield* TestClock.adjust(Duration.toMillis(Duration.minutes(5)) - 1);
+      expect(yield* Deferred.isDone(finished)).toBe(false);
+      yield* TestClock.adjust(1);
+      const exit = yield* Fiber.await(fiber);
+      expect(Exit.isFailure(exit)).toBe(true);
+      expect(String(exit)).toContain("Backup step timed out");
+      expect(calls).toEqual(["prune-staging"]);
+    })
+);

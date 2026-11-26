@@ -71,10 +71,11 @@ it.effect(
           ?.groups?.milliseconds?.replaceAll("_", "")
       );
 
-      expect(pythonSeconds).toBe(55);
-      expect(jsSeconds).toBe(60);
-      expect(jsSeconds).toBeGreaterThan(pythonSeconds);
-      expect((7 + 15 + pythonSeconds + 21) * 1000).toBeLessThan(allowanceMs);
-      expect((7 + 15 + jsSeconds + 21) * 1000).toBeLessThan(allowanceMs);
+      expect(pythonSeconds).toBe(90);
+      expect(jsSeconds - pythonSeconds).toBe(5);
+      const roundedFleetStopAndStartSeconds = 70;
+      expect((roundedFleetStopAndStartSeconds + jsSeconds) * 1000).toBeLessThan(
+        allowanceMs
+      );
     }).pipe(Effect.provide(NodeServices.layer))
 );
