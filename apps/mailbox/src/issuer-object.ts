@@ -10,7 +10,11 @@ import { nameDid } from "./issuer-policy.ts";
 import { routeIssuer } from "./issuer-runtime.ts";
 import { IssuerStore, issuerStore } from "./issuer-store.ts";
 import { issuerConfig } from "./issuer.ts";
-import { projectionViews } from "./list-names.ts";
+import {
+  directoryMode,
+  isDirectoryMethod,
+  projectionViews,
+} from "./list-names.ts";
 import { SeedBatch } from "./name-state-seed.ts";
 import { NameState } from "./name-state.ts";
 import { drainTickets } from "./name-tickets.ts";
@@ -106,9 +110,33 @@ export class Issuer extends DurableObject<Bindings> {
     );
   }
 
+  private resolveDirectoryBootstrap(configured?: string) {
+    const local = directoryMode(this.env.NAME_STATE_VIEWS);
+    const request = directoryMode(configured);
+
+    return IssuerStore.use((store) =>
+      store.transaction((tx) => {
+        if (local === "projected" || request === "projected") {
+          return tx.directoryBootstrap("projected");
+        }
+
+        return tx.directoryBootstrap(local === "degraded" ? local : request);
+      })
+    );
+  }
+
+  directoryBootstrap(configured?: string) {
+    return Effect.runPromise(
+      this.resolveDirectoryBootstrap(configured).pipe(
+        Effect.provide(this.store)
+      )
+    );
+  }
+
   drainTickets() {
     return Effect.runPromise(
-      drainTickets(this.env.MAILBOX).pipe(
+      this.resolveDirectoryBootstrap().pipe(
+        Effect.andThen(drainTickets(this.env.MAILBOX)),
         Effect.asVoid,
         Effect.provide(this.store)
       )
@@ -150,22 +178,34 @@ export class Issuer extends DurableObject<Bindings> {
     );
   }
 
-  route(request: XrpcRequest, caller: string) {
+  route(request: XrpcRequest, caller: string, configured?: string) {
     const { env } = this;
 
     return Effect.runPromise(
-      routeIssuer({
-        caller,
-        mailboxes: env.MAILBOX,
-        policy: {
-          config: issuerConfig(env.ISSUER_DID_TEMPLATE, env.ISSUER_RESERVED),
-          operators: didAllowlist(env.OPERATOR_DIDS),
-          staticDids: new Set(configuredDocuments(env).map(({ id }) => id)),
-        },
-        request,
-        store: this.store,
-        views: projectionViews(env.NAME_STATE_VIEWS),
-      })
+      (isDirectoryMethod(request.nsid)
+        ? this.resolveDirectoryBootstrap(configured)
+        : Effect.succeed(false)
+      ).pipe(
+        Effect.flatMap((bootstrap) =>
+          routeIssuer({
+            bootstrap,
+            caller,
+            mailboxes: env.MAILBOX,
+            policy: {
+              config: issuerConfig(
+                env.ISSUER_DID_TEMPLATE,
+                env.ISSUER_RESERVED
+              ),
+              operators: didAllowlist(env.OPERATOR_DIDS),
+              staticDids: new Set(configuredDocuments(env).map(({ id }) => id)),
+            },
+            request,
+            store: this.store,
+            views: projectionViews(configured ?? env.NAME_STATE_VIEWS),
+          })
+        ),
+        Effect.provide(this.store)
+      )
     );
   }
 }

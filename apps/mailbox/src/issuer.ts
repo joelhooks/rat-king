@@ -16,6 +16,7 @@ import type { Request as XrpcRequest } from "@rat-king/lexicon/transport";
 import type { XrpcFailure } from "@rat-king/lexicon/xrpc-failure";
 import { Clock, Context, Effect, Layer, Option, Result, Schema } from "effect";
 
+import { namePage } from "./bootstrap-name-scan.ts";
 import { Caller } from "./caller.ts";
 import { failure } from "./failure.ts";
 import {
@@ -202,7 +203,8 @@ const templateDidIn = (policy: IssuerPolicy, name: string) =>
 
 export const issuerHandlers = (
   policy: IssuerPolicy,
-  views: ProjectionViews = projectionViews()
+  views: ProjectionViews = projectionViews(),
+  bootstrap = false
 ) =>
   Layer.effect(
     IssuerHandlers,
@@ -467,6 +469,55 @@ export const issuerHandlers = (
           return yield* output(Enroll.Output, { did: document.id });
         }),
         ...listing,
+        listNames: bootstrap
+          ? Effect.fn("Issuer.bootstrapListNames")(
+              function* bootstrapListNames(params) {
+                const page = yield* namePage(
+                  params,
+                  retirements.presence,
+                  store,
+                  caller.did
+                );
+
+                const names = yield* Effect.forEach(
+                  page.names,
+                  (row) =>
+                    Effect.gen(function* encodeName() {
+                      const entry = {
+                        did: row.did,
+                        document: row.document,
+                        name: row.name,
+                      };
+
+                      if (row.roleTarget) {
+                        Object.assign(entry, { roleTarget: true });
+                      }
+
+                      if (row.status !== undefined) {
+                        Object.assign(entry, { status: row.status });
+                      }
+
+                      if (row.parent !== undefined) {
+                        Object.assign(entry, {
+                          parent: yield* Schema.encodeEffect(ListNames.Parent)(
+                            row.parent
+                          ).pipe(
+                            Effect.mapError(() =>
+                              failure("MailboxUnavailable", 503)
+                            )
+                          ),
+                        });
+                      }
+
+                      return entry;
+                    }),
+                  { concurrency: 1 }
+                );
+
+                return yield* output(ListNames.Output, { ...page, names });
+              }
+            )
+          : listing.listNames,
         listRoles: Effect.fn("Issuer.listRoles")(function* listRoles(params) {
           const limit = params.limit ?? ListRoles.Method.defaults.limit;
 

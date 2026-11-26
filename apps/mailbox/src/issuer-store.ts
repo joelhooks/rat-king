@@ -5,9 +5,11 @@ import type { Effect } from "effect";
 
 import { Document } from "./auth.ts";
 import { failure } from "./failure.ts";
+import type { DirectoryMode } from "./issuer-name-state.ts";
 import {
   beginCompensation,
   claimDueTickets,
+  directoryBootstrap,
   decodeProjection,
   finishTicket,
   observeName,
@@ -67,6 +69,7 @@ export interface IssuerTransaction {
   ) => readonly RetiredName[];
   readonly writeTicket: (ticket: TicketValue, now: number) => boolean;
   readonly dueTickets: (now: number) => readonly TicketValue[];
+  readonly directoryBootstrap: (mode: DirectoryMode) => boolean;
   readonly finishTicket: (ticket: TicketValue) => boolean;
   readonly beginCompensation: (
     ticket: TicketValue,
@@ -256,6 +259,7 @@ export const issuerStore = (sql: Sql) => {
     deleteRole: (name) =>
       [...sql.exec("DELETE FROM roles WHERE name=? RETURNING name", name)]
         .length > 0,
+    directoryBootstrap: (mode) => directoryBootstrap(sql, mode),
     dueTickets: (now) => claimDueTickets(sql, now),
     enroll: (host, document) => {
       sql.exec("INSERT OR IGNORE INTO hosts (did) VALUES (?)", host);

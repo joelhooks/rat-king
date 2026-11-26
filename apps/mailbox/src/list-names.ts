@@ -21,6 +21,19 @@ export const projectionViews = (value?: string) => {
 
 export type ProjectionViews = ReturnType<typeof projectionViews>;
 
+export const directoryMode = (configured?: string) => {
+  if (configured === undefined) {
+    return "bootstrap";
+  }
+
+  const { names, retired, snapshot } = projectionViews(configured);
+
+  return names || retired || snapshot ? "projected" : "degraded";
+};
+
+export const isDirectoryMethod = (nsid: string) =>
+  nsid === ListNames.Method.nsid || nsid === ListRetired.Method.nsid;
+
 export const retiredOutput = (retired: RetiredName) => {
   const row = {
     by: retired.by,

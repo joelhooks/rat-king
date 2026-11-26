@@ -19,6 +19,9 @@ export const stateColumns =
 
 export const projectionTables = (sql: Sql) => {
   sql.exec(
+    "CREATE TABLE IF NOT EXISTS directory_cutover (singleton INTEGER PRIMARY KEY CHECK(singleton=1))"
+  );
+  sql.exec(
     "CREATE TABLE IF NOT EXISTS name_state (did TEXT PRIMARY KEY, version INTEGER NOT NULL, lease_generation INTEGER NOT NULL, lease_expires_at INTEGER NOT NULL, retirement_json TEXT NOT NULL, observed_at INTEGER NOT NULL, seeded INTEGER NOT NULL CHECK(seeded IN (0,1)))"
   );
   sql.exec(
@@ -33,6 +36,24 @@ export const projectionTables = (sql: Sql) => {
   sql.exec(
     "CREATE TABLE IF NOT EXISTS ticket_drain (singleton INTEGER PRIMARY KEY CHECK(singleton=1), next_at INTEGER NOT NULL)"
   );
+};
+
+export type DirectoryMode = "bootstrap" | "degraded" | "projected";
+
+export const directoryBootstrap = (sql: Sql, mode: DirectoryMode) => {
+  if (mode === "projected") {
+    sql.exec("INSERT OR IGNORE INTO directory_cutover VALUES (1)");
+  }
+
+  if (mode !== "bootstrap") {
+    return false;
+  }
+
+  const [cutover] = sql.exec(
+    "SELECT singleton FROM directory_cutover WHERE singleton=1"
+  );
+
+  return cutover === undefined;
 };
 
 export const decodeProjection = Schema.decodeUnknownSync(StateRow);

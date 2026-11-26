@@ -76,6 +76,7 @@ export const routeIssuer = (input: {
   readonly store: Layer.Layer<IssuerStore>;
   readonly policy: IssuerPolicy;
   readonly views?: ProjectionViews;
+  readonly bootstrap?: boolean;
 }) => {
   const {
     request,
@@ -84,10 +85,11 @@ export const routeIssuer = (input: {
     store,
     policy,
     views = projectionViews(),
+    bootstrap = false,
   } = input;
 
   if (
-    request.nsid === ListNames.Method.nsid ||
+    (!bootstrap && request.nsid === ListNames.Method.nsid) ||
     request.nsid === ListRetired.Method.nsid
   ) {
     return enumerationRequest(request).pipe(
@@ -184,7 +186,7 @@ export const routeIssuer = (input: {
 
   return issuerRoute(request).pipe(
     Effect.provide(
-      issuerHandlers(policy, views).pipe(
+      issuerHandlers(policy, views, bootstrap).pipe(
         Layer.provide(store),
         Layer.provide(registry),
         Layer.provide(named),

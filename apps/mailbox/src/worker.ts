@@ -58,6 +58,7 @@ import {
   didAllowlist,
   peerDocument,
   configuredDocuments,
+  directoryDocuments,
 } from "./documents.ts";
 import {
   logFailure,
@@ -72,6 +73,7 @@ import { issuerInstance } from "./issuer-object.ts";
 import { issuerMethods } from "./issuer.ts";
 import { jsonResponse } from "./json-response.ts";
 import { validLease } from "./lease.ts";
+import { isDirectoryMethod } from "./list-names.ts";
 import {
   Caller,
   mailboxHandlers,
@@ -1524,7 +1526,10 @@ const issuerRequest = Effect.fn("Issuer.request")(function* issuerRequest(
 
   const response = yield* Effect.tryPromise({
     catch: () => failure("MailboxUnavailable", 503),
-    try: () => issuers.getByName(issuerInstance).route(transport, caller),
+    try: () =>
+      issuers
+        .getByName(issuerInstance)
+        .route(transport, caller, env.NAME_STATE_VIEWS),
   });
 
   return jsonResponse(response.body, response.status);
@@ -1737,11 +1742,10 @@ const serviceRequest = (
   });
 };
 
-const directoryAuthMethods = new Set([
-  ListNames.Method.nsid,
-  ListRetired.Method.nsid,
-  seedNameStateNsid,
-]);
+const requestDocuments = (env: Bindings, nsid: string) =>
+  isDirectoryMethod(nsid)
+    ? directoryDocuments(env)
+    : Effect.succeed(documentsLayer(env, nsid === seedNameStateNsid));
 
 const seedStanding = Effect.fn("Issuer.seedStanding")(function* seedStanding(
   request: Request,
@@ -1854,19 +1858,14 @@ const handleRequest = (
       return Response.json({ error: "InvalidRequest" }, { status: 404 });
     }
 
+    const documents = yield* requestDocuments(env, nsid);
+
     const issuer = yield* authenticate({
       audience: `${env.SERVICE_DID}#mailbox`,
       authorization: request.headers.get("authorization"),
       now: yield* Clock.currentTimeMillis,
       nsid,
-    }).pipe(
-      Effect.provide(
-        Layer.merge(
-          documentsLayer(env, directoryAuthMethods.has(nsid)),
-          replayLayer(env)
-        )
-      )
-    );
+    }).pipe(Effect.provide(Layer.merge(documents, replayLayer(env))));
 
     if (nsid === seedNameStateNsid) {
       return yield* seedStanding(request, env, issuer);

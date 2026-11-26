@@ -243,7 +243,7 @@ it.effect(
       const degraded = yield* call(
         ListNames.Method.nsid,
         { limit: 1, status: "live" },
-        ""
+        "degraded"
       );
 
       const unavailable = yield* Schema.decodeEffect(

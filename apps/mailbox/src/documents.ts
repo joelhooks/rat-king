@@ -14,7 +14,7 @@ export const didAllowlist = (value: string | undefined) =>
     value ?? "[]"
   );
 
-export const documentsJson = (env: Bindings) => {
+export const documentsJson = (env: Pick<Bindings, "DID_DOCUMENTS">) => {
   const json = env.DID_DOCUMENTS ?? bundledDocuments;
 
   if (json === undefined) {
@@ -24,7 +24,7 @@ export const documentsJson = (env: Bindings) => {
   return json;
 };
 
-export const configuredDocuments = (env: Bindings) =>
+export const configuredDocuments = (env: Pick<Bindings, "DID_DOCUMENTS">) =>
   Schema.decodeUnknownSync(Documents)(JSON.parse(documentsJson(env)));
 
 export const lookupPeerDocument = Effect.fn("Directory.lookup")(
@@ -98,7 +98,33 @@ export const peerDocument = (env: Bindings, issuer: string, did: string) =>
     did
   );
 
-export const documentsLayer = (env: Bindings, directoryOnly = false) => {
+interface DocumentBindings extends Pick<Bindings, "DID_DOCUMENTS"> {
+  readonly MAILBOX: {
+    readonly getByName: (did: string) => {
+      readonly registeredDocument: () => Promise<string | undefined>;
+    };
+  };
+  readonly ISSUER?: {
+    readonly getByName: (name: string) => {
+      readonly directoryDocument: (did: string) => Promise<string | undefined>;
+    };
+  };
+}
+
+interface DirectoryAuthBindings
+  extends DocumentBindings, Pick<Bindings, "NAME_STATE_VIEWS"> {
+  readonly ISSUER?: {
+    readonly getByName: (name: string) => {
+      readonly directoryBootstrap: (configured?: string) => Promise<boolean>;
+      readonly directoryDocument: (did: string) => Promise<string | undefined>;
+    };
+  };
+}
+
+export const documentsLayer = (
+  env: DocumentBindings,
+  directoryOnly = false
+) => {
   const documents = configuredDocuments(env);
 
   return documentResolver(
@@ -131,3 +157,23 @@ export const documentsLayer = (env: Bindings, directoryOnly = false) => {
     })
   );
 };
+
+export const directoryDocuments = Effect.fn("Worker.directoryDocuments")(
+  function* directoryDocuments(env: DirectoryAuthBindings) {
+    const issuer = env.ISSUER;
+
+    if (issuer === undefined) {
+      return documentsLayer(env, true);
+    }
+
+    const bootstrap = yield* Effect.tryPromise({
+      catch: () => failure("MailboxUnavailable", 503),
+      try: () =>
+        issuer
+          .getByName(issuerInstance)
+          .directoryBootstrap(env.NAME_STATE_VIEWS),
+    });
+
+    return documentsLayer(env, !bootstrap);
+  }
+);
