@@ -136,6 +136,7 @@ import {
   readerJournal,
   sameReaderIdentity,
 } from "./reader-journal.ts";
+import { lockReader, readerLeaseJournal } from "./reader-lease.ts";
 import {
   boundIntake,
   intakeTimeout,
@@ -1077,13 +1078,18 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         )
       );
 
-  const writeLease = (name: string, saved: typeof SavedLease.Type) =>
+  const writeLegacyLease = (name: string, saved: typeof SavedLease.Type) =>
     Schema.encodeEffect(Schema.fromJsonString(SavedLease))(saved).pipe(
       Effect.flatMap((json) => writePrivateJson(leaseFile(name), json)),
       Effect.provideService(FileSystem.FileSystem, fs),
       Effect.provideService(Path.Path, path),
-      Effect.tapError(() => Effect.logWarning("Rat King lease not saved")),
-      Effect.ignore
+      Effect.mapError(
+        () =>
+          new MailboxClientError({
+            error: "MailboxUnavailable",
+            reason: "Rat King compatible lease checkpoint unavailable",
+          })
+      )
     );
 
   const readCursor = (name: string) =>
@@ -1628,6 +1634,9 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     budget: IntakeBudget
   ) =>
     Effect.gen(function* consumeLease() {
+      const leases = path.join(settings.state, "leases", "readers");
+      yield* lockReader(leases, own.did, facts.session);
+
       if (consumerStarts > 0) {
         yield* retryMetric(own.name)("consumeReconnect");
       }
@@ -1658,8 +1667,26 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         yield* writeCursor(own.name, afterSeq);
       }
 
+      const journal = yield* readerLeaseJournal(leases, own.did, facts.session);
+
+      const legacy =
+        facts.successor === true
+          ? Option.none()
+          : yield* readLease(own.name, own.did, facts.session);
+
+      const pending = yield* journal.pending(legacy);
+
+      const checkpointLegacy = (lease: Lease.MainValue) =>
+        writeLegacyLease(own.name, {
+          did: own.did,
+          generation: lease.generation,
+          leaseId: lease.leaseId,
+          session: facts.session,
+        });
+
       const options: ConsumeOptions = {
         ackOnReturn: false,
+        acquireAttempt: pending.attempt,
         afterSeq,
         failOnHeld: true,
         harness: {
@@ -1667,6 +1694,8 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           sessionId: facts.session,
         },
         leaseName: own.name,
+        onAcquired: (lease) =>
+          checkpointLegacy(lease).pipe(Effect.andThen(journal.save(lease))),
         onAttentionReceipt: () =>
           refreshAttention.pipe(
             Deadline.timeout("2 seconds"),
@@ -1896,12 +1925,6 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                     leaseId: lease.leaseId,
                   })
                 ),
-                writeLease(own.name, {
-                  did: own.did,
-                  generation: lease.generation,
-                  leaseId: lease.leaseId,
-                  session: facts.session,
-                }),
                 progress || source === "acquire"
                   ? setState(
                       ReaderState.Live({
@@ -1913,6 +1936,11 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
                     )
                   : Effect.void,
               ])
+            ),
+            Effect.andThen(
+              source === "acquire"
+                ? Effect.void
+                : checkpointLegacy(lease).pipe(Effect.ignore)
             ),
             Effect.andThen(activity.mark),
             Effect.andThen(progress ? budget.verified : Effect.void),
@@ -1961,35 +1989,30 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
           ),
       };
 
-      const savedLease =
-        facts.successor === true
-          ? Option.none<LeaseFence>()
-          : yield* readLease(own.name, own.did, facts.session);
+      if (pending.resume !== undefined) {
+        Object.assign(options, { resume: { ...pending.resume, did: own.did } });
+      }
 
-      yield* client.consume(
-        (message, meta) =>
-          intake(own, route)(message, meta).pipe(
-            Deadline.timeoutOrElse({
-              duration: Deadline.REQUEST_MS,
-              orElse: () =>
-                Effect.fail(intakeTimeout("Reader delivery timed out")),
-            })
-          ),
-        Option.match(
-          Option.orElse(yield* Ref.get(lastLease), () => savedLease),
-          {
-            onNone: () => options,
-            onSome: (resume): ConsumeOptions => ({
-              ...options,
-              resume: {
-                did: resume.did,
-                generation: resume.generation,
-                leaseId: resume.leaseId,
-              },
-            }),
-          }
+      yield* client
+        .consume(
+          (message, meta) =>
+            intake(own, route)(message, meta).pipe(
+              Deadline.timeoutOrElse({
+                duration: Deadline.REQUEST_MS,
+                orElse: () =>
+                  Effect.fail(intakeTimeout("Reader delivery timed out")),
+              })
+            ),
+          options
         )
-      );
+        .pipe(
+          Effect.tapError((error) =>
+            Schema.is(MailboxClientError)(error) &&
+            error.error === "AcquireAttemptExpired"
+              ? journal.begin(pending.resume)
+              : Effect.void
+          )
+        );
     }).pipe(
       Effect.ensuring(
         Effect.all([
@@ -2001,6 +2024,8 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
         ])
       ),
       Effect.scoped,
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.provideService(Path.Path, path),
       Effect.provideService(HttpClient.HttpClient, http)
     );
 
@@ -3493,6 +3518,12 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
               lastError: Option.some(errorTag(failure)),
               lastReason: Option.some(reasonOf(failure)),
             })).pipe(Effect.andThen(waitForClaim(own.name, reasonOf(failure))))
+        ),
+        Effect.catchIf(
+          (error) =>
+            Schema.is(MailboxClientError)(error) &&
+            error.error === "LocalReaderBusy",
+          () => waitForClaim(own.name)
         ),
         Effect.catchIf(
           (error) =>

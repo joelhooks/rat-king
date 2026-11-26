@@ -123,9 +123,10 @@ const channelFor = (fd: number) =>
     },
   });
 
-export const bindDeskSigner = Effect.fn("DeskSigner.bind")(
-  function* bindDeskSigner(fd: number, name: string, did: string) {
-    const exchange = yield* channelFor(fd);
+type Exchange = ReturnType<typeof makeChannel>;
+
+export const identityFromGrant = Effect.fn("DeskSigner.identity")(
+  function* identityFromGrant(exchange: Exchange, name: string, did: string) {
     const description = yield* exchange({ kind: "describe" });
 
     if (
@@ -157,5 +158,13 @@ export const bindDeskSigner = Effect.fn("DeskSigner.bind")(
         ),
       signing,
     } satisfies ManagedIdentity;
+  }
+);
+
+export const bindDeskSigner = Effect.fn("DeskSigner.bind")(
+  function* bindDeskSigner(fd: number, name: string, did: string) {
+    const exchange = yield* channelFor(fd);
+
+    return yield* identityFromGrant(exchange, name, did);
   }
 );

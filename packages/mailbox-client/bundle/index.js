@@ -2047,6 +2047,14 @@ var Pi = Schema20.StructWithRest(
 var Params11 = Schema21.Undefined;
 var Input10 = Schema21.StructWithRest(
   Schema21.Struct({
+    attempt: Schema21.optionalKey(
+      lexString({
+        description: "Private 128-bit acquire-attempt credential, encoded as lowercase hex. Replays only its own current lease; never authorizes takeover.",
+        maxLength: 32,
+        minLength: 32,
+        type: "string"
+      })
+    ),
     did: lexString({ format: "did", type: "string" }).pipe(
       Schema21.brand("Lexicon:did")
     ),
@@ -4854,6 +4862,8 @@ var consumerMachine = createMachine({
 var ATTEMPT_MS = LEASE_MS;
 var RENEW_FLOOR_MS = 250;
 var LEASE_TTL_MS = 3e5;
+var HELD_RETRY_JITTER_MS = 2e3;
+var heldRetryDelay = (remaining3, jitter) => Math.max(1, Math.min(1e4 - HELD_RETRY_JITTER_MS, remaining3) + jitter);
 var attemptTimedOut = (reason) => new MailboxClientError({ error: "MailboxUnavailable", reason });
 var TIMED_OUT = "Renewal attempt timed out";
 var unavailable = (error) => error.status === void 0 ? error.error === "MailboxUnavailable" || error.error === "SocketDisconnected" : error.status >= 500 && error.status < 600 || error.status === 429;
@@ -4875,6 +4885,9 @@ var consume = (mailbox, did, handler, options) => Effect31.scoped(
         ),
         harness: options.harness
       };
+      if (options.acquireAttempt !== void 0) {
+        Object.assign(input, { attempt: options.acquireAttempt });
+      }
       if (options.renders !== void 0) {
         Object.assign(input, { renders: options.renders });
       }
@@ -4897,6 +4910,7 @@ var consume = (mailbox, did, handler, options) => Effect31.scoped(
           duration: ATTEMPT_MS,
           orElse: () => Effect31.fail(attemptTimedOut("Acquire attempt timed out"))
         }),
+        Effect31.tap((lease) => options.onAcquired?.(lease) ?? Effect31.void),
         Effect31.tap(() => options.onRetryMetric?.("acquireOk") ?? Effect31.void),
         Effect31.tapError(
           (error) => options.onRetryMetric?.(retryFailure("acquire", error)) ?? Effect31.void
@@ -4923,13 +4937,14 @@ var consume = (mailbox, did, handler, options) => Effect31.scoped(
               )
             );
             const current2 = yield* Clock6.currentTimeMillis;
-            if (holder !== void 0) {
-              yield* Effect31.interruptible(
-                Effect31.sleep(
-                  Math.max(1, Date.parse(holder.expiresAt) - current2)
-                )
-              );
-            }
+            const jitter = yield* Random.nextIntBetween(
+              0,
+              HELD_RETRY_JITTER_MS
+            );
+            const remaining3 = holder === void 0 ? 0 : Date.parse(holder.expiresAt) - current2;
+            yield* Effect31.interruptible(
+              Effect31.sleep(heldRetryDelay(remaining3, jitter))
+            );
             yield* step("RETRY");
             return yield* Effect31.fail(error);
           })
@@ -4937,8 +4952,7 @@ var consume = (mailbox, did, handler, options) => Effect31.scoped(
       );
     }).pipe(
       Effect31.retry(
-        Schedule3.spaced("1 millis").pipe(
-          Schedule3.modifyDelay(() => Random.nextBetween(0, 2e3)),
+        Schedule3.spaced("0 millis").pipe(
           Schedule3.while(
             ({ input }) => canAttempt(ATTEMPT_MS).pipe(
               Effect31.map(
@@ -6682,6 +6696,7 @@ export {
   DidResolver,
   Document,
   Documents,
+  HELD_RETRY_JITTER_MS,
   Identity2 as Identity,
   Kind,
   MailboxClientError,
@@ -6705,6 +6720,7 @@ export {
   documentResolver,
   encodePayload,
   fromBasisPoints,
+  heldRetryDelay,
   importAgreement,
   importSigning,
   layer,

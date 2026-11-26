@@ -11,7 +11,7 @@ export type { KindValue, PayloadValue } from "./payload.js";
 export { ownIdentity, prepare, PreparedMailbox, seal, sendSealed, SendOutcomes, } from "./prepare.js";
 export type { OwnIdentity, PeerDocument, PrepareOptions, SealOptions, SealedMessage, SendOutcome, SendResult, } from "./prepare.js";
 export { lookupPresence, readerCannotRender, recordType, } from "./record-visibility.js";
-export { consumerMachine } from "./consume.js";
+export { consumerMachine, heldRetryDelay, HELD_RETRY_JITTER_MS, } from "./consume.js";
 export { readPendingPush, registerDevice } from "./device.js";
 export { listPage, markRead } from "./inbox.js";
 export type { ConsumeOptions, MessageMeta, Skipped } from "./consume.js";

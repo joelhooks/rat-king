@@ -168,10 +168,15 @@ it.effect.prop(
 );
 
 it.effect.prop(
-  "LeaseHeld waits for holder expiry instead of failing, then releases",
+  "LeaseHeld waits for expiry or retries within ten seconds, whichever comes first (plus bounded jitter)",
   [
     Arbitrary.schema(
-      Schema.Int.check(Schema.isBetween({ maximum: 100, minimum: 10 }))
+      Schema.Union([
+        Schema.Int.check(Schema.isBetween({ maximum: 100, minimum: 10 })),
+        Schema.Int.check(
+          Schema.isBetween({ maximum: 300_000, minimum: 20_000 })
+        ),
+      ])
     ),
   ],
   ([ttl]) =>
@@ -224,7 +229,7 @@ it.effect.prop(
       ).pipe(Effect.forkScoped);
 
       yield* Deferred.await(attempted);
-      yield* TestClock.adjust(ttl - 1);
+      yield* TestClock.adjust(Math.min(ttl, 8000) - 1);
       expect(attempts).toBe(1);
       yield* TestClock.adjust(2001);
       yield* Deferred.await(acquired);
