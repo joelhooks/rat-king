@@ -10,7 +10,7 @@ import {
   DocumentRegistry,
   IssuerHandlers,
   issuerHandlers,
-  RetirementRegistry,
+  NamedCell,
 } from "../src/issuer.ts";
 import { testStoreFor } from "./helpers.ts";
 
@@ -124,7 +124,7 @@ it.effect.prop(
             Layer.provide(
               Layer.mock(DocumentRegistry, { put: () => Effect.void })
             ),
-            Layer.provide(Layer.mock(RetirementRegistry, {}))
+            Layer.provide(Layer.mock(NamedCell, {}))
           )
         )
       );

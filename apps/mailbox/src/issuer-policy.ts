@@ -58,6 +58,8 @@ export const refusalStatus: Readonly<Record<Refusal, number>> = {
 
 const isName = Schema.is(AgentName);
 
+export const issuerInstance = "issuer";
+
 export const nameDid = (template: string, name: string) =>
   template.replace("{agent}", name.replace("/", "."));
 

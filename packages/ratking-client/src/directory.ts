@@ -45,7 +45,7 @@ export interface Resolved {
   readonly document: PeerDocument;
   readonly parent?: typeof ForkParent.Type;
   readonly roleTarget?: boolean;
-  readonly status?: "live" | "idle" | "retired";
+  readonly status?: "live" | "idle" | "retired" | "unknown";
 }
 
 export interface Listed {
@@ -55,7 +55,7 @@ export interface Listed {
   readonly aliases: readonly string[];
   readonly parent?: typeof ForkParent.Type;
   readonly roleTarget?: boolean;
-  readonly status?: "live" | "idle" | "retired";
+  readonly status?: Resolved["status"];
 }
 
 export class UnknownName extends Schema.TaggedError<UnknownName>()(

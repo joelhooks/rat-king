@@ -154,6 +154,14 @@ export const nestStack = (
 
       Object.assign(vars, yield* issuerVars);
 
+      const views = yield* Config.option(
+        Config.String("RAT_KING_NAME_STATE_VIEWS")
+      );
+
+      if (Option.isSome(views)) {
+        Object.assign(vars, { NAME_STATE_VIEWS: views.value });
+      }
+
       Object.assign(vars, yield* delegationVars);
 
       Object.assign(vars, yield* healthReaderVars);

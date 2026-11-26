@@ -25,7 +25,7 @@ import {
   DocumentRegistry,
   issuerHandlers,
   issuerRoute,
-  RetirementRegistry,
+  NamedCell,
 } from "../src/issuer.ts";
 import { mailboxHandlers } from "../src/mailbox.ts";
 import {
@@ -147,7 +147,7 @@ it.effect.prop(
         Layer.provide(issuerStore(sql)),
         Layer.provide(callerLayer),
         Layer.provide(Layer.mock(DocumentRegistry, {})),
-        Layer.provide(Layer.mock(RetirementRegistry, {}))
+        Layer.provide(Layer.mock(NamedCell, {}))
       );
 
       const inputs = {

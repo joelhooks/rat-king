@@ -7,13 +7,14 @@ import { base64url, Document, Documents, documentResolver } from "./auth.ts";
 import type { Bindings } from "./bindings.ts";
 import { bundledDocuments } from "./bundled-documents.ts";
 import { failure } from "./failure.ts";
+import { issuerInstance } from "./issuer-policy.ts";
 
 export const didAllowlist = (value: string | undefined) =>
   Schema.decodeUnknownSync(Schema.fromJsonString(Schema.Array(Schema.String)))(
     value ?? "[]"
   );
 
-export const documentsJson = (env: Bindings) => {
+export const documentsJson = (env: Pick<Bindings, "DID_DOCUMENTS">) => {
   const json = env.DID_DOCUMENTS ?? bundledDocuments;
 
   if (json === undefined) {
@@ -23,7 +24,7 @@ export const documentsJson = (env: Bindings) => {
   return json;
 };
 
-export const configuredDocuments = (env: Bindings) =>
+export const configuredDocuments = (env: Pick<Bindings, "DID_DOCUMENTS">) =>
   Schema.decodeUnknownSync(Documents)(JSON.parse(documentsJson(env)));
 
 export const lookupPeerDocument = Effect.fn("Directory.lookup")(
@@ -97,7 +98,33 @@ export const peerDocument = (env: Bindings, issuer: string, did: string) =>
     did
   );
 
-export const documentsLayer = (env: Bindings) => {
+interface DocumentBindings extends Pick<Bindings, "DID_DOCUMENTS"> {
+  readonly MAILBOX: {
+    readonly getByName: (did: string) => {
+      readonly registeredDocument: () => Promise<string | undefined>;
+    };
+  };
+  readonly ISSUER?: {
+    readonly getByName: (name: string) => {
+      readonly directoryDocument: (did: string) => Promise<string | undefined>;
+    };
+  };
+}
+
+interface DirectoryAuthBindings
+  extends DocumentBindings, Pick<Bindings, "NAME_STATE_VIEWS"> {
+  readonly ISSUER?: {
+    readonly getByName: (name: string) => {
+      readonly directoryBootstrap: (configured?: string) => Promise<boolean>;
+      readonly directoryDocument: (did: string) => Promise<string | undefined>;
+    };
+  };
+}
+
+export const documentsLayer = (
+  env: DocumentBindings,
+  directoryOnly = false
+) => {
   const documents = configuredDocuments(env);
 
   return documentResolver(
@@ -114,7 +141,12 @@ export const documentsLayer = (env: Bindings) => {
 
       const registered = yield* Effect.tryPromise({
         catch: () => failure("MailboxUnavailable", 503),
-        try: () => env.MAILBOX.getByName(did).registeredDocument(),
+        try: () =>
+          directoryOnly
+            ? Promise.resolve(
+                env.ISSUER?.getByName(issuerInstance).directoryDocument(did)
+              )
+            : env.MAILBOX.getByName(did).registeredDocument(),
       });
 
       return registered === undefined
@@ -125,3 +157,23 @@ export const documentsLayer = (env: Bindings) => {
     })
   );
 };
+
+export const directoryDocuments = Effect.fn("Worker.directoryDocuments")(
+  function* directoryDocuments(env: DirectoryAuthBindings) {
+    const issuer = env.ISSUER;
+
+    if (issuer === undefined) {
+      return documentsLayer(env, true);
+    }
+
+    const bootstrap = yield* Effect.tryPromise({
+      catch: () => failure("MailboxUnavailable", 503),
+      try: () =>
+        issuer
+          .getByName(issuerInstance)
+          .directoryBootstrap(env.NAME_STATE_VIEWS),
+    });
+
+    return documentsLayer(env, !bootstrap);
+  }
+);

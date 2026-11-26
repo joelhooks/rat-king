@@ -4,11 +4,12 @@
   "defs": {
     "main": {
       "type": "query",
-      "description": "Authenticated list of retirements in the issuer index, ordered by name. The cursor is the last name of the previous page, exclusive. No mailbox cells are read. A lease acquisition that clears a mailbox retirement may remain indexed until named resolution reconciles it or an explicit unretire clears the index.",
+      "description": "Authenticated list of observed retirements, ordered by name. In degraded mode it reads the legacy issuer index. The cursor is exclusive. No Mailbox cells are read.",
       "parameters": {
         "type": "params",
         "properties": {
           "cursor": { "type": "string", "maxLength": 128 },
+          "snapshot": { "type": "boolean" },
           "limit": { "type": "integer", "minimum": 1, "maximum": 100, "default": 100 }
         }
       },

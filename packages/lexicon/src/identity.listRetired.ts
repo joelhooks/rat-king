@@ -15,6 +15,7 @@ export const Params = Schema.StructWithRest(
         Schema.isLessThanOrEqualTo(100)
       )
     ),
+    snapshot: Schema.optionalKey(Schema.Boolean),
   }),
   [Schema.Record(Schema.String, Runtime.Data)]
 );
@@ -44,6 +45,7 @@ export const ParamsFromQuery = Schema.StructWithRest(
   Schema.Struct({
     cursor: Schema.optionalKey(Schema.String),
     limit: Schema.optionalKey(Schema.FiniteFromString),
+    snapshot: Schema.optionalKey(Query.BooleanFromQuery),
   }),
   [Schema.Record(Schema.String, Runtime.Data)]
 ).pipe(Schema.decodeTo(Params));

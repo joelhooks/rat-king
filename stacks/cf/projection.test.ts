@@ -96,7 +96,7 @@ it.effect.prop(
         identity
       );
 
-      expect(Object.keys(props).toSorted()).toEqual([
+      const keys = [
         "bundle",
         "compatibility",
         "env",
@@ -104,7 +104,14 @@ it.effect.prop(
         "observability",
         "script",
         "workersDev",
-      ]);
+      ];
+
+      if (declaration.triggers !== undefined) {
+        keys.push("crons");
+        expect(props).toMatchObject({ crons: declaration.triggers.crons });
+      }
+
+      expect(Object.keys(props).toSorted()).toEqual(keys.toSorted());
       expect(props.name).toBe(workerName);
       expect(props.observability.logs.enabled).toBe(true);
       expect(props.script).toBe(bundle);

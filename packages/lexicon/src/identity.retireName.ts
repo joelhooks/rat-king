@@ -11,6 +11,11 @@ export const Retirement = Schema.StructWithRest(
       Schema.brand("Lexicon:did")
     ),
     name: Runtime.lexString({ maxLength: 128, type: "string" }),
+    observedAt: Schema.optionalKey(
+      Runtime.lexString({ format: "datetime", type: "string" }).pipe(
+        Schema.brand("Lexicon:datetime")
+      )
+    ),
     retiredAt: Runtime.lexString({ format: "datetime", type: "string" }).pipe(
       Schema.brand("Lexicon:datetime")
     ),

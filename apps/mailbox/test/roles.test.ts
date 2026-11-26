@@ -153,7 +153,7 @@ const harness = Effect.gen(function* harness() {
           Layer.provide(
             Layer.mock(DocumentRegistry, { put: () => Effect.void })
           ),
-          Layer.provide(storeRetirements(mailbox)),
+          Layer.provide(storeRetirements(mailbox, issuerLayer)),
           Layer.provide(Layer.succeed(Caller, { did: caller }))
         )
       )

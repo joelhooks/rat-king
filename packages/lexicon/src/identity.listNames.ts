@@ -25,13 +25,20 @@ export const Entry = Schema.StructWithRest(
     ),
     document: Defs.DidDocument,
     name: Runtime.lexString({ maxLength: 128, type: "string" }),
+    observedAt: Schema.optionalKey(
+      Runtime.lexString({ format: "datetime", type: "string" }).pipe(
+        Schema.brand("Lexicon:datetime")
+      )
+    ),
     parent: Schema.optionalKey(Parent),
     roleTarget: Schema.optionalKey(Schema.Boolean),
     status: Schema.optionalKey(
       Runtime.lexString({
-        enum: ["live", "idle", "retired"],
+        enum: ["live", "idle", "retired", "unknown"],
         type: "string",
-      }).pipe(Schema.decodeTo(Schema.Literals(["live", "idle", "retired"])))
+      }).pipe(
+        Schema.decodeTo(Schema.Literals(["live", "idle", "retired", "unknown"]))
+      )
     ),
   }),
   [Schema.Record(Schema.String, Runtime.Data)]
@@ -54,9 +61,12 @@ export const Params = Schema.StructWithRest(
     match: Schema.optionalKey(
       Runtime.lexString({ maxLength: 128, type: "string" })
     ),
+    snapshot: Schema.optionalKey(Schema.Boolean),
     status: Schema.optionalKey(
-      Runtime.lexString({ maxLength: 32, type: "string" }).check(
-        Schema.isPattern(/^(?:live|idle|retired)(?:,(?:live|idle|retired))*$/u)
+      Runtime.lexString({ maxLength: 40, type: "string" }).check(
+        Schema.isPattern(
+          /^(?:live|idle|retired|unknown)(?:,(?:live|idle|retired|unknown))*$/u
+        )
       )
     ),
   }),
@@ -96,6 +106,7 @@ export const ParamsFromQuery = Schema.StructWithRest(
     cursor: Schema.optionalKey(Schema.String),
     limit: Schema.optionalKey(Schema.FiniteFromString),
     match: Schema.optionalKey(Schema.String),
+    snapshot: Schema.optionalKey(Query.BooleanFromQuery),
     status: Schema.optionalKey(Schema.String),
   }),
   [Schema.Record(Schema.String, Runtime.Data)]

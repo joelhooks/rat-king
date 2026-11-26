@@ -40,6 +40,7 @@
         "retiredAt": { "type": "string", "format": "datetime" },
         "successor": { "type": "string", "maxLength": 128 },
         "by": { "type": "string", "format": "did" },
+        "observedAt": { "type": "string", "format": "datetime" },
         "updatedAt": { "type": "string", "format": "datetime", "description": "When identity.setSuccessor last re-pointed the retirement." }
       }
     }

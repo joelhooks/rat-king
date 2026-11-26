@@ -4,7 +4,28 @@ import { Context, Layer, Schema } from "effect";
 import type { Effect } from "effect";
 
 import { Document } from "./auth.ts";
+import { failure } from "./failure.ts";
+import type { DirectoryMode } from "./issuer-name-state.ts";
+import {
+  beginCompensation,
+  claimDueTickets,
+  directoryBootstrap,
+  decodeProjection,
+  finishTicket,
+  observeName,
+  projectionTables,
+  seededProjection,
+  stateColumns,
+  writeTicket,
+} from "./issuer-name-state.ts";
+import { fingerprint } from "./issuer-policy.ts";
 import type { Binding, PublicDocument } from "./issuer-policy.ts";
+import { NameState } from "./name-state.ts";
+import type {
+  CompensationValue,
+  NameStateValue,
+  TicketValue,
+} from "./name-state.ts";
 import type { Sql } from "./sqlite.ts";
 import { storageOperation } from "./store.ts";
 import type { RetirementValue } from "./store.ts";
@@ -14,12 +35,14 @@ export interface IssuedName {
   readonly did: string;
   readonly document: PublicDocument;
   readonly retired: boolean;
+  readonly observation?: NameStateValue;
   readonly roleTarget: boolean;
   readonly parent?: typeof Parent.Type;
 }
 
 export interface RetiredName extends RetirementValue {
   readonly did: string;
+  readonly observedAt?: number;
 }
 
 export interface RoleEntry {
@@ -35,7 +58,23 @@ export interface IssuerTransaction {
     reads: number
   ) => boolean;
   readonly enrolled: (host: string) => boolean;
-  readonly enroll: (host: string) => void;
+  readonly enroll: (host: string, document?: PublicDocument) => void;
+  readonly authDocument: (did: string) => PublicDocument | undefined;
+  readonly cacheAuthDocument: (document: PublicDocument) => void;
+  readonly observation: (did: string) => NameStateValue | undefined;
+  readonly observe: (state: NameStateValue) => number;
+  readonly projectedRetirements: (
+    after: string,
+    limit: number
+  ) => readonly RetiredName[];
+  readonly writeTicket: (ticket: TicketValue, now: number) => boolean;
+  readonly dueTickets: (now: number) => readonly TicketValue[];
+  readonly directoryBootstrap: (mode: DirectoryMode) => boolean;
+  readonly finishTicket: (ticket: TicketValue) => boolean;
+  readonly beginCompensation: (
+    ticket: TicketValue,
+    compensation: CompensationValue
+  ) => TicketValue | undefined;
   readonly binding: (name: string) => Binding | undefined;
   readonly bind: (
     name: string,
@@ -79,6 +118,7 @@ const NameRow = Schema.Struct({
   did: Schema.String,
   document: Schema.fromJsonString(Document),
   name: Schema.String,
+  observation: Schema.NullOr(Schema.fromJsonString(NameState)),
   parent: Schema.NullOr(Schema.fromJsonString(Parent)),
   retired: Schema.Number,
   roleTarget: Schema.Number,
@@ -126,7 +166,11 @@ const ScanTotal = Schema.Struct({ reads: Schema.Int });
 const TableColumn = Schema.Struct({ name: Schema.String });
 
 export const issuerStore = (sql: Sql) => {
+  projectionTables(sql);
   sql.exec("CREATE TABLE IF NOT EXISTS hosts (did TEXT PRIMARY KEY)");
+  sql.exec(
+    "CREATE TABLE IF NOT EXISTS issuer_documents (did TEXT PRIMARY KEY, document TEXT NOT NULL)"
+  );
   sql.exec(
     "CREATE TABLE IF NOT EXISTS names (name TEXT PRIMARY KEY, did TEXT NOT NULL UNIQUE, host TEXT NOT NULL, fingerprint TEXT NOT NULL, document TEXT NOT NULL)"
   );
@@ -154,6 +198,21 @@ export const issuerStore = (sql: Sql) => {
   sql.exec("CREATE INDEX IF NOT EXISTS scan_reads_expiry ON scan_reads (at)");
 
   const transaction: IssuerTransaction = {
+    authDocument: (did) => {
+      const [row] = sql.exec(
+        "SELECT document FROM names WHERE did=? UNION ALL SELECT document FROM issuer_documents WHERE did=? LIMIT 1",
+        did,
+        did
+      );
+
+      return row === undefined
+        ? undefined
+        : Schema.decodeUnknownSync(
+            Schema.Struct({ document: NameRow.fields.document })
+          )(row).document;
+    },
+    beginCompensation: (ticket, compensation) =>
+      beginCompensation(sql, ticket, compensation),
     bind: (name, binding, document, parent) => {
       sql.exec(
         "INSERT INTO names (name,did,host,fingerprint,document) VALUES (?,?,?,?,?)",
@@ -184,18 +243,38 @@ export const issuerStore = (sql: Sql) => {
         ? undefined
         : Schema.decodeUnknownSync(BindingRow)(row);
     },
+    cacheAuthDocument: (document) => {
+      const prior = transaction.authDocument(document.id);
+
+      if (prior !== undefined && fingerprint(prior) !== fingerprint(document)) {
+        throw failure("DocumentConflict", 409);
+      }
+
+      sql.exec(
+        "INSERT OR IGNORE INTO issuer_documents (did,document) VALUES (?,?)",
+        document.id,
+        JSON.stringify(document)
+      );
+    },
     deleteRole: (name) =>
       [...sql.exec("DELETE FROM roles WHERE name=? RETURNING name", name)]
         .length > 0,
-    enroll: (host) => {
+    directoryBootstrap: (mode) => directoryBootstrap(sql, mode),
+    dueTickets: (now) => claimDueTickets(sql, now),
+    enroll: (host, document) => {
       sql.exec("INSERT OR IGNORE INTO hosts (did) VALUES (?)", host);
+
+      if (document !== undefined) {
+        transaction.cacheAuthDocument(document);
+      }
     },
     enrolled: (host) =>
       [...sql.exec("SELECT did FROM hosts WHERE did=?", host)].length > 0,
+    finishTicket: (ticket) => finishTicket(sql, ticket),
     names: (after, limit, filter = "active", match = "") =>
       Array.from(
         sql.exec(
-          "SELECT names.name,names.did,document,parent,EXISTS(SELECT 1 FROM retired WHERE retired.name=names.name) AS retired,EXISTS(SELECT 1 FROM roles WHERE roles.target=names.name) AS roleTarget FROM names LEFT JOIN name_parents ON names.name=name_parents.name WHERE names.name > ? AND (? = 'all' OR (? = 'retired') = EXISTS(SELECT 1 FROM retired WHERE retired.name=names.name)) AND (? = '' OR CASE WHEN substr(?, -1) = '/' THEN substr(lower(names.name), 1, length(?)) = lower(?) ELSE instr(lower(names.name), lower(?)) > 0 END) ORDER BY names.name ASC LIMIT ?",
+          "SELECT names.name,names.did,document,parent,EXISTS(SELECT 1 FROM retired WHERE retired.name=names.name) AS retired,EXISTS(SELECT 1 FROM roles WHERE roles.target=names.name) AS roleTarget,CASE WHEN seeded=1 THEN json_object('did',names.did,'version',version,'leaseExpiresAt',lease_expires_at,'leaseGeneration',lease_generation,'observedAt',observed_at,'retirement',json(retirement_json)) END AS observation FROM names LEFT JOIN name_parents ON names.name=name_parents.name LEFT JOIN name_state ON names.did=name_state.did WHERE names.name > ? AND (? = 'all' OR (? = 'retired') = EXISTS(SELECT 1 FROM retired WHERE retired.name=names.name)) AND (? = '' OR CASE WHEN substr(?, -1) = '/' THEN substr(lower(names.name), 1, length(?)) = lower(?) ELSE instr(lower(names.name), lower(?)) > 0 END) ORDER BY names.name ASC LIMIT ?",
           after,
           filter,
           filter,
@@ -207,7 +286,7 @@ export const issuerStore = (sql: Sql) => {
           limit
         ),
         (row) => {
-          const { parent, retired, roleTarget, ...decoded } =
+          const { observation, parent, retired, roleTarget, ...decoded } =
             Schema.decodeUnknownSync(NameRow)(row);
 
           const entry = {
@@ -216,9 +295,24 @@ export const issuerStore = (sql: Sql) => {
             roleTarget: roleTarget === 1,
           };
 
+          if (observation !== null) {
+            Object.assign(entry, { observation });
+          }
+
           return parent === null ? entry : { ...entry, parent };
         }
       ),
+    observation: (did) => {
+      const [row] = sql.exec(
+        `SELECT ${stateColumns} FROM name_state WHERE did=?`,
+        did
+      );
+
+      return row === undefined
+        ? undefined
+        : seededProjection(decodeProjection(row));
+    },
+    observe: (state) => observeName(sql, state),
     parentName: (did) =>
       Array.from(
         sql.exec(
@@ -227,6 +321,25 @@ export const issuerStore = (sql: Sql) => {
         ),
         (row) => Schema.decodeUnknownSync(ParentRow)(row).parent.name
       ).at(0),
+    projectedRetirements: (after, limit) =>
+      Array.from(
+        sql.exec(
+          `SELECT ${stateColumns} FROM name_state WHERE seeded=1 AND retirement_json<>'null' AND json_extract(retirement_json,'$.name')>? ORDER BY json_extract(retirement_json,'$.name'),did LIMIT ?`,
+          after,
+          limit
+        ),
+        (row) => seededProjection(decodeProjection(row))
+      ).flatMap((state) =>
+        state === undefined || state.retirement === null
+          ? []
+          : [
+              {
+                ...state.retirement,
+                did: state.did,
+                observedAt: state.observedAt,
+              },
+            ]
+      ),
     retire: (retired) => {
       sql.exec(
         "INSERT INTO retired (name,did,retired_at,successor,by,updated_at) VALUES (?,?,?,?,?,NULLIF(?,'')) ON CONFLICT(name) DO UPDATE SET did=excluded.did, retired_at=excluded.retired_at, successor=excluded.successor, by=excluded.by, updated_at=excluded.updated_at",
@@ -311,6 +424,7 @@ export const issuerStore = (sql: Sql) => {
         );
       }
     },
+    writeTicket: (ticket, now) => writeTicket(sql, ticket, now),
   };
 
   return Layer.succeed(

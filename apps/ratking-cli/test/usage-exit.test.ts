@@ -48,6 +48,7 @@ const clientCommands = [
   ["retired", false],
   ["traffic", true],
   ["snapshot", true],
+  ["seed-name-state", true],
   ["resolve", true],
   ["role", true],
   ["role list", false],

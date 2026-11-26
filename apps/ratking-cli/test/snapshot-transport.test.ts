@@ -29,8 +29,8 @@ it.effect(
               expect(request.method).toBe("GET");
               expect(request.params).toEqual(
                 request.nsid === Names.Method.nsid
-                  ? { all: true, limit: 100 }
-                  : { limit: 100 }
+                  ? { all: true, limit: 100, snapshot: true }
+                  : { limit: 100, snapshot: true }
               );
 
               return Effect.succeed({

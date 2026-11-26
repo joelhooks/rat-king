@@ -40,7 +40,7 @@ import {
   DocumentRegistry,
   issuerHandlers,
   issuerRoute,
-  RetirementRegistry,
+  NamedCell,
 } from "../src/issuer.ts";
 import { testStoreFor } from "./helpers.ts";
 
@@ -108,7 +108,7 @@ it.effect.prop(
         Layer.provide(Layer.succeed(IssuerStore, store)),
         Layer.provide(Layer.succeed(Caller, { did: operator })),
         Layer.provide(Layer.mock(DocumentRegistry, { put: () => Effect.void })),
-        Layer.provide(Layer.mock(RetirementRegistry, {}))
+        Layer.provide(Layer.mock(NamedCell, {}))
       );
 
       const route = (request: XrpcRequest) =>
