@@ -17,6 +17,8 @@ const Text = Schema.NonEmptyString;
 
 const sending = {
   cc: Schema.optionalKey(Schema.Array(Text)),
+  ccOnPurpose: Schema.optionalKey(Schema.Boolean),
+  encrypt: Schema.optionalKey(Schema.Boolean),
   message: Schema.String,
   quiet: Schema.optionalKey(Schema.Boolean),
   summary: Text,
@@ -32,7 +34,7 @@ export const tools = Toolkit.make(
   }),
   Tool.make("send", {
     description:
-      "Send signed plaintext mail. quiet defers the recipient wake; cc gets a quiet copy.",
+      "Send signed mail. Use encrypt: true for sensitive content. quiet defers the recipient wake; cc gets a quiet copy.",
     parameters: Schema.Struct(sending),
     success: Schema.Json,
   }),
@@ -49,6 +51,7 @@ export const tools = Toolkit.make(
     description:
       "Reply by full message id, to all thread participants by default.",
     parameters: Schema.Struct({
+      encrypt: Schema.optionalKey(Schema.Boolean),
       message: Schema.String,
       quiet: Schema.optionalKey(Schema.Boolean),
       replyAll: Schema.optionalKey(Schema.Boolean),
@@ -60,7 +63,7 @@ export const tools = Toolkit.make(
   }),
   Tool.make("inbox", {
     description:
-      "Peek at unsettled mail without taking a lease or acknowledging. Continue with after=throughSeq.",
+      "Read unsettled mail without acknowledging. In citizen mode, call without a cursor to see the current batch; settle it before reading the next.",
     parameters: Schema.Struct({
       after: Schema.optionalKey(
         Schema.Int.check(Schema.isGreaterThanOrEqualTo(0))
@@ -76,8 +79,14 @@ export const tools = Toolkit.make(
   }),
   Tool.make("ack", {
     description:
-      "Acknowledge exactly these handled ids. Takes and releases a short lease; refuses LeaseHeld. Other backlog may be marked delivered, never acked.",
+      "Acknowledge only handled ids. In citizen mode, settle an ordered prefix of the current inbox batch using its printed ids.",
     parameters: Schema.Struct({ ids: Schema.NonEmptyArray(Text) }),
+    success: Schema.Json,
+  }),
+  Tool.make("wake", {
+    description:
+      "Inspect the current citizen batch token without reading or acknowledging mail.",
+    parameters: Tool.EmptyParams,
     success: Schema.Json,
   }),
   Tool.make("pending", {
@@ -99,7 +108,7 @@ export const tools = Toolkit.make(
   })
 );
 
-const entry = (item: Peeked) => {
+export const entry = (item: Peeked) => {
   const { received } = item;
 
   const common = {
@@ -170,25 +179,52 @@ const report = <A extends Schema.Json, E extends Fault, R>(
 
 const optionsFor = (args: {
   readonly summary: string;
+  readonly encrypt?: boolean | undefined;
   readonly quiet?: boolean;
 }) =>
   sendingOptions({
-    encrypt: false,
+    encrypt: args.encrypt === true,
     quiet: args.quiet === true ? true : undefined,
     summary: args.summary,
   });
 
+export interface CitizenTools {
+  readonly ack: (
+    ids: readonly string[]
+  ) => Effect.Effect<Schema.Json, NotDelivered>;
+  readonly batch: Effect.Effect<Schema.Json, NotDelivered>;
+  readonly wake: Effect.Effect<Schema.Json, NotDelivered>;
+  readonly identity: { readonly name: string; readonly did: string };
+  readonly ready: Effect.Effect<void, NotDelivered>;
+}
+
 const makeHandlers = Effect.fn("RatkingMcp.makeHandlers")(
-  function* makeHandlers(name: string) {
+  function* makeHandlers(name: string, citizen?: CitizenTools) {
     const inbox = yield* Inbox;
     const ratking = yield* RatKing;
     const directory = yield* Directory;
     const settings = yield* Settings;
-    const attached = yield* Effect.cached(inbox.attach(name));
+
+    const attached = yield* Effect.cached(
+      citizen === undefined
+        ? inbox.attach(name).pipe(
+            Effect.map(({ name: attachedName, did }) => ({
+              did,
+              name: attachedName,
+            }))
+          )
+        : Effect.succeed(citizen.identity)
+    );
 
     const named = <A extends Schema.Json, E extends Fault, R>(
       effect: Effect.Effect<A, E, R>
-    ) => report(Effect.andThen(attached, effect));
+    ) =>
+      report(
+        Effect.andThen(
+          citizen?.ready ?? Effect.void,
+          Effect.andThen(attached, effect)
+        )
+      );
 
     const pages = Effect.gen(function* pages() {
       const found: { afterSeq: number; messages: readonly Peeked[] }[] = [];
@@ -217,62 +253,70 @@ const makeHandlers = Effect.fn("RatkingMcp.makeHandlers")(
 
     return tools.of({
       ack: ({ ids }) =>
-        named(
-          Effect.gen(function* acknowledge() {
-            const requested = new Set(ids);
-            const history = yield* pages;
+        citizen === undefined
+          ? named(
+              Effect.gen(function* acknowledge() {
+                const requested = new Set(ids);
+                const history = yield* pages;
 
-            const available = new Set(
-              history.flatMap((page) =>
-                page.messages
-                  .filter(
-                    (item) =>
-                      item.state === "accepted" || item.state === "delivered"
-                  )
-                  .map((item) => item.received.id)
-              )
-            );
-
-            if (ids.some((id) => !available.has(id))) {
-              return yield* new NotDelivered({
-                code: "NotAttempted",
-                reason:
-                  "Some ids are not unsettled mail. Use inbox with its cursor; nothing was acknowledged.",
-              });
-            }
-
-            const acked: string[] = [];
-
-            for (const page of history) {
-              if (
-                !page.messages.some((item) => requested.has(item.received.id))
-              ) {
-                continue;
-              }
-
-              yield* inbox.hold(
-                (item, ack) =>
-                  requested.has(item.received.id)
-                    ? Effect.andThen(
-                        ack,
-                        Effect.sync(() => {
-                          acked.push(item.received.id);
-                        })
+                const available = new Set(
+                  history.flatMap((page) =>
+                    page.messages
+                      .filter(
+                        (item) =>
+                          item.state === "accepted" ||
+                          item.state === "delivered"
                       )
-                    : Effect.void,
-                { afterSeq: page.afterSeq, session: `mcp-${process.pid}` }
-              );
-            }
+                      .map((item) => item.received.id)
+                  )
+                );
 
-            return { acked };
-          })
-        ),
+                if (ids.some((id) => !available.has(id))) {
+                  return yield* new NotDelivered({
+                    code: "NotAttempted",
+                    reason:
+                      "Some ids are not unsettled mail. Use inbox with its cursor; nothing was acknowledged.",
+                  });
+                }
+
+                const acked: string[] = [];
+
+                for (const page of history) {
+                  if (
+                    !page.messages.some((item) =>
+                      requested.has(item.received.id)
+                    )
+                  ) {
+                    continue;
+                  }
+
+                  yield* inbox.hold(
+                    (item, ack) =>
+                      requested.has(item.received.id)
+                        ? Effect.andThen(
+                            ack,
+                            Effect.sync(() => {
+                              acked.push(item.received.id);
+                            })
+                          )
+                        : Effect.void,
+                    { afterSeq: page.afterSeq, session: `mcp-${process.pid}` }
+                  );
+                }
+
+                return { acked };
+              })
+            )
+          : report(citizen.ack(ids)),
       ask: (args) =>
         named(
           Effect.gen(function* ask() {
             const { clamp, options } = optionsFor(args);
 
-            const askingOptions: AskOptions = { ...options };
+            const askingOptions: AskOptions =
+              args.ccOnPurpose === true
+                ? { ...options, ccOnPurpose: true }
+                : { ...options };
 
             if (args.cc !== undefined) {
               Object.assign(askingOptions, { cc: args.cc });
@@ -293,16 +337,18 @@ const makeHandlers = Effect.fn("RatkingMcp.makeHandlers")(
           })
         ),
       inbox: ({ after }) =>
-        named(
-          inbox.peek(after === undefined ? {} : { afterSeq: after }).pipe(
-            Effect.map((peek) => ({
-              hasMore: peek.hasMore === true,
-              messages: peek.messages.map(entry),
-              throughSeq: peek.throughSeq,
-              unreadable: peek.unreadable.map((item) => ({ ...item })),
-            }))
-          )
-        ),
+        citizen === undefined
+          ? named(
+              inbox.peek(after === undefined ? {} : { afterSeq: after }).pipe(
+                Effect.map((peek) => ({
+                  hasMore: peek.hasMore === true,
+                  messages: peek.messages.map(entry),
+                  throughSeq: peek.throughSeq,
+                  unreadable: peek.unreadable.map((item) => ({ ...item })),
+                }))
+              )
+            )
+          : report(citizen.batch),
       list: () =>
         named(
           ratking.roles.pipe(
@@ -405,7 +451,10 @@ const makeHandlers = Effect.fn("RatkingMcp.makeHandlers")(
           Effect.gen(function* send() {
             const { clamp, options } = optionsFor(args);
 
-            const sendOptions: SendOptions = { ...options };
+            const sendOptions: SendOptions =
+              args.ccOnPurpose === true
+                ? { ...options, ccOnPurpose: true }
+                : { ...options };
 
             if (args.cc !== undefined) {
               Object.assign(sendOptions, { cc: args.cc });
@@ -424,6 +473,10 @@ const makeHandlers = Effect.fn("RatkingMcp.makeHandlers")(
               : { ...result, hint: delivered.hint };
           })
         ),
+      wake: () =>
+        citizen === undefined
+          ? Effect.succeed({ batch: null })
+          : report(citizen.wake),
       whoami: () =>
         report(
           attached.pipe(Effect.map((me) => ({ did: me.did, name: me.name })))
@@ -432,7 +485,7 @@ const makeHandlers = Effect.fn("RatkingMcp.makeHandlers")(
   }
 );
 
-export const registration = (name: string) =>
+export const registration = (name: string, citizen?: CitizenTools) =>
   McpServer.toolkit(tools).pipe(
-    Layer.provide(tools.toLayer(makeHandlers(name)))
+    Layer.provide(tools.toLayer(makeHandlers(name, citizen)))
   );

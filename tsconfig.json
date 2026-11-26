@@ -7,6 +7,7 @@
   "include": [
     "*.config.ts",
     "scripts/*.ts",
+    "plugins/**/*.mts",
     "tools/oxlint/**/*.ts",
     "tools/fence/**/*.ts"
   ],

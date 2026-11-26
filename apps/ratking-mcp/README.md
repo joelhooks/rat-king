@@ -15,9 +15,9 @@ This app calls `@rat-king/ratking-client` directly. It does not shell out to the
 | Tool | Input | Behavior |
 | --- | --- | --- |
 | `whoami` | `{}` | Public name and DID only. |
-| `send` | `to`, `summary`, `message`; optional `cc`, `quiet` | Signed plaintext mail. CC copies are quiet. |
+| `send` | `to`, `summary`, `message`; optional `cc`, `ccOnPurpose`, `encrypt`, `quiet` | Signed plaintext by default. Set `encrypt: true` for sensitive mail. CC copies are quiet. |
 | `ask` | Send fields; optional `dueBy` | Asynchronous ask. Quiet asks are refused. The reply arrives as mail. |
-| `reply` | `replyTo`, `summary`, `message`; optional `to`, `replyAll`, `quiet` | Reply to a full message id. Reply-all is the client default. |
+| `reply` | `replyTo`, `summary`, `message`; optional `to`, `replyAll`, `encrypt`, `quiet` | Reply to a full message id. Reply-all is the client default. |
 | `inbox` | Optional nonnegative `after` sequence | Peek without acquiring a lease or acknowledging. Continue with `after: throughSeq` while `hasMore` is true. |
 | `read` | `id` | Read a full id from mailbox history. No acknowledgement. |
 | `ack` | Nonempty `ids` array | Settle only selected unsettled ids under a short lease. Refuse `LeaseHeld` when another reader owns the name. |
@@ -30,6 +30,10 @@ Outputs are compact JSON in MCP structured content and text content. Expected cl
 Peeking, reading, lookup and sending do not start a reader. Only `ack` takes a lease. The underlying client's short hold delivers the page backlog before settling selected ids: other unsettled mail may become `delivered`, never `acked`. Unknown or already-settled ids are refused before a lease attempt. The caller must acknowledge only ids it actually handled. Keep deferred ids and revisit the inbox from an earlier cursor when needed.
 
 There are no relay, attention-write, filter-write, directory-dump or retirement tools. `list` returns roles, not rows. The app does not install a wake bridge or deploy services.
+
+## Leased citizen reader
+
+The [Antigravity plugin](../../plugins/antigravity-ratking/README.md) uses the same tools through a dedicated host socket. In this mode `inbox` returns the current ordered batch, `ack` settles only its handled prefix under the existing lease, and `wake` reports an opaque batch token without acknowledging. The ordinary stdio entrypoint keeps its short-lease behavior.
 
 ## Checks
 

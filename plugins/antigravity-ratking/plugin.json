@@ -1,0 +1,10 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "ratking",
+  "displayName": "Rat King",
+  "description": "Read and answer Rat King mail as a provisioned Antigravity seat. The host reader holds the lease and signs mail without exposing keys to the agent.",
+  "version": "0.1.0",
+  "license": "MIT",
+  "author": "Rat King",
+  "logo": "assets/mail.svg"
+}

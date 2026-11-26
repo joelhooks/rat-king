@@ -593,10 +593,20 @@ export class RatKing extends Context.Service<
   }
 >()("pi-ratking/RatKing") {}
 
+interface FollowOptions {
+  readonly session: string;
+  readonly ready: Effect.Effect<void>;
+  readonly retrying: Effect.Effect<void>;
+}
+
 export class Inbox extends Context.Service<
   Inbox,
   {
     readonly attach: (name: string) => Effect.Effect<Attached, NotDelivered>;
+    readonly follow: (
+      deliver: HeldDelivery,
+      options: FollowOptions
+    ) => Effect.Effect<void, NotDelivered>;
     readonly hold: (
       deliver: HeldDelivery,
       options: HoldOptions
@@ -3688,6 +3698,103 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
     )
   );
 
+  const follow = Effect.fn("RatKing.follow")(
+    function* follow(deliver: HeldDelivery, options: FollowOptions) {
+      const own = yield* awaitSelf;
+
+      if (
+        settings.refuse.includes(own.name) ||
+        settings.relays.some(
+          (relay) => relay.name === own.name || relay.to === own.name
+        )
+      ) {
+        return yield* refused("NotAttempted")(
+          "This name is reserved for another reader by local policy"
+        );
+      }
+
+      const checkpoint = path.join(
+        settings.state,
+        "citizen-cursors",
+        `${provisionLabel(own.name)}.json`
+      );
+
+      const saved = yield* fs.readFileString(checkpoint).pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(Schema.fromJsonString(Cursor))
+        ),
+        Effect.map(({ afterSeq }) => afterSeq),
+        Effect.orElseSucceed(() => 0)
+      );
+
+      const client = yield* prepare({
+        endpoint: settings.endpoint,
+        own: yield* ownIdentity(own.identity),
+        peers: peersOf(yield* directory.documents),
+        serviceDid: settings.serviceDid,
+      });
+
+      return yield* client.consume(
+        (message, meta) =>
+          Effect.gen(function* followDelivery() {
+            const item: Peeked = {
+              encrypted: message.encrypted ?? true,
+              received: yield* classify(own, message),
+              redelivered: meta.redelivered,
+              seq: meta.seq,
+              state: meta.redelivered ? "delivered" : "accepted",
+            };
+
+            yield* deliver(
+              item,
+              meta.ackOutcome.pipe(
+                Effect.mapError(unreachable),
+                Effect.flatMap((outcome) =>
+                  outcome === "delegated"
+                    ? refused("NotAttempted")(
+                        "Delegated mail cannot be acknowledged by this reader"
+                      )
+                    : writePrivateJson(
+                        checkpoint,
+                        JSON.stringify({ afterSeq: meta.seq })
+                      ).pipe(
+                        Effect.provideService(FileSystem.FileSystem, fs),
+                        Effect.provideService(Path.Path, path),
+                        Effect.tapError(() =>
+                          Effect.logWarning(
+                            "Rat King citizen cursor not written; settled mail will be skipped on replay"
+                          )
+                        ),
+                        Effect.ignore
+                      )
+                )
+              )
+            );
+          }),
+        {
+          ackOnReturn: false,
+          afterSeq: saved,
+          failOnHeld: true,
+          harness: {
+            $type: "sh.mschf.ratking.runtime.lease#other",
+            kind: "ratking-mcp",
+            sessionId: options.session,
+          },
+          leaseName: own.name,
+          onDrained: () => options.ready,
+          onRetry: () => options.retrying,
+          renders: RENDERS,
+        }
+      );
+    },
+    Effect.scoped,
+    (effect) =>
+      effect.pipe(
+        Effect.provideService(HttpClient.HttpClient, http),
+        Effect.catchTag("MailboxClientError", unreachable)
+      )
+  );
+
   const hold = Effect.fn("RatKing.hold")(function* hold(
     deliver: HeldDelivery,
     options: HoldOptions
@@ -4551,6 +4658,7 @@ export const makeRatKing = Effect.gen(function* makeRatKing() {
       Inbox.of({
         attach,
         change,
+        follow,
         hold,
         holder,
         levers,
