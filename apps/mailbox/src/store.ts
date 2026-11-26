@@ -37,6 +37,7 @@ const LegacyLease = Schema.Struct({
 export const Lease = Schema.Union([
   Schema.Struct({
     ...LegacyLease.fields,
+    attemptHash: Schema.optionalKey(Schema.String),
     did: RuntimeLease.Main.schema.fields.did,
     harness: RuntimeLease.Main.schema.fields.harness,
     issuedAt: Schema.Int,

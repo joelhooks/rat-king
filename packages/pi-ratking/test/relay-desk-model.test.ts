@@ -602,7 +602,7 @@ it.live.prop(
         yield* Effect.sleep("20 millis");
         expect(forwards).toHaveLength(1);
         expect(injected).toEqual([]);
-      }).pipe(Effect.provide(layer));
+      }).pipe(Effect.scoped, Effect.provide(layer));
 
       acquired = false;
       restarted = true;

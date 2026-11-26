@@ -67,9 +67,9 @@ export const unleasedSender = Layer.succeed(SenderFence, {
   check: () => Effect.void,
 });
 
-export const testStoreFor = (did: string) =>
+export const testStoreFor = (did: string, file = ":memory:") =>
   Effect.acquireRelease(
-    Effect.sync(() => new DatabaseSync(":memory:")),
+    Effect.sync(() => new DatabaseSync(file)),
     (database) =>
       Effect.sync(() => {
         database.close();

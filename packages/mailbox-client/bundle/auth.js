@@ -1,5 +1,5 @@
 // packages/envelope/src/es256.ts
-import { Effect as Effect2 } from "effect";
+import { Effect as Effect2, Predicate } from "effect";
 
 // packages/envelope/src/bytes.ts
 var concatenate = (...parts) => {
@@ -50,6 +50,15 @@ var normalizeSignature = (signature) => {
 };
 var lowS = (signature) => signature.length === 64 && scalar(signature.subarray(0, 32)) > 0n && scalar(signature.subarray(0, 32)) < p256Order && scalar(signature.subarray(32)) > 0n && scalar(signature.subarray(32)) <= p256Order / 2n;
 var sign = Effect2.fn("Envelope.sign")(function* sign2(key, bytes) {
+  if (Predicate.isFunction(key)) {
+    const signature2 = yield* key(bytes);
+    if (!lowS(signature2)) {
+      return yield* new EnvelopeFailure({
+        reason: "Invalid ES256 signature from signer"
+      });
+    }
+    return signature2;
+  }
   const signature = yield* cryptoOperation(
     () => crypto.subtle.sign(
       { hash: "SHA-256", name: "ECDSA" },

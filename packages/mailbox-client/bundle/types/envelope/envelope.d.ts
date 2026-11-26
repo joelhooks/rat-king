@@ -1,6 +1,7 @@
 import { CipherSuite } from "@hpke/core";
 import * as Defs from "../lexicon/defs.js";
 import { Effect, Schema } from "effect";
+import type { Es256Signer } from "./es256.js";
 import { EnvelopeFailure } from "./failure.js";
 import type { ResolveSigningKey } from "./signed.js";
 export declare const reviewStatus = "unreviewed";
@@ -9,7 +10,7 @@ export declare const info: Uint8Array<ArrayBuffer>;
 export interface SealRequest {
     readonly payload: Defs.SigningPayloadValue;
     readonly signingKeyId: string;
-    readonly signingKey: CryptoKey;
+    readonly signingKey: CryptoKey | Es256Signer;
     readonly recipientKeyId: string;
     readonly recipientKey: CryptoKey;
 }
@@ -33,11 +34,32 @@ export declare const seal: (request: SealRequest) => Effect.Effect<{
     };
     readonly version: number;
 }, EnvelopeFailure | Schema.SchemaError, never>;
+export type RecipientOpener = (envelope: Defs.EncryptedEnvelopeValue) => Effect.Effect<Uint8Array, EnvelopeFailure>;
+export declare const openCiphertext: (key: CryptoKey, envelope: {
+    readonly [x: string]: import("../lexicon/runtime.js").LexValue;
+    readonly aad: {
+        readonly [x: string]: import("../lexicon/runtime.js").LexValue;
+        readonly expiresAt?: string & import("effect/Brand").Brand<"Lexicon:datetime">;
+        readonly messageId: string & import("effect/Brand").Brand<"Lexicon:tid">;
+        readonly recipientDid: string & import("effect/Brand").Brand<"Lexicon:did">;
+        readonly recipientKeyId: string & import("effect/Brand").Brand<"Lexicon:uri">;
+        readonly senderDid: string & import("effect/Brand").Brand<"Lexicon:did">;
+    };
+    readonly ciphertext: Uint8Array<ArrayBufferLike>;
+    readonly enc: Uint8Array<ArrayBufferLike>;
+    readonly suite: {
+        readonly [x: string]: import("../lexicon/runtime.js").LexValue;
+        readonly aeadId: number;
+        readonly kdfId: number;
+        readonly kemId: number;
+    };
+    readonly version: number;
+}) => Effect.Effect<Uint8Array<ArrayBuffer>, EnvelopeFailure, never>;
 export interface OpenRequest {
     readonly envelope: Defs.EncryptedEnvelopeValue;
     readonly recipientDid: string;
     readonly recipientKeyId: string;
-    readonly recipientKey: CryptoKey;
+    readonly recipientKey: CryptoKey | RecipientOpener;
     readonly resolveSigningKey: ResolveSigningKey;
 }
 export declare const open: (request: OpenRequest) => Effect.Effect<{

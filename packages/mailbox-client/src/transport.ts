@@ -7,13 +7,13 @@ import { HttpClient, HttpClientRequest } from "effect/http";
 import { base64url, serviceToken } from "./auth.ts";
 import * as Deadline from "./deadline.ts";
 import { connectionFailure } from "./error.ts";
-import { importSigning } from "./identity.ts";
-import type { IdentityValue } from "./identity.ts";
+import { signingFor } from "./identity.ts";
+import type { RuntimeIdentity } from "./identity.ts";
 
 export const transportLayer = (
   endpoint: string,
   audience: string,
-  identity: IdentityValue
+  identity: RuntimeIdentity
 ) =>
   Layer.effect(
     Transport,
@@ -38,7 +38,7 @@ export const transportLayer = (
                 jti: nonce,
                 lxm: request.nsid,
               },
-              yield* importSigning(identity)
+              yield* signingFor(identity)
             );
 
             const url = new URL(

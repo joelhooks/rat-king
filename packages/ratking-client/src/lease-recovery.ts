@@ -1,11 +1,10 @@
+import { heldRetryDelay, HELD_RETRY_JITTER_MS } from "@rat-king/mailbox-client";
 import { Clock, Data, Deferred, Effect, Option, Random } from "effect";
 
 export interface HeldHolder {
   readonly expiresAt: string;
   readonly session: string;
 }
-
-export const RECOVERY_JITTER_MS = 2000;
 
 export const UNIDENTIFIED = "unknown";
 
@@ -42,7 +41,7 @@ export const judgeHeld = (input: {
         expiry <= input.now ||
         unidentified
         ? HeldVerdict.Wait({
-            delayMs: Math.max(0, expiry - input.now) + input.jitterMs,
+            delayMs: heldRetryDelay(expiry - input.now, input.jitterMs),
           })
         : HeldVerdict.Park({ holder: held.session });
     },
@@ -58,7 +57,7 @@ export const recoverHeld = <E>(options: {
   Effect.gen(function* recover() {
     const holder = yield* options.resolve;
     const now = yield* Clock.currentTimeMillis;
-    const jitterMs = yield* Random.nextIntBetween(0, RECOVERY_JITTER_MS);
+    const jitterMs = yield* Random.nextIntBetween(0, HELD_RETRY_JITTER_MS);
 
     const verdict = judgeHeld({
       heldFor: options.heldFor ?? 0,

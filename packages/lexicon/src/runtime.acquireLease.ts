@@ -9,6 +9,15 @@ export type ParamsValue = typeof Params.Type;
 
 export const Input = Schema.StructWithRest(
   Schema.Struct({
+    attempt: Schema.optionalKey(
+      Runtime.lexString({
+        description:
+          "Private 128-bit acquire-attempt credential, encoded as lowercase hex. Replays only its own current lease; never authorizes takeover.",
+        maxLength: 32,
+        minLength: 32,
+        type: "string",
+      })
+    ),
     did: Runtime.lexString({ format: "did", type: "string" }).pipe(
       Schema.brand("Lexicon:did")
     ),
@@ -203,6 +212,7 @@ export const KnownErrors = [
   "AuthRequired",
   "Forbidden",
   "LeaseHeld",
+  "AcquireAttemptExpired",
 ] as const;
 
 export type KnownError = (typeof KnownErrors)[number];

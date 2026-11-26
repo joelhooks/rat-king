@@ -97,6 +97,7 @@ export const PiConfig = Schema.Struct({
   roleAllowlist: Schema.optionalKey(Schema.Array(AgentName)),
   secretsCommand: Schema.optionalKey(Schema.String),
   serviceDid: Did,
+  signerNames: Schema.optionalKey(Schema.Array(AgentName)),
   state: Schema.optionalKey(Schema.String),
   threadRouting: Schema.optionalKey(Schema.Array(ThreadRouting)),
   toolName: Schema.optionalKey(ToolName),
@@ -122,6 +123,7 @@ export interface SettingsValue {
   readonly roleAllowlist?: readonly string[];
   readonly secretsCommand: string;
   readonly serviceDid: string;
+  readonly signerNames?: readonly string[];
   readonly state: string;
   readonly threadRouting?: readonly ThreadRoutingValue[];
   readonly turnRecords?: boolean;
@@ -293,6 +295,7 @@ export const loadSettings = Effect.fn("RatKing.loadSettings")(
       reserved: config.reserved ?? {},
       secretsCommand: config.secretsCommand ?? "secrets",
       serviceDid: config.serviceDid,
+      signerNames: config.signerNames ?? [],
       state,
       threadRouting: config.threadRouting ?? [],
       turnRecords,

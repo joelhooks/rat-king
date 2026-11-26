@@ -8,7 +8,11 @@ import { NodeServices } from "@effect/platform-node";
 import * as PassIngest from "@rat-king/lexicon/desk.ingest";
 import { PassRun } from "@rat-king/lexicon/pass-request";
 import { Transport } from "@rat-king/lexicon/transport";
-import { Identity, recordType, transportLayer } from "@rat-king/mailbox-client";
+import {
+  base64url,
+  recordType,
+  transportLayer,
+} from "@rat-king/mailbox-client";
 import { ownerCid } from "@rat-king/mailbox-client/owner-queue";
 import { decodeAgentGraphBody } from "@rat-king/ratking-client/agentgraph";
 import {
@@ -27,15 +31,11 @@ import {
 } from "@rat-king/ratking-client/config";
 import { deliveryReason, injects } from "@rat-king/ratking-client/delivery";
 import { directoryLayer } from "@rat-king/ratking-client/directory";
-import { claimName } from "@rat-king/ratking-client/identity";
+import { claimName, ensureIdentity } from "@rat-king/ratking-client/identity";
 import type { SessionFacts } from "@rat-king/ratking-client/identity";
 import { issuerLayer } from "@rat-king/ratking-client/issuer";
 import { appendLog } from "@rat-king/ratking-client/log";
-import {
-  canonicalName,
-  isReserved,
-  secretName,
-} from "@rat-king/ratking-client/name";
+import { canonicalName, isReserved } from "@rat-king/ratking-client/name";
 import type { ReservedValue } from "@rat-king/ratking-client/name";
 import {
   importDeskSigningKey,
@@ -74,10 +74,7 @@ import {
   recordNotice,
   recordRuleVerdict,
 } from "@rat-king/ratking-client/record-visibility";
-import {
-  SecretStore,
-  secretStoreLayer,
-} from "@rat-king/ratking-client/secrets";
+import { secretStoreLayer } from "@rat-king/ratking-client/secrets";
 import {
   Cause,
   Clock,
@@ -99,7 +96,6 @@ import {
   Predicate,
   Schedule,
   Schema,
-  Redacted,
   Scope,
   Semaphore,
 } from "effect";
@@ -2138,11 +2134,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
           });
         });
         const settings = yield* Settings;
-        const store = yield* SecretStore;
-
-        const identity = yield* Schema.decodeEffect(
-          Schema.fromJsonString(Identity)
-        )(Redacted.value(yield* store.lease(secretName(name))));
+        const identity = yield* ensureIdentity(name, undefined, true);
 
         const now = yield* Clock.currentTimeMillis;
 
@@ -2204,11 +2196,7 @@ export const ratkingExtension = (options: ExtensionOptions) =>
           }
 
           if (passLauncher === undefined) {
-            const store = yield* SecretStore;
-
-            const identity = yield* Schema.decodeEffect(
-              Schema.fromJsonString(Identity)
-            )(Redacted.value(yield* store.lease(secretName(input.desk))));
+            const identity = yield* ensureIdentity(input.desk, undefined, true);
 
             if (identity.did !== status.self.value.did) {
               return yield* passFailure(
@@ -2225,7 +2213,17 @@ export const ratkingExtension = (options: ExtensionOptions) =>
             const launcher = yield* makePassLauncher({
               desk: input.desk,
               deskDid: identity.did,
-              key: yield* importDeskSigningKey(identity.signing),
+              key:
+                "sign" in identity
+                  ? {
+                      publicKey: identity.signing,
+                      sign: (bytes) =>
+                        identity.sign(bytes).pipe(
+                          Effect.map(base64url),
+                          Effect.mapError((error) => passFailure(error.reason))
+                        ),
+                    }
+                  : yield* importDeskSigningKey(identity.signing),
               onBlocked: (runId, reason) =>
                 passBlocked(input.desk, runId, reason).pipe(
                   Effect.provideContext(context),

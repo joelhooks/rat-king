@@ -151,6 +151,8 @@ export interface MessageMeta {
     readonly redelivered: boolean;
     readonly seq: number;
 }
+export declare const HELD_RETRY_JITTER_MS = 2000;
+export declare const heldRetryDelay: (remaining: number, jitter: number) => number;
 export interface Skipped {
     readonly messageId: string;
     readonly reason: "expired" | "settled" | "unopenable";
@@ -165,6 +167,8 @@ export interface ConsumeOptions {
     readonly harness: Lease.MainValue["harness"];
     readonly renders?: readonly string[];
     readonly resume?: LeaseFence;
+    readonly acquireAttempt?: string;
+    readonly onAcquired?: (lease: Lease.MainValue) => Effect.Effect<void, MailboxClientError>;
     readonly afterSeq?: number;
     readonly onLease?: (lease: Lease.MainValue, progress: boolean, source: "acquire" | "intake" | "renew") => Effect.Effect<void, MailboxClientError, Scope.Scope>;
     readonly onRetry?: (error: MailboxClientError) => Effect.Effect<void>;
