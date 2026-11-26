@@ -127,6 +127,7 @@ export const KnownErrors = [
   "InvalidRequest",
   "AuthRequired",
   "MailboxUnavailable",
+  "ScanBudgetSpent",
 ] as const;
 
 export type KnownError = (typeof KnownErrors)[number];

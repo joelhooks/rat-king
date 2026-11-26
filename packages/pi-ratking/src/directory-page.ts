@@ -94,7 +94,7 @@ export const directoryPage = Effect.fn("RatKing.directoryPage")(
       params.all !== true &&
       statuses?.some((value) => value === "live" || value === "idle")
     ) {
-      return "Live/idle pages use cursor: instead of offset: so each call inspects at most 200 candidates.";
+      return "Live/idle pages use cursor: instead of offset: and share a scan budget. Use `ratking snapshot` for inventory or look up a single named row.";
     }
 
     let { cursor } = params;

@@ -36,6 +36,32 @@ const candidateFilter = (
   return statuses.includes("retired") ? "retired" : "active";
 };
 
+const reserveScanReads = Effect.fn("Issuer.reserveScanReads")(
+  function* reserveScanReads(
+    store: typeof IssuerStore.Service,
+    caller: string,
+    reads: number
+  ) {
+    if (reads === 0) {
+      return yield* Effect.void;
+    }
+
+    const now = yield* Clock.currentTimeMillis;
+
+    const admitted = yield* store.transaction((tx) =>
+      tx.spendScanReads(caller, now, reads)
+    );
+
+    return yield* admitted
+      ? Effect.void
+      : failure(
+          "ScanBudgetSpent",
+          429,
+          "Mailbox scan budget spent. Use `ratking snapshot` for inventory or look up a single named row."
+        );
+  }
+);
+
 const classifyName = Effect.fn("Issuer.classifyName")(function* classifyName(
   row: IssuedName,
   classify: boolean,
@@ -69,7 +95,8 @@ const classifyName = Effect.fn("Issuer.classifyName")(function* classifyName(
 export const namePage = Effect.fn("Issuer.namePage")(function* namePage(
   params: ListNames.ParamsValue,
   presence: Presence,
-  store: typeof IssuerStore.Service
+  store: typeof IssuerStore.Service,
+  caller: string
 ) {
   const now = yield* Clock.currentTimeMillis;
   const limit = params.limit ?? ListNames.Method.defaults.limit;
@@ -92,6 +119,14 @@ export const namePage = Effect.fn("Issuer.namePage")(function* namePage(
     const batch = candidates.slice(0, size);
 
     more = candidates.length > size;
+
+    if (classify) {
+      yield* reserveScanReads(
+        store,
+        caller,
+        batch.filter((row) => !row.retired).length
+      );
+    }
 
     const entries = yield* Effect.forEach(
       batch,

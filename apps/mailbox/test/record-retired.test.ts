@@ -227,7 +227,7 @@ class Change {
 }
 
 it.effect.prop(
-  "mailbox validation preserves backfill timestamps, displays mailbox values and removes only cleared retirements",
+  "bulk reads keep backfill values; named resolution consults the mailbox and heals a cleared retirement",
   [
     Arbitrary.schema(
       Schema.Int.check(Schema.isBetween({ maximum: 1000, minimum: 1 }))
@@ -264,20 +264,24 @@ it.effect.prop(
         Schema.fromJsonString(ListRetired.Output)
       )(listed.body);
 
-      expect(decoded.retired[0]?.successor).toBe("beta");
+      expect(decoded.retired[0]?.successor).toBeUndefined();
       const encoded = yield* Schema.encodeEffect(ListRetired.Output)(decoded);
-      expect(encoded.retired[0]?.retiredAt).toBe(isoTime(retiredAt));
-      expect(real.readCount()).toBe(1);
+      expect(encoded.retired[0]?.retiredAt).toBe(
+        isoTime(indexed?.retiredAt ?? -1)
+      );
+      expect(real.readCount()).toBe(0);
       expect(
         yield* real.store.transaction((tx) => tx.retiredEntry("alpha"))
       ).toEqual(indexed);
 
-      const resolved = yield* real.route({
+      const resolve = {
         input: undefined,
         method: "GET",
         nsid: ResolveRecipient.Method.nsid,
         params: { name: "alpha" },
-      });
+      } as const;
+
+      const resolved = yield* real.route(resolve);
 
       expect(resolved.status).toBe(200);
 
@@ -287,15 +291,18 @@ it.effect.prop(
 
       expect(route.name).toBe("beta");
       expect(route.chain).toEqual(["alpha", "beta"]);
-      expect(real.readCount()).toBe(2);
+      expect(real.readCount()).toBe(1);
       expect(
         yield* real.store.transaction((tx) => tx.retiredEntry("alpha"))
       ).toEqual(indexed);
       yield* real.mailbox.transaction((tx) => {
         tx.setRetirement(undefined);
       });
-      yield* real.route(list);
-      expect(real.readCount()).toBe(3);
+      expect((yield* real.route(list)).body).toBe(listed.body);
+      expect(real.readCount()).toBe(1);
+      const healed = yield* real.route(resolve);
+      expect(healed.status).toBe(200);
+      expect(real.readCount()).toBe(2);
       expect(
         yield* real.store.transaction((tx) => tx.retiredEntry("alpha"))
       ).toBeUndefined();

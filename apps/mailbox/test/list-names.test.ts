@@ -1,13 +1,23 @@
 import { it } from "@effect/vitest";
 import * as ListNames from "@rat-king/lexicon/identity.listNames";
-import { Arbitrary, Effect, Schema } from "effect";
+import * as Resolve from "@rat-king/lexicon/identity.resolveRecipient";
+import { Arbitrary, Effect, Layer, Option, Schema } from "effect";
+import { TestClock } from "effect/testing";
 import * as fc from "fast-check";
 import { expect } from "vitest";
 
+import { Caller } from "../src/caller.ts";
 import { IssuerStore, issuerStore } from "../src/issuer-store.ts";
 import type { IssuerTransaction } from "../src/issuer-store.ts";
+import {
+  DocumentRegistry,
+  issuerHandlers,
+  issuerRoute,
+  RetirementRegistry,
+} from "../src/issuer.ts";
 import { namePage } from "../src/list-names.ts";
 import { testStoreFor } from "./helpers.ts";
+import { runModel } from "./record-retired-model.ts";
 
 const Row = Schema.Struct({
   live: Schema.Boolean,
@@ -104,7 +114,8 @@ it.effect.prop(
           const page = yield* namePage(
             request,
             () => Effect.die("SQL listing must not inspect leases"),
-            store
+            store,
+            "did:web:caller.invalid"
           );
 
           expect(page.names.map((entry) => entry.name)).toEqual(
@@ -174,7 +185,12 @@ it.effect.prop(
           Object.assign(request, { cursor });
         }
 
-        const page = yield* namePage(request, presence, store);
+        const page = yield* namePage(
+          request,
+          presence,
+          store,
+          "did:web:caller.invalid"
+        );
 
         expect(page.names.map((entry) => entry.name)).toEqual(
           expected.slice(names.length, names.length + limit)
@@ -212,7 +228,8 @@ it.effect.prop(
       const first = yield* namePage(
         { status: live ? "live" : "idle" },
         presence,
-        store
+        store,
+        "did:web:caller.invalid"
       );
 
       expect(first.names).toEqual([]);
@@ -223,7 +240,8 @@ it.effect.prop(
       const second = yield* namePage(
         { cursor: "name-199", status: live ? "live" : "idle" },
         presence,
-        store
+        store,
+        "did:web:caller.invalid"
       );
 
       expect(second.names).toEqual([]);
@@ -314,11 +332,165 @@ it.effect.prop(
       const error = yield* namePage(
         { status: live ? "live" : "idle" },
         () => Effect.succeed({}),
-        store
+        store,
+        "did:web:caller.invalid"
       ).pipe(Effect.flip);
 
       expect(error.error).toBe("MailboxUnavailable");
       expect(error.status).toBe(503);
+    }).pipe(Effect.scoped)
+);
+
+const ScanGap = Schema.Int.check(
+  Schema.isBetween({ maximum: 599_999, minimum: 1 })
+);
+
+it.effect.prop(
+  "issuer scan reservations are rolling, shared across pages, and isolated by authenticated caller",
+  { gap: ScanGap },
+  ({ gap }) =>
+    Effect.gen(function* proof() {
+      const operator = "did:web:operator.invalid";
+      const other = "did:web:host.invalid";
+
+      const store = yield* seed(
+        Array.from({ length: 240 }, () => ({
+          live: false,
+          retired: false,
+          role: false,
+        }))
+      );
+
+      yield* store.transaction((tx) => {
+        tx.retire({
+          by: operator,
+          did: "did:web:name-000.example.invalid",
+          name: "name-000",
+          retiredAt: 1,
+        });
+      });
+
+      let scanReads = 0;
+      let namedReads = 0;
+
+      const handlers = issuerHandlers({
+        config: Option.none(),
+        operators: [operator],
+        staticDids: new Set(),
+      }).pipe(
+        Layer.provide(Layer.succeed(IssuerStore, store)),
+        Layer.provide(Layer.mock(DocumentRegistry, {})),
+        Layer.provide(
+          Layer.mock(RetirementRegistry, {
+            current: () =>
+              Effect.sync((): undefined => {
+                namedReads += 1;
+              }),
+            presence: () =>
+              Effect.sync(() => {
+                scanReads += 1;
+
+                return { exists: true, leaseExpiresAt: 0 };
+              }),
+          })
+        )
+      );
+
+      const route = (
+        caller: string,
+        nsid: string,
+        params: Record<string, string | boolean>
+      ) =>
+        issuerRoute({ input: undefined, method: "GET", nsid, params }).pipe(
+          Effect.provide(
+            handlers.pipe(Layer.provide(Layer.succeed(Caller, { did: caller })))
+          )
+        );
+
+      const scan = (caller: string, cursor: string) =>
+        route(caller, ListNames.Method.nsid, { cursor, status: "live" });
+
+      interface ScanModel {
+        spent: Map<string, { at: number; reads: number }[]>;
+      }
+
+      const step = (
+        at: number,
+        caller: string,
+        cursor: string,
+        cost: number
+      ) => ({
+        check: () => true,
+        run: (model: ScanModel) =>
+          Effect.gen(function* scanStep() {
+            yield* TestClock.setTime(at);
+
+            const window = (model.spent.get(caller) ?? []).filter(
+              ({ at: readAt }) => readAt > at - 600_000
+            );
+
+            const fits =
+              window.reduce((total, entry) => total + entry.reads, 0) + cost <=
+              500;
+
+            const before = scanReads;
+            const result = yield* scan(caller, cursor);
+
+            if (fits) {
+              window.push({ at, reads: cost });
+              expect(result.status).toBe(200);
+              expect(scanReads - before).toBe(cost);
+            } else {
+              expect(result.status).toBe(429);
+
+              const refusal = yield* Schema.decodeEffect(
+                Schema.fromJsonString(ListNames.ErrorBody)
+              )(result.body);
+
+              expect(refusal.error).toBe("ScanBudgetSpent");
+              expect(refusal.message).toContain("ratking snapshot");
+              expect(scanReads).toBe(before);
+            }
+
+            model.spent.set(caller, window);
+          }),
+        toString: () => `scan(${at}, ${caller}, ${cost})`,
+      });
+
+      yield* runModel(
+        () => ({ model: { spent: new Map() }, real: null }),
+        [
+          step(0, operator, "name-000", 200),
+          step(gap, operator, "name-000", 200),
+          step(gap, operator, "name-139", 100),
+          step(599_999, operator, "name-238", 1),
+          step(599_999, other, "name-238", 1),
+          {
+            check: () => true,
+            run: () =>
+              Effect.gen(function* namedAndInventory() {
+                const before = scanReads;
+
+                const resolved = yield* route(operator, Resolve.Method.nsid, {
+                  name: "name-000",
+                });
+
+                expect(resolved.status).toBe(200);
+                expect(namedReads).toBe(1);
+                expect(
+                  (yield* route(operator, ListNames.Method.nsid, { all: true }))
+                    .status
+                ).toBe(200);
+                expect(scanReads).toBe(before);
+              }),
+            toString: () =>
+              "resolve a named row and read inventory while exhausted",
+          },
+          step(600_000, operator, "name-000", 200),
+          step(600_000, operator, "name-238", 1),
+          step(600_000 + gap, operator, "name-238", 1),
+        ]
+      );
     }).pipe(Effect.scoped)
 );
 
