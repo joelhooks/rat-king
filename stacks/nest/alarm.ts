@@ -7,6 +7,7 @@ import type {
   AlarmReadingValue,
   AlarmSettingsValue,
   AlarmStateValue,
+  Severity,
 } from "./alarm-config.ts";
 import { DeskWakeState, collectDeskWake } from "./alarm-desk-wake.ts";
 import type { DeskWakePorts, DeskWakeSighting } from "./alarm-desk-wake.ts";
@@ -122,6 +123,7 @@ const summaries: Partial<Record<AlarmKeyValue, string>> = {
 export const alarmRecipients = (
   settings: AlarmSettingsValue,
   key: AlarmKeyValue,
+  severity: typeof Severity.Type,
   downInstances: readonly string[] = []
 ) => {
   if (
@@ -143,11 +145,14 @@ export const alarmRecipients = (
     ];
   }
 
-  const [owner] = Object.keys(settings.owners)
-    .filter((prefix) => key === prefix || key.startsWith(`${prefix}.`))
+  const [prefix] = Object.keys(settings.owners)
+    .filter((candidate) => key === candidate || key.startsWith(`${candidate}.`))
     .toSorted((a, b) => b.length - a.length);
 
-  const recipients = [settings.broadcast];
+  const owner = prefix === undefined ? undefined : settings.owners[prefix];
+
+  const recipients =
+    severity === "critical" || owner === undefined ? [settings.broadcast] : [];
 
   if (
     key.startsWith("readers.") ||
@@ -160,11 +165,7 @@ export const alarmRecipients = (
   }
 
   if (owner !== undefined) {
-    const target = settings.owners[owner];
-
-    if (target !== undefined) {
-      recipients.push(target);
-    }
+    recipients.push(owner);
   }
 
   return [...new Set(recipients)];
@@ -654,6 +655,7 @@ export const alarmCycle = Effect.fn("Alarm.cycle")(function* alarmCycle<R>(
           ...alarmRecipients(
             settings,
             key,
+            next.state.context.severity,
             exposedDownInstances(facts, now).map((instance) => instance.name)
           ),
           ...(reading.status === "firing" ? (reading.recipients ?? []) : []),
