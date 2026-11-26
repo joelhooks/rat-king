@@ -29,8 +29,8 @@ import * as Deadline from "./deadline.ts";
 import { readPendingPush } from "./device.ts";
 import { clientError, MailboxClientError } from "./error.ts";
 import { readMailboxHealth } from "./health.ts";
-import { importSigning, Identity } from "./identity.ts";
-import type { IdentityValue } from "./identity.ts";
+import { Identity, signingFor } from "./identity.ts";
+import type { RuntimeIdentity } from "./identity.ts";
 import { layer, RatKingMailbox } from "./mailbox.ts";
 import type { LeaseFence, OpenedMessage, SendOptions } from "./mailbox.ts";
 import { PayloadJson } from "./payload.ts";
@@ -48,15 +48,18 @@ export interface OwnIdentity {
   readonly [ownBrand]: true;
 }
 
-const identities = new WeakMap<OwnIdentity, IdentityValue>();
+const identities = new WeakMap<OwnIdentity, RuntimeIdentity>();
 
 export const ownIdentity = Effect.fn("Mailbox.ownIdentity")(
-  function* ownIdentity(value: IdentityValue) {
-    const identity = yield* Schema.decodeUnknownEffect(Identity)(value).pipe(
-      Effect.mapError(clientError)
-    );
+  function* ownIdentity(value: RuntimeIdentity) {
+    const identity =
+      "sign" in value
+        ? value
+        : yield* Schema.decodeUnknownEffect(Identity)(value).pipe(
+            Effect.mapError(clientError)
+          );
 
-    yield* importSigning(identity).pipe(Effect.mapError(clientError));
+    yield* signingFor(identity).pipe(Effect.mapError(clientError));
 
     const handle: OwnIdentity = Object.freeze<OwnIdentity>({
       [ownBrand]: true,
@@ -205,7 +208,7 @@ export const prepare = Effect.fn("Mailbox.prepare")(function* prepare(
   const mailboxContext = yield* Layer.build(layer(config, resolverLayer));
   const mailbox = Context.get(mailboxContext, RatKingMailbox);
 
-  const signingKey = yield* importSigning(identity).pipe(
+  const signingKey = yield* signingFor(identity).pipe(
     Effect.mapError(clientError)
   );
 

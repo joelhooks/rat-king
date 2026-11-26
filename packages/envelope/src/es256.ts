@@ -1,5 +1,5 @@
 /* oxlint-disable typescript/promise-function-async -- Effect's lazy WebCrypto Promise adapters do not need redundant async wrappers. */
-import { Effect } from "effect";
+import { Effect, Predicate } from "effect";
 
 import { concatenate } from "./bytes.ts";
 import { EnvelopeFailure } from "./failure.ts";
@@ -39,10 +39,26 @@ export const lowS = (signature: Uint8Array) =>
   scalar(signature.subarray(32)) > 0n &&
   scalar(signature.subarray(32)) <= p256Order / 2n;
 
+export type Es256Signer = (
+  bytes: Uint8Array
+) => Effect.Effect<Uint8Array, EnvelopeFailure>;
+
 export const sign = Effect.fn("Envelope.sign")(function* sign(
-  key: CryptoKey,
+  key: CryptoKey | Es256Signer,
   bytes: Uint8Array
 ) {
+  if (Predicate.isFunction(key)) {
+    const signature = yield* key(bytes);
+
+    if (!lowS(signature)) {
+      return yield* new EnvelopeFailure({
+        reason: "Invalid ES256 signature from signer",
+      });
+    }
+
+    return signature;
+  }
+
   const signature = yield* cryptoOperation(() =>
     crypto.subtle.sign(
       { hash: "SHA-256", name: "ECDSA" },

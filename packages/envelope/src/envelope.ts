@@ -1,7 +1,7 @@
 /* oxlint-disable typescript/promise-function-async -- Effect's lazy HPKE Promise adapters do not need redundant async wrappers. */
 import { Aes128Gcm, CipherSuite, HkdfSha256 } from "@hpke/core";
 import * as Defs from "@rat-king/lexicon/defs";
-import { Effect, Schema } from "effect";
+import { Effect, Predicate, Schema } from "effect";
 
 import {
   aadBytes,
@@ -12,6 +12,7 @@ import {
   supported,
 } from "./canonical.ts";
 import { sign } from "./es256.ts";
+import type { Es256Signer } from "./es256.ts";
 import { EnvelopeFailure } from "./failure.ts";
 import { CompatibleP256Kem } from "./hpke-p256.ts";
 import { openPlaintext, verifySigned } from "./signed.ts";
@@ -31,7 +32,7 @@ export const info = new TextEncoder().encode("sh.mschf.ratking.hpke.v1");
 export interface SealRequest {
   readonly payload: Defs.SigningPayloadValue;
   readonly signingKeyId: string;
-  readonly signingKey: CryptoKey;
+  readonly signingKey: CryptoKey | Es256Signer;
   readonly recipientKeyId: string;
   readonly recipientKey: CryptoKey;
 }
@@ -104,11 +105,36 @@ export const seal = Effect.fn("Envelope.seal")(function* seal(
   )({ ...header, ciphertext: new Uint8Array(ciphertext) });
 });
 
+export type RecipientOpener = (
+  envelope: Defs.EncryptedEnvelopeValue
+) => Effect.Effect<Uint8Array, EnvelopeFailure>;
+
+export const openCiphertext = Effect.fn("Envelope.openCiphertext")(
+  function* openCiphertext(
+    key: CryptoKey,
+    envelope: Defs.EncryptedEnvelopeValue
+  ) {
+    const context = yield* cryptoOperation(() =>
+      hpke.createRecipientContext({
+        enc: envelope.enc,
+        info,
+        recipientKey: key,
+      })
+    );
+
+    const opened = yield* cryptoOperation(() =>
+      context.open(envelope.ciphertext, aadBytes(envelope))
+    );
+
+    return new Uint8Array(opened);
+  }
+);
+
 export interface OpenRequest {
   readonly envelope: Defs.EncryptedEnvelopeValue;
   readonly recipientDid: string;
   readonly recipientKeyId: string;
-  readonly recipientKey: CryptoKey;
+  readonly recipientKey: CryptoKey | RecipientOpener;
   readonly resolveSigningKey: ResolveSigningKey;
 }
 
@@ -134,23 +160,13 @@ export const open = Effect.fn("Envelope.open")(function* open(
     return yield* openPlaintext(envelope, request.resolveSigningKey);
   }
 
-  const context = yield* cryptoOperation(() =>
-    hpke.createRecipientContext({
-      enc: envelope.enc,
-      info,
-      recipientKey: request.recipientKey,
-    })
-  );
+  const key = request.recipientKey;
 
-  const opened = yield* cryptoOperation(() =>
-    context.open(envelope.ciphertext, aadBytes(envelope))
-  );
+  const opened = yield* Predicate.isFunction(key)
+    ? key(envelope)
+    : openCiphertext(key, envelope);
 
-  return yield* verifySigned(
-    envelope,
-    new Uint8Array(opened),
-    request.resolveSigningKey
-  );
+  return yield* verifySigned(envelope, opened, request.resolveSigningKey);
 });
 
 export {

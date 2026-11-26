@@ -4,29 +4,14 @@ import { Context, Data, Effect } from "effect";
 import { Document } from "./auth.js";
 import type { ConsumeOptions, MessageMeta } from "./consume.js";
 import { MailboxClientError } from "./error.js";
+import type { RuntimeIdentity } from "./identity.js";
 import type { LeaseFence, OpenedMessage, SendOptions } from "./mailbox.js";
 import type { RetryObserver } from "./retry-metrics.js";
 declare const ownBrand: unique symbol;
 export interface OwnIdentity {
     readonly [ownBrand]: true;
 }
-export declare const ownIdentity: (value: {
-    readonly agreement: {
-        readonly crv: "P-256";
-        readonly d: string;
-        readonly kty: "EC";
-        readonly x: string;
-        readonly y: string;
-    };
-    readonly did: string;
-    readonly signing: {
-        readonly crv: "P-256";
-        readonly d: string;
-        readonly kty: "EC";
-        readonly x: string;
-        readonly y: string;
-    };
-}) => Effect.Effect<OwnIdentity, MailboxClientError, never>;
+export declare const ownIdentity: (value: RuntimeIdentity) => Effect.Effect<OwnIdentity, MailboxClientError, never>;
 export type PeerDocument = typeof Document.Type;
 export type SendOutcome = {
     readonly _tag: "NotAttempted";

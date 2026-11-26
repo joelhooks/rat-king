@@ -14,7 +14,7 @@ import { Socket } from "effect/socket";
 
 import { base64url, serviceToken } from "./auth.ts";
 import { clientError, MailboxClientError } from "./error.ts";
-import { importSigning } from "./identity.ts";
+import { signingFor } from "./identity.ts";
 import type { Batch, ClientConfig, LeaseFence } from "./mailbox.ts";
 
 export class WebSocketPort extends Context.Service<
@@ -134,9 +134,7 @@ export const watch = (
             jti: base64url(crypto.getRandomValues(new Uint8Array(16))),
             lxm: Subscribe.Method.nsid,
           },
-          yield* importSigning(config.identity).pipe(
-            Effect.mapError(clientError)
-          )
+          yield* signingFor(config.identity).pipe(Effect.mapError(clientError))
         ).pipe(Effect.mapError(clientError));
 
         const auth = yield* Schema.encodeEffect(Subscribe.Auth)({
