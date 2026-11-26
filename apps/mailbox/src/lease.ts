@@ -6,6 +6,7 @@ import type * as Renew from "@rat-king/lexicon/runtime.renewLease";
 import type { XrpcFailure } from "@rat-king/lexicon/xrpc-failure";
 import { Clock, Context, DateTime, Effect, Layer, Schema } from "effect";
 
+import { base64url } from "./auth.ts";
 import { failure } from "./failure.ts";
 import { redeliver } from "./redelivery.ts";
 import { MailboxStore } from "./store.ts";
@@ -36,6 +37,12 @@ const sameHarness = Schema.toEquivalence(
   RuntimeLease.Main.schema.fields.harness
 );
 
+const sameAttempt = (
+  current: LeaseValue,
+  hash: string | null
+): current is Extract<LeaseValue, { readonly did: string }> =>
+  hash !== null && "did" in current && current.attemptHash === hash;
+
 const resumes = (current: LeaseValue, input: Acquire.InputValue, now: number) =>
   current.expiresAt > now &&
   input.leaseId === current.leaseId &&
@@ -48,11 +55,57 @@ const fullLease = (lease: LeaseValue): RuntimeLease.MainValue => {
     throw failure("LeaseNotFound", 404);
   }
 
+  const { attemptHash: _private, ...publicLease } = lease;
+
   return Schema.decodeUnknownSync(RuntimeLease.Main)({
-    ...lease,
+    ...publicLease,
     expiresAt: DateTime.formatIso(DateTime.makeUnsafe(lease.expiresAt)),
     issuedAt: DateTime.formatIso(DateTime.makeUnsafe(lease.issuedAt)),
   });
+};
+
+const attemptDigest = Effect.fn("Lease.attemptDigest")(function* digest(
+  attempt: string | undefined
+) {
+  if (attempt === undefined) {
+    return null;
+  }
+
+  if (!/^[0-9a-f]{32}$/u.test(attempt)) {
+    return yield* failure("InvalidRequest", 400, "Invalid acquire credential");
+  }
+
+  const bytes = new TextEncoder().encode(attempt);
+
+  const hash = yield* Effect.tryPromise(
+    crypto.subtle.digest.bind(crypto.subtle, "SHA-256", bytes)
+  ).pipe(Effect.mapError(() => failure("MailboxUnavailable", 503)));
+
+  return base64url(new Uint8Array(hash));
+});
+
+const replayAttempt = (
+  current: LeaseValue | undefined,
+  input: Acquire.InputValue,
+  hash: string | null,
+  now: number
+) => {
+  if (!current || !sameAttempt(current, hash)) {
+    return null;
+  }
+
+  if (
+    current.did !== input.did ||
+    !sameHarness(input.harness, current.harness)
+  ) {
+    throw failure("LeaseHeld", 409);
+  }
+
+  if (current.expiresAt <= now) {
+    throw failure("AcquireAttemptExpired", 409);
+  }
+
+  return fullLease(current);
 };
 
 const expiry = (now: number, requested: string) => {
@@ -63,6 +116,25 @@ const expiry = (now: number, requested: string) => {
   }
 
   return Math.min(expiresAt, now + 300_000);
+};
+
+const checkHarness = (harness: Acquire.InputValue["harness"]) => {
+  if (
+    [
+      "sh.mschf.ratking.runtime.lease#pi",
+      "sh.mschf.ratking.runtime.lease#claude",
+      "sh.mschf.ratking.runtime.lease#codex",
+      "sh.mschf.ratking.runtime.lease#opencode",
+    ].includes(harness.$type) &&
+    !Schema.is(Schema.Struct({ sessionId: Schema.NonEmptyString }))(harness) &&
+    !Schema.is(Schema.Struct({ paneId: Schema.NonEmptyString }))(harness)
+  ) {
+    throw failure(
+      "InvalidRequest",
+      400,
+      "Harness requires a sessionId or paneId"
+    );
+  }
 };
 
 export interface LeaseInterface {
@@ -93,6 +165,7 @@ export class LeaseAuthority extends Context.Service<
 const makeLeases = (store: typeof MailboxStore.Service): LeaseInterface =>
   LeaseAuthority.of({
     acquire: Effect.fn("Lease.acquire")(function* acquire(input) {
+      const attemptHash = yield* attemptDigest(input.attempt);
       const now = yield* Clock.currentTimeMillis;
 
       return yield* store.transaction((tx) => {
@@ -100,30 +173,16 @@ const makeLeases = (store: typeof MailboxStore.Service): LeaseInterface =>
           throw failure("Forbidden", 403);
         }
 
-        const expiresAt = expiry(now, input.expiresAt);
-
-        if (
-          [
-            "sh.mschf.ratking.runtime.lease#pi",
-            "sh.mschf.ratking.runtime.lease#claude",
-            "sh.mschf.ratking.runtime.lease#codex",
-            "sh.mschf.ratking.runtime.lease#opencode",
-          ].includes(input.harness.$type) &&
-          !Schema.is(Schema.Struct({ sessionId: Schema.NonEmptyString }))(
-            input.harness
-          ) &&
-          !Schema.is(Schema.Struct({ paneId: Schema.NonEmptyString }))(
-            input.harness
-          )
-        ) {
-          throw failure(
-            "InvalidRequest",
-            400,
-            "Harness requires a sessionId or paneId"
-          );
-        }
+        checkHarness(input.harness);
 
         const current = tx.lease();
+        const replay = replayAttempt(current, input, attemptHash, now);
+
+        if (replay !== null) {
+          return replay;
+        }
+
+        const expiresAt = expiry(now, input.expiresAt);
 
         if (
           current &&
@@ -136,6 +195,10 @@ const makeLeases = (store: typeof MailboxStore.Service): LeaseInterface =>
 
         if (current && resumes(current, input, now)) {
           const resumed = { ...current, expiresAt };
+
+          if (attemptHash !== null) {
+            Object.assign(resumed, { attemptHash });
+          }
 
           if (input.renders !== undefined) {
             Object.assign(resumed, { renders: input.renders });
@@ -163,6 +226,10 @@ const makeLeases = (store: typeof MailboxStore.Service): LeaseInterface =>
 
         if (input.renders !== undefined) {
           Object.assign(lease, { renders: input.renders });
+        }
+
+        if (attemptHash !== null) {
+          Object.assign(lease, { attemptHash });
         }
 
         tx.setLease(lease);

@@ -11,8 +11,11 @@ import {
   Arbitrary,
   Clock,
   DateTime,
+  Deferred,
   Effect,
+  Fiber,
   Layer,
+  Ref,
   Result,
   Schema,
 } from "effect";
@@ -36,7 +39,7 @@ import { SenderFence } from "../src/sender-fence.ts";
 import { MailboxStore } from "../src/store.ts";
 import type { Transaction } from "../src/store.ts";
 import { TestFailure } from "./celld.ts";
-import { documents, testStore } from "./helpers.ts";
+import { documents, testStore, testStoreFor } from "./helpers.ts";
 
 interface Model {
   generation: number;
@@ -441,6 +444,158 @@ it.effect.prop(
       });
     }).pipe(Effect.scoped),
   { arbitrary: { runs: 40 }, timeout: 30_000 }
+);
+
+it.effect.prop(
+  "attempt proof returns only its own live grant or resume, without extending it",
+  [Arbitrary.schema(Schema.Literals(["release", "takeover", "expire"]))],
+  ([end]) =>
+    Effect.gen(function* replay() {
+      const storage = yield* testStore;
+
+      const authority = LeaseAuthority.pipe(
+        Effect.provide(leaseLayer.pipe(Layer.provide(storage.layer)))
+      );
+
+      const leases = yield* authority;
+      const now = yield* Clock.currentTimeMillis;
+
+      const grantInput = {
+        ...acquireInput(now, 10_000),
+        attempt: "1".repeat(32),
+      };
+
+      const grant = yield* leases.acquire(grantInput);
+
+      const replayInput = {
+        ...acquireInput(now, 20_000),
+        attempt: grantInput.attempt,
+      };
+
+      expect(yield* leases.acquire(replayInput)).toEqual(grant);
+      expect(grant).not.toHaveProperty("attemptHash");
+      const { layer } = yield* testStoreFor("did:web:other.invalid");
+
+      const other = yield* LeaseAuthority.pipe(
+        Effect.provide(leaseLayer.pipe(Layer.provide(layer)))
+      );
+
+      yield* refused(other.acquire(grantInput), "Forbidden");
+      const contender = { ...grantInput, attempt: "2".repeat(32) };
+      yield* refused(leases.acquire(contender), "LeaseHeld");
+      yield* refused(
+        leases.acquire({
+          ...grantInput,
+          harness: { ...grantInput.harness, sessionId: "other" },
+        }),
+        "LeaseHeld"
+      );
+
+      const resumed = yield* leases.acquire({
+        ...contender,
+        ...fenceInput(grant),
+      });
+
+      expect(fenceInput(resumed)).toEqual(fenceInput(grant));
+      expect(
+        yield* leases.acquire({
+          ...acquireInput(now, 30_000),
+          attempt: contender.attempt,
+        })
+      ).toEqual(resumed);
+      yield* refused(leases.acquire(grantInput), "LeaseHeld");
+
+      if (end === "takeover") {
+        const next = yield* leases.acquire({
+          ...grantInput,
+          ...fenceInput(resumed),
+          attempt: "3".repeat(32),
+          harness: { ...grantInput.harness, sessionId: "other" },
+        });
+
+        expect(next.generation).toBe(resumed.generation + 1);
+        yield* refused(leases.acquire(contender), "LeaseHeld");
+      } else {
+        yield* end === "release"
+          ? leases.release(fenceInput(resumed))
+          : TestClock.adjust(10_000);
+        yield* refused(leases.acquire(contender), "AcquireAttemptExpired");
+      }
+    }).pipe(Effect.scoped)
+);
+
+it.effect(
+  "rotation rejects new stale sends but not a send already authorized",
+  () =>
+    Effect.gen(function* pin() {
+      const sample = yield* sealed();
+
+      const docs = yield* documents(
+        sample.keys.sender.publicKey,
+        sample.keys.recipient.publicKey
+      );
+
+      const storage = yield* testStore;
+
+      const leases = yield* LeaseAuthority.pipe(
+        Effect.provide(leaseLayer.pipe(Layer.provide(storage.layer)))
+      );
+
+      const authorized = yield* Deferred.make<null>();
+      const proceed = yield* Deferred.make<null>();
+      const first = yield* Ref.make(true);
+
+      const handlers = yield* MailboxHandlers.pipe(
+        Effect.provide(
+          handlersLayer.pipe(
+            Layer.provide(storage.layer),
+            Layer.provide(staticResolver(docs)),
+            Layer.provide(Layer.succeed(Caller, { did: recipientDid })),
+            Layer.provide(
+              Layer.succeed(SenderFence, {
+                check: (_did, fence) =>
+                  leases.checkSend(fence).pipe(
+                    Effect.andThen(Ref.getAndSet(first, false)),
+                    Effect.flatMap((pause) =>
+                      pause
+                        ? Deferred.succeed(authorized, null).pipe(
+                            Effect.andThen(Deferred.await(proceed))
+                          )
+                        : Effect.void
+                    )
+                  ),
+              })
+            )
+          )
+        )
+      );
+
+      const request = acquireInput(yield* Clock.currentTimeMillis, 10_000);
+      const old = yield* leases.acquire(request);
+
+      const send = handlers.send({
+        envelope: {
+          ...sample.envelope,
+          aad: {
+            ...sample.envelope.aad,
+            senderDid: sample.envelope.aad.recipientDid,
+          },
+        },
+        ...fenceInput(old),
+      });
+
+      const inFlight = yield* send.pipe(Effect.forkScoped);
+      yield* Deferred.await(authorized);
+      yield* leases.acquire({
+        ...request,
+        ...fenceInput(old),
+        harness: { ...request.harness, sessionId: "successor" },
+      });
+      yield* refused(send, "LeaseMismatch");
+      yield* Deferred.succeed(proceed, null);
+      const admitted = yield* Fiber.join(inFlight);
+      expect(admitted.receipt.state).toBe("accepted");
+    }).pipe(Effect.scoped)
 );
 
 it.effect("legacy lease row expands without resetting generation", () =>

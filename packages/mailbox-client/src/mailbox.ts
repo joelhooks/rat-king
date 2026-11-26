@@ -345,6 +345,7 @@ export interface FencedMessage {
 }
 
 export interface AcquireRequest {
+  readonly attempt?: string;
   readonly did: string;
   readonly harness: Lease.MainValue["harness"];
   readonly renders?: readonly string[];

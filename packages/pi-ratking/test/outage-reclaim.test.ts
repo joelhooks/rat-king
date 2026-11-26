@@ -60,6 +60,10 @@ interface Server {
 
 const settle = TestClock.withLive(Effect.sleep("5 millis"));
 
+const fixtureState = FileSystem.FileSystem.use((fs) =>
+  fs.makeTempDirectoryScoped()
+).pipe(Effect.provide(NodeServices.layer));
+
 const memoryFiles = () => {
   const files = new Map<string, string>();
   const absent = FileSystem.makeNoop({});
@@ -301,7 +305,7 @@ it.effect.prop(
   },
   ({ duration }) =>
     Effect.gen(function* resumeLease() {
-      const state = "/reader-resume-fixture";
+      const state = yield* fixtureState;
       const session = "resume";
 
       const server: Server = {
@@ -379,7 +383,7 @@ for (const fault of Reconnect.literals) {
     },
     ({ unavailable }) =>
       Effect.gen(function* stalledIntake() {
-        const state = "/reader-reconnect-fixture";
+        const state = yield* fixtureState;
         const box = fakeMailbox("accept");
         const files = memoryFiles();
         let generation = 0;
@@ -528,7 +532,7 @@ it.effect.prop(
   },
   ({ leaseOffset }) =>
     Effect.gen(function* watchdog() {
-      const state = "/reader-watchdog-fixture";
+      const state = yield* fixtureState;
       const files = memoryFiles();
       const start = yield* Clock.currentTimeMillis;
 
@@ -543,8 +547,8 @@ it.effect.prop(
 
       const watchdogReasons: string[] = [];
       const ready = yield* Deferred.make<boolean>();
-      let stallNext = false;
-      let stalled = false;
+      let stall = false;
+      let stalledAt: number | undefined;
       let drained = false;
 
       const fs = {
@@ -555,11 +559,15 @@ it.effect.prop(
           options?: Parameters<typeof files.writeFileString>[2]
         ) =>
           Effect.suspend(() => {
-            if (stallNext && path.includes("/leases/")) {
-              stallNext = false;
-              stalled = true;
-
-              return Effect.never;
+            if (stall && path.startsWith(`${state}/leases/.tester.json.`)) {
+              return Clock.currentTimeMillis.pipe(
+                Effect.tap((now) =>
+                  Effect.sync(() => {
+                    stalledAt ??= now;
+                  })
+                ),
+                Effect.andThen(Effect.never)
+              );
             }
 
             return files.writeFileString(path, text, options);
@@ -579,6 +587,7 @@ it.effect.prop(
             env: Option.some("tester"),
             onState: (reader) => {
               if (ReaderState.$is("Retrying")(reader)) {
+                stall = false;
                 watchdogReasons.push(reader.reason);
               }
             },
@@ -598,11 +607,11 @@ it.effect.prop(
 
         yield* Deferred.await(ready);
         const first = yield* readBeat;
-        stallNext = true;
+        stall = true;
 
         yield* TestClock.adjust(TTL_MS / 2 - 1000);
         yield* advance(6000);
-        expect(stalled).toBe(true);
+        expect(stalledAt).toBeDefined();
 
         yield* TestClock.adjust(TTL_MS + 60_000 + leaseOffset);
         const later = yield* readBeat;
@@ -612,7 +621,8 @@ it.effect.prop(
         expect(watchdogReasons).toEqual([]);
         expect(server.serial).toBe(1);
 
-        yield* TestClock.adjust(TTL_MS / 2 - 60_000 - leaseOffset - 6000);
+        const now = yield* Clock.currentTimeMillis;
+        yield* TestClock.adjust(2 * TTL_MS - (now - (stalledAt ?? start)));
         yield* advance(10_000);
         expect(watchdogReasons).toEqual([
           "Reader made no progress for two lease TTLs",
@@ -645,7 +655,7 @@ it.effect.prop(
   },
   ({ duration, start, slow }) =>
     Effect.gen(function* plannedStop() {
-      const state = "/planned-outage-fixture";
+      const state = yield* fixtureState;
       const begin = yield* Clock.currentTimeMillis;
       const transitions: string[] = [];
       const firstLive = yield* Deferred.make<boolean>();

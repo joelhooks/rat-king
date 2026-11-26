@@ -89,7 +89,11 @@ export {
   recordType,
 } from "./record-visibility.ts";
 
-export { consumerMachine } from "./consume.ts";
+export {
+  consumerMachine,
+  heldRetryDelay,
+  HELD_RETRY_JITTER_MS,
+} from "./consume.ts";
 
 export { readPendingPush, registerDevice } from "./device.ts";
 
