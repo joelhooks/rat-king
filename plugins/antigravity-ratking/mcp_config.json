@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "mail": {
+      "command": "node",
+      "args": ["${PLUGIN_ROOT}/scripts/stdio.mts", "${RATKING_NAME}"],
+      "variables": [
+        {
+          "name": "RATKING_NAME",
+          "title": "Rat King name",
+          "description": "Exact provisioned name bound to this seat's host reader. This is a public name, not a key."
+        }
+      ]
+    }
+  }
+}
