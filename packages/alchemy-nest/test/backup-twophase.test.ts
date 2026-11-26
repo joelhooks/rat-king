@@ -7,7 +7,7 @@ import { backupScript } from "../../../stacks/nest/backup-script.ts";
 import { localExec } from "../src/local-exec.ts";
 
 const fixture = String.raw`
-import base64, contextlib, io, json, os, pathlib, subprocess, sys, tempfile
+import base64, contextlib, io, json, os, pathlib, re, subprocess, sys, tempfile
 script, phase = sys.argv[1], sys.argv[2]
 payloads = [base64.b64decode(value) for value in json.loads(sys.argv[3])]
 with tempfile.TemporaryDirectory() as tmp:
@@ -53,12 +53,14 @@ with tempfile.TemporaryDirectory() as tmp:
         print('TWOPHASE_PASSED')
         sys.exit(0)
     if phase == 'budget':
-        slow = script.replace('SNAPSHOT_BUDGET = 55', 'SNAPSHOT_BUDGET = 1').replace('def copy_file(source, target):', 'def copy_file(source, target):\n    time.sleep(3)')
-        assert slow != script
+        shortened, replacements = re.subn(r'^SNAPSHOT_BUDGET = \d+$', 'SNAPSHOT_BUDGET = 1', script, flags=re.MULTILINE)
+        assert replacements == 1
+        slow = shortened.replace('def copy_file(source, target):', 'def copy_file(source, target):\n    time.sleep(3)')
         try:
             run('snapshot', str(staging), source=slow)
             raise AssertionError('Budget did not fire')
-        except RuntimeError: pass
+        except RuntimeError as error:
+            assert str(error) == 'Snapshot copy exceeded its stop budget', str(error)
         print('TWOPHASE_PASSED')
         sys.exit(0)
     assert run('precopy', str(staging)) == 'BACKUP_PRECOPY_DONE'

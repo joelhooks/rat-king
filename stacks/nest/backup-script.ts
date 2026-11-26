@@ -6,6 +6,7 @@ import { objectArchiveScript } from "../../packages/alchemy-nest/src/object-arch
 import {
   armSlack,
   backupStopBudgetMs,
+  snapshotBudgetSeconds,
   stopRestartLimit,
 } from "./backup-limits.ts";
 import { unitMemoryScript } from "./memory-script.ts";
@@ -22,7 +23,7 @@ BACKUP_NAME = r'[0-9]{8}T[0-9]{6}\.[0-9]{6}Z-[0-9a-f]{32}'
 PUBLISH_PREFIX = '.mailbox-publish-'
 SNAPSHOT_ROOTS = ['seaweedfs', 'celld']
 SNAPSHOT_ARCHIVE = 'mailbox.tar.gz'
-SNAPSHOT_BUDGET = 55
+SNAPSHOT_BUDGET = ${snapshotBudgetSeconds}
 ARM_SLACK_US = ${Duration.toMillis(armSlack) * 1000}
 STOP_RESTART_US = ${Duration.toMillis(stopRestartLimit) * 1000}
 STOP_COVER_US = ${backupStopBudgetMs * 1000}
