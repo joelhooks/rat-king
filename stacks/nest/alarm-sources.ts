@@ -33,7 +33,12 @@ import { mailReadings, rememberMailTargets } from "./alarm-stranded.ts";
 import { WakeSighting, WakeTarget } from "./alarm-wakes.ts";
 import { Sha, ShipReceipt } from "./ship-config.ts";
 import { sanitizeCandidateStderr } from "./ship-diagnostics.ts";
-import { StopMemory, stopMemoryChecks } from "./stop-memory.ts";
+import {
+  rememberStopMemory,
+  StopMemory,
+  stopMemoryChecks,
+  StopMemoryHistory,
+} from "./stop-memory.ts";
 
 const Count = Schema.Int.check(Schema.isGreaterThanOrEqualTo(0));
 
@@ -194,6 +199,7 @@ export const SourceState = Schema.Struct({
     )
   ),
   measurementMisses: Schema.optionalKey(Count),
+  preStopHistory: Schema.optionalKey(StopMemoryHistory),
   unexplained: Schema.Array(Schema.Finite),
   wakeTargets: Schema.optionalKey(Schema.Array(WakeTarget)),
 });
@@ -749,7 +755,7 @@ const digestReading = (
   const checks =
     facts.stopMemory === null || facts.stopMemory === undefined
       ? []
-      : stopMemoryChecks(facts.stopMemory);
+      : stopMemoryChecks(facts.stopMemory, sources.preStopHistory ?? [], now);
 
   const memory = checks
     .filter((check) => stopped === undefined || check.kind !== "unavailable")
@@ -794,6 +800,20 @@ const digestReading = (
   return facts.digest === null ? unknown : ok;
 };
 
+const trackStopMemory = (
+  prior: typeof SourceState.Type,
+  facts: typeof AlarmFacts.Type,
+  now: number
+) => {
+  const preStopHistory = rememberStopMemory(
+    prior.preStopHistory ?? [],
+    facts.stopMemory?.preStopHistory ?? [],
+    now
+  );
+
+  return preStopHistory.length === 0 ? undefined : { preStopHistory };
+};
+
 export const observeAlarms = (
   prior: typeof SourceState.Type,
   facts: typeof AlarmFacts.Type,
@@ -801,6 +821,7 @@ export const observeAlarms = (
 ) => {
   const sources = {
     ...trackSources(prior, facts, now),
+    ...trackStopMemory(prior, facts, now),
     wakeTargets: rememberMailTargets(prior.wakeTargets ?? [], facts.wakes),
   };
 

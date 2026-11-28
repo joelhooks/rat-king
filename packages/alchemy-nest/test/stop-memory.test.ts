@@ -11,7 +11,6 @@ import {
 import { backupScript } from "../../../stacks/nest/backup-script.ts";
 import { healthScript } from "../../../stacks/nest/health-script.ts";
 import type { StopMemory } from "../../../stacks/nest/stop-memory.ts";
-import { stopMemoryWarnings } from "../../../stacks/nest/stop-memory.ts";
 import { localExec } from "../src/local-exec.ts";
 
 const fixture = String.raw`
@@ -124,45 +123,82 @@ it.effect.prop(
     }).pipe(Effect.provide(NodeServices.layer))
 );
 
-const Delta = Schema.Union([
-  Schema.Int.check(Schema.isBetween({ maximum: 5000, minimum: -5000 })),
-  Schema.Literals([-1, 0, 1]),
-]);
+const day = 86_400_000;
+
+const now = Date.parse("2026-10-09T15:00:00Z");
+
+const cap = 4_831_838_208;
 
 it.prop(
-  "outside a mailbox window, unit anonymous memory warns at 60 percent and clears below it, regardless of charged file cache or slice charge",
+  "the alarm ignores live pressure and warns only on fresh pre-stop growth against comparable prior nights",
   [
     AlarmFacts,
-    Delta,
     Schema.Literals(["celld", "seaweedfs"]),
-    Schema.Literals(["known", "missing-anon", "missing-cap", "zero-cap"]),
+    Schema.Literals([
+      "growth",
+      "steady-high",
+      "small-delta",
+      "low-headroom-use",
+      "retry-only",
+      "stale",
+      "future",
+      "changed-cap",
+      "no-history",
+    ]),
     Bytes,
   ],
-  ([base, delta, name, accounting, cache]) => {
-    const maximum = 100_000;
-
-    const healthy = {
-      anon: 0,
+  ([base, unit, mode, cache]) => {
+    const live = {
+      anon: 3_290_000_000,
       current: cache,
       file: cache,
-      max: maximum,
+      max: cap,
       peak: cache,
     };
 
+    const nightly = (at: number, anon: number, max = cap) => ({
+      at,
+      charge: { ...live, anon, max },
+      unit,
+    });
+
+    const normal = [1_390_000_000, 1_710_000_000, 1_550_000_000];
+
+    const prior =
+      mode === "steady-high" || mode === "small-delta"
+        ? [3_190_000_000, 3_240_000_000, 3_490_000_000]
+        : normal;
+
+    const latestAt = mode === "stale" ? now - 2 * day : now;
+
+    const quietAnon = {
+      "low-headroom-use": 2_500_000_000,
+      "small-delta": 3_240_000_000 + 512 * 1024 ** 2 - 1,
+    };
+
+    const latest = nightly(
+      mode === "future" ? now + 1 : latestAt,
+      mode === "low-headroom-use" || mode === "small-delta"
+        ? quietAnon[mode]
+        : live.anon
+    );
+
+    const history = [
+      ...(mode === "retry-only" ? [] : prior).map((anon, i) =>
+        nightly(
+          latestAt - (i + 1) * day,
+          anon,
+          mode === "changed-cap" ? 6_000_000_000 : cap
+        )
+      ),
+      ...normal.map((anon, i) => nightly(latestAt - (i + 1) * 1000, anon)),
+      latest,
+    ];
+
     const memory: typeof StopMemory.Type = {
-      celld: healthy,
-      seaweedfs: healthy,
-      slice: { ...healthy, anon: maximum * 2 },
-      [name]: {
-        ...healthy,
-        anon: accounting === "missing-anon" ? null : maximum * 0.6 + delta,
-        max: {
-          known: maximum,
-          "missing-anon": maximum,
-          "missing-cap": null,
-          "zero-cap": 0,
-        }[accounting],
-      },
+      celld: live,
+      seaweedfs: live,
+      slice: { ...live, anon: cap * 2 },
     };
 
     const facts = {
@@ -174,87 +210,33 @@ it.prop(
       stopMemory: memory,
     };
 
-    const reasons = stopMemoryWarnings(memory);
+    let sources = emptySources;
 
-    const reading = observeAlarms(emptySources, facts, 0).readings[
-      "digest.fail"
-    ];
-
-    const shouldWarn = accounting !== "known" || delta >= 0;
-
-    expect(reasons.length > 0).toBe(shouldWarn);
-    expect(reading.status).toBe(shouldWarn ? "firing" : "ok");
-
-    if (reading.status === "firing") {
-      expect(reading.severity).toBe("warn");
-      expect(reading.evidence).toBe(reasons.join("; "));
+    if (mode !== "no-history") {
+      for (const sample of history.toSorted((a, b) => a.at - b.at)) {
+        ({ sources } = observeAlarms(
+          sources,
+          {
+            ...facts,
+            stopMemory: { ...memory, preStopHistory: [sample] },
+          },
+          Math.min(sample.at, now)
+        ));
+      }
     }
 
-    const recovered = observeAlarms(
-      emptySources,
-      {
-        ...facts,
-        stopMemory: {
-          ...memory,
-          [name]: { ...healthy, anon: maximum * 0.6 - 1 },
-        },
-      },
-      1
-    );
+    const reading = observeAlarms(sources, facts, now).readings["digest.fail"];
 
-    expect(recovered.readings["digest.fail"].status).toBe("ok");
-  }
-);
-
-it.prop(
-  "memory warnings preserve simultaneous digest evidence and leave no-memory measurement gating unchanged",
-  [
-    AlarmFacts,
-    Schema.Literals(["celld", "seaweedfs"]),
-    Schema.Int.check(Schema.isBetween({ maximum: 100, minimum: 60 })),
-    Schema.Int.check(Schema.isBetween({ maximum: 3, minimum: 0 })),
-  ],
-  ([base, name, anon, misses]) => {
-    const charge = { anon: 0, current: 100, file: 100, max: 100, peak: 100 };
-    const healthy = { celld: charge, seaweedfs: charge };
-    const memory = { ...healthy, [name]: { ...charge, anon } };
-    const warnings = stopMemoryWarnings(memory);
-    const prior = { ...emptySources, measurementMisses: misses };
-
-    for (const digest of ["ok", "fail", null] as const) {
-      const facts = { ...base, digest, stopMemory: null };
-      const baseline = observeAlarms(prior, facts, 0).readings["digest.fail"];
-
-      const withoutWarning = observeAlarms(
-        prior,
-        { ...facts, stopMemory: healthy },
-        0
-      ).readings["digest.fail"];
-
-      const combined = observeAlarms(prior, { ...facts, stopMemory: memory }, 0)
-        .readings["digest.fail"];
-
-      const quietStatus =
-        facts.measurementFailed || digest === null ? "unknown" : "ok";
-
-      const expectedStatus =
-        digest === "fail" || (facts.measurementFailed && misses >= 1)
-          ? "firing"
-          : quietStatus;
-
-      expect(baseline.status).toBe(expectedStatus);
-      expect(withoutWarning).toEqual(baseline);
-      expect(combined.status).toBe("firing");
-
-      if (combined.status === "firing") {
-        expect(combined.severity).toBe("warn");
-        expect(combined.evidence).toBe(
-          [
-            ...(baseline.status === "firing" ? [baseline.evidence] : []),
-            ...warnings,
-          ].join("; ")
-        );
-      }
+    if (mode === "growth") {
+      expect(reading).toMatchObject({ severity: "warn", status: "firing" });
+      expect(reading).toHaveProperty(
+        "evidence",
+        expect.stringContaining(
+          `${unit} pre-stop anonymous memory grew to 3290000000 bytes vs prior-night median 1550000000 bytes`
+        )
+      );
+    } else {
+      expect(reading).toEqual({ status: "ok" });
     }
   }
 );

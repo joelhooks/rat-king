@@ -17,7 +17,12 @@ import { AlarmSourcesOff } from "./alarm-config.ts";
 import { BACKUP_OWNER, backupCover } from "./alarm-maintenance.ts";
 import { nodeService, storeService } from "./backup.ts";
 import { healthScript } from "./health-script.ts";
-import { StopMemory, stopMemoryChecks } from "./stop-memory.ts";
+import {
+  readStopMemoryJournal,
+  rememberStopMemory,
+  StopMemory,
+  stopMemoryChecks,
+} from "./stop-memory.ts";
 
 export const backupService = "rat-king-mailbox-backup.service";
 
@@ -333,7 +338,11 @@ export const assess = (facts: HealthFacts, previous?: HealthDigest) => {
   const memory =
     facts.stopMemory === null || facts.stopMemory === undefined
       ? []
-      : stopMemoryChecks(facts.stopMemory);
+      : stopMemoryChecks(
+          facts.stopMemory,
+          facts.stopMemory.preStopHistory ?? [],
+          DateTime.toEpochMillis(facts.observedAt)
+        );
 
   const plannedMemory = (check: { readonly kind: string }) =>
     stopping && check.kind === "unavailable";
@@ -547,7 +556,8 @@ const run = (props: ReadonlyMap<string, string>) => ({
 
 export const collectHealth = Effect.fn("Nest.health")(function* collectHealth(
   shell: Pick<Interface, "exec">,
-  input: HealthInput
+  input: HealthInput,
+  previousMemory?: typeof StopMemory.Type | null
 ) {
   const observedAt = DateTime.makeUnsafe(yield* Clock.currentTimeMillis);
   const unavailable: Record<string, string> = {};
@@ -734,12 +744,23 @@ export const collectHealth = Effect.fn("Nest.health")(function* collectHealth(
         ])
       : "";
 
+    const times = run(props);
+
     return {
-      ...run(props),
-      memoryPeak: count(props.get("MemoryPeak")),
-      precopyCapacity: /\bBACKUP_PRECOPY_CAPACITY\b/u.test(journal),
-      retentionRefused: retentionRefusedFrom(journal),
-      stopMs: stopMsFrom(journal),
+      memory:
+        times.startedAt === null
+          ? []
+          : readStopMemoryJournal(
+              journal,
+              DateTime.toEpochMillis(times.startedAt)
+            ),
+      run: {
+        ...times,
+        memoryPeak: count(props.get("MemoryPeak")),
+        precopyCapacity: /\bBACKUP_PRECOPY_CAPACITY\b/u.test(journal),
+        retentionRefused: retentionRefusedFrom(journal),
+        stopMs: stopMsFrom(journal),
+      },
     };
   });
 
@@ -801,9 +822,15 @@ export const collectHealth = Effect.fn("Nest.health")(function* collectHealth(
     { concurrency: 4 }
   );
 
+  const preStopHistory = rememberStopMemory(
+    previousMemory?.preStopHistory ?? [],
+    facts.lastRun?.memory ?? [],
+    DateTime.toEpochMillis(observedAt)
+  );
+
   return {
     backup: {
-      lastRun: facts.lastRun,
+      lastRun: facts.lastRun?.run ?? null,
       newest: facts.newest,
       nextRun: facts.nextRun,
     },
@@ -812,7 +839,10 @@ export const collectHealth = Effect.fn("Nest.health")(function* collectHealth(
     observedAt,
     retention: facts.retention,
     services: { celld: facts.celld, seaweedfs: facts.seaweedfs },
-    stopMemory: facts.stopMemory,
+    stopMemory:
+      facts.stopMemory === null || preStopHistory.length === 0
+        ? facts.stopMemory
+        : { ...facts.stopMemory, preStopHistory },
     storage: {
       dataDirs: facts.dataDirs,
       objects: facts.objects,
