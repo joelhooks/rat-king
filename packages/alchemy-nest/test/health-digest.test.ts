@@ -18,10 +18,6 @@ import {
   retentionService,
 } from "../../../stacks/nest/health.ts";
 import type { HealthDigest, HealthFacts } from "../../../stacks/nest/health.ts";
-import {
-  StopMemory,
-  stopMemoryWarnings,
-} from "../../../stacks/nest/stop-memory.ts";
 import { declaredListeners } from "../src/listener-contract.ts";
 import { localExec } from "../src/local-exec.ts";
 
@@ -88,19 +84,6 @@ const digestOf = (facts: HealthFacts): HealthDigest => ({
 it("a healthy host reports ok with no reasons", () => {
   expect(assess(healthy)).toStrictEqual({ reasons: [], status: "ok" });
 });
-
-it.prop(
-  "anonymous memory warnings appear in the health digest without declaring an outage",
-  [StopMemory],
-  ([stopMemory]) => {
-    const reasons = stopMemoryWarnings(stopMemory);
-
-    expect(assess({ ...healthy, stopMemory })).toStrictEqual({
-      reasons,
-      status: reasons.length > 0 ? "warn" : "ok",
-    });
-  }
-);
 
 it.prop(
   "a service that is not active outside the backup's stop fails the digest, whatever else is true",
@@ -264,7 +247,7 @@ it.prop(
 );
 
 const probes = {
-  "backup.lastRun": (argv: readonly string[]) => argv[0] === "journalctl",
+  "backup.lastRun": (argv: readonly string[]) => argv.includes("--output=cat"),
   "backup.newest": (argv: readonly string[]) => argv.includes("share"),
   "backup.nextRun": (argv: readonly string[]) => argv.includes(backupTimer),
   listeners: (argv: readonly string[]) => argv[0] === "ss",
@@ -418,6 +401,84 @@ it.effect.prop(
             }
       );
       expect(assess(facts).status).toBe(hung === "health" ? "fail" : "warn");
+    })
+);
+
+it.effect.prop(
+  "health compares the latest permitted backup invocation log with prior digest samples, not live memory",
+  [Schema.Literals(["growth", "steady", "no-journal"])],
+  ([mode]) =>
+    Effect.gen(function* preStopGrowth() {
+      const now = Date.parse(observedAt);
+      yield* TestClock.setTime(now);
+
+      const charge = (anon: number) => ({
+        anon,
+        current: anon,
+        max: 4_831_838_208,
+        peak: 4_294_967_296,
+      });
+
+      const previousMemory = {
+        celld: charge(1_000_000_000),
+        preStopHistory: [1_550_000_000, 1_390_000_000, 1_710_000_000].map(
+          (anon, index) => ({
+            at: now - (3 - index) * 86_400_000,
+            charge: charge(anon),
+            unit: "seaweedfs" as const,
+          })
+        ),
+      };
+
+      const journal = `BACKUP_STOP_MEMORY rat-king-celld.service malformed\n[12:30:00.000] INFO (#1): BACKUP_STOP_MEMORY rat-king-seaweedfs.service ${JSON.stringify(charge(mode === "growth" ? 3_290_000_000 : 1_650_000_000))}\nBACKUP_STOP_MEMORY rat-king.slice {}\nBACKUP_RECOVERY_ARMED`;
+
+      const shell = {
+        exec: (argv: readonly string[]) => {
+          const command = argv.slice(4);
+
+          if (command.includes("--output=cat")) {
+            return Effect.succeed({
+              code: 0,
+              stdout: mode === "no-journal" ? "" : journal,
+            });
+          }
+
+          return Effect.succeed({ code: 0, stdout: reply(command) });
+        },
+      };
+
+      const client = HttpClient.make((request) =>
+        Effect.succeed(HttpClientResponse.fromWeb(request, new Response("ok")))
+      );
+
+      const facts = yield* collectHealth(
+        shell,
+        {
+          backupRoot: "/srv/backups",
+          bucket: "rat-king-cells",
+          dataRoot: "/data",
+          healthUrl: "http://192.0.2.10:18787/.well-known/celld/health",
+          home: "/home/example",
+          publicIPv4: "192.0.2.10",
+          sidecar: false,
+        },
+        previousMemory
+      ).pipe(Effect.provideService(HttpClient.HttpClient, client));
+
+      const verdict = assess(facts);
+
+      const growth =
+        "seaweedfs pre-stop anonymous memory grew to 3290000000 bytes vs prior-night median 1550000000 bytes";
+
+      expect(facts.stopMemory?.seaweedfs?.anon).toBe(1_073_741_824);
+      expect(facts.stopMemory?.preStopHistory?.length).toBe(
+        mode === "no-journal" ? 3 : 4
+      );
+      expect(facts.unavailable).toEqual({});
+      expect(verdict.status).toBe(mode === "growth" ? "warn" : "ok");
+      expect(verdict.reasons.some((reason) => reason.startsWith(growth))).toBe(
+        mode === "growth"
+      );
     })
 );
 

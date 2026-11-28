@@ -677,19 +677,23 @@ export const healthDigest = (previous?: string, config?: StageConfigValue) =>
       yield* Config.String("RAT_KING_LIVE_NODE")
     );
 
-    const facts = yield* collectHealth(yield* HostShell, {
-      backupRoot: yield* Config.String("RAT_KING_BACKUP_ROOT"),
-      bucket: yield* Config.String("RAT_KING_BUCKET").pipe(
-        Config.withDefault("rat-king-cells")
-      ),
-      dataRoot: host.dataRoot,
-      healthUrl: `${workerUrl(stage, host)}/.well-known/celld/health`,
-      home: host.home,
-      publicIPv4: workerIPv4(stage, host),
-      sidecar: yield* Config.Boolean("RAT_KING_CLAUDE_SIDECAR").pipe(
-        Config.withDefault(false)
-      ),
-    });
+    const facts = yield* collectHealth(
+      yield* HostShell,
+      {
+        backupRoot: yield* Config.String("RAT_KING_BACKUP_ROOT"),
+        bucket: yield* Config.String("RAT_KING_BUCKET").pipe(
+          Config.withDefault("rat-king-cells")
+        ),
+        dataRoot: host.dataRoot,
+        healthUrl: `${workerUrl(stage, host)}/.well-known/celld/health`,
+        home: host.home,
+        publicIPv4: workerIPv4(stage, host),
+        sidecar: yield* Config.Boolean("RAT_KING_CLAUDE_SIDECAR").pipe(
+          Config.withDefault(false)
+        ),
+      },
+      prior?.stopMemory
+    );
 
     const digest = { ...facts, ...assess(facts, prior) };
 
